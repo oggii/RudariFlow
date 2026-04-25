@@ -1,0 +1,30 @@
+{
+  "name": "rudariflow",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Sprache-zu-Text Diktier-App, lokal angetrieben von Whisper.cpp mit GPU-Beschleunigung",
+  "author": {
+    "name": "oggi",
+    "email": "info@0ggi.ch",
+    "url": "https://0ggi.ch"
+  },
+  "homepage": "https://0ggi.ch",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-autostart": "^2.5.1",
+    "@tauri-apps/plugin-global-shortcut": "^2.3.1",
+    "@tauri-apps/plugin-shell": "^2.3.5"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.3"
+  }
+}

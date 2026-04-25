@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RudariFlow</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="titlebar" data-tauri-drag-region></div>
+      <div id="app-body">
+      <aside id="sidebar">
+        <div class="sidebar-header">
+          <div class="app-identity">
+            <img class="app-logo" src="/src/sidebar-logo.png" alt="RudariFlow" />
+          </div>
+          <div id="status-indicator">
+            <span id="status-dot"></span>
+            <span id="status-text" data-i18n="status_ready">Ready</span>
+          </div>
+        </div>
+        <nav id="sidebar-nav">
+          <a class="nav-item active" data-section="general">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.2"/>
+              <path d="M8 5v3l2 1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span data-i18n="nav_general">General</span>
+          </a>
+          <a class="nav-item" data-section="engine">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M2.5 8h3l1.5-3 2 6 1.5-3h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span data-i18n="nav_engine">Engine</span>
+          </a>
+          <a class="nav-item" data-section="recording">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="6" y="2.5" width="4" height="7" rx="2" stroke="currentColor" stroke-width="1.2"/>
+              <path d="M4 8.5a4 4 0 008 0M8 12.5v1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            <span data-i18n="nav_recording">Recording</span>
+          </a>
+        </nav>
+        <div class="sidebar-footer">
+          <span class="version-text">v0.1.0</span>
+          <a href="#" id="credit-link" class="credit-text">by oggi</a>
+        </div>
+      </aside>
+
+      <main id="content">
+        <section id="section-general" class="content-section active">
+          <div class="section-header">
+            <h2 class="section-title" data-i18n="general_title">General</h2>
+            <p class="section-desc" data-i18n="general_desc">Configure your audio input device and interface</p>
+          </div>
+          <div class="settings-list">
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="microphone_label">Microphone</span>
+                <span class="label-hint" data-i18n="microphone_hint">Select your preferred input device</span>
+              </div>
+              <div class="setting-control">
+                <select id="mic-select"></select>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="ui_language_label">Display Language</span>
+                <span class="label-hint" data-i18n="ui_language_hint">Language used for the app interface</span>
+              </div>
+              <div class="setting-control">
+                <select id="ui-language-select">
+                  <option value="en">English</option>
+                  <option value="de">Deutsch</option>
+                </select>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="volume_label">Notification Volume</span>
+                <span class="label-hint" data-i18n="volume_hint">Soft sound when starting/stopping recording</span>
+              </div>
+              <div class="setting-control">
+                <input id="volume-slider" type="range" min="0" max="1" step="0.05" />
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="autostart_label">Start with computer</span>
+                <span class="label-hint" data-i18n="autostart_hint">Launch RudariFlow automatically when you log in</span>
+              </div>
+              <div class="setting-control">
+                <label class="switch">
+                  <input id="autostart-toggle" type="checkbox" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="section-engine" class="content-section">
+          <div class="section-header">
+            <h2 class="section-title" data-i18n="engine_title">Engine</h2>
+            <p class="section-desc" data-i18n="engine_desc">Choose your transcription backend</p>
+          </div>
+          <div class="settings-list">
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="engine_label">Transcription Engine</span>
+                <span class="label-hint" data-i18n="engine_hint">Local runs on-device, Cloud requires an API key</span>
+              </div>
+              <div class="setting-control">
+                <div class="toggle-group">
+                  <button id="engine-local" class="toggle-btn active" data-i18n="engine_local">Local Whisper</button>
+                  <button id="engine-cloud" class="toggle-btn" data-i18n="engine_cloud">Groq Cloud</button>
+                </div>
+              </div>
+            </div>
+            <div class="setting-row" id="language-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="language_label">Language</span>
+                <span class="label-hint" data-i18n="language_hint">Auto-detect or pick a preferred language</span>
+              </div>
+              <div class="setting-control">
+                <select id="language-select">
+                  <option value="auto" selected data-i18n="language_auto">Auto-detect</option>
+                  <option value="en">English</option>
+                  <option value="de">German (Deutsch)</option>
+                  <option value="fr">French (Français)</option>
+                  <option value="it">Italian (Italiano)</option>
+                  <option value="es">Spanish (Español)</option>
+                  <option value="pt">Portuguese (Português)</option>
+                  <option value="nl">Dutch (Nederlands)</option>
+                  <option value="ru">Russian (Русский)</option>
+                  <option value="zh">Chinese (中文)</option>
+                  <option value="ja">Japanese (日本語)</option>
+                  <option value="ko">Korean (한국어)</option>
+                  <option value="ar">Arabic (العربية)</option>
+                  <option value="tr">Turkish (Türkçe)</option>
+                  <option value="pl">Polish (Polski)</option>
+                </select>
+              </div>
+            </div>
+            <div class="setting-row" id="local-settings">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="model_label">Model Size</span>
+                <span class="label-hint" data-i18n="model_hint">Larger models are more accurate but use more resources</span>
+              </div>
+              <div class="setting-control">
+                <div class="model-row">
+                  <select id="model-select">
+                    <option value="tiny" data-i18n="model_tiny">Tiny (~75 MB) — fastest, lowest accuracy</option>
+                    <option value="base" data-i18n="model_base">Base (~142 MB)</option>
+                    <option value="small" selected data-i18n="model_small">Small (~466 MB) — recommended default</option>
+                    <option value="medium" data-i18n="model_medium">Medium (~1.5 GB)</option>
+                    <option value="large-v3" data-i18n="model_large_v3">Large v3 (~2.9 GB) — highest accuracy</option>
+                    <option value="large-v3-turbo" data-i18n="model_large_v3_turbo">Large v3 Turbo (~1.5 GB) — large quality, ~8x faster</option>
+                  </select>
+                  <button id="download-btn" class="btn-primary" data-i18n="download">Download</button>
+                </div>
+              </div>
+            </div>
+            <div id="download-progress" class="hidden">
+              <div id="progress-bar"><div id="progress-fill"></div></div>
+            </div>
+            <div class="setting-row hidden" id="cloud-settings">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="groq_label">Groq API Key</span>
+                <span class="label-hint" data-i18n="groq_hint">Get your key from console.groq.com</span>
+              </div>
+              <div class="setting-control">
+                <input type="password" id="groq-key" placeholder="gsk_..." />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="section-recording" class="content-section">
+          <div class="section-header">
+            <h2 class="section-title" data-i18n="recording_title">Recording</h2>
+            <p class="section-desc" data-i18n="recording_desc">Configure how you trigger transcription</p>
+          </div>
+          <div class="settings-list">
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="recording_mode_label">Recording Mode</span>
+                <span class="label-hint" data-i18n="recording_mode_hint">Toggle starts/stops, Push to Talk records while held</span>
+              </div>
+              <div class="setting-control">
+                <div class="toggle-group">
+                  <button id="mode-toggle" class="toggle-btn active" data-i18n="mode_toggle">Toggle</button>
+                  <button id="mode-ptt" class="toggle-btn" data-i18n="mode_ptt">Push to Talk</button>
+                </div>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="hotkey_label">Hotkey</span>
+                <span class="label-hint" data-i18n="hotkey_hint">Global keyboard shortcut to trigger recording</span>
+              </div>
+              <div class="setting-control">
+                <button id="hotkey-btn" class="hotkey-btn"><kbd id="hotkey-text">Cmd+Shift+D</kbd></button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
