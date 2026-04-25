@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "RudariFlow",
+  "version": "0.1.0",
+  "identifier": "com.rudariflow.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "RudariFlow",
+        "width": 900,
+        "height": 600,
+        "minWidth": 700,
+        "minHeight": 500,
+        "resizable": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "macOSPrivateApi": true,
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "oggi",
+    "homepage": "https://0ggi.ch",
+    "shortDescription": "Sprache-zu-Text Diktier-App, lokal angetrieben von Whisper.cpp",
+    "longDescription": "RudariFlow ist eine lokale Diktier-App für Windows mit NVIDIA-GPU-Beschleunigung. Drücke einen globalen Hotkey, sprich, und der transkribierte Text wird automatisch eingefügt. Unterstützt mehrere Sprachen via Whisper.cpp.",
+    "resources": ["binaries/whisper/*"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

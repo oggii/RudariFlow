@@ -1,0 +1,18 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities",
+  "windows": ["main", "overlay"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "global-shortcut:default",
+    "autostart:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
+    {
+      "identifier": "shell:allow-open",
+      "allow": [{ "url": "https://0ggi.ch" }]
+    }
+  ]
+}
