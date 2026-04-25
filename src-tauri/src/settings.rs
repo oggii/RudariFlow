@@ -13,8 +13,8 @@ pub struct Settings {
     #[serde(rename = "recordingMode")]
     pub recording_mode: String,
     pub hotkey: String,
-    #[serde(rename = "useGpu", default = "default_use_gpu")]
-    pub use_gpu: bool,
+    #[serde(rename = "gpuBackend", default = "default_gpu_backend")]
+    pub gpu_backend: String,
     #[serde(default = "default_language")]
     pub language: String,
     #[serde(rename = "uiLanguage", default)]
@@ -29,8 +29,8 @@ fn default_volume() -> f32 {
     0.4
 }
 
-fn default_use_gpu() -> bool {
-    true
+fn default_gpu_backend() -> String {
+    "auto".to_string()
 }
 
 fn default_language() -> String {
@@ -46,7 +46,7 @@ impl Default for Settings {
             groq_api_key: String::new(),
             recording_mode: "toggle".to_string(),
             hotkey: "CmdOrCtrl+Shift+Space".to_string(),
-            use_gpu: true,
+            gpu_backend: "auto".to_string(),
             language: "auto".to_string(),
             ui_language: String::new(),
             volume: 0.4,
@@ -62,10 +62,22 @@ impl Settings {
 
     pub fn load(app_dir: &PathBuf) -> Self {
         let path = Self::config_path(app_dir);
-        match fs::read_to_string(&path) {
-            Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
-            Err(_) => Self::default(),
+        let Ok(contents) = fs::read_to_string(&path) else {
+            return Self::default();
+        };
+        let mut settings: Self = match serde_json::from_str(&contents) {
+            Ok(s) => s,
+            Err(_) => return Self::default(),
+        };
+        // Migration: pre-0.2.0 used `useGpu: bool`. Map it onto gpuBackend.
+        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&contents) {
+            if !raw.get("gpuBackend").is_some() {
+                if let Some(use_gpu) = raw.get("useGpu").and_then(|v| v.as_bool()) {
+                    settings.gpu_backend = if use_gpu { "auto".to_string() } else { "cpu".to_string() };
+                }
+            }
         }
+        settings
     }
 
     pub fn save(&self, app_dir: &PathBuf) -> Result<(), String> {
