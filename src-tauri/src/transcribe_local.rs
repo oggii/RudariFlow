@@ -2,6 +2,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use tauri::{AppHandle, Manager};
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 pub async fn transcribe_local(
     app: &AppHandle,
     model_path: &PathBuf,
@@ -41,6 +44,11 @@ pub async fn transcribe_local(
         .args(["--no-timestamps", "-np", "-l", language]);
     if !use_gpu {
         cmd.arg("-ng");
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
     let output = cmd

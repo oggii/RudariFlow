@@ -20,7 +20,9 @@
         "minHeight": 500,
         "resizable": true,
         "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "hiddenTitle": true,
+        "label": "main",
+        "visible": false
       }
     ],
     "macOSPrivateApi": true,
