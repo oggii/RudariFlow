@@ -211,7 +211,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
-            Some(vec![]),
+            Some(vec!["--start-minimized"]),
         ))
         .manage(AppState {
             recorder: Recorder::new(),
@@ -240,6 +240,18 @@ fn main() {
             }
         })
         .setup(move |app| {
+            // If launched at login (autostart adds --start-minimized), keep the main
+            // window hidden so the app lives in the tray. Otherwise show it normally.
+            let started_minimized = std::env::args().any(|a| a == "--start-minimized");
+            if let Some(main_window) = app.get_webview_window("main") {
+                if started_minimized {
+                    println!("[RudariFlow] Started minimized (autostart) — staying in tray");
+                } else {
+                    let _ = main_window.show();
+                    let _ = main_window.set_focus();
+                }
+            }
+
             // Bottom-center recording pill: hidden by default, shown while recording.
             let monitor = app.primary_monitor().ok().flatten();
             let (overlay_w, overlay_h) = (320.0_f64, 64.0_f64);
