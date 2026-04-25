@@ -119,7 +119,7 @@ impl Recorder {
         let raw_text = match settings.engine.as_str() {
             "local" => {
                 let model_path = app_dir.join(transcribe_local::model_filename(&settings.whisper_model));
-                transcribe_local::transcribe_local(app, &model_path, &temp_path, settings.use_gpu, &settings.language).await?
+                transcribe_local::transcribe_local(app, &model_path, &temp_path, &settings.gpu_backend, &settings.language).await?
             }
             "cloud" => {
                 transcribe_groq::transcribe_groq(&settings.groq_api_key, &temp_path).await?

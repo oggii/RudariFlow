@@ -46,7 +46,7 @@
           </a>
         </nav>
         <div class="sidebar-footer">
-          <span class="version-text">v0.1.0</span>
+          <span class="version-text">v0.2.0</span>
           <a href="#" id="credit-link" class="credit-text">by oggi</a>
         </div>
       </aside>
@@ -119,6 +119,19 @@
                   <button id="engine-local" class="toggle-btn active" data-i18n="engine_local">Local Whisper</button>
                   <button id="engine-cloud" class="toggle-btn" data-i18n="engine_cloud">Groq Cloud</button>
                 </div>
+              </div>
+            </div>
+            <div class="setting-row" id="gpu-backend-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="gpu_backend_label">GPU Backend</span>
+                <span class="label-hint" data-i18n="gpu_backend_hint">Auto picks NVIDIA CUDA when available, otherwise CPU</span>
+              </div>
+              <div class="setting-control">
+                <select id="gpu-backend-select">
+                  <option value="auto" data-i18n="gpu_backend_auto">Auto</option>
+                  <option value="cuda" data-i18n="gpu_backend_cuda">NVIDIA CUDA</option>
+                  <option value="cpu" data-i18n="gpu_backend_cpu">CPU only</option>
+                </select>
               </div>
             </div>
             <div class="setting-row" id="language-row">

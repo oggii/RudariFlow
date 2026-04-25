@@ -12,7 +12,7 @@ interface Settings {
   groqApiKey: string;
   recordingMode: string;
   hotkey: string;
-  useGpu: boolean;
+  gpuBackend: string;
   language: string;
   uiLanguage: string;
   volume: number;
@@ -40,6 +40,7 @@ const localSettings = document.getElementById("local-settings")!;
 const cloudSettings = document.getElementById("cloud-settings")!;
 const modelSelect = document.getElementById("model-select") as HTMLSelectElement;
 const languageSelect = document.getElementById("language-select") as HTMLSelectElement;
+const gpuBackendSelect = document.getElementById("gpu-backend-select") as HTMLSelectElement;
 const uiLanguageSelect = document.getElementById("ui-language-select") as HTMLSelectElement;
 const volumeSlider = document.getElementById("volume-slider") as HTMLInputElement;
 const autostartToggle = document.getElementById("autostart-toggle") as HTMLInputElement;
@@ -122,6 +123,9 @@ async function loadSettings() {
 
   // Language
   languageSelect.value = currentSettings.language;
+
+  // GPU backend
+  gpuBackendSelect.value = currentSettings.gpuBackend || "auto";
 
   // Groq key
   groqKey.value = currentSettings.groqApiKey;
@@ -210,6 +214,7 @@ async function saveSettings() {
   currentSettings.groqApiKey = groqKey.value;
   currentSettings.language = languageSelect.value;
   currentSettings.uiLanguage = uiLanguageSelect.value;
+  currentSettings.gpuBackend = gpuBackendSelect.value;
   currentSettings.volume = parseFloat(volumeSlider.value);
   currentSettings.autostart = autostartToggle.checked;
   await invoke("save_settings", { settings: currentSettings });
@@ -229,6 +234,8 @@ engineCloud.addEventListener("click", () => {
 micSelect.addEventListener("change", () => saveSettings());
 
 languageSelect.addEventListener("change", () => saveSettings());
+
+gpuBackendSelect.addEventListener("change", () => saveSettings());
 
 uiLanguageSelect.addEventListener("change", () => {
   setLang(uiLanguageSelect.value);
