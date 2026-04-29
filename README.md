@@ -88,9 +88,11 @@ Produces:
 - **Hotkey:** [tauri-plugin-global-shortcut](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/global-shortcut)
 - **Autostart:** [tauri-plugin-autostart](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/autostart)
 
-## Licences / Credits
+## Licence / Credits
+
+RudariFlow is released under the **[MIT License](LICENSE)** — free to use, modify, redistribute, and incorporate into closed-source projects, with attribution.
 
 Initial Tauri scaffolding based on [albertshiney/typr](https://github.com/albertshiney/typr).
 Uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT) for transcription.
 
-App © 2026 oggi. All rights reserved.
+© 2026 [oggi](https://0ggi.ch).
