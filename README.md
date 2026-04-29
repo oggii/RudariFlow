@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="RudariFlow%20White%20No%20BG.png">
-    <img src="RudariFlow%20No%20BG.png" alt="RudariFlow" width="360">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/RudariFlow%20White%20No%20BG.png">
+    <img src="assets/RudariFlow%20No%20BG.png" alt="RudariFlow" width="360">
   </picture>
 </p>
 
