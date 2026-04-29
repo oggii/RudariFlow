@@ -107,6 +107,18 @@
       import { listen } from "@tauri-apps/api/event";
       import { getCurrentWindow } from "@tauri-apps/api/window";
 
+      // ── Diagnostic logging into the same startup.log Rust writes ────
+      function diag(msg) {
+        try { invoke("diag_log", { source: "overlay", message: msg }); } catch (_) {}
+      }
+      window.__rfPing = diag;
+      diag("script start");
+      window.addEventListener("DOMContentLoaded", () => diag("DOMContentLoaded"));
+      window.addEventListener("load", () => diag("load"));
+      window.addEventListener("error", (e) => diag(`window error: ${e.message} at ${e.filename}:${e.lineno}`));
+      window.addEventListener("unhandledrejection", (e) => diag(`unhandled rejection: ${e.reason}`));
+      document.addEventListener("visibilitychange", () => diag(`visibility: ${document.visibilityState}`));
+
       const BAR_COUNT = 32;
       const HISTORY = new Array(BAR_COUNT).fill(0);
       const waveform = document.getElementById("waveform");
@@ -127,19 +139,26 @@
       }
       paint();
 
+      let levelEventCount = 0;
       listen("audio-level", (event) => {
+        levelEventCount++;
+        // Log only the first level event after entering recording so we know the listener fired
         const lvl = Math.max(0, Math.min(1, Number(event.payload) || 0));
         HISTORY.shift();
         HISTORY.push(lvl);
         paint();
-      });
+      }).then(() => diag("audio-level listener registered"));
 
       window.__overlayUpdate = (state) => {
+        diag(`__overlayUpdate(${state}) bodyState=${document.body.dataset.state} levelEvents=${levelEventCount}`);
         document.body.dataset.state = state;
         if (state !== "recording") {
           // Stop responding to incoming levels (set bars to baseline)
           for (let i = 0; i < BAR_COUNT; i++) HISTORY[i] = 0;
           paint();
+        }
+        if (state === "recording") {
+          levelEventCount = 0;
         }
       };
 

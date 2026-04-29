@@ -6,6 +6,7 @@ use crate::audio::AudioRecorder;
 use crate::cleanup::cleanup_text;
 use crate::paste::paste_text;
 use crate::settings::Settings;
+use crate::startup_log;
 use crate::transcribe_local;
 use crate::transcribe_groq;
 
@@ -17,26 +18,56 @@ pub enum RecordingState {
 }
 
 fn update_overlay(app: &AppHandle, state: &RecordingState) {
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        match state {
-            RecordingState::Ready => {
-                let _ = overlay.hide();
-            }
-            RecordingState::Recording | RecordingState::Transcribing => {
-                let _ = overlay.show();
+    let Some(overlay) = app.get_webview_window("overlay") else {
+        startup_log::log("[overlay] no window handle");
+        return;
+    };
+
+    let was_visible = overlay.is_visible().unwrap_or(false);
+    let pos = overlay.outer_position().ok();
+    let size = overlay.outer_size().ok();
+    startup_log::log(&format!(
+        "[overlay] update_overlay state={:?} pre_visible={} pos={:?} size={:?}",
+        state, was_visible, pos, size
+    ));
+
+    match state {
+        RecordingState::Ready => {
+            if let Err(e) = overlay.hide() {
+                startup_log::log(&format!("[overlay] hide() failed: {}", e));
             }
         }
-        let class = match state {
-            RecordingState::Ready => "ready",
-            RecordingState::Recording => "recording",
-            RecordingState::Transcribing => "transcribing",
-        };
-        let js = format!(
-            "document.body.dataset.state = '{}'; if (window.__overlayUpdate) window.__overlayUpdate('{}');",
-            class, class
-        );
-        let _ = overlay.eval(&js);
+        RecordingState::Recording | RecordingState::Transcribing => {
+            // Defensive: force always-on-top off then on, then show.
+            // This kicks Windows' compositor into re-stacking the window correctly
+            // after fullscreen apps / monitor switches have left it stale.
+            // We deliberately do NOT call set_focus() — stealing focus would break
+            // the auto-paste target since the user is typing in another app.
+            let _ = overlay.set_always_on_top(false);
+            let _ = overlay.set_always_on_top(true);
+            if let Err(e) = overlay.show() {
+                startup_log::log(&format!("[overlay] show() failed: {}", e));
+            }
+        }
     }
+    let class = match state {
+        RecordingState::Ready => "ready",
+        RecordingState::Recording => "recording",
+        RecordingState::Transcribing => "transcribing",
+    };
+    let js = format!(
+        "document.body.dataset.state = '{}'; if (window.__overlayUpdate) window.__overlayUpdate('{}'); window.__rfPing && window.__rfPing('post-eval-{}');",
+        class, class, class
+    );
+    if let Err(e) = overlay.eval(&js) {
+        startup_log::log(&format!("[overlay] eval() failed: {}", e));
+    }
+
+    let post_visible = overlay.is_visible().unwrap_or(false);
+    startup_log::log(&format!(
+        "[overlay] update_overlay done state={:?} post_visible={}",
+        state, post_visible
+    ));
 }
 
 pub struct Recorder {

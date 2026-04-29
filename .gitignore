@@ -42,3 +42,7 @@ whisper.cpp/
 
 # Tauri capabilities autogen
 src-tauri/gen/
+
+# Personal / stray files accidentally dropped into the repo dir
+Dany Phone.*
+WhatsApp Audio*

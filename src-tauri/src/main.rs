@@ -12,6 +12,7 @@ use rudariflow_lib::audio;
 use rudariflow_lib::downloader;
 use rudariflow_lib::recorder::{Recorder, RecordingState};
 use rudariflow_lib::settings::Settings;
+use rudariflow_lib::startup_log;
 use rudariflow_lib::transcribe_local;
 
 struct AppState {
@@ -90,7 +91,24 @@ fn cancel_recording(
 }
 
 #[tauri::command]
+fn diag_log(source: String, message: String) {
+    startup_log::log(&format!("[{}] {}", source, message));
+}
+
+fn running_from_debug_build() -> bool {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let path_str = exe.to_string_lossy().to_lowercase();
+    path_str.contains("\\target\\debug\\") || path_str.contains("/target/debug/")
+}
+
+#[tauri::command]
 fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    if enabled && running_from_debug_build() {
+        return Err(
+            "Refusing to register autostart from a debug build. Install the production build first."
+                .to_string(),
+        );
+    }
     let mgr = app.autolaunch();
     if enabled {
         mgr.enable().map_err(|e| e.to_string())
@@ -209,7 +227,9 @@ async fn do_toggle_recording(
 
 fn main() {
     let app_dir = get_app_dir();
+    startup_log::init(&app_dir);
     let settings = Settings::load(&app_dir);
+    startup_log::log("settings loaded");
     let initial_hotkey = settings.hotkey.clone();
     let initial_autostart = settings.autostart;
 
@@ -236,6 +256,7 @@ fn main() {
             cancel_recording,
             change_hotkey,
             set_autostart,
+            diag_log,
         ])
         .on_window_event(|window, event| {
             // Close button (X) on the main window hides to tray instead of quitting.
@@ -247,16 +268,38 @@ fn main() {
             }
         })
         .setup(move |app| {
+            startup_log::log("setup() entered");
+            if let Ok(rd) = app.path().resource_dir() {
+                startup_log::log(&format!("resource_dir: {:?}", rd));
+            } else {
+                startup_log::log("resource_dir: <unresolved>");
+            }
+
             // If launched at login (autostart adds --start-minimized), keep the main
             // window hidden so the app lives in the tray. Otherwise show it normally.
             let started_minimized = std::env::args().any(|a| a == "--start-minimized");
+            startup_log::log(&format!("started_minimized: {}", started_minimized));
             if let Some(main_window) = app.get_webview_window("main") {
+                startup_log::log("main window handle obtained");
+                // Listen for webview load errors / page-failed-to-load events.
+                let mw_for_listener = main_window.clone();
+                main_window.on_window_event(move |ev| {
+                    startup_log::log(&format!("[main window event] {:?}", ev));
+                    let _ = &mw_for_listener;
+                });
                 if started_minimized {
-                    println!("[RudariFlow] Started minimized (autostart) — staying in tray");
+                    startup_log::log("autostart: keeping main hidden");
                 } else {
-                    let _ = main_window.show();
-                    let _ = main_window.set_focus();
+                    startup_log::log("showing main window");
+                    if let Err(e) = main_window.show() {
+                        startup_log::log(&format!("main_window.show() failed: {}", e));
+                    }
+                    if let Err(e) = main_window.set_focus() {
+                        startup_log::log(&format!("main_window.set_focus() failed: {}", e));
+                    }
                 }
+            } else {
+                startup_log::log("ERROR: no main window handle from get_webview_window(\"main\")");
             }
 
             // Bottom-center recording pill: hidden by default, shown while recording.
@@ -302,23 +345,36 @@ fn main() {
                 eprintln!("[RudariFlow] ERROR: {}", e);
             }
 
-            // Sync persisted autostart preference with the OS.
-            let autolaunch = app.autolaunch();
-            match autolaunch.is_enabled() {
-                Ok(actual) if actual != initial_autostart => {
-                    let r = if initial_autostart {
-                        autolaunch.enable()
-                    } else {
-                        autolaunch.disable()
-                    };
-                    if let Err(e) = r {
-                        eprintln!("[RudariFlow] Autostart sync failed: {}", e);
-                    } else {
-                        println!("[RudariFlow] Autostart synced to {}", initial_autostart);
+            // Sync persisted autostart preference with the OS — but never
+            // register a debug build at autostart (would point Windows at a
+            // dev-only exe whose webview tries to load the Vite dev server).
+            let is_debug = running_from_debug_build();
+            startup_log::log(&format!("running_from_debug_build: {}", is_debug));
+            if is_debug && initial_autostart {
+                startup_log::log(
+                    "Skipping autostart registration: running from debug build path",
+                );
+            } else {
+                let autolaunch = app.autolaunch();
+                match autolaunch.is_enabled() {
+                    Ok(actual) if actual != initial_autostart => {
+                        let r = if initial_autostart {
+                            autolaunch.enable()
+                        } else {
+                            autolaunch.disable()
+                        };
+                        if let Err(e) = r {
+                            startup_log::log(&format!("Autostart sync failed: {}", e));
+                        } else {
+                            startup_log::log(&format!(
+                                "Autostart synced to {}",
+                                initial_autostart
+                            ));
+                        }
                     }
+                    Ok(_) => {}
+                    Err(e) => startup_log::log(&format!("Autostart query failed: {}", e)),
                 }
-                Ok(_) => {}
-                Err(e) => eprintln!("[RudariFlow] Autostart query failed: {}", e),
             }
 
             // System tray.
@@ -360,6 +416,7 @@ fn main() {
                 })
                 .build(app)?;
 
+            startup_log::log("setup() completed successfully");
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -1,84 +1,96 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="RudariFlow%20White%20No%20BG.png">
+    <img src="RudariFlow%20No%20BG.png" alt="RudariFlow" width="360">
+  </picture>
+</p>
+
+<p align="center"><em>English · <a href="README.de.md">Deutsch</a></em></p>
+
 # RudariFlow
 
-Lokale Sprache-zu-Text Diktier-App für Windows, angetrieben von [whisper.cpp](https://github.com/ggml-org/whisper.cpp) mit NVIDIA-GPU-Beschleunigung. Globaler Hotkey, Push-to-Talk oder Toggle-Modus, automatisches Einfügen des transkribierten Texts.
+Local speech-to-text dictation app for Windows, powered by [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Global hotkey, push-to-talk or toggle mode, automatic paste of the transcribed text.
 
-> **v0.1.0 — Windows + NVIDIA GPU only.** Mac/AMD/Intel-Support folgt in 0.2.0.
+> **v0.2.0 — Windows.** NVIDIA GPU recommended for speed; CPU fallback included for AMD / Intel / no-GPU systems. macOS and Linux planned for later releases.
 
 Made by [oggi](https://0ggi.ch).
 
 ## Features
 
-- Lokale Transkription via whisper.cpp (cuBLAS) — keine Cloud nötig
-- NVIDIA-GPU-Beschleunigung (CUDA 12.4)
-- Mehrere Whisper-Modelle wählbar: tiny → large-v3-turbo, mit Auto-Download bei Auswahl
-- Sprachen: Auto-Erkennung oder fest 14 Sprachen (DE, EN, FR, IT, ES, …)
-- Push-to-Talk **und** Toggle-Modi
-- Konfigurierbarer globaler Hotkey
-- Schwebende Aufnahme-Pille mit Live-Wellenform und Cancel-Button
-- Auto-Einfügen via Tastatur-Simulation (kompatibel mit allen Anwendungen)
-- System-Tray-Icon — X minimiert in den Tray statt Beenden
-- Optional: mit Windows-Anmeldung starten
-- UI in Deutsch und Englisch
+- Local transcription via whisper.cpp — no cloud required
+- **Auto backend detection:** uses NVIDIA CUDA when available, falls back to CPU otherwise
+- Multiple Whisper models selectable: tiny → large-v3-turbo, auto-downloaded on selection
+- Languages: auto-detect or pick from 14 fixed languages (EN, DE, FR, IT, ES, …)
+- **Push-to-talk** and **toggle** modes
+- Configurable global hotkey (capture any chord from the settings UI)
+- Floating recording pill with live waveform and cancel button
+- Auto-paste via simulated typing (works with any application)
+- System tray icon — closing the window minimises to tray instead of quitting
+- Optional: start with Windows login
+- UI available in English and German (auto-detected from OS locale)
 
-## System-Voraussetzungen
+## System Requirements
 
 - **OS:** Windows 10/11 x64
-- **GPU:** NVIDIA mit CUDA-fähigem Treiber (für GPU-Beschleunigung)
-- **Hinweis:** Erstmaliger Lauf JIT-kompiliert CUDA-Kernels für deine GPU (~30-60s einmalig)
+- **GPU (recommended):** NVIDIA with a CUDA-capable driver for full speed
+- **CPU fallback:** Works without a GPU or on AMD/Intel — significantly slower (~10-30×). For CPU-only users we recommend the `small` or `medium` model.
+- **Note:** The first run of each model on a new GPU JIT-compiles CUDA kernels (~30-60s, one-time)
 
-## Installation (für Endbenutzer)
+## Installation (for end users)
 
-Lade die neueste `RudariFlow_x.y.z_x64-setup.exe` aus den [Releases](https://github.com/oggii/RudariFlow/releases) herunter und führe sie aus.
+Download the latest `RudariFlow_x.y.z_x64-setup.exe` from the [Releases](https://github.com/oggii/RudariFlow/releases) page and run it.
 
-## Entwicklung
+The installer is unsigned, so Windows SmartScreen will show an "Unknown publisher" warning — click **More info → Run anyway** to proceed. Code signing may be added in a later release.
 
-### Voraussetzungen
+## Development
 
-- [Rust](https://rustup.rs/) (MSVC toolchain auf Windows)
+### Prerequisites
+
+- [Rust](https://rustup.rs/) (MSVC toolchain on Windows)
 - [Node.js](https://nodejs.org/) ≥ 20
-- Visual Studio Build Tools mit C++ workload (für `cargo build`)
+- Visual Studio Build Tools with the C++ workload (for `cargo build`)
 
 ### Setup
 
 ```powershell
-# 1. Repo klonen
+# 1. Clone the repo
 git clone https://github.com/oggii/RudariFlow.git
 cd RudariFlow
 
-# 2. Frontend-Dependencies
+# 2. Frontend dependencies
 npm install
 
-# 3. whisper.cpp + CUDA-DLLs herunterladen (~436 MB)
+# 3. Fetch whisper.cpp backends (cuBLAS + CPU, ~600 MB total)
 powershell -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1
 
-# 4. Dev-Modus starten
+# 4. Run in dev mode
 npm run tauri dev
 ```
 
-### Production Build
+### Production build
 
 ```powershell
 npm run tauri build
 ```
 
-Erzeugt:
+Produces:
 - `src-tauri/target/release/rudariflow.exe` (portable)
-- `src-tauri/target/release/bundle/nsis/RudariFlow_x.y.z_x64-setup.exe` (Installer)
-- `src-tauri/target/release/bundle/msi/RudariFlow_x.y.z_x64_en-US.msi`
+- `src-tauri/target/release/bundle/nsis/RudariFlow_x.y.z_x64-setup.exe` (NSIS installer)
+- `src-tauri/target/release/bundle/msi/RudariFlow_x.y.z_x64_en-US.msi` (MSI installer)
 
-## Architektur
+## Architecture
 
 - **Tauri 2** (Rust backend + Webview frontend)
 - **Frontend:** Vanilla TypeScript + Vite
-- **Audio capture:** [cpal](https://github.com/RustAudio/cpal) (Cross-platform low-level audio I/O)
-- **Transcription:** whisper.cpp als externer Sidecar-Prozess (`whisper-cli.exe`), mitgeliefert als Resource
-- **Auto-Paste:** [enigo](https://github.com/enigo-rs/enigo) (Tastatur-Simulation)
+- **Audio capture:** [cpal](https://github.com/RustAudio/cpal) (cross-platform low-level audio I/O)
+- **Transcription:** whisper.cpp as an external sidecar process (`whisper-cli.exe`), bundled as a Tauri resource
+- **Auto-paste:** [enigo](https://github.com/enigo-rs/enigo) (keyboard simulation)
 - **Hotkey:** [tauri-plugin-global-shortcut](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/global-shortcut)
 - **Autostart:** [tauri-plugin-autostart](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/autostart)
 
-## Lizenzen / Credits
+## Licences / Credits
 
-Basiert auf der initialen Tauri-Vorlage von [albertshiney/typr](https://github.com/albertshiney/typr).
-Verwendet [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT) für die Transkription.
+Initial Tauri scaffolding based on [albertshiney/typr](https://github.com/albertshiney/typr).
+Uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT) for transcription.
 
-App © 2026 oggi. Alle Rechte vorbehalten.
+App © 2026 oggi. All rights reserved.
