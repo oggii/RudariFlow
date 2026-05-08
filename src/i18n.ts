@@ -144,4 +144,10 @@ function applyTranslations() {
     const key = el.getAttribute("data-i18n")!;
     el.textContent = t(key);
   });
+  document.querySelectorAll<HTMLElement>("[data-i18n-placeholder]").forEach((el) => {
+    const key = el.getAttribute("data-i18n-placeholder")!;
+    if ("placeholder" in el) {
+      (el as HTMLInputElement | HTMLTextAreaElement).placeholder = t(key);
+    }
+  });
 }

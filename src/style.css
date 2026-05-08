@@ -564,3 +564,26 @@ kbd {
   background: var(--accent-subtle);
   color: var(--text);
 }
+
+/* ── Custom Vocabulary textarea ─────────────────────── */
+
+#custom-prompt {
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  box-sizing: border-box;
+}
+#custom-prompt::placeholder {
+  color: var(--text-tertiary);
+}
+#custom-prompt:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
