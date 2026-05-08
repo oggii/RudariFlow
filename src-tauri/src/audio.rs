@@ -154,9 +154,27 @@ impl AudioRecorder {
         } else {
             samples.clone()
         };
+        drop(samples);
+        self.samples.lock().unwrap().clear();
+
+        // Trim leading/trailing silence. If everything is silence, bail before
+        // we waste a whisper invocation hallucinating filler text.
+        let trimmed: Vec<f32> = match trim_silence(&mono, self.source_sample_rate) {
+            Some((start, end)) => mono[start..end].to_vec(),
+            None => {
+                println!("[RudariFlow] trim_silence: no speech detected");
+                return Err("no_speech".to_string());
+            }
+        };
+        println!(
+            "[RudariFlow] Trimmed {} -> {} samples ({:.1}% kept)",
+            mono.len(),
+            trimmed.len(),
+            100.0 * trimmed.len() as f32 / mono.len() as f32
+        );
 
         // Downsample to 16kHz for whisper.cpp
-        let resampled = resample(&mono, self.source_sample_rate, 16000);
+        let resampled = resample(&trimmed, self.source_sample_rate, 16000);
         println!("[RudariFlow] Resampled to {} samples at 16kHz", resampled.len());
 
         let spec = WavSpec {
@@ -172,9 +190,6 @@ impl AudioRecorder {
             writer.write_sample(amplitude).map_err(|e| e.to_string())?;
         }
         writer.finalize().map_err(|e| e.to_string())?;
-
-        drop(samples);
-        self.samples.lock().unwrap().clear();
 
         println!("[RudariFlow] WAV saved to {:?}", output_path);
         Ok(output_path.clone())
