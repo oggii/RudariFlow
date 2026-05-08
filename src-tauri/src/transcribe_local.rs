@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
@@ -80,12 +81,57 @@ fn resolve_backend(app: &AppHandle, requested: &str) -> &'static str {
     }
 }
 
+fn cpu_thread_count() -> u32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(4)
+        .min(8)
+        .max(1)
+}
+
+pub(crate) fn build_whisper_args(
+    model_path: &Path,
+    audio_path: &Path,
+    language: &str,
+    custom_prompt: &str,
+    backend: &str,
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = Vec::with_capacity(16);
+    args.push("-m".into());
+    args.push(model_path.as_os_str().to_owned());
+    args.push("-f".into());
+    args.push(audio_path.as_os_str().to_owned());
+    args.push("--no-timestamps".into());
+    args.push("-np".into());
+    args.push("-l".into());
+    args.push(language.into());
+    args.push("--temperature".into());
+    args.push("0.0".into());
+    args.push("--best-of".into());
+    args.push("1".into());
+
+    if backend == "cpu" {
+        args.push("-ng".into());
+        args.push("-t".into());
+        args.push(cpu_thread_count().to_string().into());
+    }
+
+    let trimmed_prompt = custom_prompt.trim();
+    if !trimmed_prompt.is_empty() {
+        args.push("--prompt".into());
+        args.push(trimmed_prompt.into());
+    }
+
+    args
+}
+
 pub async fn transcribe_local(
     app: &AppHandle,
     model_path: &PathBuf,
     audio_path: &PathBuf,
     gpu_backend: &str,
     language: &str,
+    custom_prompt: &str,
 ) -> Result<String, String> {
     if !model_path.exists() {
         return Err("Whisper model not found. Please download a model first.".to_string());
@@ -100,16 +146,10 @@ pub async fn transcribe_local(
         backend, model_path
     );
 
+    let args = build_whisper_args(model_path, audio_path, language, custom_prompt, backend);
+
     let mut cmd = Command::new(&exe);
-    cmd.current_dir(&dir)
-        .arg("-m")
-        .arg(model_path)
-        .arg("-f")
-        .arg(audio_path)
-        .args(["--no-timestamps", "-np", "-l", language]);
-    if backend == "cpu" {
-        cmd.arg("-ng");
-    }
+    cmd.current_dir(&dir).args(&args);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -122,14 +162,16 @@ pub async fn transcribe_local(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // If cuda failed but auto was active, fall back to cpu and retry once.
         if backend == "cuda" && gpu_backend == "auto" {
             eprintln!(
                 "[RudariFlow] cuda failed at runtime ({}). Retrying on cpu.",
                 stderr.trim()
             );
             *AUTO_CACHED.lock().unwrap() = Some("cpu");
-            return Box::pin(transcribe_local(app, model_path, audio_path, "cpu", language)).await;
+            return Box::pin(transcribe_local(
+                app, model_path, audio_path, "cpu", language, custom_prompt,
+            ))
+            .await;
         }
         return Err(format!("whisper-cli failed: {}", stderr));
     }
@@ -167,5 +209,76 @@ mod tests {
             model_download_url("small"),
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
         );
+    }
+
+    #[test]
+    fn build_args_cuda_minimal() {
+        let args = build_whisper_args(
+            std::path::Path::new("model.bin"),
+            std::path::Path::new("audio.wav"),
+            "auto",
+            "",
+            "cuda",
+        );
+        let s: Vec<String> = args.iter().map(|s| s.to_string_lossy().into_owned()).collect();
+        assert!(s.contains(&"-m".to_string()));
+        assert!(s.contains(&"model.bin".to_string()));
+        assert!(s.contains(&"-f".to_string()));
+        assert!(s.contains(&"audio.wav".to_string()));
+        assert!(s.contains(&"--no-timestamps".to_string()));
+        assert!(s.contains(&"-np".to_string()));
+        assert!(s.contains(&"-l".to_string()));
+        assert!(s.contains(&"auto".to_string()));
+        assert!(s.contains(&"--temperature".to_string()));
+        assert!(s.contains(&"0.0".to_string()));
+        assert!(s.contains(&"--best-of".to_string()));
+        assert!(s.contains(&"1".to_string()));
+        assert!(!s.contains(&"-ng".to_string()));
+        assert!(!s.contains(&"-t".to_string()));
+        assert!(!s.contains(&"--prompt".to_string()));
+    }
+
+    #[test]
+    fn build_args_cpu_adds_ng_and_threads() {
+        let args = build_whisper_args(
+            std::path::Path::new("model.bin"),
+            std::path::Path::new("audio.wav"),
+            "en",
+            "",
+            "cpu",
+        );
+        let s: Vec<String> = args.iter().map(|s| s.to_string_lossy().into_owned()).collect();
+        assert!(s.contains(&"-ng".to_string()));
+        assert!(s.contains(&"-t".to_string()));
+        let t_idx = s.iter().position(|x| x == "-t").unwrap();
+        let n: u32 = s[t_idx + 1].parse().expect("threads is a number");
+        assert!((1..=8).contains(&n), "thread count {} out of range", n);
+    }
+
+    #[test]
+    fn build_args_includes_prompt_when_non_empty() {
+        let args = build_whisper_args(
+            std::path::Path::new("m.bin"),
+            std::path::Path::new("a.wav"),
+            "de",
+            "Tauri whisper.cpp ggml",
+            "cuda",
+        );
+        let s: Vec<String> = args.iter().map(|s| s.to_string_lossy().into_owned()).collect();
+        let i = s.iter().position(|x| x == "--prompt").expect("--prompt present");
+        assert_eq!(s[i + 1], "Tauri whisper.cpp ggml");
+    }
+
+    #[test]
+    fn build_args_omits_prompt_when_empty() {
+        let args = build_whisper_args(
+            std::path::Path::new("m.bin"),
+            std::path::Path::new("a.wav"),
+            "auto",
+            "   ",
+            "cuda",
+        );
+        let s: Vec<String> = args.iter().map(|s| s.to_string_lossy().into_owned()).collect();
+        assert!(!s.contains(&"--prompt".to_string()));
     }
 }

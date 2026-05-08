@@ -142,18 +142,38 @@ impl Recorder {
     ) -> Result<String, String> {
         let temp_path = app_dir.join("temp_recording.wav");
 
-        {
+        let save_result = {
             let mut recorder = self.audio_recorder.lock().unwrap();
-            recorder.stop_and_save(&temp_path)?;
+            recorder.stop_and_save(&temp_path)
+        };
+
+        if let Err(e) = &save_result {
+            if e == "no_speech" {
+                let _ = app.emit("audio-empty", ());
+                return Ok(String::new());
+            }
         }
+        save_result?;
 
         let raw_text = match settings.engine.as_str() {
             "local" => {
                 let model_path = app_dir.join(transcribe_local::model_filename(&settings.whisper_model));
-                transcribe_local::transcribe_local(app, &model_path, &temp_path, &settings.gpu_backend, &settings.language).await?
+                transcribe_local::transcribe_local(
+                    app,
+                    &model_path,
+                    &temp_path,
+                    &settings.gpu_backend,
+                    &settings.language,
+                    &settings.custom_prompt,
+                ).await?
             }
             "cloud" => {
-                transcribe_groq::transcribe_groq(&settings.groq_api_key, &temp_path).await?
+                transcribe_groq::transcribe_groq(
+                    &settings.groq_api_key,
+                    &temp_path,
+                    &settings.language,
+                    &settings.custom_prompt,
+                ).await?
             }
             _ => return Err(format!("Unknown engine: {}", settings.engine)),
         };
