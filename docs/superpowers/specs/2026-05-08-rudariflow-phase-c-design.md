@@ -102,11 +102,37 @@ Primary user runs `large-v3-turbo` on NVIDIA CUDA, dictates in EN + DE + technic
 
 ### 7. Deterministic decoding flags
 
-**Problem:** Default whisper-cli decoding can fall back to higher temperatures on low-confidence segments, producing nondeterministic output. For dictation we prefer deterministic, fastest single-pass.
+**Problem:** Default whisper-cli decoding can fall back to higher temperatures on low-confidence segments, re-decoding them at temperatures 0.2 / 0.4 / … This is both nondeterministic and costs roughly 2× wall-clock on segments that hit the fallback. For dictation we prefer deterministic single-pass.
 
 **Change:**
 - In `transcribe_local::transcribe_local`, append `--temperature 0.0 --best-of 1` to the command line.
 - No setting; this is a tuning constant. If accuracy regresses on noisy input, revisit before release.
+- Side benefit: ~10–30% faster decode on real-world dictations.
+
+### 8. CPU thread tuning
+
+**Problem:** whisper-cli defaults to 4 threads. On modern multi-core machines using the CPU fallback (no NVIDIA GPU), this leaves a lot of cores idle and makes transcription unnecessarily slow. The CUDA path doesn't benefit (compute happens on the GPU), so we only override for CPU.
+
+**Change:**
+- In `transcribe_local::transcribe_local`, when `backend == "cpu"`, compute `let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);` and append `-t <threads>` to the command line.
+- Cap at 8: whisper.cpp typically saturates around that on x86 — more threads contend on memory bandwidth and hurt throughput.
+- No new dependency: `std::thread::available_parallelism` is in std.
+- Logical cores are good enough; hyperthreading hurts a little on whisper but not enough to justify a `num_cpus` dep for physical-core counting.
+
+### 9. Idle-posture audit + baseline
+
+**Problem:** Before Phase B reshapes runtime resource use, we want a documented baseline so we can prove improvement (or catch regressions). Code inspection suggests idle should already be cheap — cpal stream is dropped on stop, sample buffer cleared, no model loaded — but it's never been measured.
+
+**Change:**
+- Not a code change. A measurement task during the v0.3.0 release.
+- Author runs the installed app on the primary CUDA machine and records, in `docs/superpowers/specs/2026-05-08-rudariflow-phase-c-design.md` under a "Baseline measurements" appendix:
+  - Idle CPU % (10 s sample, Task Manager) for `RudariFlow.exe` and any spawned children.
+  - Idle private working set (RAM) for the same processes.
+  - Recording CPU % during a 5 s dictation.
+  - Peak RAM during transcription with `large-v3-turbo` on CUDA.
+  - Same set on a CPU-only machine if available.
+- If anything looks unexpectedly high (e.g. >2% idle CPU, >300 MB idle RAM beyond the two webviews), that becomes a bug ticket — not blocking the release, but documented.
+- These numbers become the "before" column when Phase B ships.
 
 ## Architecture & data flow
 
@@ -140,6 +166,8 @@ Each change is independent. Failure modes per item:
 - **#5 (bundle pruning):** missing-DLL failure at first transcription. Verified on both backends before release.
 - **#6 (Groq language):** if `auto` and Groq misdetects, user can pick an explicit language as before.
 - **#7 (deterministic flags):** if word error rate regresses on noisy clips, drop `--best-of 1` first, then `--temperature 0.0`. Easy revert.
+- **#8 (CPU threads):** if a user reports thermal throttling or stalls on shared machines, lower the cap. Trivial revert.
+- **#9 (baseline):** measurement only — no runtime risk.
 
 Rollback granularity: each change is one file or two. Any item can be reverted independently without touching the others.
 
@@ -164,6 +192,8 @@ Rollback granularity: each change is one file or two. Any item can be reverted i
 - [ ] Switch engine to Groq, language to "de", dictate German → correct transcription (verifies #6).
 - [ ] Build installer, install fresh, transcribe on CUDA → works (verifies #5 CUDA allowlist).
 - [ ] Install on CPU-only machine, transcribe → works (verifies #5 CPU allowlist).
+- [ ] On CPU-only machine, observe `whisper-cli` arg list in logs includes `-t <N>` where N matches `available_parallelism().min(8)` (verifies #8).
+- [ ] Baseline measurements captured in spec appendix on at least the CUDA machine (verifies #9).
 
 ## Out of scope (deferred to phase B)
 
