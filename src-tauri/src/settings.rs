@@ -23,6 +23,8 @@ pub struct Settings {
     pub volume: f32,
     #[serde(default)]
     pub autostart: bool,
+    #[serde(rename = "customPrompt", default)]
+    pub custom_prompt: String,
 }
 
 fn default_volume() -> f32 {
@@ -51,6 +53,7 @@ impl Default for Settings {
             ui_language: String::new(),
             volume: 0.4,
             autostart: false,
+            custom_prompt: String::new(),
         }
     }
 }
@@ -139,6 +142,52 @@ mod tests {
 
         let settings = Settings::load(&dir);
         assert_eq!(settings, Settings::default());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_custom_prompt_default_empty() {
+        let s = Settings::default();
+        assert_eq!(s.custom_prompt, "");
+    }
+
+    #[test]
+    fn test_custom_prompt_roundtrip() {
+        let dir = temp_dir().join("typr_test_prompt");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut settings = Settings::default();
+        settings.custom_prompt = "Tauri whisper.cpp ggml".to_string();
+        settings.save(&dir).unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!(loaded.custom_prompt, "Tauri whisper.cpp ggml");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_custom_prompt_missing_field_loads_as_empty() {
+        let dir = temp_dir().join("typr_test_prompt_missing");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let pre_v3 = r#"{
+            "microphone": "default",
+            "engine": "local",
+            "whisperModel": "small",
+            "groqApiKey": "",
+            "recordingMode": "toggle",
+            "hotkey": "CmdOrCtrl+Shift+Space",
+            "gpuBackend": "auto",
+            "language": "auto",
+            "uiLanguage": "",
+            "volume": 0.4,
+            "autostart": false
+        }"#;
+        fs::write(dir.join("config.json"), pre_v3).unwrap();
+
+        let loaded = Settings::load(&dir);
+        assert_eq!(loaded.custom_prompt, "");
 
         let _ = fs::remove_dir_all(&dir);
     }
