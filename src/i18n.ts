@@ -53,6 +53,10 @@ const en: Translations = {
   hotkey_hint: "Global keyboard shortcut to trigger recording",
   hotkey_press_keys: "Press a key combination…",
   hotkey_invalid: "Invalid combination, try again",
+  custom_prompt_label: "Custom Vocabulary",
+  custom_prompt_hint: "Names, acronyms and jargon you dictate often. Helps Whisper get them right.",
+  custom_prompt_placeholder: "e.g. Tauri, whisper.cpp, ggml, oggi",
+  audio_empty_message: "No speech detected",
 };
 
 const de: Translations = {
@@ -108,6 +112,10 @@ const de: Translations = {
   hotkey_hint: "Globales Tastenkürzel zum Auslösen der Aufnahme",
   hotkey_press_keys: "Tastenkombination drücken…",
   hotkey_invalid: "Ungültige Kombination, erneut versuchen",
+  custom_prompt_label: "Eigenes Vokabular",
+  custom_prompt_hint: "Namen, Abkürzungen und Fachbegriffe, die du oft diktierst. Hilft Whisper, sie korrekt zu erkennen.",
+  custom_prompt_placeholder: "z. B. Tauri, whisper.cpp, ggml, oggi",
+  audio_empty_message: "Keine Sprache erkannt",
 };
 
 const dictionaries: Record<string, Translations> = { en, de };
