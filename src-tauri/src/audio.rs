@@ -182,7 +182,7 @@ impl AudioRecorder {
 }
 
 /// Simple linear interpolation resampler
-fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate == to_rate {
         return samples.to_vec();
     }
@@ -206,4 +206,117 @@ fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     }
 
     output
+}
+
+const TRIM_RMS_THRESHOLD: f32 = 0.005;
+const TRIM_PAD_MS: u32 = 200;
+
+/// Find the speech bounds in `samples` using a 20 ms RMS window.
+/// Returns `Some((start, end))` indices into `samples`, padded ±TRIM_PAD_MS.
+/// Returns `None` if every window is below TRIM_RMS_THRESHOLD.
+pub fn trim_silence(samples: &[f32], sample_rate: u32) -> Option<(usize, usize)> {
+    if samples.is_empty() {
+        return None;
+    }
+    let window = (sample_rate / 50) as usize; // 20 ms
+    let pad = ((TRIM_PAD_MS as u64 * sample_rate as u64) / 1000) as usize;
+
+    if window == 0 || samples.len() < window {
+        let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+        let rms = (sum_sq / samples.len() as f32).sqrt();
+        return if rms >= TRIM_RMS_THRESHOLD {
+            Some((0, samples.len()))
+        } else {
+            None
+        };
+    }
+
+    let mut first_loud: Option<usize> = None;
+    let mut last_loud: Option<usize> = None;
+    let mut i = 0;
+    while i + window <= samples.len() {
+        let chunk = &samples[i..i + window];
+        let sum_sq: f32 = chunk.iter().map(|s| s * s).sum();
+        let rms = (sum_sq / window as f32).sqrt();
+        if rms >= TRIM_RMS_THRESHOLD {
+            if first_loud.is_none() {
+                first_loud = Some(i);
+            }
+            last_loud = Some(i + window);
+        }
+        i += window;
+    }
+
+    let (start, end) = match (first_loud, last_loud) {
+        (Some(s), Some(e)) => (s, e),
+        _ => return None,
+    };
+
+    let padded_start = start.saturating_sub(pad);
+    let padded_end = (end + pad).min(samples.len());
+    Some((padded_start, padded_end))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synth(silent_secs: f32, tone_secs: f32, trail_secs: f32, sr: u32) -> Vec<f32> {
+        let n_silent = (silent_secs * sr as f32) as usize;
+        let n_tone = (tone_secs * sr as f32) as usize;
+        let n_trail = (trail_secs * sr as f32) as usize;
+        let mut v = Vec::with_capacity(n_silent + n_tone + n_trail);
+        v.extend(std::iter::repeat(0.0_f32).take(n_silent));
+        v.extend(std::iter::repeat(0.5_f32).take(n_tone));
+        v.extend(std::iter::repeat(0.0_f32).take(n_trail));
+        v
+    }
+
+    #[test]
+    fn trim_silence_finds_tone_in_silence() {
+        let sr = 16_000;
+        let buf = synth(1.0, 1.0, 1.0, sr);
+        let bounds = trim_silence(&buf, sr).expect("should detect speech");
+        let expected_start = (0.8 * sr as f32) as usize;
+        let expected_end = (2.2 * sr as f32) as usize;
+        let win = (sr / 50) as usize;
+        assert!(
+            bounds.0 <= expected_start + win && bounds.0 + win >= expected_start,
+            "start {} not near {}",
+            bounds.0,
+            expected_start
+        );
+        assert!(
+            bounds.1 <= expected_end + win && bounds.1 + win >= expected_end,
+            "end {} not near {}",
+            bounds.1,
+            expected_end
+        );
+    }
+
+    #[test]
+    fn trim_silence_returns_none_for_all_silence() {
+        let sr = 16_000;
+        let buf = vec![0.0_f32; sr as usize * 2];
+        assert!(trim_silence(&buf, sr).is_none());
+    }
+
+    #[test]
+    fn trim_silence_returns_full_range_for_all_speech() {
+        let sr = 16_000;
+        let buf = vec![0.5_f32; sr as usize * 2];
+        let bounds = trim_silence(&buf, sr).expect("should detect speech");
+        assert_eq!(bounds.0, 0);
+        assert_eq!(bounds.1, buf.len());
+    }
+
+    #[test]
+    fn trim_silence_handles_short_buffers() {
+        let sr = 16_000;
+        let short_loud = vec![0.5_f32; 100];
+        assert!(trim_silence(&short_loud, sr).is_some());
+
+        let short_quiet = vec![0.0_f32; 100];
+        assert!(trim_silence(&short_quiet, sr).is_none());
+    }
 }
