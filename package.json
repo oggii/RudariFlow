@@ -1,7 +1,7 @@
 {
   "name": "rudariflow",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Sprache-zu-Text Diktier-App, lokal angetrieben von Whisper.cpp mit GPU-Beschleunigung",
   "author": {
     "name": "oggi",
