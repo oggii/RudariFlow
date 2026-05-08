@@ -149,7 +149,21 @@ impl Recorder {
 
         if let Err(e) = &save_result {
             if e == "no_speech" {
+                // Make sure the overlay is visible so the notice can be seen.
+                if let Some(overlay) = app.get_webview_window("overlay") {
+                    let _ = overlay.set_always_on_top(false);
+                    let _ = overlay.set_always_on_top(true);
+                    let _ = overlay.show();
+                }
                 let _ = app.emit("audio-empty", ());
+                // Hold the overlay open long enough for the 1.5s notice to play.
+                let app_clone = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(1700)).await;
+                    if let Some(overlay) = app_clone.get_webview_window("overlay") {
+                        let _ = overlay.hide();
+                    }
+                });
                 return Ok(String::new());
             }
         }

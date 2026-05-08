@@ -87,6 +87,23 @@
       }
       .cancel:hover { background: rgba(255, 92, 92, 0.85); }
       .cancel svg { width: 10px; height: 10px; stroke: #fff; }
+      .notice {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.95);
+        background: rgba(20, 20, 22, 0.92);
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 200ms ease;
+      }
+      body[data-state="notice"] .notice { opacity: 1; }
     </style>
   </head>
   <body data-state="ready">
@@ -102,6 +119,7 @@
         </svg>
       </button>
     </div>
+    <div class="notice" id="notice"></div>
     <script type="module">
       import { invoke } from "@tauri-apps/api/core";
       import { listen } from "@tauri-apps/api/event";
@@ -161,6 +179,36 @@
           levelEventCount = 0;
         }
       };
+
+      const noticeEl = document.getElementById("notice");
+      let noticeTimer = null;
+      function showNotice(text, ms) {
+        noticeEl.textContent = text;
+        document.body.dataset.state = "notice";
+        if (noticeTimer) clearTimeout(noticeTimer);
+        noticeTimer = setTimeout(() => {
+          document.body.dataset.state = "ready";
+          invoke("diag_log", { source: "overlay", message: "notice timeout" });
+        }, ms);
+      }
+
+      // i18n strings are owned by the main window. Keep a tiny EN/DE map here
+      // since the overlay is a separate webview without access to the main
+      // window's dictionary.
+      const NOTICE_TEXT = {
+        en: { audio_empty: "No speech detected" },
+        de: { audio_empty: "Keine Sprache erkannt" },
+      };
+      function pickLang() {
+        const nav = (navigator.language || "en").toLowerCase();
+        return nav.startsWith("de") ? "de" : "en";
+      }
+
+      listen("audio-empty", () => {
+        diag("audio-empty received");
+        const lang = pickLang();
+        showNotice(NOTICE_TEXT[lang].audio_empty, 1500);
+      }).then(() => diag("audio-empty listener registered"));
 
       document.getElementById("cancel").addEventListener("click", async (e) => {
         e.stopPropagation();
