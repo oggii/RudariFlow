@@ -70,7 +70,7 @@ fn update_overlay(app: &AppHandle, state: &RecordingState) {
     ));
 }
 
-fn emit_audio_empty(app: &AppHandle) {
+fn emit_audio_empty(app: &AppHandle, state: Arc<Mutex<RecordingState>>) {
     if let Some(overlay) = app.get_webview_window("overlay") {
         let _ = overlay.set_always_on_top(false);
         let _ = overlay.set_always_on_top(true);
@@ -78,10 +78,16 @@ fn emit_audio_empty(app: &AppHandle) {
     }
     let _ = app.emit("audio-empty", ());
     let app_clone = app.clone();
+    let state_clone = state.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(1700)).await;
-        if let Some(overlay) = app_clone.get_webview_window("overlay") {
-            let _ = overlay.hide();
+        // If a new recording started during the grace window, leave the
+        // overlay alone — don't hide it mid-dictation.
+        let current = state_clone.lock().unwrap().clone();
+        if current == RecordingState::Ready {
+            if let Some(overlay) = app_clone.get_webview_window("overlay") {
+                let _ = overlay.hide();
+            }
         }
     });
 }
@@ -167,7 +173,7 @@ impl Recorder {
                 };
                 if let Err(e) = &samples_result {
                     if e == "no_speech" {
-                        emit_audio_empty(app);
+                        emit_audio_empty(app, self.state.clone());
                         return Ok(String::new());
                     }
                 }
@@ -190,7 +196,7 @@ impl Recorder {
                 };
                 if let Err(e) = &save_result {
                     if e == "no_speech" {
-                        emit_audio_empty(app);
+                        emit_audio_empty(app, self.state.clone());
                         return Ok(String::new());
                     }
                 }
