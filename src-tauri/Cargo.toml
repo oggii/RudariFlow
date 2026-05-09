@@ -1,6 +1,6 @@
 [package]
 name = "rudariflow"
-version = "0.3.0"
+version = "0.4.0"
 description = "Sprache-zu-Text Diktier-App, lokal angetrieben von Whisper.cpp mit GPU-Beschleunigung"
 authors = ["oggi <info@0ggi.ch>"]
 edition = "2021"
