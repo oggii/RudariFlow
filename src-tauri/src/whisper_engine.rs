@@ -61,6 +61,156 @@ pub(crate) fn loaded_key(model_path: &Path, use_gpu: bool) -> LoadedModelKey {
     }
 }
 
+use std::sync::Mutex;
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+};
+
+pub struct WhisperEngine {
+    inner: Mutex<EngineState>,
+}
+
+struct EngineState {
+    loaded: Option<Loaded>,
+}
+
+struct Loaded {
+    key: LoadedModelKey,
+    ctx: WhisperContext,
+}
+
+impl WhisperEngine {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(EngineState { loaded: None }),
+        }
+    }
+
+    /// Drop the cached model. Next call reloads. Used when settings change.
+    pub fn invalidate(&self) {
+        self.inner.lock().unwrap().loaded = None;
+    }
+
+    /// Ensure a model is loaded for the given path and gpu mode. Returns
+    /// the actual `use_gpu` chosen (may differ from requested when "auto"
+    /// falls back to CPU after a failed GPU load).
+    pub fn ensure_loaded(&self, model_path: &Path, gpu_backend: &str) -> Result<bool, String> {
+        let intent = initial_backend_intent(gpu_backend);
+        let try_gpu_first = matches!(intent, BackendChoice::Gpu);
+        let allow_fallback = should_fallback_on_gpu_failure(gpu_backend);
+
+        let mut state = self.inner.lock().unwrap();
+
+        if let Some(existing) = &state.loaded {
+            let want_gpu = try_gpu_first;
+            if existing.key.model_path == model_path
+                && (existing.key.use_gpu == want_gpu || !allow_fallback)
+            {
+                return Ok(existing.key.use_gpu);
+            }
+            state.loaded = None;
+        }
+
+        let first_try_use_gpu = try_gpu_first;
+        match load_context(model_path, first_try_use_gpu) {
+            Ok(ctx) => {
+                state.loaded = Some(Loaded {
+                    key: loaded_key(model_path, first_try_use_gpu),
+                    ctx,
+                });
+                Ok(first_try_use_gpu)
+            }
+            Err(e) if allow_fallback && first_try_use_gpu => {
+                eprintln!(
+                    "[RudariFlow] GPU load failed ({}); falling back to CPU.",
+                    e
+                );
+                let ctx = load_context(model_path, false)?;
+                state.loaded = Some(Loaded {
+                    key: loaded_key(model_path, false),
+                    ctx,
+                });
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Run a one-shot transcription on the provided 16 kHz mono samples.
+    /// Caller is responsible for `ensure_loaded` before this; this fails
+    /// loudly if no model is resident.
+    pub fn transcribe(
+        &self,
+        samples: &[f32],
+        language: &str,
+        custom_prompt: &str,
+    ) -> Result<String, String> {
+        let state = self.inner.lock().unwrap();
+        let loaded = state
+            .loaded
+            .as_ref()
+            .ok_or_else(|| "WhisperEngine: no model loaded".to_string())?;
+
+        let mut wstate = loaded
+            .ctx
+            .create_state()
+            .map_err(|e| format!("create_state: {e:?}"))?;
+
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_language(Some(language));
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_temperature(0.0);
+        params.set_single_segment(false);
+
+        if !loaded.key.use_gpu {
+            params.set_n_threads(cpu_thread_count());
+        }
+
+        let prompt = custom_prompt.trim();
+        if !prompt.is_empty() {
+            params.set_initial_prompt(prompt);
+        }
+
+        wstate
+            .full(params, samples)
+            .map_err(|e| format!("whisper full() failed: {e:?}"))?;
+
+        collect_segments(&wstate)
+    }
+}
+
+impl Default for WhisperEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn load_context(model_path: &Path, use_gpu: bool) -> Result<WhisperContext, String> {
+    let mut params = WhisperContextParameters::default();
+    params.use_gpu = use_gpu;
+    params.flash_attn = use_gpu; // free perf on Ampere+; degrades elsewhere
+
+    let path_str = model_path
+        .to_str()
+        .ok_or_else(|| "model path is not valid UTF-8".to_string())?;
+    WhisperContext::new_with_params(path_str, params)
+        .map_err(|e| format!("WhisperContext::new (use_gpu={}): {e:?}", use_gpu))
+}
+
+fn collect_segments(state: &WhisperState) -> Result<String, String> {
+    let mut out = String::new();
+    for segment in state.as_iter() {
+        let s = segment
+            .to_str_lossy()
+            .map_err(|e| format!("segment text: {e:?}"))?;
+        out.push_str(&s);
+    }
+    Ok(out.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +282,43 @@ mod tests {
         let a = loaded_key(Path::new("/m/small.bin"), true);
         let b = loaded_key(Path::new("/m/small.bin"), true);
         assert!(!needs_reload(&a, &b));
+    }
+
+    /// Loads a real `ggml-tiny.bin` and transcribes the spike fixture.
+    /// Skipped by default; run manually:
+    ///   cargo test --lib whisper_engine::tests::integration_tiny_transcribe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn integration_tiny_transcribe() {
+        let appdata = std::env::var("APPDATA").expect("APPDATA env var");
+        let model = PathBuf::from(&appdata).join("com.rudariflow.app").join("ggml-tiny.bin");
+        if !model.exists() {
+            panic!("tiny model not found at {:?} — download via the app first", model);
+        }
+        let wav = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/spike-3s.wav");
+        let samples = read_wav_16k_mono(&wav);
+
+        let engine = WhisperEngine::new();
+        let used_gpu = engine
+            .ensure_loaded(&model, "auto")
+            .expect("ensure_loaded");
+        eprintln!("ensure_loaded chose use_gpu={}", used_gpu);
+
+        let text = engine.transcribe(&samples, "en", "").expect("transcribe");
+        eprintln!("transcribed: {:?}", text);
+        assert!(!text.is_empty(), "transcription should be non-empty");
+    }
+
+    fn read_wav_16k_mono(path: &PathBuf) -> Vec<f32> {
+        let mut reader = hound::WavReader::open(path).expect("open wav");
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.sample_rate, 16_000);
+        assert_eq!(spec.bits_per_sample, 16);
+        reader
+            .samples::<i16>()
+            .map(|s| s.expect("sample") as f32 / i16::MAX as f32)
+            .collect()
     }
 }
