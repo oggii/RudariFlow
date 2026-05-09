@@ -37,13 +37,14 @@ fn get_settings(state: State<AppState>) -> Settings {
 #[tauri::command]
 fn save_settings(state: State<AppState>, settings: Settings) -> Result<(), String> {
     settings.save(&state.app_dir)?;
-    let backend_changed = {
+    let engine_invalidate = {
         let prev = state.settings.lock().unwrap();
         prev.gpu_backend != settings.gpu_backend
+            || prev.whisper_model != settings.whisper_model
     };
     *state.settings.lock().unwrap() = settings;
-    if backend_changed {
-        transcribe_local::clear_backend_cache();
+    if engine_invalidate {
+        state.whisper_engine.invalidate();
     }
     Ok(())
 }
