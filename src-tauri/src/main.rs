@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -14,11 +14,13 @@ use rudariflow_lib::recorder::{Recorder, RecordingState};
 use rudariflow_lib::settings::Settings;
 use rudariflow_lib::startup_log;
 use rudariflow_lib::transcribe_local;
+use rudariflow_lib::whisper_engine::WhisperEngine;
 
 struct AppState {
     recorder: Recorder,
     settings: Mutex<Settings>,
     app_dir: PathBuf,
+    whisper_engine: Arc<WhisperEngine>,
 }
 
 fn get_app_dir() -> PathBuf {
@@ -180,7 +182,7 @@ fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
                                 let settings = state.settings.lock().unwrap().clone();
                                 match state
                                     .recorder
-                                    .stop_and_transcribe(&handle, &settings, &state.app_dir)
+                                    .stop_and_transcribe(&handle, &settings, &state.app_dir, &state.whisper_engine)
                                     .await
                                 {
                                     Ok(result) => println!("[RudariFlow] Transcription: {}", result),
@@ -215,7 +217,7 @@ async fn do_toggle_recording(
             let settings = state.settings.lock().unwrap().clone();
             let result = state
                 .recorder
-                .stop_and_transcribe(app, &settings, &state.app_dir)
+                .stop_and_transcribe(app, &settings, &state.app_dir, &state.whisper_engine)
                 .await?;
             Ok(result)
         }
@@ -244,6 +246,7 @@ fn main() {
             recorder: Recorder::new(),
             settings: Mutex::new(settings),
             app_dir,
+            whisper_engine: Arc::new(WhisperEngine::new()),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
