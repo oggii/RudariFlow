@@ -153,6 +153,27 @@ fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
                 ShortcutState::Pressed => {
                     tauri::async_runtime::spawn(async move {
                         let state = handle.state::<AppState>();
+                        // Background warmup: kick off model load in parallel
+                        // with audio capture. Single-flight via the engine's
+                        // mutex; ignores errors here — they surface at
+                        // transcription time.
+                        let s = state.settings.lock().unwrap().clone();
+                        if s.engine == "local" {
+                            let model_path = state
+                                .app_dir
+                                .join(rudariflow_lib::whisper_engine::model_filename(
+                                    &s.whisper_model,
+                                ));
+                            if model_path.exists() {
+                                let engine = state.whisper_engine.clone();
+                                let backend = s.gpu_backend.clone();
+                                tauri::async_runtime::spawn_blocking(move || {
+                                    if let Err(e) = engine.ensure_loaded(&model_path, &backend) {
+                                        eprintln!("[RudariFlow] warmup failed: {}", e);
+                                    }
+                                });
+                            }
+                        }
                         match mode.as_str() {
                             "toggle" => match do_toggle_recording(&handle, state.inner()).await {
                                 Ok(result) => println!("[RudariFlow] Toggle result: {}", result),
