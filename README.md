@@ -11,14 +11,22 @@
 
 Local speech-to-text dictation app for Windows, powered by [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Global hotkey, push-to-talk or toggle mode, automatic paste of the transcribed text.
 
-> **v0.2.0 — Windows.** NVIDIA GPU recommended for speed; CPU fallback included for AMD / Intel / no-GPU systems. macOS and Linux planned for later releases.
+> **v0.4.0 — Windows.** In-process whisper-rs backend with persistent model, hotkey-press warmup, and streaming partial transcripts. NVIDIA GPU recommended for speed; CPU fallback included for AMD / Intel / no-GPU systems. macOS and Linux planned for later releases.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 Made by [oggi](https://0ggi.ch).
 
 ## Features
 
-- Local transcription via whisper.cpp — no cloud required
+- Local transcription via in-process whisper-rs — no cloud required, no subprocess per dictation
+- **Persistent model:** loaded once on first use and reused across dictations
+- **Hotkey-press warmup:** pressing PTT preloads the model in parallel so it's hot by the time you finish speaking
+- **Streaming partial transcripts:** text appears in the overlay as Whisper emits each segment
 - **Auto backend detection:** uses NVIDIA CUDA when available, falls back to CPU otherwise
+- **Custom Vocabulary:** inject domain terms (names, jargon, acronyms) to bias recognition
+- **No-speech detection:** silent recordings show an overlay notice instead of pasting nothing
+- **Clipboard-safe paste:** your previous clipboard contents are saved and restored around auto-paste
 - Multiple Whisper models selectable: tiny → large-v3-turbo, auto-downloaded on selection
 - Languages: auto-detect or pick from 14 fixed languages (EN, DE, FR, IT, ES, …)
 - **Push-to-talk** and **toggle** modes
@@ -35,6 +43,7 @@ Made by [oggi](https://0ggi.ch).
 - **GPU (recommended):** NVIDIA with a CUDA-capable driver for full speed
 - **CPU fallback:** Works without a GPU or on AMD/Intel — significantly slower (~10-30×). For CPU-only users we recommend the `small` or `medium` model.
 - **Note:** The first run of each model on a new GPU JIT-compiles CUDA kernels (~30-60s, one-time)
+- **RAM:** the selected whisper model stays resident from first dictation onward. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB.
 
 ## Installation (for end users)
 
@@ -49,6 +58,7 @@ The installer is unsigned, so Windows SmartScreen will show an "Unknown publishe
 - [Rust](https://rustup.rs/) (MSVC toolchain on Windows)
 - [Node.js](https://nodejs.org/) ≥ 20
 - Visual Studio Build Tools with the C++ workload (for `cargo build`)
+- CUDA Toolkit 12.x (required to compile `whisper-rs` with the `cuda` feature)
 
 ### Setup
 
@@ -60,7 +70,7 @@ cd RudariFlow
 # 2. Frontend dependencies
 npm install
 
-# 3. Fetch whisper.cpp backends (cuBLAS + CPU, ~600 MB total)
+# 3. Fetch CUDA runtime DLLs (~80 MB)
 powershell -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1
 
 # 4. Run in dev mode
@@ -83,7 +93,7 @@ Produces:
 - **Tauri 2** (Rust backend + Webview frontend)
 - **Frontend:** Vanilla TypeScript + Vite
 - **Audio capture:** [cpal](https://github.com/RustAudio/cpal) (cross-platform low-level audio I/O)
-- **Transcription:** whisper.cpp as an external sidecar process (`whisper-cli.exe`), bundled as a Tauri resource
+- **Transcription:** in-process [`whisper-rs`](https://github.com/tazz4843/whisper-rs) (whisper.cpp Rust bindings) with the `cuda` feature; runtime fallback to CPU
 - **Auto-paste:** [enigo](https://github.com/enigo-rs/enigo) (keyboard simulation)
 - **Hotkey:** [tauri-plugin-global-shortcut](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/global-shortcut)
 - **Autostart:** [tauri-plugin-autostart](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/autostart)

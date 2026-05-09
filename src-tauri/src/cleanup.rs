@@ -10,7 +10,6 @@ pub fn cleanup_text(text: &str) -> String {
         .collect::<Vec<&str>>()
         .join(" ");
 
-    // Capitalize first letter of each sentence
     let mut result = String::new();
     let mut capitalize_next = true;
 
@@ -26,13 +25,6 @@ pub fn cleanup_text(text: &str) -> String {
         }
     }
 
-    // Ensure ending punctuation
-    if let Some(last) = result.chars().last() {
-        if !matches!(last, '.' | '!' | '?') {
-            result.push('.');
-        }
-    }
-
     result
 }
 
@@ -42,41 +34,44 @@ mod tests {
 
     #[test]
     fn test_trim_whitespace() {
-        assert_eq!(cleanup_text("  hello world  "), "Hello world.");
+        assert_eq!(cleanup_text("  hello world  "), "Hello world");
     }
 
     #[test]
     fn test_normalize_spaces() {
-        assert_eq!(cleanup_text("hello    world"), "Hello world.");
+        assert_eq!(cleanup_text("hello    world"), "Hello world");
     }
 
     #[test]
     fn test_capitalize_first_letter() {
-        assert_eq!(cleanup_text("hello world"), "Hello world.");
+        assert_eq!(cleanup_text("hello world"), "Hello world");
     }
 
     #[test]
     fn test_capitalize_after_period() {
-        assert_eq!(cleanup_text("hello. world"), "Hello. World.");
+        assert_eq!(cleanup_text("hello. world"), "Hello. World");
     }
 
     #[test]
     fn test_capitalize_after_question_mark() {
-        assert_eq!(cleanup_text("hello? world"), "Hello? World.");
+        assert_eq!(cleanup_text("hello? world"), "Hello? World");
     }
 
     #[test]
     fn test_capitalize_after_exclamation() {
-        assert_eq!(cleanup_text("hello! world"), "Hello! World.");
+        assert_eq!(cleanup_text("hello! world"), "Hello! World");
     }
 
     #[test]
-    fn test_ensure_ending_punctuation() {
-        assert_eq!(cleanup_text("hello world"), "Hello world.");
+    fn test_no_forced_terminal_punctuation() {
+        // Phase C: never auto-append a period. Trust whisper's output.
+        assert_eq!(cleanup_text("hello world"), "Hello world");
+        assert_eq!(cleanup_text("search query"), "Search query");
+        assert_eq!(cleanup_text("foo bar"), "Foo bar");
     }
 
     #[test]
-    fn test_preserve_existing_ending_punctuation() {
+    fn test_preserves_existing_punctuation() {
         assert_eq!(cleanup_text("hello world."), "Hello world.");
         assert_eq!(cleanup_text("hello world!"), "Hello world!");
         assert_eq!(cleanup_text("hello world?"), "Hello world?");

@@ -46,7 +46,7 @@
           </a>
         </nav>
         <div class="sidebar-footer">
-          <span class="version-text">v0.2.0</span>
+          <span class="version-text">v0.4.0</span>
           <a href="#" id="credit-link" class="credit-text">by oggi</a>
         </div>
       </aside>
@@ -176,6 +176,21 @@
                   </select>
                   <button id="download-btn" class="btn-primary" data-i18n="download">Download</button>
                 </div>
+              </div>
+            </div>
+            <div class="setting-row hidden" id="custom-prompt-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="custom_prompt_label">Custom Vocabulary</span>
+                <span class="label-hint" data-i18n="custom_prompt_hint">Names, acronyms and jargon you dictate often. Helps Whisper get them right.</span>
+              </div>
+              <div class="setting-control">
+                <textarea
+                  id="custom-prompt"
+                  rows="3"
+                  maxlength="2000"
+                  data-i18n-placeholder="custom_prompt_placeholder"
+                  placeholder="e.g. Tauri, whisper.cpp, ggml, oggi"
+                ></textarea>
               </div>
             </div>
             <div id="download-progress" class="hidden">

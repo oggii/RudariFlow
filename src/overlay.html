@@ -87,6 +87,45 @@
       }
       .cancel:hover { background: rgba(255, 92, 92, 0.85); }
       .cancel svg { width: 10px; height: 10px; stroke: #fff; }
+      .transcript {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 18px;
+        font-size: 12px;
+        font-weight: 500;
+        line-height: 1.3;
+        color: rgba(255, 255, 255, 0.95);
+        background: rgba(20, 20, 22, 0.92);
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        opacity: 0;
+        pointer-events: none;
+        text-overflow: ellipsis;
+        overflow: hidden;
+        white-space: nowrap;
+        transition: opacity 120ms ease;
+      }
+      body[data-state="transcribing"] .transcript { opacity: 1; }
+      .notice {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.95);
+        background: rgba(20, 20, 22, 0.92);
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 200ms ease;
+      }
+      body[data-state="notice"] .notice { opacity: 1; }
     </style>
   </head>
   <body data-state="ready">
@@ -102,6 +141,8 @@
         </svg>
       </button>
     </div>
+    <div class="notice" id="notice"></div>
+    <div class="transcript" id="transcript"></div>
     <script type="module">
       import { invoke } from "@tauri-apps/api/core";
       import { listen } from "@tauri-apps/api/event";
@@ -159,8 +200,55 @@
         }
         if (state === "recording") {
           levelEventCount = 0;
+          cumulative = "";
+          transcriptEl.textContent = "";
         }
       };
+
+      const transcriptEl = document.getElementById("transcript");
+      let cumulative = "";
+      listen("partial-transcript", (event) => {
+        const p = event.payload || {};
+        if (p.is_final) {
+          // Final canonical text replaces whatever we accumulated.
+          cumulative = String(p.text || "");
+        } else {
+          // New segment delta — append.
+          const seg = String(p.text || "").trim();
+          if (seg) cumulative = (cumulative + " " + seg).trim();
+        }
+        transcriptEl.textContent = cumulative;
+      }).then(() => diag("partial-transcript listener registered"));
+
+      const noticeEl = document.getElementById("notice");
+      let noticeTimer = null;
+      function showNotice(text, ms) {
+        noticeEl.textContent = text;
+        document.body.dataset.state = "notice";
+        if (noticeTimer) clearTimeout(noticeTimer);
+        noticeTimer = setTimeout(() => {
+          document.body.dataset.state = "ready";
+          invoke("diag_log", { source: "overlay", message: "notice timeout" });
+        }, ms);
+      }
+
+      // i18n strings are owned by the main window. Keep a tiny EN/DE map here
+      // since the overlay is a separate webview without access to the main
+      // window's dictionary.
+      const NOTICE_TEXT = {
+        en: { audio_empty: "No speech detected" },
+        de: { audio_empty: "Keine Sprache erkannt" },
+      };
+      function pickLang() {
+        const nav = (navigator.language || "en").toLowerCase();
+        return nav.startsWith("de") ? "de" : "en";
+      }
+
+      listen("audio-empty", () => {
+        diag("audio-empty received");
+        const lang = pickLang();
+        showNotice(NOTICE_TEXT[lang].audio_empty, 1500);
+      }).then(() => diag("audio-empty listener registered"));
 
       document.getElementById("cancel").addEventListener("click", async (e) => {
         e.stopPropagation();

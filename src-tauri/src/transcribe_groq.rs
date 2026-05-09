@@ -1,7 +1,28 @@
 use reqwest::multipart;
 use std::path::PathBuf;
 
-pub async fn transcribe_groq(api_key: &str, audio_path: &PathBuf) -> Result<String, String> {
+/// Build the non-file form fields for the Groq request as `(key, value)` pairs.
+/// Pure function for testability; the multipart::Form is opaque.
+pub(crate) fn groq_text_fields(language: &str, custom_prompt: &str) -> Vec<(&'static str, String)> {
+    let mut fields: Vec<(&'static str, String)> = Vec::with_capacity(4);
+    fields.push(("model", "whisper-large-v3-turbo".to_string()));
+    fields.push(("response_format", "json".to_string()));
+    if language != "auto" && !language.is_empty() {
+        fields.push(("language", language.to_string()));
+    }
+    let trimmed_prompt = custom_prompt.trim();
+    if !trimmed_prompt.is_empty() {
+        fields.push(("prompt", trimmed_prompt.to_string()));
+    }
+    fields
+}
+
+pub async fn transcribe_groq(
+    api_key: &str,
+    audio_path: &PathBuf,
+    language: &str,
+    custom_prompt: &str,
+) -> Result<String, String> {
     if api_key.is_empty() {
         return Err("Groq API key not set. Please enter your API key in settings.".to_string());
     }
@@ -14,11 +35,10 @@ pub async fn transcribe_groq(api_key: &str, audio_path: &PathBuf) -> Result<Stri
         .mime_str("audio/wav")
         .map_err(|e| e.to_string())?;
 
-    let form = multipart::Form::new()
-        .text("model", "whisper-large-v3-turbo")
-        .text("language", "en")
-        .text("response_format", "json")
-        .part("file", file_part);
+    let mut form = multipart::Form::new().part("file", file_part);
+    for (k, v) in groq_text_fields(language, custom_prompt) {
+        form = form.text(k, v);
+    }
 
     let client = reqwest::Client::new();
     let response = client
@@ -53,8 +73,40 @@ mod tests {
     #[tokio::test]
     async fn test_empty_api_key() {
         let path = PathBuf::from("/tmp/test.wav");
-        let result = transcribe_groq("", &path).await;
+        let result = transcribe_groq("", &path, "en", "").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("API key not set"));
+    }
+
+    #[test]
+    fn groq_text_fields_auto_omits_language() {
+        let fields = groq_text_fields("auto", "");
+        assert!(fields.iter().any(|(k, v)| *k == "model" && v == "whisper-large-v3-turbo"));
+        assert!(!fields.iter().any(|(k, _)| *k == "language"));
+        assert!(!fields.iter().any(|(k, _)| *k == "prompt"));
+    }
+
+    #[test]
+    fn groq_text_fields_explicit_language_passes_through() {
+        let fields = groq_text_fields("de", "");
+        assert!(fields.iter().any(|(k, v)| *k == "language" && v == "de"));
+    }
+
+    #[test]
+    fn groq_text_fields_includes_prompt_when_non_empty() {
+        let fields = groq_text_fields("en", "Tauri whisper.cpp");
+        assert!(fields.iter().any(|(k, v)| *k == "prompt" && v == "Tauri whisper.cpp"));
+    }
+
+    #[test]
+    fn groq_text_fields_omits_blank_prompt() {
+        let fields = groq_text_fields("en", "   ");
+        assert!(!fields.iter().any(|(k, _)| *k == "prompt"));
+    }
+
+    #[test]
+    fn groq_text_fields_always_sets_response_format() {
+        let fields = groq_text_fields("auto", "");
+        assert!(fields.iter().any(|(k, v)| *k == "response_format" && v == "json"));
     }
 }

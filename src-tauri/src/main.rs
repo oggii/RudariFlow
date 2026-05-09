@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -13,12 +13,13 @@ use rudariflow_lib::downloader;
 use rudariflow_lib::recorder::{Recorder, RecordingState};
 use rudariflow_lib::settings::Settings;
 use rudariflow_lib::startup_log;
-use rudariflow_lib::transcribe_local;
+use rudariflow_lib::whisper_engine::WhisperEngine;
 
 struct AppState {
     recorder: Recorder,
     settings: Mutex<Settings>,
     app_dir: PathBuf,
+    whisper_engine: Arc<WhisperEngine>,
 }
 
 fn get_app_dir() -> PathBuf {
@@ -35,13 +36,14 @@ fn get_settings(state: State<AppState>) -> Settings {
 #[tauri::command]
 fn save_settings(state: State<AppState>, settings: Settings) -> Result<(), String> {
     settings.save(&state.app_dir)?;
-    let backend_changed = {
+    let engine_invalidate = {
         let prev = state.settings.lock().unwrap();
         prev.gpu_backend != settings.gpu_backend
+            || prev.whisper_model != settings.whisper_model
     };
     *state.settings.lock().unwrap() = settings;
-    if backend_changed {
-        transcribe_local::clear_backend_cache();
+    if engine_invalidate {
+        state.whisper_engine.invalidate();
     }
     Ok(())
 }
@@ -58,7 +60,7 @@ fn get_recording_state(state: State<AppState>) -> RecordingState {
 
 #[tauri::command]
 fn check_model_downloaded(state: State<AppState>, model_size: String) -> bool {
-    let model_file = transcribe_local::model_filename(&model_size);
+    let model_file = rudariflow_lib::whisper_engine::model_filename(&model_size);
     state.app_dir.join(&model_file).exists()
 }
 
@@ -68,8 +70,8 @@ async fn download_model(
     state: State<'_, AppState>,
     model_size: String,
 ) -> Result<(), String> {
-    let url = transcribe_local::model_download_url(&model_size);
-    let model_file = transcribe_local::model_filename(&model_size);
+    let url = rudariflow_lib::whisper_engine::model_download_url(&model_size);
+    let model_file = rudariflow_lib::whisper_engine::model_filename(&model_size);
     let dest = state.app_dir.join(&model_file);
     downloader::download_model(app, &url, &dest).await
 }
@@ -151,6 +153,27 @@ fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
                 ShortcutState::Pressed => {
                     tauri::async_runtime::spawn(async move {
                         let state = handle.state::<AppState>();
+                        // Background warmup: kick off model load in parallel
+                        // with audio capture. Single-flight via the engine's
+                        // mutex; ignores errors here — they surface at
+                        // transcription time.
+                        let s = state.settings.lock().unwrap().clone();
+                        if s.engine == "local" {
+                            let model_path = state
+                                .app_dir
+                                .join(rudariflow_lib::whisper_engine::model_filename(
+                                    &s.whisper_model,
+                                ));
+                            if model_path.exists() {
+                                let engine = state.whisper_engine.clone();
+                                let backend = s.gpu_backend.clone();
+                                tauri::async_runtime::spawn_blocking(move || {
+                                    if let Err(e) = engine.ensure_loaded(&model_path, &backend) {
+                                        eprintln!("[RudariFlow] warmup failed: {}", e);
+                                    }
+                                });
+                            }
+                        }
                         match mode.as_str() {
                             "toggle" => match do_toggle_recording(&handle, state.inner()).await {
                                 Ok(result) => println!("[RudariFlow] Toggle result: {}", result),
@@ -180,7 +203,7 @@ fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
                                 let settings = state.settings.lock().unwrap().clone();
                                 match state
                                     .recorder
-                                    .stop_and_transcribe(&handle, &settings, &state.app_dir)
+                                    .stop_and_transcribe(&handle, &settings, &state.app_dir, &state.whisper_engine)
                                     .await
                                 {
                                     Ok(result) => println!("[RudariFlow] Transcription: {}", result),
@@ -215,7 +238,7 @@ async fn do_toggle_recording(
             let settings = state.settings.lock().unwrap().clone();
             let result = state
                 .recorder
-                .stop_and_transcribe(app, &settings, &state.app_dir)
+                .stop_and_transcribe(app, &settings, &state.app_dir, &state.whisper_engine)
                 .await?;
             Ok(result)
         }
@@ -244,6 +267,7 @@ fn main() {
             recorder: Recorder::new(),
             settings: Mutex::new(settings),
             app_dir,
+            whisper_engine: Arc::new(WhisperEngine::new()),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -269,6 +293,38 @@ fn main() {
         })
         .setup(move |app| {
             startup_log::log("setup() entered");
+            // Add the bundled CUDA runtime DLLs to the Windows DLL search path
+            // so whisper-rs (cuda feature) can load cudart, cublas, etc.
+            #[cfg(windows)]
+            {
+                if let Ok(rd) = app.path().resource_dir() {
+                    let cuda_dir = rd.join("binaries").join("cuda-runtime");
+                    if cuda_dir.exists() {
+                        use std::os::windows::ffi::OsStrExt;
+                        use std::ffi::OsStr;
+                        let wide: Vec<u16> = OsStr::new(&cuda_dir)
+                            .encode_wide()
+                            .chain(std::iter::once(0))
+                            .collect();
+                        let ok = unsafe {
+                            windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW(wide.as_ptr())
+                        };
+                        if ok == 0 {
+                            startup_log::log("SetDllDirectoryW failed");
+                        } else {
+                            startup_log::log(&format!(
+                                "SetDllDirectoryW set to {:?}",
+                                cuda_dir
+                            ));
+                        }
+                    } else {
+                        startup_log::log(&format!(
+                            "cuda-runtime dir not found at {:?}",
+                            cuda_dir
+                        ));
+                    }
+                }
+            }
             if let Ok(rd) = app.path().resource_dir() {
                 startup_log::log(&format!("resource_dir: {:?}", rd));
             } else {

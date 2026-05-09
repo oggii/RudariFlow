@@ -1,6 +1,6 @@
 pub mod settings;
 pub mod audio;
-pub mod transcribe_local;
+pub mod whisper_engine;
 pub mod transcribe_groq;
 pub mod cleanup;
 pub mod paste;

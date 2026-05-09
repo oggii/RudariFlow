@@ -17,6 +17,7 @@ interface Settings {
   uiLanguage: string;
   volume: number;
   autostart: boolean;
+  customPrompt: string;
 }
 
 interface MicDevice {
@@ -52,6 +53,8 @@ const modeToggle = document.getElementById("mode-toggle")!;
 const modePtt = document.getElementById("mode-ptt")!;
 const hotkeyText = document.getElementById("hotkey-text")!;
 const hotkeyBtn = document.getElementById("hotkey-btn") as HTMLButtonElement;
+const customPromptTextarea = document.getElementById("custom-prompt") as HTMLTextAreaElement;
+const customPromptRow = document.getElementById("custom-prompt-row")!;
 
 // Section navigation
 const navItems = document.querySelectorAll(".nav-item");
@@ -129,6 +132,7 @@ async function loadSettings() {
 
   // Groq key
   groqKey.value = currentSettings.groqApiKey;
+  customPromptTextarea.value = currentSettings.customPrompt || "";
 
   // Recording mode
   setRecordingMode(currentSettings.recordingMode);
@@ -143,6 +147,8 @@ function setEngine(engine: string) {
   engineCloud.classList.toggle("active", engine === "cloud");
   localSettings.classList.toggle("hidden", engine !== "local");
   cloudSettings.classList.toggle("hidden", engine !== "cloud");
+  // Custom vocab applies to both engines (whisper-cli's --prompt and Groq's prompt)
+  customPromptRow.classList.remove("hidden");
 }
 
 function setRecordingMode(mode: string) {
@@ -217,6 +223,7 @@ async function saveSettings() {
   currentSettings.gpuBackend = gpuBackendSelect.value;
   currentSettings.volume = parseFloat(volumeSlider.value);
   currentSettings.autostart = autostartToggle.checked;
+  currentSettings.customPrompt = customPromptTextarea.value;
   await invoke("save_settings", { settings: currentSettings });
 }
 
@@ -286,6 +293,7 @@ downloadBtn.addEventListener("click", async () => {
 });
 
 groqKey.addEventListener("change", () => saveSettings());
+customPromptTextarea.addEventListener("change", () => saveSettings());
 
 modeToggle.addEventListener("click", () => {
   setRecordingMode("toggle");
