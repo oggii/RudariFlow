@@ -269,6 +269,38 @@ fn main() {
         })
         .setup(move |app| {
             startup_log::log("setup() entered");
+            // Add the bundled CUDA runtime DLLs to the Windows DLL search path
+            // so whisper-rs (cuda feature) can load cudart, cublas, etc.
+            #[cfg(windows)]
+            {
+                if let Ok(rd) = app.path().resource_dir() {
+                    let cuda_dir = rd.join("binaries").join("cuda-runtime");
+                    if cuda_dir.exists() {
+                        use std::os::windows::ffi::OsStrExt;
+                        use std::ffi::OsStr;
+                        let wide: Vec<u16> = OsStr::new(&cuda_dir)
+                            .encode_wide()
+                            .chain(std::iter::once(0))
+                            .collect();
+                        let ok = unsafe {
+                            windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW(wide.as_ptr())
+                        };
+                        if ok == 0 {
+                            startup_log::log("SetDllDirectoryW failed");
+                        } else {
+                            startup_log::log(&format!(
+                                "SetDllDirectoryW set to {:?}",
+                                cuda_dir
+                            ));
+                        }
+                    } else {
+                        startup_log::log(&format!(
+                            "cuda-runtime dir not found at {:?}",
+                            cuda_dir
+                        ));
+                    }
+                }
+            }
             if let Ok(rd) = app.path().resource_dir() {
                 startup_log::log(&format!("resource_dir: {:?}", rd));
             } else {

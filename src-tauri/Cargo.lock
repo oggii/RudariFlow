@@ -3525,6 +3525,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tokio",
  "whisper-rs",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
