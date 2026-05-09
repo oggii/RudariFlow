@@ -35,6 +35,7 @@ Made by [oggi](https://0ggi.ch).
 - **GPU (recommended):** NVIDIA with a CUDA-capable driver for full speed
 - **CPU fallback:** Works without a GPU or on AMD/Intel — significantly slower (~10-30×). For CPU-only users we recommend the `small` or `medium` model.
 - **Note:** The first run of each model on a new GPU JIT-compiles CUDA kernels (~30-60s, one-time)
+- **RAM:** the selected whisper model stays resident from first dictation onward. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB.
 
 ## Installation (for end users)
 
@@ -49,6 +50,7 @@ The installer is unsigned, so Windows SmartScreen will show an "Unknown publishe
 - [Rust](https://rustup.rs/) (MSVC toolchain on Windows)
 - [Node.js](https://nodejs.org/) ≥ 20
 - Visual Studio Build Tools with the C++ workload (for `cargo build`)
+- CUDA Toolkit 12.x (required to compile `whisper-rs` with the `cuda` feature)
 
 ### Setup
 
@@ -60,7 +62,7 @@ cd RudariFlow
 # 2. Frontend dependencies
 npm install
 
-# 3. Fetch whisper.cpp backends (cuBLAS + CPU, ~600 MB total)
+# 3. Fetch CUDA runtime DLLs (~80 MB)
 powershell -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1
 
 # 4. Run in dev mode
@@ -83,7 +85,7 @@ Produces:
 - **Tauri 2** (Rust backend + Webview frontend)
 - **Frontend:** Vanilla TypeScript + Vite
 - **Audio capture:** [cpal](https://github.com/RustAudio/cpal) (cross-platform low-level audio I/O)
-- **Transcription:** whisper.cpp as an external sidecar process (`whisper-cli.exe`), bundled as a Tauri resource
+- **Transcription:** in-process [`whisper-rs`](https://github.com/tazz4843/whisper-rs) (whisper.cpp Rust bindings) with the `cuda` feature; runtime fallback to CPU
 - **Auto-paste:** [enigo](https://github.com/enigo-rs/enigo) (keyboard simulation)
 - **Hotkey:** [tauri-plugin-global-shortcut](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/global-shortcut)
 - **Autostart:** [tauri-plugin-autostart](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/autostart)

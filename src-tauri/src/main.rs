@@ -13,7 +13,6 @@ use rudariflow_lib::downloader;
 use rudariflow_lib::recorder::{Recorder, RecordingState};
 use rudariflow_lib::settings::Settings;
 use rudariflow_lib::startup_log;
-use rudariflow_lib::transcribe_local;
 use rudariflow_lib::whisper_engine::WhisperEngine;
 
 struct AppState {
@@ -61,7 +60,7 @@ fn get_recording_state(state: State<AppState>) -> RecordingState {
 
 #[tauri::command]
 fn check_model_downloaded(state: State<AppState>, model_size: String) -> bool {
-    let model_file = transcribe_local::model_filename(&model_size);
+    let model_file = rudariflow_lib::whisper_engine::model_filename(&model_size);
     state.app_dir.join(&model_file).exists()
 }
 
@@ -71,8 +70,8 @@ async fn download_model(
     state: State<'_, AppState>,
     model_size: String,
 ) -> Result<(), String> {
-    let url = transcribe_local::model_download_url(&model_size);
-    let model_file = transcribe_local::model_filename(&model_size);
+    let url = rudariflow_lib::whisper_engine::model_download_url(&model_size);
+    let model_file = rudariflow_lib::whisper_engine::model_filename(&model_size);
     let dest = state.app_dir.join(&model_file);
     downloader::download_model(app, &url, &dest).await
 }
