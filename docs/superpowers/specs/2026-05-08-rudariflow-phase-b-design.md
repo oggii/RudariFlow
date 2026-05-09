@@ -166,3 +166,15 @@ Capture on CPU-only box (no NVIDIA), `small`, same fixed clip:
 - **Cold start:** _TBD before/after_
 - **Warm dictation:** _TBD before/after_
 - **Steady-state RAM:** _TBD before/after_
+
+## Spike result (Task 1)
+
+Validated on Windows 10 + CUDA Toolkit 12.6.85 + LLVM 19.1.7 (libclang for bindgen) + VS 2022 Build Tools (MSVC 14.44, CUDA-supported) + Ninja generator, against `tiny.en` model on a 3-second mono 16 kHz fixture (`tests/fixtures/spike-3s.wav`). Build env requires `CUDAARCHS=75;80;86;89;90` (Blackwell sm_120 reaches the GPU via PTX JIT — newer arches not yet known to CUDA 12.6).
+
+- Build: succeeded with `whisper-rs 0.16` `cuda` feature; single binary loads `cudart64_12.dll` lazily.
+- `use_gpu=true` on RTX 5080 (Blackwell sm_120 via PTX JIT): succeeded, CUDA0 backend, `CUDA0 total size = 77.11 MB`, transcription returned non-empty text.
+- `use_gpu=false` on RTX 5080: succeeded in same process after the GPU run, `whisper_backend_init_gpu: no GPU found`, `CPU total size = 77.11 MB`, transcription returned the same text.
+- `use_gpu=true` with `CUDA_VISIBLE_DEVICES=-1`: **bonus** — whisper.cpp emits `ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected` and **automatically falls back to the CPU backend** (`CPU total size = 77.11 MB`). Transcription succeeds. This means our `auto` selector does not need to probe for CUDA before constructing the context — `use_gpu=true` is safe to attempt unconditionally.
+- `use_gpu=false` with `CUDA_VISIBLE_DEVICES=-1`: succeeded, identical to the GPU-visible CPU path.
+
+Conclusion: single-installer auto-detect is feasible. Proceed with Task 2.
