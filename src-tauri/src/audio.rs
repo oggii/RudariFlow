@@ -134,18 +134,19 @@ impl AudioRecorder {
         println!("[RudariFlow] Audio recording discarded");
     }
 
-    pub fn stop_and_save(&mut self, output_path: &PathBuf) -> Result<PathBuf, String> {
-        self.stream = None; // Drop stops the stream
+    /// Stop the stream, dedup channels to mono, trim leading/trailing silence,
+    /// and resample to 16 kHz. Returns the prepared sample buffer or
+    /// `Err("no_speech")` if the entire recording was silence.
+    pub fn stop_and_take_samples(&mut self) -> Result<Vec<f32>, String> {
+        self.stream = None;
         println!("[RudariFlow] Audio recording stopped");
 
         let samples = self.samples.lock().unwrap();
         if samples.is_empty() {
             return Err("No audio captured".to_string());
         }
-
         println!("[RudariFlow] Captured {} raw samples", samples.len());
 
-        // Convert to mono if multi-channel
         let mono: Vec<f32> = if self.source_channels > 1 {
             samples
                 .chunks(self.source_channels as usize)
@@ -157,8 +158,6 @@ impl AudioRecorder {
         drop(samples);
         self.samples.lock().unwrap().clear();
 
-        // Trim leading/trailing silence. If everything is silence, bail before
-        // we waste a whisper invocation hallucinating filler text.
         let trimmed: Vec<f32> = match trim_silence(&mono, self.source_sample_rate) {
             Some((start, end)) => mono[start..end].to_vec(),
             None => {
@@ -173,27 +172,36 @@ impl AudioRecorder {
             100.0 * trimmed.len() as f32 / mono.len() as f32
         );
 
-        // Downsample to 16kHz for whisper.cpp
-        let resampled = resample(&trimmed, self.source_sample_rate, 16000);
+        let resampled = resample(&trimmed, self.source_sample_rate, 16_000);
         println!("[RudariFlow] Resampled to {} samples at 16kHz", resampled.len());
+        Ok(resampled)
+    }
 
-        let spec = WavSpec {
-            channels: 1,
-            sample_rate: 16000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-
-        let mut writer = WavWriter::create(output_path, spec).map_err(|e| e.to_string())?;
-        for &sample in resampled.iter() {
-            let amplitude = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-            writer.write_sample(amplitude).map_err(|e| e.to_string())?;
-        }
-        writer.finalize().map_err(|e| e.to_string())?;
-
-        println!("[RudariFlow] WAV saved to {:?}", output_path);
+    /// Stop the stream and write a 16 kHz mono 16-bit WAV. Used by the Groq
+    /// path which uploads a WAV file. Wraps `stop_and_take_samples`.
+    pub fn stop_and_save(&mut self, output_path: &PathBuf) -> Result<PathBuf, String> {
+        let samples = self.stop_and_take_samples()?;
+        samples_to_wav(&samples, output_path)?;
         Ok(output_path.clone())
     }
+}
+
+/// Write a `Vec<f32>` of 16 kHz mono samples as a 16-bit PCM WAV.
+pub fn samples_to_wav(samples: &[f32], output_path: &PathBuf) -> Result<PathBuf, String> {
+    let spec = WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = WavWriter::create(output_path, spec).map_err(|e| e.to_string())?;
+    for &sample in samples {
+        let amplitude = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+        writer.write_sample(amplitude).map_err(|e| e.to_string())?;
+    }
+    writer.finalize().map_err(|e| e.to_string())?;
+    println!("[RudariFlow] WAV saved to {:?}", output_path);
+    Ok(output_path.clone())
 }
 
 /// Simple linear interpolation resampler
@@ -333,5 +341,26 @@ mod tests {
 
         let short_quiet = vec![0.0_f32; 100];
         assert!(trim_silence(&short_quiet, sr).is_none());
+    }
+
+    #[test]
+    fn samples_to_wav_roundtrips() {
+        let dir = std::env::temp_dir().join("rudariflow_samples_to_wav_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.wav");
+
+        let samples: Vec<f32> = (0..16_000).map(|i| (i as f32 / 16_000.0) * 0.5).collect();
+        samples_to_wav(&samples, &path).expect("write wav");
+
+        let mut reader = hound::WavReader::open(&path).expect("open written wav");
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.sample_rate, 16_000);
+        assert_eq!(spec.bits_per_sample, 16);
+        let count = reader.samples::<i16>().count();
+        assert_eq!(count, samples.len());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
