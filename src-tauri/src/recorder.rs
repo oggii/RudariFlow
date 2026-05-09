@@ -179,7 +179,7 @@ impl Recorder {
                     return Err("Whisper model not found. Please download a model first.".to_string());
                 }
                 engine.ensure_loaded(&model_path, &settings.gpu_backend)?;
-                engine.transcribe(&samples, &settings.language, &settings.custom_prompt)?
+                engine.transcribe(app, &samples, &settings.language, &settings.custom_prompt)?
             }
             "cloud" => {
                 // Cloud path: still uses a WAV file because Groq accepts uploads.
