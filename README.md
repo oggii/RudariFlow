@@ -11,7 +11,7 @@
 
 Local speech-to-text dictation app for Windows, powered by [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Global hotkey, push-to-talk or toggle mode, automatic paste of the transcribed text.
 
-> **v0.4.0 — Windows.** In-process whisper-rs backend with persistent model, hotkey-press warmup, and streaming partial transcripts. NVIDIA GPU recommended for speed; CPU fallback included for AMD / Intel / no-GPU systems. macOS and Linux planned for later releases.
+> **v0.5.0, Windows.** One installer for every GPU: NVIDIA GeForce RTX runs on CUDA, AMD Radeon and Intel Arc run on Vulkan, and everything else falls back to the CPU. The backend is picked automatically at runtime.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
@@ -23,7 +23,7 @@ Made by [oggi](https://0ggi.ch).
 - **Persistent model:** loaded once on first use and reused across dictations
 - **Hotkey-press warmup:** pressing PTT preloads the model in parallel so it's hot by the time you finish speaking
 - **Streaming partial transcripts:** text appears in the overlay as Whisper emits each segment
-- **Auto backend detection:** uses NVIDIA CUDA when available, falls back to CPU otherwise
+- **Auto backend detection:** NVIDIA CUDA when available, otherwise Vulkan (AMD / Intel / NVIDIA), otherwise CPU. Settings show the detected GPUs and let you force CUDA, Vulkan or CPU. Flash attention is on for CUDA and off for Vulkan (2× slower on an RX 6800); force it with `RUDARIFLOW_FLASH_ATTN=1` or `=0`
 - **Custom Vocabulary:** inject domain terms (names, jargon, acronyms) to bias recognition
 - **No-speech detection:** silent recordings show an overlay notice instead of pasting nothing
 - **Clipboard-safe paste:** your previous clipboard contents are saved and restored around auto-paste
@@ -40,9 +40,11 @@ Made by [oggi](https://0ggi.ch).
 ## System Requirements
 
 - **OS:** Windows 10/11 x64
-- **GPU (recommended):** NVIDIA with a CUDA-capable driver for full speed
-- **CPU fallback:** Works without a GPU or on AMD/Intel — significantly slower (~10-30×). For CPU-only users we recommend the `small` or `medium` model.
-- **Note:** The first run of each model on a new GPU JIT-compiles CUDA kernels (~30-60s, one-time)
+- **GPU (recommended), current driver only, no extra runtime to install:**
+  - NVIDIA GeForce RTX 20 series or newer: CUDA (driver 525 or newer)
+  - AMD Radeon RX 6000 or newer (AMD Software: Adrenalin Edition): Vulkan
+  - Intel Arc and other Vulkan 1.2 GPUs: Vulkan
+- **CPU fallback:** Works without a usable GPU, but significantly slower (~10-30×). For CPU-only users we recommend the `small` or `medium` model.
 - **RAM:** the selected whisper model stays resident from first dictation onward. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB.
 
 ## Installation (for end users)
@@ -58,7 +60,9 @@ The installer is unsigned, so Windows SmartScreen will show an "Unknown publishe
 - [Rust](https://rustup.rs/) (MSVC toolchain on Windows)
 - [Node.js](https://nodejs.org/) ≥ 20
 - Visual Studio Build Tools with the C++ workload (for `cargo build`)
-- CUDA Toolkit 12.x (required to compile `whisper-rs` with the `cuda` feature)
+- [CMake](https://cmake.org/) and [LLVM](https://llvm.org/) (libclang, for `whisper-rs-sys` bindgen)
+- [Vulkan SDK](https://vulkan.lunarg.com/) (provides `glslc` to compile whisper.cpp's Vulkan shaders; `VULKAN_SDK` must be set)
+- [CUDA Toolkit 12.x](https://developer.nvidia.com/cuda-downloads) (12.8 recommended; the compiler and cuBLAS components are enough, no NVIDIA GPU needed to build)
 
 ### Setup
 
@@ -70,12 +74,21 @@ cd RudariFlow
 # 2. Frontend dependencies
 npm install
 
-# 3. Fetch CUDA runtime DLLs (~80 MB)
+# 3. Collect the GPU runtime DLLs shipped next to the exe
+#    (CUDA runtime from CUDA_PATH, Vulkan loader from System32)
 powershell -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1
 
-# 4. Run in dev mode
+# 4. Keep the build path short: whisper.cpp's nested Vulkan shader build
+#    exceeds the 260-character path limit under src-tauri\target
+$env:CARGO_TARGET_DIR = "C:\t\rf"
+$env:CUDAARCHS = "75;80;86;89;120"   # RTX 20, 30, A-series, 40, 50
+
+# 5. Run in dev mode
 npm run tauri dev
 ```
+
+Without a CUDA Toolkit you can still build and run a Vulkan-only binary:
+`npm run tauri dev -- --no-default-features --features vulkan`.
 
 ### Production build
 
@@ -83,17 +96,26 @@ npm run tauri dev
 npm run tauri build
 ```
 
-Produces:
-- `src-tauri/target/release/rudariflow.exe` (portable)
-- `src-tauri/target/release/bundle/nsis/RudariFlow_x.y.z_x64-setup.exe` (NSIS installer)
-- `src-tauri/target/release/bundle/msi/RudariFlow_x.y.z_x64_en-US.msi` (MSI installer)
+Produces (under `CARGO_TARGET_DIR`):
+- `release/rudariflow.exe` (portable, needs the DLLs from step 3 next to it)
+- `release/bundle/nsis/RudariFlow_x.y.z_x64-setup.exe` (NSIS installer)
+- `release/bundle/msi/RudariFlow_x.y.z_x64_en-US.msi` (MSI installer)
+
+### Benchmark
+
+```powershell
+cd src-tauri
+cargo run --release --example bench -- "$env:APPDATA\com.rudariflow.app\ggml-large-v3-turbo.bin" path\to\16khz-mono.wav
+```
+
+Times model load and transcription on the first GPU with and without flash attention, and on CPU.
 
 ## Architecture
 
 - **Tauri 2** (Rust backend + Webview frontend)
 - **Frontend:** Vanilla TypeScript + Vite
 - **Audio capture:** [cpal](https://github.com/RustAudio/cpal) (cross-platform low-level audio I/O)
-- **Transcription:** in-process [`whisper-rs`](https://github.com/tazz4843/whisper-rs) (whisper.cpp Rust bindings) with the `cuda` feature; runtime fallback to CPU
+- **Transcription:** in-process [`whisper-rs`](https://github.com/tazz4843/whisper-rs) (whisper.cpp Rust bindings) built with both the `cuda` and `vulkan` features; the backend is chosen at runtime from ggml's device list, with fallback to CPU
 - **Auto-paste:** [enigo](https://github.com/enigo-rs/enigo) (keyboard simulation)
 - **Hotkey:** [tauri-plugin-global-shortcut](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/global-shortcut)
 - **Autostart:** [tauri-plugin-autostart](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/autostart)

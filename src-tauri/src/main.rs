@@ -92,6 +92,15 @@ fn cancel_recording(
     state.recorder.cancel_recording(&app)
 }
 
+/// GPUs whisper.cpp can use, for the settings hint. Async so backend
+/// initialisation (CUDA / Vulkan device probing) stays off the main thread.
+#[tauri::command]
+async fn detect_gpus() -> Vec<rudariflow_lib::whisper_engine::GpuDevice> {
+    tauri::async_runtime::spawn_blocking(rudariflow_lib::whisper_engine::list_gpu_devices)
+        .await
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 fn diag_log(source: String, message: String) {
     startup_log::log(&format!("[{}] {}", source, message));
@@ -309,6 +318,7 @@ fn main() {
             change_hotkey,
             set_hotkey_paused,
             set_autostart,
+            detect_gpus,
             diag_log,
         ])
         .on_window_event(|window, event| {
@@ -322,38 +332,8 @@ fn main() {
         })
         .setup(move |app| {
             startup_log::log("setup() entered");
-            // Add the bundled CUDA runtime DLLs to the Windows DLL search path
-            // so whisper-rs (cuda feature) can load cudart, cublas, etc.
-            #[cfg(windows)]
-            {
-                if let Ok(rd) = app.path().resource_dir() {
-                    let cuda_dir = rd.join("binaries").join("cuda-runtime");
-                    if cuda_dir.exists() {
-                        use std::os::windows::ffi::OsStrExt;
-                        use std::ffi::OsStr;
-                        let wide: Vec<u16> = OsStr::new(&cuda_dir)
-                            .encode_wide()
-                            .chain(std::iter::once(0))
-                            .collect();
-                        let ok = unsafe {
-                            windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW(wide.as_ptr())
-                        };
-                        if ok == 0 {
-                            startup_log::log("SetDllDirectoryW failed");
-                        } else {
-                            startup_log::log(&format!(
-                                "SetDllDirectoryW set to {:?}",
-                                cuda_dir
-                            ));
-                        }
-                    } else {
-                        startup_log::log(&format!(
-                            "cuda-runtime dir not found at {:?}",
-                            cuda_dir
-                        ));
-                    }
-                }
-            }
+            // The CUDA runtime and Vulkan loader DLLs are load-time imports and
+            // are installed next to rudariflow.exe (see tauri.conf.json).
             if let Ok(rd) = app.path().resource_dir() {
                 startup_log::log(&format!("resource_dir: {:?}", rd));
             } else {

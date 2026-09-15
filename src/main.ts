@@ -129,6 +129,7 @@ async function loadSettings() {
 
   // GPU backend
   gpuBackendSelect.value = currentSettings.gpuBackend || "auto";
+  refreshDetectedGpus();
 
   // Groq key
   groqKey.value = currentSettings.groqApiKey;
@@ -139,6 +140,34 @@ async function loadSettings() {
 
   // Hotkey
   renderHotkey(currentSettings.hotkey);
+}
+
+interface GpuDevice {
+  gpu_index: number;
+  api: "Cuda" | "Vulkan";
+  name: string;
+}
+
+async function refreshDetectedGpus() {
+  const el = document.getElementById("gpu-detected")!;
+  try {
+    const gpus = await invoke<GpuDevice[]>("detect_gpus");
+    if (gpus.length === 0) {
+      el.textContent = t("gpu_detected_none");
+      return;
+    }
+    // An NVIDIA card is listed once per API; group the APIs by card name.
+    const byName = new Map<string, string[]>();
+    for (const g of gpus) {
+      const apis = byName.get(g.name) ?? [];
+      apis.push(g.api === "Cuda" ? "CUDA" : "Vulkan");
+      byName.set(g.name, apis);
+    }
+    const list = [...byName].map(([name, apis]) => `${name} (${apis.join(", ")})`);
+    el.textContent = `${t("gpu_detected")}: ${list.join("; ")}`;
+  } catch (e) {
+    console.error("detect_gpus failed:", e);
+  }
 }
 
 function setEngine(engine: string) {

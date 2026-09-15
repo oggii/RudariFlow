@@ -124,12 +124,14 @@
             <div class="setting-row" id="gpu-backend-row">
               <div class="setting-label">
                 <span class="label-text" data-i18n="gpu_backend_label">GPU Backend</span>
-                <span class="label-hint" data-i18n="gpu_backend_hint">Auto picks NVIDIA CUDA when available, otherwise CPU</span>
+                <span class="label-hint" data-i18n="gpu_backend_hint">Auto: NVIDIA CUDA, otherwise Vulkan (AMD / Intel), otherwise CPU</span>
+                <span class="label-hint" id="gpu-detected"></span>
               </div>
               <div class="setting-control">
                 <select id="gpu-backend-select">
                   <option value="auto" data-i18n="gpu_backend_auto">Auto</option>
                   <option value="cuda" data-i18n="gpu_backend_cuda">NVIDIA CUDA</option>
+                  <option value="vulkan" data-i18n="gpu_backend_vulkan">Vulkan (AMD / Intel / NVIDIA)</option>
                   <option value="cpu" data-i18n="gpu_backend_cpu">CPU only</option>
                 </select>
               </div>

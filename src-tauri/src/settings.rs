@@ -80,6 +80,11 @@ impl Settings {
                 }
             }
         }
+        // Accepted values are auto / cuda / vulkan / cpu. Anything else (e.g. a
+        // "gpu" value from a pre-release build) behaves like and becomes auto.
+        if !matches!(settings.gpu_backend.as_str(), "auto" | "cuda" | "vulkan" | "cpu") {
+            settings.gpu_backend = "auto".to_string();
+        }
         settings
     }
 
@@ -142,6 +147,21 @@ mod tests {
 
         let settings = Settings::load(&dir);
         assert_eq!(settings, Settings::default());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_unknown_gpu_backend_becomes_auto() {
+        let dir = temp_dir().join("typr_test_gpu_backend");
+        let _ = fs::remove_dir_all(&dir);
+
+        for (saved, expected) in [("gpu", "auto"), ("cuda", "cuda"), ("vulkan", "vulkan"), ("cpu", "cpu")] {
+            let mut settings = Settings::default();
+            settings.gpu_backend = saved.to_string();
+            settings.save(&dir).unwrap();
+            assert_eq!(Settings::load(&dir).gpu_backend, expected);
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }
