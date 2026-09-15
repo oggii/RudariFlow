@@ -30,7 +30,7 @@ Made by [oggi](https://0ggi.ch).
 - Multiple Whisper models selectable: tiny → large-v3-turbo, auto-downloaded on selection
 - Languages: auto-detect or pick from 14 fixed languages (EN, DE, FR, IT, ES, …)
 - **Push-to-talk** and **toggle** modes
-- Configurable global hotkey (capture any chord from the settings UI)
+- Configurable global hotkey (capture any chord from the settings UI), including mouse side buttons (Mouse 4 / Mouse 5, alone or with Ctrl/Shift/Alt/Win). A bound side button is consumed, so it no longer triggers "Back" / "Forward" in other apps
 - Floating recording pill with live waveform and cancel button
 - Auto-paste via simulated typing (works with any application)
 - System tray icon — closing the window minimises to tray instead of quitting

@@ -5,6 +5,15 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Mouse side buttons as hotkey.** Press Mouse 4 (Back) or Mouse 5 (Forward),
+  optionally with Ctrl/Shift/Alt/Win, while capturing the hotkey in settings.
+  Implemented with a low-level mouse hook because `RegisterHotKey` only
+  accepts keyboard keys. Toggle and push-to-talk both work; the bound button
+  is consumed so it does not also navigate back/forward in the focused app.
+
 ## [0.5.0] - 2026-09-15 - One build for NVIDIA, AMD and Intel GPUs
 
 ### Added

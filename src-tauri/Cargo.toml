@@ -39,6 +39,15 @@ tauri-plugin-autostart = "2.5.1"
 # raw-api re-exports whisper-rs-sys for ggml device enumeration.
 whisper-rs = { version = "0.16", features = ["raw-api"] }
 
+[target.'cfg(windows)'.dependencies]
+# Low-level mouse hook for side-button hotkeys (src/mouse_hotkey.rs).
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
 [[example]]
 name = "spike"
 path = "examples/spike.rs"
