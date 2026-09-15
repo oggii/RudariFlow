@@ -5,7 +5,7 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.1] - 2026-09-15 - Mouse side buttons as hotkey
 
 ### Added
 - **Mouse side buttons as hotkey.** Press Mouse 4 (Back) or Mouse 5 (Forward),

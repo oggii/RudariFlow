@@ -11,7 +11,7 @@
 
 Local speech-to-text dictation app for Windows, powered by [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Global hotkey, push-to-talk or toggle mode, automatic paste of the transcribed text.
 
-> **v0.5.0, Windows.** One installer for every GPU: NVIDIA GeForce RTX runs on CUDA, AMD Radeon and Intel Arc run on Vulkan, and everything else falls back to the CPU. The backend is picked automatically at runtime.
+> **v0.5.1, Windows.** One installer for every GPU: NVIDIA GeForce RTX runs on CUDA, AMD Radeon and Intel Arc run on Vulkan, and everything else falls back to the CPU. The backend is picked automatically at runtime.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
