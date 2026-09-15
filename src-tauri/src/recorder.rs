@@ -1,8 +1,9 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::audio::AudioRecorder;
+use crate::audio::{lock, AudioRecorder};
 use crate::cleanup::cleanup_text;
 use crate::paste::paste_text;
 use crate::settings::Settings;
@@ -71,19 +72,25 @@ fn update_overlay(app: &AppHandle, state: &RecordingState) {
 }
 
 fn emit_audio_empty(app: &AppHandle, state: Arc<Mutex<RecordingState>>) {
+    show_notice(app, state, "audio-empty", 1700);
+}
+
+/// Briefly show the overlay with a notice (`audio-empty`, `mic-error`) so a
+/// failed hotkey press is visible instead of silently doing nothing.
+fn show_notice(app: &AppHandle, state: Arc<Mutex<RecordingState>>, event: &str, hide_after_ms: u64) {
     if let Some(overlay) = app.get_webview_window("overlay") {
         let _ = overlay.set_always_on_top(false);
         let _ = overlay.set_always_on_top(true);
         let _ = overlay.show();
     }
-    let _ = app.emit("audio-empty", ());
+    let _ = app.emit(event, ());
     let app_clone = app.clone();
     let state_clone = state.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(1700)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(hide_after_ms)).await;
         // If a new recording started during the grace window, leave the
         // overlay alone — don't hide it mid-dictation.
-        let current = state_clone.lock().unwrap().clone();
+        let current = lock(&state_clone).clone();
         if current == RecordingState::Ready {
             if let Some(overlay) = app_clone.get_webview_window("overlay") {
                 let _ = overlay.hide();
@@ -95,6 +102,24 @@ fn emit_audio_empty(app: &AppHandle, state: Arc<Mutex<RecordingState>>) {
 pub struct Recorder {
     state: Arc<Mutex<RecordingState>>,
     audio_recorder: Arc<Mutex<AudioRecorder>>,
+    /// Set while the microphone is being opened, so the state lock is never
+    /// held across device I/O.
+    starting: AtomicBool,
+}
+
+/// Resets the recorder to Ready when dropped, including when transcription
+/// panics, so a crash can never leave the app stuck in Transcribing.
+struct ReadyOnDrop<'a> {
+    app: &'a AppHandle,
+    state: &'a Arc<Mutex<RecordingState>>,
+}
+
+impl Drop for ReadyOnDrop<'_> {
+    fn drop(&mut self) {
+        *lock(self.state) = RecordingState::Ready;
+        let _ = self.app.emit("recording-state", RecordingState::Ready);
+        update_overlay(self.app, &RecordingState::Ready);
+    }
 }
 
 impl Recorder {
@@ -102,26 +127,42 @@ impl Recorder {
         Self {
             state: Arc::new(Mutex::new(RecordingState::Ready)),
             audio_recorder: Arc::new(Mutex::new(AudioRecorder::new())),
+            starting: AtomicBool::new(false),
         }
     }
 
     pub fn get_state(&self) -> RecordingState {
-        self.state.lock().unwrap().clone()
+        lock(&self.state).clone()
     }
 
     pub fn start_recording(&self, app: &AppHandle, mic_name: &str) -> Result<(), String> {
-        let mut state = self.state.lock().unwrap();
-        if *state != RecordingState::Ready {
+        if *lock(&self.state) != RecordingState::Ready {
             return Err("Already recording or transcribing".to_string());
         }
+        if self
+            .starting
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("Microphone is still opening".to_string());
+        }
 
-        let mut recorder = self.audio_recorder.lock().unwrap();
-        recorder.start(app, mic_name)?;
-
-        *state = RecordingState::Recording;
-        let _ = app.emit("recording-state", RecordingState::Recording);
-        update_overlay(app, &RecordingState::Recording);
-        Ok(())
+        let opened = lock(&self.audio_recorder).start(app, mic_name);
+        let result = match opened {
+            Ok(()) => {
+                *lock(&self.state) = RecordingState::Recording;
+                let _ = app.emit("recording-state", RecordingState::Recording);
+                update_overlay(app, &RecordingState::Recording);
+                Ok(())
+            }
+            Err(e) => {
+                startup_log::log(&format!("[recorder] start failed: {}", e));
+                show_notice(app, self.state.clone(), "mic-error", 2600);
+                Err(e)
+            }
+        };
+        self.starting.store(false, Ordering::SeqCst);
+        result
     }
 
     pub async fn stop_and_transcribe(
@@ -133,27 +174,24 @@ impl Recorder {
     ) -> Result<String, String> {
         // Stop recording
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = lock(&self.state);
             if *state != RecordingState::Recording {
                 return Err("Not currently recording".to_string());
             }
             *state = RecordingState::Transcribing;
-            let _ = app.emit("recording-state", RecordingState::Transcribing);
-            update_overlay(app, &RecordingState::Transcribing);
         }
+        let _ = app.emit("recording-state", RecordingState::Transcribing);
+        update_overlay(app, &RecordingState::Transcribing);
+
+        // Always reset state to Ready, regardless of success, failure or panic.
+        let _ready = ReadyOnDrop { app, state: &self.state };
 
         let result = self
             .run_transcription_pipeline(app, settings, app_dir, engine)
             .await;
-
-        // Always reset state to Ready, regardless of success/failure.
-        {
-            let mut state = self.state.lock().unwrap();
-            *state = RecordingState::Ready;
-            let _ = app.emit("recording-state", RecordingState::Ready);
-            update_overlay(app, &RecordingState::Ready);
+        if let Err(e) = &result {
+            startup_log::log(&format!("[recorder] transcription failed: {}", e));
         }
-
         result
     }
 
@@ -167,10 +205,7 @@ impl Recorder {
         let raw_text = match settings.engine.as_str() {
             "local" => {
                 // Local path: take samples, hand directly to in-process whisper.
-                let samples_result = {
-                    let mut recorder = self.audio_recorder.lock().unwrap();
-                    recorder.stop_and_take_samples()
-                };
+                let samples_result = lock(&self.audio_recorder).stop_and_take_samples();
                 if let Err(e) = &samples_result {
                     if e == "no_speech" {
                         emit_audio_empty(app, self.state.clone());
@@ -190,10 +225,7 @@ impl Recorder {
             "cloud" => {
                 // Cloud path: still uses a WAV file because Groq accepts uploads.
                 let temp_path = app_dir.join("temp_recording.wav");
-                let save_result = {
-                    let mut recorder = self.audio_recorder.lock().unwrap();
-                    recorder.stop_and_save(&temp_path)
-                };
+                let save_result = lock(&self.audio_recorder).stop_and_save(&temp_path);
                 if let Err(e) = &save_result {
                     if e == "no_speech" {
                         emit_audio_empty(app, self.state.clone());
@@ -224,13 +256,14 @@ impl Recorder {
     }
 
     pub fn cancel_recording(&self, app: &AppHandle) -> Result<(), String> {
-        let mut state = self.state.lock().unwrap();
-        if *state != RecordingState::Recording {
-            return Err("Not currently recording".to_string());
+        {
+            let mut state = lock(&self.state);
+            if *state != RecordingState::Recording {
+                return Err("Not currently recording".to_string());
+            }
+            *state = RecordingState::Ready;
         }
-        let mut recorder = self.audio_recorder.lock().unwrap();
-        recorder.discard();
-        *state = RecordingState::Ready;
+        lock(&self.audio_recorder).discard();
         let _ = app.emit("recording-state", RecordingState::Ready);
         update_overlay(app, &RecordingState::Ready);
         Ok(())

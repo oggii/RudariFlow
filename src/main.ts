@@ -138,7 +138,7 @@ async function loadSettings() {
   setRecordingMode(currentSettings.recordingMode);
 
   // Hotkey
-  hotkeyText.textContent = currentSettings.hotkey.replace("CmdOrCtrl", "Cmd");
+  renderHotkey(currentSettings.hotkey);
 }
 
 function setEngine(engine: string) {
@@ -341,7 +341,8 @@ listen<DownloadProgress>("download-progress", (event) => {
 let capturing = false;
 
 function renderHotkey(combo: string) {
-  hotkeyText.textContent = combo.replace("CmdOrCtrl", "Cmd");
+  const isMac = navigator.userAgent.includes("Mac");
+  hotkeyText.textContent = combo.replace("CmdOrCtrl", isMac ? "Cmd" : "Ctrl");
 }
 
 function keyEventToCombo(e: KeyboardEvent): string | null {
@@ -357,7 +358,10 @@ function keyEventToCombo(e: KeyboardEvent): string | null {
   // Normalize key name to Tauri shortcut format
   let key = k;
   if (key === " ") key = "Space";
-  else if (key.length === 1) key = key.toUpperCase();
+  else if (/^[a-z]$/i.test(key)) key = key.toUpperCase();
+  // Digits and punctuation: e.key changes with Shift ("!" instead of "1")
+  // and with the layout (umlauts), so use the physical code (Digit1, Minus).
+  else if (key.length === 1) key = e.code;
   // Function keys, arrows, etc. already match (F1, ArrowLeft, ...)
   return [...mods, key].join("+");
 }
@@ -365,6 +369,8 @@ function keyEventToCombo(e: KeyboardEvent): string | null {
 function startCapture() {
   if (capturing) return;
   capturing = true;
+  // Release the global hotkey so pressing the current chord reaches this window.
+  invoke("set_hotkey_paused", { paused: true }).catch(console.error);
   hotkeyBtn.classList.add("capturing");
   hotkeyText.textContent = t("hotkey_press_keys");
   window.addEventListener("keydown", onCaptureKey, true);
@@ -377,6 +383,7 @@ function stopCapture() {
   hotkeyBtn.classList.remove("capturing");
   window.removeEventListener("keydown", onCaptureKey, true);
   window.removeEventListener("mousedown", onOutsideClick, true);
+  invoke("set_hotkey_paused", { paused: false }).catch(console.error);
   renderHotkey(currentSettings.hotkey);
 }
 
@@ -389,6 +396,7 @@ async function onCaptureKey(e: KeyboardEvent) {
   }
   const combo = keyEventToCombo(e);
   if (!combo) return; // wait for a non-modifier key
+  window.removeEventListener("keydown", onCaptureKey, true);
   try {
     await invoke("change_hotkey", { newHotkey: combo });
     currentSettings.hotkey = combo;

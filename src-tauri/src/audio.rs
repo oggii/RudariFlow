@@ -1,9 +1,23 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{WavSpec, WavWriter};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::path::PathBuf;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
+
+use crate::startup_log;
+
+/// Lock a mutex even if a previous holder panicked. A poisoned lock would
+/// otherwise make every later hotkey press panic silently.
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Upper bound for opening the input stream. USB audio interfaces that Windows
+/// has selectively suspended can take seconds to wake, or never answer.
+const MIC_OPEN_TIMEOUT: Duration = Duration::from_secs(6);
+const MIC_RETRY_DELAY: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MicDevice {
@@ -56,81 +70,75 @@ impl AudioRecorder {
         }
     }
 
+    /// Open the microphone and start capturing. The device work runs on a
+    /// dedicated thread bounded by MIC_OPEN_TIMEOUT so a sleeping or wedged
+    /// audio device can never block the hotkey path indefinitely.
     pub fn start(&mut self, app: &AppHandle, mic_name: &str) -> Result<(), String> {
-        // Clear any leftover samples from previous recording
-        self.samples.lock().unwrap().clear();
+        self.release_stream();
+        // Fresh buffer per recording: a late callback from a previous stream
+        // that is still shutting down cannot leak into this one.
+        self.samples = Arc::new(Mutex::new(Vec::new()));
 
-        let host = cpal::default_host();
-
-        let device = if mic_name == "default" {
-            host.default_input_device()
-                .ok_or("No default input device found")?
-        } else {
-            host.input_devices()
-                .map_err(|e| e.to_string())?
-                .find(|d| d.name().map(|n| n == mic_name).unwrap_or(false))
-                .ok_or(format!("Microphone '{}' not found", mic_name))?
-        };
-
-        // Use the device's default config instead of forcing 16kHz
-        let default_config = device
-            .default_input_config()
-            .map_err(|e| format!("Failed to get default input config: {}", e))?;
-
-        let sample_rate = default_config.sample_rate().0;
-        let channels = default_config.channels();
-
-        println!("[RudariFlow] Mic config: {}Hz, {} channels", sample_rate, channels);
-
-        self.source_sample_rate = sample_rate;
-        self.source_channels = channels;
-
-        let config = cpal::StreamConfig {
-            channels,
-            sample_rate: cpal::SampleRate(sample_rate),
-            buffer_size: cpal::BufferSize::Default,
-        };
-
+        let (tx, rx) = std::sync::mpsc::channel();
         let samples = self.samples.clone();
         let app_handle = app.clone();
-        let last_emit_ms = Arc::new(AtomicU64::new(0));
-        let start = std::time::Instant::now();
-        let stream = device
-            .build_input_stream(
-                &config,
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    let mut buf = samples.lock().unwrap();
-                    buf.extend_from_slice(data);
-                    drop(buf);
-
-                    let now_ms = start.elapsed().as_millis() as u64;
-                    let last = last_emit_ms.load(Ordering::Relaxed);
-                    if now_ms.saturating_sub(last) >= 33 {
-                        last_emit_ms.store(now_ms, Ordering::Relaxed);
-                        // RMS over this chunk (mono mix if multi-channel).
-                        let sum_sq: f32 = data.iter().map(|s| s * s).sum();
-                        let rms = (sum_sq / data.len().max(1) as f32).sqrt();
-                        // Boost so quiet voice still moves the meter; cap at 1.
-                        let level = (rms * 4.0).min(1.0);
-                        let _ = app_handle.emit("audio-level", level);
-                    }
-                },
-                |err| {
-                    eprintln!("[RudariFlow] Audio stream error: {}", err);
-                },
-                None,
-            )
+        let mic = mic_name.to_string();
+        std::thread::Builder::new()
+            .name("rf-mic-open".into())
+            .spawn(move || {
+                let mut result = open_stream(&app_handle, &mic, samples.clone());
+                if let Err(e) = &result {
+                    startup_log::log(&format!("[audio] open failed ({}), retrying", e));
+                    std::thread::sleep(MIC_RETRY_DELAY);
+                    result = open_stream(&app_handle, &mic, samples.clone());
+                }
+                if result.is_err() && mic != "default" {
+                    startup_log::log(&format!(
+                        "[audio] '{}' unavailable, falling back to default input",
+                        mic
+                    ));
+                    result = open_stream(&app_handle, "default", samples);
+                }
+                // If the caller already timed out, the stream comes back in the
+                // send error and is dropped here, closing the device.
+                let _ = tx.send(result);
+            })
             .map_err(|e| e.to_string())?;
 
-        stream.play().map_err(|e| e.to_string())?;
-        self.stream = Some(SendStream(stream));
-        println!("[RudariFlow] Audio recording started");
+        let opened = match rx.recv_timeout(MIC_OPEN_TIMEOUT) {
+            Ok(r) => r?,
+            Err(_) => {
+                return Err(format!(
+                    "Microphone '{}' did not respond within {} s",
+                    mic_name,
+                    MIC_OPEN_TIMEOUT.as_secs()
+                ))
+            }
+        };
+
+        self.source_sample_rate = opened.sample_rate;
+        self.source_channels = opened.channels;
+        self.stream = Some(opened.stream);
+        startup_log::log(&format!(
+            "[audio] recording started on '{}' ({} Hz, {} ch)",
+            opened.device_name, opened.sample_rate, opened.channels
+        ));
         Ok(())
     }
 
+    /// Close the input stream off-thread. Dropping a WASAPI stream joins its
+    /// audio thread, which can stall on a misbehaving device.
+    fn release_stream(&mut self) {
+        if let Some(stream) = self.stream.take() {
+            let _ = std::thread::Builder::new()
+                .name("rf-mic-close".into())
+                .spawn(move || drop(stream));
+        }
+    }
+
     pub fn discard(&mut self) {
-        self.stream = None;
-        self.samples.lock().unwrap().clear();
+        self.release_stream();
+        lock(&self.samples).clear();
         println!("[RudariFlow] Audio recording discarded");
     }
 
@@ -138,10 +146,10 @@ impl AudioRecorder {
     /// and resample to 16 kHz. Returns the prepared sample buffer or
     /// `Err("no_speech")` if the entire recording was silence.
     pub fn stop_and_take_samples(&mut self) -> Result<Vec<f32>, String> {
-        self.stream = None;
+        self.release_stream();
         println!("[RudariFlow] Audio recording stopped");
 
-        let samples = self.samples.lock().unwrap();
+        let samples = lock(&self.samples);
         if samples.is_empty() {
             return Err("No audio captured".to_string());
         }
@@ -156,7 +164,7 @@ impl AudioRecorder {
             samples.clone()
         };
         drop(samples);
-        self.samples.lock().unwrap().clear();
+        lock(&self.samples).clear();
 
         let trimmed: Vec<f32> = match trim_silence(&mono, self.source_sample_rate) {
             Some((start, end)) => mono[start..end].to_vec(),
@@ -184,6 +192,82 @@ impl AudioRecorder {
         samples_to_wav(&samples, output_path)?;
         Ok(output_path.clone())
     }
+}
+
+struct OpenedStream {
+    stream: SendStream,
+    device_name: String,
+    sample_rate: u32,
+    channels: u16,
+}
+
+fn open_stream(
+    app: &AppHandle,
+    mic_name: &str,
+    samples: Arc<Mutex<Vec<f32>>>,
+) -> Result<OpenedStream, String> {
+    let host = cpal::default_host();
+
+    let device = if mic_name == "default" {
+        host.default_input_device()
+            .ok_or("No default input device found")?
+    } else {
+        host.input_devices()
+            .map_err(|e| e.to_string())?
+            .find(|d| d.name().map(|n| n == mic_name).unwrap_or(false))
+            .ok_or(format!("Microphone '{}' not found", mic_name))?
+    };
+    let device_name = device.name().unwrap_or_else(|_| mic_name.to_string());
+
+    // Use the device's default config instead of forcing 16kHz
+    let default_config = device
+        .default_input_config()
+        .map_err(|e| format!("Failed to get default input config: {}", e))?;
+
+    let sample_rate = default_config.sample_rate().0;
+    let channels = default_config.channels();
+
+    let config = cpal::StreamConfig {
+        channels,
+        sample_rate: cpal::SampleRate(sample_rate),
+        buffer_size: cpal::BufferSize::Default,
+    };
+
+    let app_handle = app.clone();
+    let last_emit_ms = Arc::new(AtomicU64::new(0));
+    let start = std::time::Instant::now();
+    let stream = device
+        .build_input_stream(
+            &config,
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                lock(&samples).extend_from_slice(data);
+
+                let now_ms = start.elapsed().as_millis() as u64;
+                let last = last_emit_ms.load(Ordering::Relaxed);
+                if now_ms.saturating_sub(last) >= 33 {
+                    last_emit_ms.store(now_ms, Ordering::Relaxed);
+                    // RMS over this chunk (mono mix if multi-channel).
+                    let sum_sq: f32 = data.iter().map(|s| s * s).sum();
+                    let rms = (sum_sq / data.len().max(1) as f32).sqrt();
+                    // Boost so quiet voice still moves the meter; cap at 1.
+                    let level = (rms * 4.0).min(1.0);
+                    let _ = app_handle.emit("audio-level", level);
+                }
+            },
+            |err| {
+                startup_log::log(&format!("[audio] stream error: {}", err));
+            },
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+
+    stream.play().map_err(|e| e.to_string())?;
+    Ok(OpenedStream {
+        stream: SendStream(stream),
+        device_name,
+        sample_rate,
+        channels,
+    })
 }
 
 /// Write a `Vec<f32>` of 16 kHz mono samples as a 16-bit PCM WAV.
