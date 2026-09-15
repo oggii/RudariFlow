@@ -30,7 +30,7 @@ Made by [oggi](https://0ggi.ch).
 - Mehrere Whisper-Modelle wählbar: tiny → large-v3-turbo, mit Auto-Download bei Auswahl
 - Sprachen: Auto-Erkennung oder fest 14 Sprachen (DE, EN, FR, IT, ES, …)
 - Push-to-Talk **und** Toggle-Modi
-- Konfigurierbarer globaler Hotkey
+- Konfigurierbarer globaler Hotkey, auch Maus-Seitentasten (Maus 4 / Maus 5, allein oder mit Strg/Umschalt/Alt/Win). Eine belegte Seitentaste wird abgefangen und löst in anderen Programmen kein „Zurück“/„Vorwärts“ mehr aus
 - Schwebende Aufnahme-Pille mit Live-Wellenform und Cancel-Button
 - Auto-Einfügen via Tastatur-Simulation (kompatibel mit allen Anwendungen)
 - System-Tray-Icon — X minimiert in den Tray statt Beenden

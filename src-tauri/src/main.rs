@@ -10,6 +10,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use rudariflow_lib::audio;
 use rudariflow_lib::downloader;
+use rudariflow_lib::mouse_hotkey;
 use rudariflow_lib::recorder::{Recorder, RecordingState};
 use rudariflow_lib::settings::Settings;
 use rudariflow_lib::startup_log;
@@ -135,13 +136,12 @@ fn change_hotkey(
     new_hotkey: String,
 ) -> Result<(), String> {
     let current = state.settings.lock().unwrap().hotkey.clone();
-    let gs = app.global_shortcut();
     if new_hotkey != current {
         // Register the new chord before dropping the old one, so a rejected
         // chord (invalid name, taken by another app) leaves the old one working.
         register_hotkey(&app, &new_hotkey)?;
-        let _ = gs.unregister(current.as_str());
-    } else if !gs.is_registered(current.as_str()) {
+        unregister_hotkey(&app, &current);
+    } else if !hotkey_is_registered(&app, &current) {
         register_hotkey(&app, &new_hotkey)?;
     }
     startup_log::log(&format!("[hotkey] changed {} -> {}", current, new_hotkey));
@@ -160,20 +160,42 @@ fn set_hotkey_paused(
     paused: bool,
 ) -> Result<(), String> {
     let current = state.settings.lock().unwrap().hotkey.clone();
-    let gs = app.global_shortcut();
     if paused {
-        let _ = gs.unregister(current.as_str());
+        unregister_hotkey(&app, &current);
         Ok(())
-    } else if gs.is_registered(current.as_str()) {
+    } else if hotkey_is_registered(&app, &current) {
         Ok(())
     } else {
         register_hotkey(&app, &current)
     }
 }
 
+/// Keyboard chords go through the global-shortcut plugin; mouse side buttons
+/// (`Mouse4`, `Mouse5`, optionally with modifiers) through a mouse hook.
 fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
-    let handle = app.clone();
     startup_log::log(&format!("[hotkey] registering {}", hotkey));
+    if let Some(binding) = mouse_hotkey::parse(hotkey) {
+        let handle = app.clone();
+        let label = hotkey.to_string();
+        return mouse_hotkey::register(
+            binding,
+            Box::new(move |pressed| {
+                startup_log::log(&format!(
+                    "[hotkey] {} {}",
+                    label,
+                    if pressed { "Pressed" } else { "Released" }
+                ));
+                on_hotkey(&handle, pressed);
+            }),
+        )
+        .map_err(|e| {
+            let msg = format!("Failed to register hotkey '{}': {}", hotkey, e);
+            startup_log::log(&format!("[hotkey] {}", msg));
+            msg
+        });
+    }
+
+    let handle = app.clone();
     app.global_shortcut()
         .on_shortcut(hotkey, move |_app, shortcut, event| {
             startup_log::log(&format!(
@@ -181,82 +203,98 @@ fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
                 shortcut.into_string(),
                 event.state
             ));
-            let handle = handle.clone();
-            let state = handle.state::<AppState>();
-            let mode = state.settings.lock().unwrap().recording_mode.clone();
-            println!("[RudariFlow] Recording mode: {}", mode);
-
-            match event.state {
-                ShortcutState::Pressed => {
-                    tauri::async_runtime::spawn(async move {
-                        let state = handle.state::<AppState>();
-                        // Background warmup: kick off model load in parallel
-                        // with audio capture. Single-flight via the engine's
-                        // mutex; ignores errors here — they surface at
-                        // transcription time.
-                        let s = state.settings.lock().unwrap().clone();
-                        if s.engine == "local" {
-                            let model_path = state
-                                .app_dir
-                                .join(rudariflow_lib::whisper_engine::model_filename(
-                                    &s.whisper_model,
-                                ));
-                            if model_path.exists() {
-                                let engine = state.whisper_engine.clone();
-                                let backend = s.gpu_backend.clone();
-                                tauri::async_runtime::spawn_blocking(move || {
-                                    if let Err(e) = engine.ensure_loaded(&model_path, &backend) {
-                                        eprintln!("[RudariFlow] warmup failed: {}", e);
-                                    }
-                                });
-                            }
-                        }
-                        match mode.as_str() {
-                            "toggle" => match do_toggle_recording(&handle, state.inner()).await {
-                                Ok(result) => println!("[RudariFlow] Toggle result: {}", result),
-                                Err(e) => startup_log::log(&format!("[hotkey] toggle error: {}", e)),
-                            },
-                            "push-to-talk" => {
-                                let current = state.recorder.get_state();
-                                println!("[RudariFlow] PTT mode, current state: {:?}", current);
-                                if current == RecordingState::Ready {
-                                    let mic = state.settings.lock().unwrap().microphone.clone();
-                                    match state.recorder.start_recording(&handle, &mic) {
-                                        Ok(_) => println!("[RudariFlow] Recording started"),
-                                        Err(e) => startup_log::log(&format!("[hotkey] start error: {}", e)),
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    });
-                }
-                ShortcutState::Released => {
-                    if mode == "push-to-talk" {
-                        tauri::async_runtime::spawn(async move {
-                            let state = handle.state::<AppState>();
-                            let current = state.recorder.get_state();
-                            if current == RecordingState::Recording {
-                                let settings = state.settings.lock().unwrap().clone();
-                                match state
-                                    .recorder
-                                    .stop_and_transcribe(&handle, &settings, &state.app_dir, &state.whisper_engine)
-                                    .await
-                                {
-                                    Ok(result) => println!("[RudariFlow] Transcription: {}", result),
-                                    Err(e) => eprintln!("[RudariFlow] Transcription error: {}", e),
-                                }
-                            }
-                        });
-                    }
-                }
-            }
+            on_hotkey(&handle, event.state == ShortcutState::Pressed);
         })
         .map_err(|e| {
             let msg = format!("Failed to register hotkey '{}': {}", hotkey, e);
             startup_log::log(&format!("[hotkey] {}", msg));
             msg
         })
+}
+
+fn unregister_hotkey(app: &AppHandle, hotkey: &str) {
+    match mouse_hotkey::parse(hotkey) {
+        Some(binding) => mouse_hotkey::unregister(binding),
+        None => {
+            let _ = app.global_shortcut().unregister(hotkey);
+        }
+    }
+}
+
+fn hotkey_is_registered(app: &AppHandle, hotkey: &str) -> bool {
+    match mouse_hotkey::parse(hotkey) {
+        Some(binding) => mouse_hotkey::is_registered(binding),
+        None => app.global_shortcut().is_registered(hotkey),
+    }
+}
+
+/// Shared press/release handling for keyboard and mouse hotkeys.
+fn on_hotkey(handle: &AppHandle, pressed: bool) {
+    let handle = handle.clone();
+    let state = handle.state::<AppState>();
+    let mode = state.settings.lock().unwrap().recording_mode.clone();
+    println!("[RudariFlow] Recording mode: {}", mode);
+
+    if pressed {
+        tauri::async_runtime::spawn(async move {
+            let state = handle.state::<AppState>();
+            // Background warmup: kick off model load in parallel
+            // with audio capture. Single-flight via the engine's
+            // mutex; ignores errors here — they surface at
+            // transcription time.
+            let s = state.settings.lock().unwrap().clone();
+            if s.engine == "local" {
+                let model_path = state
+                    .app_dir
+                    .join(rudariflow_lib::whisper_engine::model_filename(
+                        &s.whisper_model,
+                    ));
+                if model_path.exists() {
+                    let engine = state.whisper_engine.clone();
+                    let backend = s.gpu_backend.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        if let Err(e) = engine.ensure_loaded(&model_path, &backend) {
+                            eprintln!("[RudariFlow] warmup failed: {}", e);
+                        }
+                    });
+                }
+            }
+            match mode.as_str() {
+                "toggle" => match do_toggle_recording(&handle, state.inner()).await {
+                    Ok(result) => println!("[RudariFlow] Toggle result: {}", result),
+                    Err(e) => startup_log::log(&format!("[hotkey] toggle error: {}", e)),
+                },
+                "push-to-talk" => {
+                    let current = state.recorder.get_state();
+                    println!("[RudariFlow] PTT mode, current state: {:?}", current);
+                    if current == RecordingState::Ready {
+                        let mic = state.settings.lock().unwrap().microphone.clone();
+                        match state.recorder.start_recording(&handle, &mic) {
+                            Ok(_) => println!("[RudariFlow] Recording started"),
+                            Err(e) => startup_log::log(&format!("[hotkey] start error: {}", e)),
+                        }
+                    }
+                }
+                _ => {}
+            }
+        });
+    } else if mode == "push-to-talk" {
+        tauri::async_runtime::spawn(async move {
+            let state = handle.state::<AppState>();
+            let current = state.recorder.get_state();
+            if current == RecordingState::Recording {
+                let settings = state.settings.lock().unwrap().clone();
+                match state
+                    .recorder
+                    .stop_and_transcribe(&handle, &settings, &state.app_dir, &state.whisper_engine)
+                    .await
+                {
+                    Ok(result) => println!("[RudariFlow] Transcription: {}", result),
+                    Err(e) => eprintln!("[RudariFlow] Transcription error: {}", e),
+                }
+            }
+        });
+    }
 }
 
 /// Shared logic for toggle recording, used by both the Tauri command and hotkey handler.

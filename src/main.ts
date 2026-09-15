@@ -371,15 +371,30 @@ let capturing = false;
 
 function renderHotkey(combo: string) {
   const isMac = navigator.userAgent.includes("Mac");
-  hotkeyText.textContent = combo.replace("CmdOrCtrl", isMac ? "Cmd" : "Ctrl");
+  hotkeyText.textContent = combo
+    .replace("CmdOrCtrl", isMac ? "Cmd" : "Ctrl")
+    .replace("Mouse4", t("hotkey_mouse4"))
+    .replace("Mouse5", t("hotkey_mouse5"));
 }
 
-function keyEventToCombo(e: KeyboardEvent): string | null {
+function modifierTokens(e: KeyboardEvent | MouseEvent): string[] {
   const mods: string[] = [];
   if (e.ctrlKey) mods.push("CmdOrCtrl");
   if (e.altKey) mods.push("Alt");
   if (e.shiftKey) mods.push("Shift");
   if (e.metaKey) mods.push("Super");
+  return mods;
+}
+
+/// Mouse side buttons: MouseEvent.button 3 = back (XBUTTON1), 4 = forward
+/// (XBUTTON2). They work alone or with modifiers.
+function mouseEventToCombo(e: MouseEvent): string | null {
+  const button = e.button === 3 ? "Mouse4" : e.button === 4 ? "Mouse5" : null;
+  return button ? [...modifierTokens(e), button].join("+") : null;
+}
+
+function keyEventToCombo(e: KeyboardEvent): string | null {
+  const mods = modifierTokens(e);
   // Ignore lone modifier keys
   const k = e.key;
   if (["Control", "Shift", "Alt", "Meta", "OS"].includes(k)) return null;
@@ -425,7 +440,12 @@ async function onCaptureKey(e: KeyboardEvent) {
   }
   const combo = keyEventToCombo(e);
   if (!combo) return; // wait for a non-modifier key
+  await applyCapturedCombo(combo);
+}
+
+async function applyCapturedCombo(combo: string) {
   window.removeEventListener("keydown", onCaptureKey, true);
+  window.removeEventListener("mousedown", onOutsideClick, true);
   try {
     await invoke("change_hotkey", { newHotkey: combo });
     currentSettings.hotkey = combo;
@@ -438,8 +458,20 @@ async function onCaptureKey(e: KeyboardEvent) {
 }
 
 function onOutsideClick(e: MouseEvent) {
+  const combo = mouseEventToCombo(e);
+  if (combo) {
+    e.preventDefault();
+    e.stopPropagation();
+    applyCapturedCombo(combo);
+    return;
+  }
   if (!hotkeyBtn.contains(e.target as Node)) stopCapture();
 }
+
+// Side buttons would otherwise trigger history navigation in the webview.
+window.addEventListener("mouseup", (e) => {
+  if (e.button === 3 || e.button === 4) e.preventDefault();
+});
 
 hotkeyBtn.addEventListener("click", startCapture);
 
