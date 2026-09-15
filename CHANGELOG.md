@@ -5,6 +5,55 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-09-15 - One build for NVIDIA, AMD and Intel GPUs
+
+### Added
+- **Vulkan backend next to CUDA.** whisper.cpp is compiled with both; AMD
+  Radeon (RX 6000 and newer) and Intel Arc are now GPU-accelerated instead of
+  running on the CPU.
+- **Runtime backend selection.** The app enumerates ggml's GPU devices and picks
+  CUDA on NVIDIA, otherwise Vulkan, otherwise CPU. If a backend fails to load,
+  Auto moves on to the next one.
+- GPU Backend setting: Auto / NVIDIA CUDA / Vulkan / CPU only, plus a line
+  showing the detected GPUs and which APIs they support.
+- `bench` example to compare GPU with and without flash attention, and CPU.
+
+### Changed
+- Flash attention per backend: on for CUDA, off for Vulkan. On an RX 6800 (no
+  cooperative-matrix support) large-v3-turbo took 910 ms with it vs 434 ms
+  without for 17.5 s of audio. Override with `RUDARIFLOW_FLASH_ATTN=1|0`.
+- Whisper uses up to 8 CPU threads on the GPU path too (log-mel extraction and
+  non-offloaded ops run on the CPU).
+- CUDA kernels built for compute 7.5/8.0/8.6/8.9/12.0 (RTX 20 to RTX 50) with
+  CUDA 12.8; RTX 50 no longer depends on PTX JIT.
+- The CUDA runtime (cudart, cuBLAS, cuBLASLt 12.8) and the Vulkan loader are
+  installed next to `rudariflow.exe`, where Windows resolves load-time imports.
+  Replaces the `binaries/cuda-runtime` folder and `SetDllDirectoryW`, which could
+  not satisfy load-time imports on machines without a CUDA Toolkit.
+- Model load logs the chosen backend and device to `startup.log`.
+
+### Fixed
+- **Hotkey stopped responding after idle.** Opening a USB audio interface that
+  Windows had suspended could block forever while the recorder state lock was
+  held. The microphone now opens on its own thread with a 6 s timeout, one
+  retry and a fallback to the default input; failures show "Microphone
+  unavailable" in the overlay.
+- **Changing the hotkey could leave no hotkey at all** when the new chord was
+  rejected. The new chord is registered before the old one is released, the
+  current chord is paused while capturing, and digits/punctuation use the
+  physical key code.
+- A panic during transcription can no longer leave the app stuck in
+  Transcribing; poisoned locks are recovered.
+- Hotkey presses, microphone and transcription errors are written to
+  `startup.log`.
+
+### Build
+- Prerequisites: CMake, LLVM (libclang), Vulkan SDK and CUDA Toolkit 12.x.
+  `scripts/setup-whisper.ps1` collects the runtime DLLs from CUDA_PATH and
+  System32. Set a short `CARGO_TARGET_DIR` (e.g. `C:\t\rf`); the nested Vulkan
+  shader build exceeds the Windows path limit under `src-tauri\target`.
+- Vulkan-only builds: `--no-default-features --features vulkan`.
+
 ## [0.4.0] — 2026-05-09 — Phase B: in-process whisper-rs
 
 Architectural shift from per-dictation `whisper-cli.exe` subprocess to in-process

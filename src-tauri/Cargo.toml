@@ -1,6 +1,6 @@
 [package]
 name = "rudariflow"
-version = "0.4.0"
+version = "0.5.0"
 description = "Sprache-zu-Text Diktier-App, lokal angetrieben von Whisper.cpp mit GPU-Beschleunigung"
 authors = ["oggi <info@0ggi.ch>"]
 edition = "2021"
@@ -8,6 +8,15 @@ edition = "2021"
 [lib]
 name = "rudariflow_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# GPU backends compiled into whisper.cpp. Release builds carry both and pick
+# at runtime: CUDA on NVIDIA, Vulkan on AMD / Intel (or NVIDIA without CUDA).
+# Without a CUDA Toolkit, build Vulkan only:
+#   --no-default-features --features vulkan
+default = ["cuda", "vulkan"]
+vulkan = ["whisper-rs/vulkan"]
+cuda = ["whisper-rs/cuda"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -27,11 +36,13 @@ dirs = "6"
 arboard = "3"
 futures-util = "0.3"
 tauri-plugin-autostart = "2.5.1"
-whisper-rs = { version = "0.16", features = ["cuda"] }
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_LibraryLoader"] }
+# raw-api re-exports whisper-rs-sys for ggml device enumeration.
+whisper-rs = { version = "0.16", features = ["raw-api"] }
 
 [[example]]
 name = "spike"
 path = "examples/spike.rs"
+
+[[example]]
+name = "bench"
+path = "examples/bench.rs"

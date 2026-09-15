@@ -236,8 +236,8 @@
       // since the overlay is a separate webview without access to the main
       // window's dictionary.
       const NOTICE_TEXT = {
-        en: { audio_empty: "No speech detected" },
-        de: { audio_empty: "Keine Sprache erkannt" },
+        en: { audio_empty: "No speech detected", mic_error: "Microphone unavailable" },
+        de: { audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar" },
       };
       function pickLang() {
         const nav = (navigator.language || "en").toLowerCase();
@@ -249,6 +249,11 @@
         const lang = pickLang();
         showNotice(NOTICE_TEXT[lang].audio_empty, 1500);
       }).then(() => diag("audio-empty listener registered"));
+
+      listen("mic-error", () => {
+        diag("mic-error received");
+        showNotice(NOTICE_TEXT[pickLang()].mic_error, 2400);
+      });
 
       document.getElementById("cancel").addEventListener("click", async (e) => {
         e.stopPropagation();

@@ -1,30 +1,132 @@
+use std::ffi::CStr;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
 
-/// Where the engine decides to run after probing the GPU.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BackendChoice {
-    Gpu,
-    Cpu,
+/// GPU API a ggml device belongs to. One build carries both backends, so an
+/// NVIDIA card shows up twice (CUDA0 and Vulkan0) and an AMD/Intel card once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum GpuApi {
+    Cuda,
+    Vulkan,
 }
 
-/// Decide which backend to attempt first based on the user's `gpuBackend`
-/// setting. The actual fallback after a failed GPU load is handled in
-/// `ensure_loaded`; this is just the initial intent.
-pub(crate) fn initial_backend_intent(requested: &str) -> BackendChoice {
-    match requested {
-        "cpu" => BackendChoice::Cpu,
-        _ => BackendChoice::Gpu, // "auto" and "cuda" both start by trying GPU
+impl GpuApi {
+    pub fn label(self) -> &'static str {
+        match self {
+            GpuApi::Cuda => "CUDA",
+            GpuApi::Vulkan => "Vulkan",
+        }
     }
 }
 
-/// Whether a `use_gpu=true` failure should fall back to CPU.
-/// Auto: yes. Explicit "cuda": no — surface the error to the user.
-pub(crate) fn should_fallback_on_gpu_failure(requested: &str) -> bool {
-    requested == "auto"
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GpuDevice {
+    /// Position among GPU-type devices, which is what whisper.cpp's
+    /// `gpu_device` parameter counts.
+    pub gpu_index: i32,
+    pub api: GpuApi,
+    pub name: String,
+}
+
+/// Backend a model is actually loaded on.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ActiveBackend {
+    Gpu(GpuDevice),
+    Cpu,
+}
+
+impl ActiveBackend {
+    fn label(&self) -> String {
+        match self {
+            ActiveBackend::Gpu(d) => format!("{} ({})", d.api.label(), d.name),
+            ActiveBackend::Cpu => "CPU".to_string(),
+        }
+    }
+}
+
+/// Enumerate GPU devices the same way whisper.cpp does when it resolves
+/// `gpu_device`, tagging each with its backend.
+pub fn list_gpu_devices() -> Vec<GpuDevice> {
+    use whisper_rs::whisper_rs_sys as sys;
+    let mut out = Vec::new();
+    // SAFETY: the ggml backend registry is process-global and initialised on
+    // first access; these calls only read device metadata.
+    unsafe {
+        let mut gpu_index = 0;
+        for i in 0..sys::ggml_backend_dev_count() {
+            let dev = sys::ggml_backend_dev_get(i);
+            let ty = sys::ggml_backend_dev_type(dev);
+            if ty != sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_GPU
+                && ty != sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_IGPU
+            {
+                continue;
+            }
+            let reg_name = CStr::from_ptr(sys::ggml_backend_reg_name(sys::ggml_backend_dev_backend_reg(dev)))
+                .to_string_lossy()
+                .into_owned();
+            let api = match reg_name.as_str() {
+                "CUDA" => Some(GpuApi::Cuda),
+                "Vulkan" => Some(GpuApi::Vulkan),
+                _ => None,
+            };
+            if let Some(api) = api {
+                let name = CStr::from_ptr(sys::ggml_backend_dev_description(dev))
+                    .to_string_lossy()
+                    .trim()
+                    .to_string();
+                out.push(GpuDevice { gpu_index, api, name });
+            }
+            gpu_index += 1;
+        }
+    }
+    out
+}
+
+/// Order of backends to try for the user's `gpuBackend` setting.
+/// `auto` prefers CUDA (fastest on NVIDIA), then Vulkan (AMD, Intel, or NVIDIA
+/// without a working CUDA runtime), then CPU. An explicit choice does not
+/// fall back, so a broken setup surfaces as an error instead of silently
+/// running slowly.
+pub(crate) fn backend_candidates(requested: &str, devices: &[GpuDevice]) -> Vec<ActiveBackend> {
+    let first = |api: GpuApi| {
+        devices
+            .iter()
+            .find(|d| d.api == api)
+            .cloned()
+            .map(ActiveBackend::Gpu)
+    };
+    match requested {
+        "cpu" => vec![ActiveBackend::Cpu],
+        "cuda" => first(GpuApi::Cuda).into_iter().collect(),
+        "vulkan" => first(GpuApi::Vulkan).into_iter().collect(),
+        _ => first(GpuApi::Cuda)
+            .into_iter()
+            .chain(first(GpuApi::Vulkan))
+            .chain(std::iter::once(ActiveBackend::Cpu))
+            .collect(),
+    }
+}
+
+/// Flash attention default per backend. On CUDA it is a free win. On Vulkan it
+/// only pays off with cooperative-matrix support (RX 7000+, Arc, RTX); on an
+/// RX 6800 (no matrix cores) large-v3-turbo ran 910 ms with it vs 434 ms
+/// without for 17.5 s of audio, so Vulkan defaults to off.
+/// Override with RUDARIFLOW_FLASH_ATTN=1 or =0.
+pub(crate) fn flash_attn_default(api: GpuApi, env_override: Option<&str>) -> bool {
+    match env_override {
+        Some("1") | Some("true") => true,
+        Some("0") | Some("false") => false,
+        _ => api == GpuApi::Cuda,
+    }
+}
+
+fn flash_attn_enabled(api: GpuApi) -> bool {
+    flash_attn_default(api, std::env::var("RUDARIFLOW_FLASH_ATTN").ok().as_deref())
 }
 
 /// CPU thread count for whisper inference. Mirrors the Phase C clamp.
+/// Also used on GPU: log-mel extraction and the ops the GPU backend does not
+/// offload still run on the CPU.
 pub(crate) fn cpu_thread_count() -> i32 {
     std::thread::available_parallelism()
         .map(|n| n.get() as i32)
@@ -41,25 +143,6 @@ pub fn model_download_url(model_size: &str) -> String {
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{}.bin",
         model_size
     )
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct LoadedModelKey {
-    pub model_path: PathBuf,
-    pub use_gpu: bool,
-}
-
-/// Whether a settings change requires reloading the model. Reload iff
-/// either the model file path or the GPU mode differs.
-pub(crate) fn needs_reload(prev: &LoadedModelKey, next: &LoadedModelKey) -> bool {
-    prev.model_path != next.model_path || prev.use_gpu != next.use_gpu
-}
-
-pub(crate) fn loaded_key(model_path: &Path, use_gpu: bool) -> LoadedModelKey {
-    LoadedModelKey {
-        model_path: model_path.to_path_buf(),
-        use_gpu,
-    }
 }
 
 use std::sync::Mutex;
@@ -82,7 +165,8 @@ struct EngineState {
 }
 
 struct Loaded {
-    key: LoadedModelKey,
+    model_path: PathBuf,
+    backend: ActiveBackend,
     ctx: WhisperContext,
 }
 
@@ -95,52 +179,56 @@ impl WhisperEngine {
 
     /// Drop the cached model. Next call reloads. Used when settings change.
     pub fn invalidate(&self) {
-        self.inner.lock().unwrap().loaded = None;
+        self.lock().loaded = None;
     }
 
-    /// Ensure a model is loaded for the given path and gpu mode. Returns
-    /// the actual `use_gpu` chosen (may differ from requested when "auto"
-    /// falls back to CPU after a failed GPU load).
-    pub fn ensure_loaded(&self, model_path: &Path, gpu_backend: &str) -> Result<bool, String> {
-        let intent = initial_backend_intent(gpu_backend);
-        let try_gpu_first = matches!(intent, BackendChoice::Gpu);
-        let allow_fallback = should_fallback_on_gpu_failure(gpu_backend);
+    fn lock(&self) -> std::sync::MutexGuard<'_, EngineState> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
 
-        let mut state = self.inner.lock().unwrap();
+    /// Ensure a model is loaded for the given path and `gpuBackend` setting.
+    /// Returns the backend it ended up on. Changing the setting invalidates
+    /// the engine (see `save_settings`), so a resident model for the same
+    /// path is reused as is.
+    pub fn ensure_loaded(&self, model_path: &Path, gpu_backend: &str) -> Result<ActiveBackend, String> {
+        let mut state = self.lock();
 
         if let Some(existing) = &state.loaded {
-            let want_gpu = try_gpu_first;
-            if existing.key.model_path == model_path
-                && (existing.key.use_gpu == want_gpu || !allow_fallback)
-            {
-                return Ok(existing.key.use_gpu);
+            if existing.model_path == model_path {
+                return Ok(existing.backend.clone());
             }
             state.loaded = None;
         }
 
-        let first_try_use_gpu = try_gpu_first;
-        match load_context(model_path, first_try_use_gpu) {
-            Ok(ctx) => {
-                state.loaded = Some(Loaded {
-                    key: loaded_key(model_path, first_try_use_gpu),
-                    ctx,
-                });
-                Ok(first_try_use_gpu)
-            }
-            Err(e) if allow_fallback && first_try_use_gpu => {
-                eprintln!(
-                    "[RudariFlow] GPU load failed ({}); falling back to CPU.",
-                    e
-                );
-                let ctx = load_context(model_path, false)?;
-                state.loaded = Some(Loaded {
-                    key: loaded_key(model_path, false),
-                    ctx,
-                });
-                Ok(false)
-            }
-            Err(e) => Err(e),
+        let devices = list_gpu_devices();
+        let candidates = backend_candidates(gpu_backend, &devices);
+        if candidates.is_empty() {
+            let wanted = if gpu_backend == "cuda" { "NVIDIA CUDA" } else { "Vulkan" };
+            return Err(format!("No {} GPU found (detected: {:?})", wanted, devices));
         }
+
+        let mut last_err = String::new();
+        for backend in candidates {
+            match load_context(model_path, &backend) {
+                Ok(ctx) => {
+                    state.loaded = Some(Loaded {
+                        model_path: model_path.to_path_buf(),
+                        backend: backend.clone(),
+                        ctx,
+                    });
+                    return Ok(backend);
+                }
+                Err(e) => {
+                    crate::startup_log::log(&format!(
+                        "[engine] load on {} failed: {}",
+                        backend.label(),
+                        e
+                    ));
+                    last_err = e;
+                }
+            }
+        }
+        Err(last_err)
     }
 
     /// Run a one-shot transcription on the provided 16 kHz mono samples.
@@ -153,7 +241,7 @@ impl WhisperEngine {
         language: &str,
         custom_prompt: &str,
     ) -> Result<String, String> {
-        let state = self.inner.lock().unwrap();
+        let state = self.lock();
         let loaded = state
             .loaded
             .as_ref()
@@ -173,9 +261,7 @@ impl WhisperEngine {
         params.set_temperature(0.0);
         params.set_single_segment(false);
 
-        if !loaded.key.use_gpu {
-            params.set_n_threads(cpu_thread_count());
-        }
+        params.set_n_threads(cpu_thread_count());
 
         let prompt = custom_prompt.trim();
         if !prompt.is_empty() {
@@ -222,16 +308,33 @@ impl Default for WhisperEngine {
     }
 }
 
-fn load_context(model_path: &Path, use_gpu: bool) -> Result<WhisperContext, String> {
+fn load_context(model_path: &Path, backend: &ActiveBackend) -> Result<WhisperContext, String> {
     let mut params = WhisperContextParameters::default();
-    params.use_gpu = use_gpu;
-    params.flash_attn = use_gpu; // free perf on Ampere+; degrades elsewhere
+    match backend {
+        ActiveBackend::Gpu(dev) => {
+            params.use_gpu = true;
+            params.gpu_device = dev.gpu_index;
+            params.flash_attn = flash_attn_enabled(dev.api);
+        }
+        ActiveBackend::Cpu => {
+            params.use_gpu = false;
+            params.flash_attn = false;
+        }
+    }
+    let flash_attn = params.flash_attn;
 
     let path_str = model_path
         .to_str()
         .ok_or_else(|| "model path is not valid UTF-8".to_string())?;
-    WhisperContext::new_with_params(path_str, params)
-        .map_err(|e| format!("WhisperContext::new (use_gpu={}): {e:?}", use_gpu))
+    let ctx = WhisperContext::new_with_params(path_str, params)
+        .map_err(|e| format!("WhisperContext::new on {}: {e:?}", backend.label()))?;
+    crate::startup_log::log(&format!(
+        "whisper model loaded: {:?} backend={} flash_attn={}",
+        model_path,
+        backend.label(),
+        flash_attn
+    ));
+    Ok(ctx)
 }
 
 fn collect_segments(state: &WhisperState) -> Result<String, String> {
@@ -249,32 +352,61 @@ fn collect_segments(state: &WhisperState) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn intent_for_cpu_is_cpu() {
-        assert_eq!(initial_backend_intent("cpu"), BackendChoice::Cpu);
+    fn dev(gpu_index: i32, api: GpuApi) -> GpuDevice {
+        GpuDevice { gpu_index, api, name: format!("{api:?}{gpu_index}") }
+    }
+
+    fn nvidia() -> Vec<GpuDevice> {
+        // CUDA registers before Vulkan, so the same RTX card is index 0 and 1.
+        vec![dev(0, GpuApi::Cuda), dev(1, GpuApi::Vulkan)]
+    }
+
+    fn amd() -> Vec<GpuDevice> {
+        vec![dev(0, GpuApi::Vulkan)]
     }
 
     #[test]
-    fn intent_for_cuda_is_gpu() {
-        assert_eq!(initial_backend_intent("cuda"), BackendChoice::Gpu);
+    fn auto_prefers_cuda_then_vulkan_then_cpu() {
+        let c = backend_candidates("auto", &nvidia());
+        assert_eq!(
+            c,
+            vec![
+                ActiveBackend::Gpu(dev(0, GpuApi::Cuda)),
+                ActiveBackend::Gpu(dev(1, GpuApi::Vulkan)),
+                ActiveBackend::Cpu
+            ]
+        );
     }
 
     #[test]
-    fn intent_for_auto_is_gpu() {
-        assert_eq!(initial_backend_intent("auto"), BackendChoice::Gpu);
+    fn auto_on_amd_uses_vulkan_then_cpu() {
+        let c = backend_candidates("auto", &amd());
+        assert_eq!(c, vec![ActiveBackend::Gpu(dev(0, GpuApi::Vulkan)), ActiveBackend::Cpu]);
     }
 
     #[test]
-    fn intent_for_unknown_is_gpu() {
-        // Defensive: unknown strings (future settings) attempt GPU first.
-        assert_eq!(initial_backend_intent(""), BackendChoice::Gpu);
+    fn auto_without_gpu_is_cpu() {
+        assert_eq!(backend_candidates("auto", &[]), vec![ActiveBackend::Cpu]);
+        // Unknown or legacy values behave like auto.
+        assert_eq!(backend_candidates("gpu", &[]), vec![ActiveBackend::Cpu]);
     }
 
     #[test]
-    fn fallback_only_on_auto() {
-        assert!(should_fallback_on_gpu_failure("auto"));
-        assert!(!should_fallback_on_gpu_failure("cuda"));
-        assert!(!should_fallback_on_gpu_failure("cpu"));
+    fn explicit_choice_does_not_fall_back() {
+        assert_eq!(
+            backend_candidates("vulkan", &nvidia()),
+            vec![ActiveBackend::Gpu(dev(1, GpuApi::Vulkan))]
+        );
+        assert!(backend_candidates("cuda", &amd()).is_empty());
+        assert_eq!(backend_candidates("cpu", &nvidia()), vec![ActiveBackend::Cpu]);
+    }
+
+    #[test]
+    fn flash_attn_defaults_per_api_and_env_wins() {
+        assert!(flash_attn_default(GpuApi::Cuda, None));
+        assert!(!flash_attn_default(GpuApi::Vulkan, None));
+        assert!(flash_attn_default(GpuApi::Vulkan, Some("1")));
+        assert!(!flash_attn_default(GpuApi::Cuda, Some("0")));
     }
 
     #[test]
@@ -295,27 +427,6 @@ mod tests {
             model_download_url("small"),
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
         );
-    }
-
-    #[test]
-    fn needs_reload_on_path_change() {
-        let a = loaded_key(Path::new("/m/small.bin"), true);
-        let b = loaded_key(Path::new("/m/medium.bin"), true);
-        assert!(needs_reload(&a, &b));
-    }
-
-    #[test]
-    fn needs_reload_on_gpu_mode_change() {
-        let a = loaded_key(Path::new("/m/small.bin"), true);
-        let b = loaded_key(Path::new("/m/small.bin"), false);
-        assert!(needs_reload(&a, &b));
-    }
-
-    #[test]
-    fn no_reload_when_identical() {
-        let a = loaded_key(Path::new("/m/small.bin"), true);
-        let b = loaded_key(Path::new("/m/small.bin"), true);
-        assert!(!needs_reload(&a, &b));
     }
 
     #[test]

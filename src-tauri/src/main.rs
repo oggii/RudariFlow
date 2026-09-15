@@ -92,6 +92,15 @@ fn cancel_recording(
     state.recorder.cancel_recording(&app)
 }
 
+/// GPUs whisper.cpp can use, for the settings hint. Async so backend
+/// initialisation (CUDA / Vulkan device probing) stays off the main thread.
+#[tauri::command]
+async fn detect_gpus() -> Vec<rudariflow_lib::whisper_engine::GpuDevice> {
+    tauri::async_runtime::spawn_blocking(rudariflow_lib::whisper_engine::list_gpu_devices)
+        .await
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 fn diag_log(source: String, message: String) {
     startup_log::log(&format!("[{}] {}", source, message));
@@ -127,23 +136,51 @@ fn change_hotkey(
 ) -> Result<(), String> {
     let current = state.settings.lock().unwrap().hotkey.clone();
     let gs = app.global_shortcut();
-    let _ = gs.unregister(current.as_str());
-    register_hotkey(&app, &new_hotkey)?;
+    if new_hotkey != current {
+        // Register the new chord before dropping the old one, so a rejected
+        // chord (invalid name, taken by another app) leaves the old one working.
+        register_hotkey(&app, &new_hotkey)?;
+        let _ = gs.unregister(current.as_str());
+    } else if !gs.is_registered(current.as_str()) {
+        register_hotkey(&app, &new_hotkey)?;
+    }
+    startup_log::log(&format!("[hotkey] changed {} -> {}", current, new_hotkey));
     let mut settings = state.settings.lock().unwrap();
     settings.hotkey = new_hotkey;
     settings.save(&state.app_dir)?;
     Ok(())
 }
 
+/// Temporarily release the global hotkey while the settings UI captures a new
+/// chord; a registered chord never reaches the webview as a keydown.
+#[tauri::command]
+fn set_hotkey_paused(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    paused: bool,
+) -> Result<(), String> {
+    let current = state.settings.lock().unwrap().hotkey.clone();
+    let gs = app.global_shortcut();
+    if paused {
+        let _ = gs.unregister(current.as_str());
+        Ok(())
+    } else if gs.is_registered(current.as_str()) {
+        Ok(())
+    } else {
+        register_hotkey(&app, &current)
+    }
+}
+
 fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
     let handle = app.clone();
-    println!("[RudariFlow] Registering global shortcut: {}", hotkey);
+    startup_log::log(&format!("[hotkey] registering {}", hotkey));
     app.global_shortcut()
         .on_shortcut(hotkey, move |_app, shortcut, event| {
-            println!(
-                "[RudariFlow] Hotkey event: {:?} state={:?}",
-                shortcut, event.state
-            );
+            startup_log::log(&format!(
+                "[hotkey] {} {:?}",
+                shortcut.into_string(),
+                event.state
+            ));
             let handle = handle.clone();
             let state = handle.state::<AppState>();
             let mode = state.settings.lock().unwrap().recording_mode.clone();
@@ -177,7 +214,7 @@ fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
                         match mode.as_str() {
                             "toggle" => match do_toggle_recording(&handle, state.inner()).await {
                                 Ok(result) => println!("[RudariFlow] Toggle result: {}", result),
-                                Err(e) => eprintln!("[RudariFlow] Toggle error: {}", e),
+                                Err(e) => startup_log::log(&format!("[hotkey] toggle error: {}", e)),
                             },
                             "push-to-talk" => {
                                 let current = state.recorder.get_state();
@@ -186,7 +223,7 @@ fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
                                     let mic = state.settings.lock().unwrap().microphone.clone();
                                     match state.recorder.start_recording(&handle, &mic) {
                                         Ok(_) => println!("[RudariFlow] Recording started"),
-                                        Err(e) => eprintln!("[RudariFlow] Start recording error: {}", e),
+                                        Err(e) => startup_log::log(&format!("[hotkey] start error: {}", e)),
                                     }
                                 }
                             }
@@ -217,7 +254,7 @@ fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
         })
         .map_err(|e| {
             let msg = format!("Failed to register hotkey '{}': {}", hotkey, e);
-            eprintln!("[RudariFlow] {}", msg);
+            startup_log::log(&format!("[hotkey] {}", msg));
             msg
         })
 }
@@ -279,7 +316,9 @@ fn main() {
             toggle_recording,
             cancel_recording,
             change_hotkey,
+            set_hotkey_paused,
             set_autostart,
+            detect_gpus,
             diag_log,
         ])
         .on_window_event(|window, event| {
@@ -293,38 +332,8 @@ fn main() {
         })
         .setup(move |app| {
             startup_log::log("setup() entered");
-            // Add the bundled CUDA runtime DLLs to the Windows DLL search path
-            // so whisper-rs (cuda feature) can load cudart, cublas, etc.
-            #[cfg(windows)]
-            {
-                if let Ok(rd) = app.path().resource_dir() {
-                    let cuda_dir = rd.join("binaries").join("cuda-runtime");
-                    if cuda_dir.exists() {
-                        use std::os::windows::ffi::OsStrExt;
-                        use std::ffi::OsStr;
-                        let wide: Vec<u16> = OsStr::new(&cuda_dir)
-                            .encode_wide()
-                            .chain(std::iter::once(0))
-                            .collect();
-                        let ok = unsafe {
-                            windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW(wide.as_ptr())
-                        };
-                        if ok == 0 {
-                            startup_log::log("SetDllDirectoryW failed");
-                        } else {
-                            startup_log::log(&format!(
-                                "SetDllDirectoryW set to {:?}",
-                                cuda_dir
-                            ));
-                        }
-                    } else {
-                        startup_log::log(&format!(
-                            "cuda-runtime dir not found at {:?}",
-                            cuda_dir
-                        ));
-                    }
-                }
-            }
+            // The CUDA runtime and Vulkan loader DLLs are load-time imports and
+            // are installed next to rudariflow.exe (see tauri.conf.json).
             if let Ok(rd) = app.path().resource_dir() {
                 startup_log::log(&format!("resource_dir: {:?}", rd));
             } else {
@@ -399,6 +408,17 @@ fn main() {
 
             if let Err(e) = register_hotkey(app.handle(), &initial_hotkey) {
                 eprintln!("[RudariFlow] ERROR: {}", e);
+                // A saved chord that no longer registers would leave the app
+                // with no hotkey at all; fall back to the default chord.
+                let default_hotkey = Settings::default().hotkey;
+                if initial_hotkey != default_hotkey
+                    && register_hotkey(app.handle(), &default_hotkey).is_ok()
+                {
+                    let state = app.state::<AppState>();
+                    let mut settings = state.settings.lock().unwrap();
+                    settings.hotkey = default_hotkey;
+                    let _ = settings.save(&state.app_dir);
+                }
             }
 
             // Sync persisted autostart preference with the OS — but never
