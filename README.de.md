@@ -32,6 +32,7 @@ Made by [oggi](https://0ggi.ch).
 - **Verlauf:** die letzten 200 Diktate bleiben auf deinem Computer, die letzten 50 mit Aufnahme. Kopieren, abspielen, löschen oder eine Aufnahme mit dem aktuellen Modell neu transkribieren. Lässt sich auf „Nur Text“ stellen oder ausschalten
 - **Letztes Diktat einfügen:** ein zweites Tastenkürzel (Standard Alt+Umschalt+V) fügt dein letztes Diktat erneut ein
 - **Andere Apps während der Aufnahme stummschalten:** Musik und Videos verstummen, während du diktierst, und kommen danach zurück (standardmäßig aus)
+- **KI-Korrektur, komplett lokal:** ein Sprachmodell auf deinem PC entfernt Füllwörter, übernimmt gesprochene Korrekturen („Dienstag, nein, Mittwoch“), korrigiert Grammatik und Satzzeichen, macht Listen und glättet im Stil „Geschliffen“ deine Sätze. Es übersetzt nie und beantwortet nie, was du diktierst. Regeln pro App („kleingeschrieben in WhatsApp“, „formell in Outlook“, „keine KI in VS Code“) passen auf das Programm oder ein Wort im Fenstertitel und funktionieren so auch für Websites. Läuft mit Gemma 4 (standardmäßig E4B, wahlweise 12B oder E2B) in einem mitgelieferten llama.cpp-Server; das Modell wird einmal heruntergeladen (3 bis 7 GB), danach verlässt nichts deinen PC. Ist das Modell nicht bereit oder zu langsam, wird der reine Whisper-Text eingefügt. Standardmäßig aus
 - Mehrere Whisper-Modelle wählbar: tiny → large-v3-turbo, mit Auto-Download bei Auswahl
 - Sprachen: Auto-Erkennung oder eine der rund 100 Sprachen, die Whisper kann
 - Push-to-Talk **und** Toggle-Modi
@@ -81,6 +82,9 @@ npm install
 #    (CUDA-Runtime aus CUDA_PATH, Vulkan-Loader aus System32)
 powershell -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1
 
+# 3b. llama.cpp-Server für die KI-Korrektur holen (festgelegter Build, SHA-256 geprüft)
+powershell -ExecutionPolicy Bypass -File scripts/setup-llama.ps1
+
 # 4. Build-Pfad kurz halten: der verschachtelte Vulkan-Shader-Build von
 #    whisper.cpp sprengt unter src-tauri\target das 260-Zeichen-Limit
 $env:CARGO_TARGET_DIR = "C:\t\rf"
@@ -123,6 +127,7 @@ Misst Modell-Ladezeit und Transkription auf der ersten GPU mit und ohne Flash At
 
 ## Architektur
 
+- **KI-Korrektur:** [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` (Release b11100, Vulkan-Build) als eigener Prozess auf 127.0.0.1 mit zufälligem Port und API-Schlüssel, in einem Job-Objekt, das ihn mit RudariFlow beendet; Gemma-4-Modelle (Apache-2.0) von Hugging Face. Ein eigener Prozess ist nötig, weil whisper-rs seine eigene ggml-Kopie in `rudariflow.exe` einbindet
 - **Tauri 2** (Rust backend + Webview frontend)
 - **Frontend:** Vanilla TypeScript + Vite
 - **Audio capture:** [cpal](https://github.com/RustAudio/cpal) (Cross-platform low-level audio I/O)

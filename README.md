@@ -32,6 +32,7 @@ Made by [oggi](https://0ggi.ch).
 - **History:** the last 200 dictations stay on your computer, the last 50 with their recording. Copy, play, delete, or re-run a recording with the current model. Can be set to text only or turned off
 - **Paste last transcript:** a second hotkey (default Alt+Shift+V) pastes your last dictation again
 - **Mute other apps while recording:** music and videos go quiet while you dictate and come back afterwards (off by default)
+- **AI cleanup, fully local:** a language model on your PC removes filler words, applies spoken corrections ("Tuesday, no, Wednesday"), fixes grammar and punctuation, formats lists and, in the Polished style, smooths your sentences. It never translates and never answers what you dictate. Per-app rules ("lowercase in WhatsApp", "formal in Outlook", "no AI in VS Code") match the program or a word in the window title, so they also work for websites. Runs Gemma 4 (E4B by default, 12B or E2B selectable) in a bundled llama.cpp server; the model downloads once (3 to 7 GB), then nothing leaves your PC. If the model is not ready or too slow, the plain Whisper text is pasted. Off by default
 - Multiple Whisper models selectable: tiny → large-v3-turbo, auto-downloaded on selection
 - Languages: auto-detect or any of the ~100 languages Whisper supports
 - **Push-to-talk** and **toggle** modes
@@ -51,6 +52,7 @@ Made by [oggi](https://0ggi.ch).
   - Intel Arc and other Vulkan 1.2 GPUs: Vulkan
 - **CPU fallback:** Works without a usable GPU, but significantly slower (~10-30×). For CPU-only users we recommend the `small` or `medium` model.
 - **RAM:** the selected whisper model stays resident from first dictation onward. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB.
+- **AI cleanup (optional):** runs on Vulkan on AMD, NVIDIA and Intel GPUs with the normal driver, on the same card as Whisper. The default model needs about 5 GB of video memory on top of Whisper, so 8 GB cards and up are fine; smaller cards move part of the model to the CPU. Measured on an AMD Radeon RX 6800: about 0.3 s per dictation. NVIDIA and Intel Arc use the same Vulkan path but have not been tested yet. Without a usable GPU expect 5 to 10 s per dictation.
 
 ## Installation (for end users)
 
@@ -83,6 +85,9 @@ npm install
 #    (CUDA runtime from CUDA_PATH, Vulkan loader from System32)
 powershell -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1
 
+# 3b. Fetch the llama.cpp server used for AI cleanup (pinned build, SHA-256 checked)
+powershell -ExecutionPolicy Bypass -File scripts/setup-llama.ps1
+
 # 4. Keep the build path short: whisper.cpp's nested Vulkan shader build
 #    exceeds the 260-character path limit under src-tauri\target
 $env:CARGO_TARGET_DIR = "C:\t\rf"
@@ -105,6 +110,15 @@ Produces (under `CARGO_TARGET_DIR`):
 - `release/rudariflow.exe` (portable, needs the DLLs from step 3 next to it)
 - `release/bundle/nsis/RudariFlow_x.y.z_x64-setup.exe` (NSIS installer)
 - `release/bundle/msi/RudariFlow_x.y.z_x64_en-US.msi` (MSI installer)
+
+A plain `cargo build` does not copy the installer resources next to the exe. For AI cleanup in such a build, point it at the server: `$env:RUDARIFLOW_LLAMA_DIR = "$PWD\src-tauri\binaries\llama"`.
+
+`src-tauri/examples/ai_bench.rs` compares language models on your GPU with the app's prompt and output guard:
+
+```powershell
+cd src-tauri
+cargo run --release --example ai_bench -- ..\src-tauri\binaries\llama report.md path\to\model.gguf
+```
 
 ### Test data separate from your installed app
 
@@ -129,6 +143,7 @@ Times model load and transcription on the first GPU with and without flash atten
 - **Frontend:** Vanilla TypeScript + Vite
 - **Audio capture:** [cpal](https://github.com/RustAudio/cpal) (cross-platform low-level audio I/O)
 - **Transcription:** in-process [`whisper-rs`](https://github.com/tazz4843/whisper-rs) (whisper.cpp Rust bindings) built with both the `cuda` and `vulkan` features; the backend is chosen at runtime from ggml's device list, with fallback to CPU
+- **AI cleanup:** [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` (release b11100, Vulkan build) as a child process on 127.0.0.1 with a random port and API key, in a kill-on-close Job Object; Gemma 4 GGUF models (Apache-2.0) from Hugging Face. It runs as its own process because whisper-rs links its own copy of ggml into `rudariflow.exe`
 - **Auto-paste:** [enigo](https://github.com/enigo-rs/enigo) (keyboard simulation)
 - **Hotkey:** [tauri-plugin-global-shortcut](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/global-shortcut)
 - **Autostart:** [tauri-plugin-autostart](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/autostart)

@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **AI cleanup, fully local.** New tab. After Whisper, a language model on
+  the PC removes fillers and false starts, applies spoken self-corrections,
+  fixes grammar and punctuation, formats lists and (Polished style) smooths
+  phrasing; Light keeps the wording. Per-app rules add instructions or turn
+  the AI off, matched on the exe name or a whole word in the window title.
+  Runs Gemma 4 E4B (default), 12B or E2B in a bundled llama.cpp server
+  (b11100, Vulkan) on 127.0.0.1, on the GPU Whisper uses; the model
+  downloads once. A test box shows the result and time. Replacement
+  triggers are hidden from the model behind placeholders. Any failure,
+  missing model or time limit pastes the plain Whisper text. Measured on
+  an RX 6800: 0.2 to 0.8 s per dictation. Off by default.
+- History keeps the app a dictation went into and, when the AI changed
+  it, the original text ("Original" button).
+- `scripts/setup-llama.ps1` and `examples/ai_bench.rs` (model benchmark).
 - **Replacements.** A new tab maps spoken phrases to longer text ("my email" ->
   your address, links, signatures). Matched as whole words in any
   capitalisation, in one pass, longest phrase first; a dictation that is only
@@ -41,6 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The settings window has a fixed size (900 x 600) and cannot be maximized.
 
 ### Fixed
+- Model downloads go to `<file>.part` and are renamed when complete, so an
+  interrupted download no longer looks like a finished model; progress
+  events are throttled to about 10 per second.
 - **Microphone dropdown was blank** with the default setting, because the
   list had no entry for "default"; the next settings save then stored an empty
   device name, and every recording first failed to open "" and retried for

@@ -3,7 +3,7 @@
 **Date:** 2026-09-23
 **Target release:** the minor release after the quick wins (v0.6.0, branch `feature/quick-wins`)
 **Branch:** `feature/ai-cleanup`, based on `feature/quick-wins`
-**Status:** approved design, pending spec review
+**Status:** implemented on `feature/ai-cleanup` (see "Changes during implementation")
 
 ## Context
 
@@ -199,3 +199,12 @@ The server listens on 127.0.0.1 only and requires a random key per start. Text n
 | llama.cpp flag or API changes | Pinned build `b11100`; upgrades are deliberate. |
 | Port or process leftovers | Random free port per start; Job Object kills the child with the app. |
 | Two dictations in quick succession | `-np 1` serialises requests; the second waits within its timeout. |
+
+## Changes during implementation
+
+- **Models:** Gemma 4 E4B (default), 12B and E2B; see "Benchmark result". The Qwen candidates were dropped.
+- **Warm-up before Ready:** the first inference on the GPU compiles pipelines and timed out (2.4 s limit). The server now answers one short request with the shared system prompt before it reports Ready; the first dictation after start took 316 ms.
+- **Crash detection:** a killed server is only visibly gone once it has released its GPU memory, so a failed request now watches the process for up to 5 s and restarts it in the background (within the two-failure limit). Connect timeout 0.8 s instead of Windows' ~2 s for a closed local port.
+- **History** also stores the window title, so a re-run applies title-based rules.
+- **Model notes** ("Recommended", "Best quality", "Small") moved from the dropdown into the hint line, because the fixed 900 x 600 window truncated them.
+- **Verified on the RX 6800:** status Loading to Ready in 3.9 s (E4B, warm-up included); rules for WhatsApp, Outlook and VS Code ("No AI"); replacement placeholder kept; History re-run with "Original"; force-killing RudariFlow ends llama-server (Job Object); crash of llama-server falls back in 54 ms and restarts. Not verified: NVIDIA and Intel GPUs, CPU-only PCs.
