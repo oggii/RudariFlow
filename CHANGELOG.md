@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The sidebar shows the real app version (it was stuck at v0.4.0).
 
 ### Fixed
+- **Microphone dropdown was blank** with the default setting, because the
+  list had no entry for "default"; the next settings save then stored an empty
+  device name, and every recording first failed to open "" and retried for
+  0.4 s before falling back. The list now starts with "System default (device
+  name)", a saved device that is unplugged stays listed as "not connected",
+  and an empty saved value loads as "default".
 - Pasting waits (up to 1.5 s) until Ctrl, Shift, Alt and Win are released, so
   a hotkey that is still held cannot turn Ctrl+V into Ctrl+Shift+V.
 - The two clipboard unit tests no longer race each other.

@@ -120,6 +120,11 @@ impl Settings {
         if !matches!(settings.gpu_backend.as_str(), "auto" | "cuda" | "vulkan" | "cpu") {
             settings.gpu_backend = "auto".to_string();
         }
+        // An empty microphone (saved by the settings UI before it listed
+        // "default") means the system default input.
+        if settings.microphone.trim().is_empty() {
+            settings.microphone = "default".to_string();
+        }
         if !matches!(settings.send_command.as_str(), "off" | "enter" | "ctrl+enter") {
             settings.send_command = default_send_command();
         }
@@ -271,6 +276,19 @@ mod tests {
         settings.mute_audio = true;
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), settings);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_empty_microphone_loads_as_default() {
+        let dir = temp_dir().join("typr_test_empty_mic");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut settings = Settings::default();
+        settings.microphone = String::new();
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).microphone, "default");
 
         let _ = fs::remove_dir_all(&dir);
     }

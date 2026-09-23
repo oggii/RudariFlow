@@ -119,6 +119,28 @@ sidebar.addEventListener("mousedown", (e) => {
 });
 
 let currentSettings: Settings;
+let mics: MicDevice[] = [];
+
+/// "default" follows whatever Windows uses as input. A saved device that is
+/// unplugged stays listed, so the dropdown never goes blank and a later save
+/// cannot wipe the choice.
+function renderMicOptions() {
+  const saved = currentSettings.microphone || "default";
+  const add = (value: string, label: string) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    micSelect.appendChild(option);
+  };
+  micSelect.innerHTML = "";
+  const systemDefault = mics.find((m) => m.is_default);
+  add("default", systemDefault ? `${t("mic_system_default")} (${systemDefault.name})` : t("mic_system_default"));
+  for (const mic of mics) add(mic.name, mic.name);
+  if (saved !== "default" && !mics.some((m) => m.name === saved)) {
+    add(saved, `${saved} (${t("mic_not_connected")})`);
+  }
+  micSelect.value = saved;
+}
 
 async function loadSettings() {
   currentSettings = await invoke<Settings>("get_settings");
@@ -140,15 +162,8 @@ async function loadSettings() {
   autostartToggle.checked = currentSettings.autostart;
 
   // Populate mic dropdown
-  const mics = await invoke<MicDevice[]>("list_microphones");
-  micSelect.innerHTML = "";
-  mics.forEach((mic) => {
-    const option = document.createElement("option");
-    option.value = mic.name;
-    option.textContent = mic.name + (mic.is_default ? " (default)" : "");
-    micSelect.appendChild(option);
-  });
-  micSelect.value = currentSettings.microphone;
+  mics = await invoke<MicDevice[]>("list_microphones");
+  renderMicOptions();
 
   // Engine
   setEngine(currentSettings.engine);
@@ -321,6 +336,7 @@ gpuBackendSelect.addEventListener("change", () => saveSettings());
 uiLanguageSelect.addEventListener("change", async () => {
   setLang(uiLanguageSelect.value);
   populateLanguageSelect(languageSelect, getLang(), t("language_auto"));
+  renderMicOptions();
   renderHotkeys();
   await saveSettings();
   await refreshHistory();
