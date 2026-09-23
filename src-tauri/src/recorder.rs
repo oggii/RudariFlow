@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
@@ -11,13 +11,19 @@ use crate::foreground_app;
 use crate::history::History;
 use crate::llm_server::LlmServer;
 use crate::mute;
-use crate::paste::{paste_text, press_submit};
+use crate::paste::{paste_text, press_delete, press_submit};
 use crate::polish::polish;
+use crate::selection::{self, Target};
 use crate::send_command::strip_send_command;
 use crate::settings::Settings;
 use crate::startup_log;
 use crate::transcribe_groq;
+use crate::voice_edit::{self, Edit};
 use crate::whisper_engine::WhisperEngine;
+
+/// Start of the error an Edit mode failure returns; the pill then says the
+/// text was left unchanged.
+const EDIT_FAILED: &str = "edit failed";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum RecordingState {
@@ -85,6 +91,43 @@ fn show_polishing(app: &AppHandle) {
         let _ = overlay.eval(
             "document.body.dataset.state = 'polishing'; if (window.__overlayUpdate) window.__overlayUpdate('polishing');",
         );
+    }
+}
+
+/// The pill's chip: how many words the dictation will edit, or none.
+fn emit_edit_target(app: &AppHandle, words: Option<usize>) {
+    let _ = app.emit("edit-target", words);
+}
+
+/// Called right after recording starts: when text is selected where Edit
+/// mode works, the pill shows it. The decision is made again on release.
+pub fn announce_edit_target(app: &AppHandle, settings: &Settings, app_dir: &Path) {
+    if !voice_edit::available(settings, app_dir, &foreground_app::current()) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Target::Selected(text) = selection::read() {
+            emit_edit_target(&app, Some(selection::word_count(&text)));
+        }
+    });
+}
+
+/// The selection the dictation edits, read on release; `None` means a normal
+/// dictation.
+async fn edit_selection(settings: &Settings, app_dir: &Path, ctx: &AppContext) -> Option<String> {
+    if !voice_edit::available(settings, app_dir, ctx) {
+        return None;
+    }
+    match tauri::async_runtime::spawn_blocking(selection::read).await {
+        Ok(Target::Selected(text)) => Some(text),
+        Ok(Target::None(reason)) => {
+            if reason != "nothing selected" {
+                startup_log::log(&format!("[edit] not editing: {}", reason));
+            }
+            None
+        }
+        Err(_) => None,
     }
 }
 
@@ -199,6 +242,11 @@ impl Recorder {
     ) -> Result<String, String> {
         // The app the text will go into, read before anything else can take focus.
         let ctx = foreground_app::current();
+        let selection = if *lock(&self.state) == RecordingState::Recording {
+            edit_selection(settings, app_dir, &ctx).await
+        } else {
+            None
+        };
 
         // Stop recording
         {
@@ -210,16 +258,21 @@ impl Recorder {
         }
         mute::restore();
         let _ = app.emit("recording-state", RecordingState::Transcribing);
+        emit_edit_target(app, selection.as_deref().map(selection::word_count));
         update_overlay(app, &RecordingState::Transcribing);
 
         // Always reset state to Ready, regardless of success, failure or panic.
-        let _ready = ReadyOnDrop { app, state: &self.state };
+        let ready = ReadyOnDrop { app, state: &self.state };
 
         let result = self
-            .run_transcription_pipeline(app, settings, app_dir, engine, history, llm, &ctx)
+            .run_transcription_pipeline(app, settings, app_dir, engine, history, llm, &ctx, selection)
             .await;
         if let Err(e) = &result {
             startup_log::log(&format!("[recorder] transcription failed: {}", e));
+        }
+        drop(ready);
+        if result.as_ref().is_err_and(|e| e.starts_with(EDIT_FAILED)) {
+            show_notice(app, self.state.clone(), "edit-failed", 2600);
         }
         result
     }
@@ -233,6 +286,7 @@ impl Recorder {
         history: &History,
         llm: &Arc<LlmServer>,
         ctx: &AppContext,
+        selection: Option<String>,
     ) -> Result<String, String> {
         let taken = lock(&self.audio_recorder).stop_and_take_samples();
         let samples = match taken {
@@ -244,6 +298,9 @@ impl Recorder {
         };
 
         let (raw_text, language) = transcribe_samples(Some(app), settings, app_dir, engine, &samples).await?;
+        if let Some(selection) = selection {
+            return self.run_edit(app, settings, app_dir, history, llm, ctx, &selection, &raw_text, &samples).await;
+        }
         let cleaned = dictionary::apply_spelling(&cleanup_text(&raw_text), &dictionary::terms(&settings.custom_prompt));
 
         let (text, submit) = match strip_send_command(&cleaned) {
@@ -269,6 +326,48 @@ impl Recorder {
         }
 
         Ok(text)
+    }
+
+    /// Edit mode: `spoken` says what to do with `selection`; the result
+    /// replaces it (or deletes it). On failure the selection stays as it was.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_edit(
+        &self,
+        app: &AppHandle,
+        settings: &Settings,
+        app_dir: &PathBuf,
+        history: &History,
+        llm: &Arc<LlmServer>,
+        ctx: &AppContext,
+        selection: &str,
+        raw_text: &str,
+        samples: &[f32],
+    ) -> Result<String, String> {
+        let spoken = cleanup_text(raw_text);
+        if spoken.trim().is_empty() {
+            emit_audio_empty(app, self.state.clone());
+            return Ok(String::new());
+        }
+        let (result, _) =
+            voice_edit::edit(settings, app_dir, llm, ctx, selection, &spoken, || show_polishing(app)).await;
+        match result.map_err(|e| format!("{}: {}", EDIT_FAILED, e))? {
+            Edit::Delete => {
+                press_delete()?;
+                Ok(String::new())
+            }
+            Edit::Replace(text) => {
+                let pasted = paste_text(&text);
+                let model = model_label(settings);
+                if history
+                    .record_edit(&text, selection, &spoken, ctx, samples, &model, &settings.history)
+                    .is_some()
+                {
+                    let _ = app.emit("history-updated", ());
+                }
+                pasted?;
+                Ok(text)
+            }
+        }
     }
 
     pub fn cancel_recording(&self, app: &AppHandle) -> Result<(), String> {

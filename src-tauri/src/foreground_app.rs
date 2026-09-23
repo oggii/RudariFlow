@@ -22,6 +22,11 @@ pub fn open_apps() -> Vec<String> {
     imp::open_apps()
 }
 
+/// Executable name of a process, as in `exe_name`; empty when unknown.
+pub fn process_name(pid: u32) -> String {
+    imp::process_exe(pid)
+}
+
 #[cfg(windows)]
 mod imp {
     use super::exe_name;
@@ -52,7 +57,7 @@ mod imp {
         pid
     }
 
-    fn process_exe(pid: u32) -> String {
+    pub fn process_exe(pid: u32) -> String {
         unsafe {
             let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
             if process.is_null() {
@@ -158,6 +163,10 @@ mod imp {
 
     pub fn open_apps() -> Vec<String> {
         Vec::new()
+    }
+
+    pub fn process_exe(_pid: u32) -> String {
+        String::new()
     }
 }
 

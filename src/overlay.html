@@ -150,6 +150,24 @@
         transition: opacity 200ms ease;
       }
       body[data-state="notice"] .notice { opacity: 1; }
+
+      /* Edit mode: the dictation will change the selected text. */
+      .edit-chip {
+        display: none;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(124, 138, 255, 0.22);
+        color: #c9cfff;
+        font-size: 11px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      body[data-edit="1"] .edit-chip { display: flex; }
+      body[data-edit="1"] .mic-icon { fill: #9aa5ff; }
+      body[data-edit="1"][data-state="recording"] .bar { background: #9aa5ff; }
     </style>
   </head>
   <body data-state="ready">
@@ -158,6 +176,7 @@
         <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
         <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
       </svg>
+      <span class="edit-chip" id="edit-chip"></span>
       <div class="waveform" id="waveform"></div>
       <button class="cancel" id="cancel" title="Cancel recording" aria-label="Cancel recording">
         <svg viewBox="0 0 12 12" fill="none">
@@ -222,13 +241,17 @@
           for (let i = 0; i < BAR_COUNT; i++) HISTORY[i] = 0;
           paint();
         }
+        if (state === "recording" || state === "ready") {
+          delete document.body.dataset.edit;
+        }
         if (state === "recording") {
           levelEventCount = 0;
           cumulative = "";
           transcriptEl.textContent = "";
         }
         if (state === "polishing") {
-          transcriptEl.dataset.phase = NOTICE_TEXT[pickLang()].polishing;
+          const text = NOTICE_TEXT[pickLang()];
+          transcriptEl.dataset.phase = document.body.dataset.edit ? text.editing : text.polishing;
         }
       };
 
@@ -263,8 +286,14 @@
       // since the overlay is a separate webview without access to the main
       // window's dictionary.
       const NOTICE_TEXT = {
-        en: { audio_empty: "No speech detected", mic_error: "Microphone unavailable", polishing: "Polishing" },
-        de: { audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar", polishing: "Überarbeitung" },
+        en: {
+          audio_empty: "No speech detected", mic_error: "Microphone unavailable", polishing: "Polishing",
+          editing: "Editing", word: "word", words: "words", edit_failed: "Edit failed, text unchanged",
+        },
+        de: {
+          audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar", polishing: "Überarbeitung",
+          editing: "Bearbeiten", word: "Wort", words: "Wörter", edit_failed: "Bearbeiten ging nicht, Text unverändert",
+        },
       };
       function pickLang() {
         const nav = (navigator.language || "en").toLowerCase();
@@ -276,6 +305,24 @@
         const lang = pickLang();
         showNotice(NOTICE_TEXT[lang].audio_empty, 1500);
       }).then(() => diag("audio-empty listener registered"));
+
+      // Edit mode: how many selected words the dictation will change (null: none).
+      const editChip = document.getElementById("edit-chip");
+      listen("edit-target", (event) => {
+        const words = Number(event.payload) || 0;
+        const text = NOTICE_TEXT[pickLang()];
+        if (words > 0) {
+          editChip.textContent = `✎ ${words} ${words === 1 ? text.word : text.words}`;
+          document.body.dataset.edit = "1";
+        } else {
+          delete document.body.dataset.edit;
+        }
+      });
+
+      listen("edit-failed", () => {
+        diag("edit-failed received");
+        showNotice(NOTICE_TEXT[pickLang()].edit_failed, 2400);
+      });
 
       listen("mic-error", () => {
         diag("mic-error received");

@@ -38,6 +38,9 @@ pub struct HistoryEntry {
     /// Window title at the time, so a re-run applies title-based rules too.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
+    /// What was said in Edit mode; `raw` then holds the selected text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit: Option<String>,
 }
 
 pub struct History {
@@ -78,6 +81,36 @@ impl History {
         model: &str,
         mode: &str,
     ) -> Option<HistoryEntry> {
+        self.insert(text, raw, None, ctx, samples, model, mode)
+    }
+
+    /// Record an Edit mode result: `original` is the selected text,
+    /// `instruction` what the user said.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_edit(
+        &self,
+        text: &str,
+        original: &str,
+        instruction: &str,
+        ctx: &AppContext,
+        samples: &[f32],
+        model: &str,
+        mode: &str,
+    ) -> Option<HistoryEntry> {
+        self.insert(text, Some(original), Some(instruction), ctx, samples, model, mode)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert(
+        &self,
+        text: &str,
+        raw: Option<&str>,
+        edit: Option<&str>,
+        ctx: &AppContext,
+        samples: &[f32],
+        model: &str,
+        mode: &str,
+    ) -> Option<HistoryEntry> {
         *lock(&self.last_text) = Some(text.to_string());
         if mode == "off" {
             return None;
@@ -97,6 +130,7 @@ impl History {
             raw: raw.map(str::to_string),
             app: ctx.exe.clone(),
             title: ctx.title.clone(),
+            edit: edit.map(str::to_string),
         };
         if mode == "audio" && fs::create_dir_all(&self.dir).is_ok() {
             entry.has_audio = samples_to_wav(samples, &self.audio_path(id)).is_ok();
@@ -289,9 +323,13 @@ mod tests {
 
         let json = fs::read_to_string(dir.join("history").join("history.json")).unwrap();
         assert!(json.contains("\"app\": \"whatsapp.root\""));
+        let edited = h.record_edit("Hi.", "Hello there.", "shorter", &ctx, &[], "small", "text").unwrap();
+        assert_eq!((edited.raw.as_deref(), edited.edit.as_deref()), (Some("Hello there."), Some("shorter")));
+        assert_eq!(h.last_text().as_deref(), Some("Hi."));
         let plain = h.record("x", None, &AppContext::default(), &[], "small", "text").unwrap();
         let json = fs::read_to_string(dir.join("history").join("history.json")).unwrap();
-        assert_eq!(json.matches("\"raw\"").count(), 1, "empty fields are not written");
+        assert_eq!(json.matches("\"raw\"").count(), 2, "empty fields are not written");
+        assert_eq!(json.matches("\"edit\"").count(), 1);
         assert!(plain.raw.is_none() && plain.app.is_empty());
 
         // Entries written before these fields existed still load.

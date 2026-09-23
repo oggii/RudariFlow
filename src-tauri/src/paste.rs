@@ -92,6 +92,14 @@ pub fn paste_text(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Remove the selection (Edit mode, "delete that").
+pub fn press_delete() -> Result<(), String> {
+    wait_for_modifiers_released(MODIFIER_WAIT);
+    use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+    enigo.key(Key::Delete, Direction::Click).map_err(|e| e.to_string())
+}
+
 /// Submit what was just pasted: `"enter"` or `"ctrl+enter"`.
 pub fn press_submit(key: &str) -> Result<(), String> {
     wait_for_modifiers_released(MODIFIER_WAIT);

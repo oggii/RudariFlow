@@ -309,7 +309,7 @@ impl LlmServer {
             .arg(model)
             .args(["--host", "127.0.0.1", "--port", &port_arg, "--api-key", &api_key])
             .args(["-dev", device.as_ref().map_or("none", |d| d.id.as_str())])
-            .args(["--fit", "on", "-c", "4096", "-np", "1", "--reasoning-budget", "0", "--no-webui"])
+            .args(["--fit", "on", "-c", "8192", "-np", "1", "--reasoning-budget", "0", "--no-webui"])
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err));

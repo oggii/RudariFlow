@@ -11,7 +11,7 @@
 
 Local speech-to-text dictation app for Windows, powered by [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Global hotkey, push-to-talk or toggle mode, automatic paste of the transcribed text.
 
-> **v0.6.2, Windows.** New: "Write in" turns every dictation into one language, and the dictionary can be imported and exported. Since 0.6.0: local AI cleanup with per-app rules, a dictionary, history, replacements and a "send it" command (see the [changelog](CHANGELOG.md)). One installer for every GPU: NVIDIA GeForce RTX runs on CUDA, AMD Radeon and Intel Arc run on Vulkan, and everything else falls back to the CPU. The backend is picked automatically at runtime.
+> **v0.7.0, Windows.** New: Edit mode, select text and say what to change. Since 0.6: "Write in" turns every dictation into one language, dictionary import and export, local AI cleanup with per-app rules, a dictionary, history, replacements and a "send it" command (see the [changelog](CHANGELOG.md)). One installer for every GPU: NVIDIA GeForce RTX runs on CUDA, AMD Radeon and Intel Arc run on Vulkan, and everything else falls back to the CPU. The backend is picked automatically at runtime.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
@@ -32,6 +32,7 @@ Made by [oggi](https://0ggi.ch).
 - **History:** the last 200 dictations stay on your computer, the last 50 with their recording. Copy, play, delete, or re-run a recording with the current model. Can be set to text only or turned off
 - **Paste last transcript:** a second hotkey (default Alt+Shift+V) pastes your last dictation again
 - **Mute other apps while recording:** music and videos go quiet while you dictate and come back afterwards (off by default)
+- **Edit mode:** select text in any app, hold the hotkey and say what to change ("shorter", "more formal", "in Turkish", "delete that") or say the new wording; the local model rewrites the selection in place, Ctrl+Z undoes it. Terminals, address bars and password fields are left alone
 - **AI cleanup, fully local:** a language model on your PC removes filler words, applies spoken corrections ("Tuesday, no, Wednesday"), fixes grammar and punctuation, formats lists and, in the Polished style, smooths your sentences. It keeps the language you spoke and never answers what you dictate; set "Write in" to a language and it writes every dictation in that language instead, translating when you switch languages while speaking. Per-app rules ("lowercase in WhatsApp", "formal in Outlook", "no AI in VS Code") match the program or a word in the window title, so they also work for websites. Runs Gemma 4 (E4B by default, 12B or E2B selectable) in a bundled llama.cpp server; the model downloads once (3 to 7 GB), then nothing leaves your PC. If the model is not ready or too slow, the plain Whisper text is pasted. Off by default
 - Multiple Whisper models selectable: tiny → large-v3-turbo, auto-downloaded on selection
 - Languages: auto-detect or any of the ~100 languages Whisper supports

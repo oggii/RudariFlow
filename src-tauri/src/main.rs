@@ -20,10 +20,11 @@ use rudariflow_lib::llm_server::{LlmServer, ServerStatus};
 use rudariflow_lib::mouse_hotkey;
 use rudariflow_lib::paste::paste_text;
 use rudariflow_lib::polish::{polish, Polished};
-use rudariflow_lib::recorder::{model_label, transcribe_samples, Recorder, RecordingState};
+use rudariflow_lib::recorder::{announce_edit_target, model_label, transcribe_samples, Recorder, RecordingState};
 use rudariflow_lib::send_command::strip_send_command;
 use rudariflow_lib::settings::Settings;
 use rudariflow_lib::startup_log;
+use rudariflow_lib::voice_edit::{self, Edit};
 use rudariflow_lib::whisper_engine::WhisperEngine;
 
 struct AppState {
@@ -206,6 +207,9 @@ fn history_audio(state: State<AppState>, id: u64) -> Result<tauri::ipc::Response
 #[tauri::command]
 async fn history_rerun(state: State<'_, AppState>, id: u64) -> Result<HistoryEntry, String> {
     let entry = state.history.get(id).ok_or("History entry not found")?;
+    if entry.edit.is_some() {
+        return Err("Edits cannot be re-run".to_string());
+    }
     if !entry.has_audio {
         return Err("This entry has no recording".to_string());
     }
@@ -287,6 +291,68 @@ async fn ai_test(state: State<'_, AppState>, text: String, app: String) -> Resul
     let ctx = AppContext { exe: app.trim().to_lowercase(), title: String::new() };
     let text = dictionary::apply_spelling(&cleanup_text(&text), &dictionary::terms(&settings.custom_prompt));
     Ok(polish(&settings, &state.app_dir, &state.llm, &ctx, &text, None, || {}).await)
+}
+
+#[derive(serde::Serialize)]
+struct EditTestResult {
+    /// The replacement text; empty when the model asked to delete.
+    text: String,
+    delete: bool,
+    error: Option<String>,
+    #[serde(rename = "aiMs")]
+    ai_ms: u64,
+}
+
+/// Run an Edit mode request on a sample selection as if it came from `app`
+/// (for testing; nothing is pasted). Works before the AI cleanup switch is on.
+#[tauri::command]
+async fn ai_edit_test(
+    state: State<'_, AppState>,
+    selection: String,
+    spoken: String,
+    app: String,
+) -> Result<EditTestResult, String> {
+    let settings = state.settings.lock().unwrap().clone();
+    let ctx = AppContext { exe: app.trim().to_lowercase(), title: String::new() };
+    let (result, ai_ms) =
+        voice_edit::edit(&settings, &state.app_dir, &state.llm, &ctx, &selection, &cleanup_text(&spoken), || {}).await;
+    Ok(match result {
+        Ok(Edit::Replace(text)) => EditTestResult { text, delete: false, error: None, ai_ms },
+        Ok(Edit::Delete) => EditTestResult { text: String::new(), delete: true, error: None, ai_ms },
+        Err(e) => EditTestResult { text: String::new(), delete: false, error: Some(e), ai_ms },
+    })
+}
+
+/// Test hook for the whole Edit mode path without a microphone: read the
+/// selection of the focused app, edit it with `spoken` as if it had been
+/// said, and paste the result. Only when started with
+/// RUDARIFLOW_TEST_COMMANDS=1.
+#[tauri::command]
+async fn edit_live_test(state: State<'_, AppState>, spoken: String) -> Result<String, String> {
+    if std::env::var("RUDARIFLOW_TEST_COMMANDS").as_deref() != Ok("1") {
+        return Err("test commands are off".to_string());
+    }
+    let settings = state.settings.lock().unwrap().clone();
+    let ctx = foreground_app::current();
+    if !voice_edit::available(&settings, &state.app_dir, &ctx) {
+        return Err(format!("Edit mode not available in '{}'", ctx.exe));
+    }
+    let target = tauri::async_runtime::spawn_blocking(rudariflow_lib::selection::read).await.map_err(|e| e.to_string())?;
+    let Some(selection) = target.selected().map(str::to_string) else {
+        return Err(format!("no edit: {:?}", target));
+    };
+    let (result, ai_ms) =
+        voice_edit::edit(&settings, &state.app_dir, &state.llm, &ctx, &selection, &cleanup_text(&spoken), || {}).await;
+    match result? {
+        Edit::Replace(text) => {
+            paste_text(&text)?;
+            Ok(format!("{} ms in '{}': {:?} -> {:?}", ai_ms, ctx.exe, selection, text))
+        }
+        Edit::Delete => {
+            rudariflow_lib::paste::press_delete()?;
+            Ok(format!("{} ms in '{}': deleted {:?}", ai_ms, ctx.exe, selection))
+        }
+    }
 }
 
 /// Restart the AI server, e.g. after it failed twice.
@@ -561,7 +627,7 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
                             (s.microphone.clone(), s.mute_audio)
                         };
                         match state.recorder.start_recording(&handle, &mic, mute) {
-                            Ok(_) => println!("[RudariFlow] Recording started"),
+                            Ok(_) => announce_edit_target(&handle, &s, &state.app_dir),
                             Err(e) => startup_log::log(&format!("[hotkey] start error: {}", e)),
                         }
                     }
@@ -608,6 +674,8 @@ async fn do_toggle_recording(
                 (s.microphone.clone(), s.mute_audio)
             };
             state.recorder.start_recording(app, &mic, mute)?;
+            let settings = state.settings.lock().unwrap().clone();
+            announce_edit_target(app, &settings, &state.app_dir);
             Ok("recording".to_string())
         }
         RecordingState::Recording => {
@@ -688,6 +756,8 @@ fn main() {
             ai_status,
             ai_download_model,
             ai_test,
+            ai_edit_test,
+            edit_live_test,
             ai_restart,
             list_open_apps,
             dictionary_export,

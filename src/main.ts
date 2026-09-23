@@ -34,6 +34,7 @@ interface Settings {
   aiRules: AppRule[];
   swissSpelling: boolean;
   aiOutputLanguage: string;
+  editMode: boolean;
 }
 
 interface Replacement {
@@ -51,6 +52,8 @@ interface HistoryEntry {
   raw?: string | null;
   /** Program the dictation went into, e.g. "whatsapp.root". */
   app?: string;
+  /** What was said in Edit mode; `raw` then holds the selected text. */
+  edit?: string | null;
 }
 
 interface MicDevice {
@@ -704,6 +707,7 @@ function renderHistoryEntry(e: HistoryEntry): HTMLElement {
   const renderMeta = (entry: HistoryEntry) => {
     const parts = [formatWhen(entry.id), formatDuration(entry.durationMs), entry.model];
     if (entry.app) parts.push(entry.app);
+    if (entry.edit) parts.push(t("history_edit").replace("{instruction}", entry.edit));
     meta.textContent = parts.join(" \u00b7 ");
   };
   renderMeta(e);
@@ -764,7 +768,9 @@ function renderHistoryEntry(e: HistoryEntry): HTMLElement {
       }
     });
     rerun.title = t("history_rerun_title");
-    actions.appendChild(rerun);
+    // An edit's recording is the instruction; re-running it as a dictation
+    // would replace the edited text with it.
+    if (!e.edit) actions.appendChild(rerun);
   }
   actions.appendChild(
     smallButton(t("history_delete"), async () => {

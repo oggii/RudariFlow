@@ -11,7 +11,7 @@
 
 Lokale Sprache-zu-Text Diktier-App für Windows, angetrieben von [whisper.cpp](https://github.com/ggml-org/whisper.cpp) mit GPU-Beschleunigung. Globaler Hotkey, Push-to-Talk oder Toggle-Modus, automatisches Einfügen des transkribierten Texts.
 
-> **v0.6.2, Windows.** Neu: „Schreiben in“ macht aus jedem Diktat eine Sprache, und das Wörterbuch lässt sich importieren und exportieren. Seit 0.6.0: lokale KI-Korrektur mit Regeln pro App, Wörterbuch, Verlauf, Ersetzungen und der Befehl „Abschicken“ (siehe [Changelog](CHANGELOG.md)). Ein Installer für jede GPU: NVIDIA GeForce RTX läuft über CUDA, AMD Radeon und Intel Arc über Vulkan, alles andere fällt auf die CPU zurück. Das Backend wird zur Laufzeit automatisch gewählt.
+> **v0.7.0, Windows.** Neu: Bearbeiten per Stimme, Text markieren und sagen, was sich ändern soll. Seit 0.6: „Schreiben in“ macht aus jedem Diktat eine Sprache, Wörterbuch-Import und -Export, lokale KI-Korrektur mit Regeln pro App, Wörterbuch, Verlauf, Ersetzungen und der Befehl „Abschicken“ (siehe [Changelog](CHANGELOG.md)). Ein Installer für jede GPU: NVIDIA GeForce RTX läuft über CUDA, AMD Radeon und Intel Arc über Vulkan, alles andere fällt auf die CPU zurück. Das Backend wird zur Laufzeit automatisch gewählt.
 
 Vollständige Versionshistorie siehe [CHANGELOG.md](CHANGELOG.md).
 
@@ -32,6 +32,7 @@ Made by [oggi](https://0ggi.ch).
 - **Verlauf:** die letzten 200 Diktate bleiben auf deinem Computer, die letzten 50 mit Aufnahme. Kopieren, abspielen, löschen oder eine Aufnahme mit dem aktuellen Modell neu transkribieren. Lässt sich auf „Nur Text“ stellen oder ausschalten
 - **Letztes Diktat einfügen:** ein zweites Tastenkürzel (Standard Alt+Umschalt+V) fügt dein letztes Diktat erneut ein
 - **Andere Apps während der Aufnahme stummschalten:** Musik und Videos verstummen, während du diktierst, und kommen danach zurück (standardmäßig aus)
+- **Bearbeiten per Stimme:** Text in einer beliebigen App markieren, Hotkey halten und sagen, was sich ändern soll („kürzer“, „förmlicher“, „auf Türkisch“, „lösch das“), oder den neuen Wortlaut sprechen; das lokale Modell schreibt die Markierung an Ort und Stelle um, Strg+Z macht es rückgängig. Terminals, Adressleisten und Passwortfelder bleiben unberührt
 - **KI-Korrektur, komplett lokal:** ein Sprachmodell auf deinem PC entfernt Füllwörter, übernimmt gesprochene Korrekturen („Dienstag, nein, Mittwoch“), korrigiert Grammatik und Satzzeichen, macht Listen und glättet im Stil „Geschliffen“ deine Sätze. Es behält die gesprochene Sprache und beantwortet nie, was du diktierst; stellst du bei „Schreiben in“ eine Sprache ein, schreibt es jedes Diktat in dieser Sprache und übersetzt, wenn du beim Sprechen die Sprache wechselst. Regeln pro App („kleingeschrieben in WhatsApp“, „formell in Outlook“, „keine KI in VS Code“) passen auf das Programm oder ein Wort im Fenstertitel und funktionieren so auch für Websites. Läuft mit Gemma 4 (standardmäßig E4B, wahlweise 12B oder E2B) in einem mitgelieferten llama.cpp-Server; das Modell wird einmal heruntergeladen (3 bis 7 GB), danach verlässt nichts deinen PC. Ist das Modell nicht bereit oder zu langsam, wird der reine Whisper-Text eingefügt. Standardmäßig aus
 - Mehrere Whisper-Modelle wählbar: tiny → large-v3-turbo, mit Auto-Download bei Auswahl
 - Sprachen: Auto-Erkennung oder eine der rund 100 Sprachen, die Whisper kann
