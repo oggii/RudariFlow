@@ -35,26 +35,33 @@ tokio = { version = "1", features = ["full"] }
 dirs = "6"
 arboard = "3"
 regex = "1"
+getrandom = "0.3"
+whatlang = "0.18"
 futures-util = "0.3"
 tauri-plugin-autostart = "2.5.1"
 # raw-api re-exports whisper-rs-sys for ggml device enumeration.
 whisper-rs = { version = "0.16", features = ["raw-api"] }
 
 [target.'cfg(windows)'.dependencies]
-# Low-level mouse hook for side-button hotkeys (src/mouse_hotkey.rs).
+# Low-level mouse hook for side-button hotkeys (src/mouse_hotkey.rs); the
+# foreground app for AI cleanup rules (src/foreground_app.rs).
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
+  "Win32_Graphics_Dwm",
   "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
-# Core Audio sessions for muting other apps while recording (src/mute.rs).
+# Core Audio sessions for muting other apps while recording (src/mute.rs);
+# a kill-on-close Job Object for the AI server (src/llm_server.rs).
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Media_Audio",
+  "Win32_Security",
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",
   "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
   "Win32_System_Variant",
 ] }
 
@@ -65,3 +72,7 @@ path = "examples/spike.rs"
 [[example]]
 name = "bench"
 path = "examples/bench.rs"
+
+[[example]]
+name = "ai_bench"
+path = "examples/ai_bench.rs"

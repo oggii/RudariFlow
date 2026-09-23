@@ -576,29 +576,6 @@ kbd {
   color: var(--text);
 }
 
-/* ── Custom Vocabulary textarea ─────────────────────── */
-
-#custom-prompt {
-  width: 100%;
-  min-height: 64px;
-  resize: vertical;
-  font: inherit;
-  padding: 8px 10px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  color: var(--text);
-  box-sizing: border-box;
-}
-#custom-prompt::placeholder {
-  color: var(--text-tertiary);
-}
-#custom-prompt:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-subtle);
-}
-
 /* ── Small buttons ──────────────────────────────────── */
 
 .btn-secondary {
@@ -796,4 +773,255 @@ kbd {
   display: flex;
   gap: 2px;
   margin-right: -6px;
+}
+
+/* ── AI cleanup ─────────────────────────────────────── */
+
+.subsection-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 28px 0 4px;
+}
+
+.subsection-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  margin-bottom: 12px;
+  max-width: 560px;
+}
+
+.ai-status[data-tone="ok"] { color: var(--green); }
+.ai-status[data-tone="warn"] { color: var(--yellow); }
+.ai-status[data-tone="error"] { color: var(--red); }
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ai-model-row {
+  max-width: 440px;
+}
+
+.download-progress {
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.progress-track {
+  height: 3px;
+  background: var(--surface);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.field-textarea {
+  width: 100%;
+  min-height: 56px;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.45;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  transition: border-color var(--transition);
+}
+.field-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+.rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.rule-list:empty {
+  display: none;
+}
+
+.rule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 2fr) auto auto;
+  align-items: start;
+  gap: 8px;
+}
+
+.rule-row input[type="text"] {
+  max-width: none;
+}
+
+.rule-instructions {
+  width: 100%;
+  min-height: 33px;
+  field-sizing: content;
+  resize: none;
+  overflow: hidden;
+  font: inherit;
+  line-height: 1.4;
+  padding: 7px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  transition: border-color var(--transition), opacity var(--transition);
+}
+.rule-instructions:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+.rule-instructions:disabled {
+  opacity: 0.4;
+}
+
+.rule-off {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 33px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rule-off input {
+  accent-color: var(--accent);
+}
+
+.rule-row .icon-btn {
+  margin-top: 3px;
+}
+
+.ai-test {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 32px;
+}
+
+.ai-test-controls {
+  display: flex;
+  gap: 8px;
+}
+.ai-test-controls input[type="text"] {
+  flex: 1;
+  max-width: 240px;
+}
+
+.ai-test-result {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ai-test-result p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+#ai-test-meta[data-tone="warn"] { color: var(--yellow); }
+#ai-test-meta[data-tone="error"] { color: var(--red); }
+
+/* ── Dictionary ─────────────────────────────────────── */
+
+#dict-count {
+  opacity: 0.75;
+}
+
+.dict-options {
+  margin-bottom: 16px;
+}
+
+.dict-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.dict-add {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dict-add input[type="text"] {
+  flex: 1;
+  max-width: none;
+  background: var(--bg);
+}
+
+.dict-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dict-add-btn svg {
+  width: 11px;
+  height: 11px;
+}
+
+.dict-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 12px 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.dict-row:last-child {
+  border-bottom: none;
+}
+.dict-row:hover {
+  background: var(--surface-hover);
+}
+
+.dict-term {
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.dict-empty {
+  padding: 16px;
+}
+
+.dict-tip {
+  margin: 10px 0 0;
+}
+
+.dict-long {
+  color: var(--yellow);
 }

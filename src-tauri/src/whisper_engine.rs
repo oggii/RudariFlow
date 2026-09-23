@@ -44,6 +44,15 @@ impl ActiveBackend {
     }
 }
 
+/// Name of the GPU Whisper uses (or will use) for this `gpuBackend` setting;
+/// `None` for CPU. The AI cleanup server runs on the same card.
+pub fn preferred_gpu_name(gpu_backend: &str) -> Option<String> {
+    match backend_candidates(gpu_backend, &list_gpu_devices()).into_iter().next()? {
+        ActiveBackend::Gpu(device) => Some(device.name),
+        ActiveBackend::Cpu => None,
+    }
+}
+
 /// Enumerate GPU devices the same way whisper.cpp does when it resolves
 /// `gpu_device`, tagging each with its backend.
 pub fn list_gpu_devices() -> Vec<GpuDevice> {
@@ -235,13 +244,15 @@ impl WhisperEngine {
     /// Caller is responsible for `ensure_loaded` before this; this fails
     /// loudly if no model is resident. With `overlay`, partial transcripts
     /// stream into the recording pill.
+    /// Returns the text and the language Whisper used (detected, or the one
+    /// set in the settings), as an English name such as "German".
     pub fn transcribe(
         &self,
         overlay: Option<&AppHandle>,
         samples: &[f32],
         language: &str,
         custom_prompt: &str,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<String>), String> {
         let state = self.lock();
         let loaded = state
             .loaded
@@ -289,6 +300,7 @@ impl WhisperEngine {
             .map_err(|e| format!("whisper full() failed: {e:?}"))?;
 
         let text = collect_segments(&wstate)?;
+        let language = whisper_rs::get_lang_str_full(wstate.full_lang_id_from_state()).map(capitalize);
 
         // Final event so the overlay knows to stop accumulating.
         if let Some(overlay) = overlay.and_then(|app| app.get_webview_window("overlay")) {
@@ -301,7 +313,15 @@ impl WhisperEngine {
             );
         }
 
-        Ok(text)
+        Ok((text, language))
+    }
+}
+
+fn capitalize(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 

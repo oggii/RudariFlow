@@ -1,21 +1,26 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+use rudariflow_lib::ai_cleanup::AppContext;
+use rudariflow_lib::ai_models;
 use rudariflow_lib::audio;
 use rudariflow_lib::cleanup::cleanup_text;
+use rudariflow_lib::dictionary;
 use rudariflow_lib::downloader;
+use rudariflow_lib::foreground_app;
 use rudariflow_lib::history::{self, History, HistoryEntry};
+use rudariflow_lib::llm_server::{LlmServer, ServerStatus};
 use rudariflow_lib::mouse_hotkey;
 use rudariflow_lib::paste::paste_text;
+use rudariflow_lib::polish::{polish, Polished};
 use rudariflow_lib::recorder::{model_label, transcribe_samples, Recorder, RecordingState};
-use rudariflow_lib::replacements::apply_replacements;
 use rudariflow_lib::send_command::strip_send_command;
 use rudariflow_lib::settings::Settings;
 use rudariflow_lib::startup_log;
@@ -27,6 +32,42 @@ struct AppState {
     app_dir: PathBuf,
     whisper_engine: Arc<WhisperEngine>,
     history: Arc<History>,
+    /// The AI cleanup model server.
+    llm: Arc<LlmServer>,
+    /// Id of the AI model being downloaded, if any.
+    ai_download: Mutex<Option<String>>,
+}
+
+/// Set in `setup`; lets the AI server report status changes to the UI.
+static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
+
+/// Where the bundled llama.cpp server lives: `llama\` next to the exe (the
+/// installer's resource folder), or `RUDARIFLOW_LLAMA_DIR` for dev builds.
+fn llama_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("RUDARIFLOW_LLAMA_DIR") {
+        return PathBuf::from(dir);
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("llama")))
+        .unwrap_or_else(|| PathBuf::from("llama"))
+}
+
+/// The selected AI model's file, if AI cleanup is on and it is downloaded.
+fn ai_model_to_run(settings: &Settings, app_dir: &std::path::Path) -> Option<PathBuf> {
+    if !settings.ai_cleanup {
+        return None;
+    }
+    let path = ai_models::model_path(app_dir, ai_models::find(&settings.ai_model)?);
+    path.exists().then_some(path)
+}
+
+/// Start the AI server in the background when it should run.
+fn warm_ai(state: &AppState) {
+    let settings = state.settings.lock().unwrap().clone();
+    if let Some(model) = ai_model_to_run(&settings, &state.app_dir) {
+        state.llm.warm(model, Some(settings.gpu_backend));
+    }
 }
 
 /// What a global hotkey does.
@@ -67,14 +108,20 @@ fn get_settings(state: State<AppState>) -> Settings {
 #[tauri::command]
 fn save_settings(state: State<AppState>, settings: Settings) -> Result<(), String> {
     settings.save(&state.app_dir)?;
-    let engine_invalidate = {
+    let (engine_invalidate, ai_restart) = {
         let prev = state.settings.lock().unwrap();
-        prev.gpu_backend != settings.gpu_backend
-            || prev.whisper_model != settings.whisper_model
+        (
+            prev.gpu_backend != settings.gpu_backend || prev.whisper_model != settings.whisper_model,
+            prev.ai_cleanup != settings.ai_cleanup || prev.ai_model != settings.ai_model,
+        )
     };
     *state.settings.lock().unwrap() = settings;
     if engine_invalidate {
         state.whisper_engine.invalidate();
+    }
+    if ai_restart {
+        state.llm.stop();
+        warm_ai(&state);
     }
     Ok(())
 }
@@ -104,7 +151,7 @@ async fn download_model(
     let url = rudariflow_lib::whisper_engine::model_download_url(&model_size);
     let model_file = rudariflow_lib::whisper_engine::model_filename(&model_size);
     let dest = state.app_dir.join(&model_file);
-    downloader::download_model(app, &url, &dest).await
+    downloader::download_model(app, &url, &dest, "download-progress").await
 }
 
 #[tauri::command]
@@ -164,15 +211,94 @@ async fn history_rerun(state: State<'_, AppState>, id: u64) -> Result<HistoryEnt
     }
     let samples = history::read_wav(&state.history.audio_path(id))?;
     let settings = state.settings.lock().unwrap().clone();
-    let raw = transcribe_samples(None, &settings, &state.app_dir, &state.whisper_engine, &samples)
-        .await?;
-    let cleaned = cleanup_text(&raw);
+    let (raw, language) =
+        transcribe_samples(None, &settings, &state.app_dir, &state.whisper_engine, &samples).await?;
+    let cleaned = dictionary::apply_spelling(&cleanup_text(&raw), &dictionary::terms(&settings.custom_prompt));
     let text = strip_send_command(&cleaned).unwrap_or(cleaned);
-    let text = apply_replacements(&text, &settings.replacements);
+    let ctx = AppContext { exe: entry.app.clone(), title: entry.title.clone() };
+    let polished = polish(&settings, &state.app_dir, &state.llm, &ctx, &text, language.as_deref(), || {}).await;
     state
         .history
-        .update_text(id, &text, &model_label(&settings))
+        .update_text(id, &polished.text, polished.raw.as_deref(), &model_label(&settings))
         .ok_or_else(|| "History entry not found".to_string())
+}
+
+#[derive(serde::Serialize)]
+struct AiModelInfo {
+    id: &'static str,
+    label: &'static str,
+    bytes: u64,
+    downloaded: bool,
+}
+
+#[derive(serde::Serialize)]
+struct AiStatus {
+    server: ServerStatus,
+    /// The bundled llama-server was found.
+    installed: bool,
+    models: Vec<AiModelInfo>,
+    downloading: Option<String>,
+}
+
+#[tauri::command]
+fn ai_status(state: State<AppState>) -> AiStatus {
+    AiStatus {
+        server: state.llm.status(),
+        installed: state.llm.is_installed(),
+        models: ai_models::MODELS
+            .iter()
+            .map(|m| AiModelInfo {
+                id: m.id,
+                label: m.label,
+                bytes: m.bytes,
+                downloaded: ai_models::model_path(&state.app_dir, m).exists(),
+            })
+            .collect(),
+        downloading: state.ai_download.lock().unwrap().clone(),
+    }
+}
+
+/// Download an AI model (progress as `ai-download-progress` events).
+#[tauri::command]
+async fn ai_download_model(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let model = ai_models::find(&id).ok_or("Unknown AI model")?;
+    {
+        let mut downloading = state.ai_download.lock().unwrap();
+        if downloading.is_some() {
+            return Err("A download is already running".to_string());
+        }
+        *downloading = Some(id.clone());
+    }
+    let dest = ai_models::model_path(&state.app_dir, model);
+    let result =
+        downloader::download_model(app, &ai_models::download_url(model), &dest, "ai-download-progress").await;
+    *state.ai_download.lock().unwrap() = None;
+    result?;
+    warm_ai(&state);
+    Ok(())
+}
+
+/// Clean up a sample text as if it were dictated into `app` (settings test
+/// box). Works before the AI cleanup switch is on.
+#[tauri::command]
+async fn ai_test(state: State<'_, AppState>, text: String, app: String) -> Result<Polished, String> {
+    let mut settings = state.settings.lock().unwrap().clone();
+    settings.ai_cleanup = true;
+    let ctx = AppContext { exe: app.trim().to_lowercase(), title: String::new() };
+    let text = dictionary::apply_spelling(&cleanup_text(&text), &dictionary::terms(&settings.custom_prompt));
+    Ok(polish(&settings, &state.app_dir, &state.llm, &ctx, &text, None, || {}).await)
+}
+
+/// Restart the AI server, e.g. after it failed twice.
+#[tauri::command]
+fn ai_restart(state: State<AppState>) {
+    state.llm.stop();
+    warm_ai(&state);
+}
+
+#[tauri::command]
+fn list_open_apps() -> Vec<String> {
+    foreground_app::open_apps()
 }
 
 #[tauri::command]
@@ -386,6 +512,9 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
             // mutex; ignores errors here — they surface at
             // transcription time.
             let s = state.settings.lock().unwrap().clone();
+            if let Some(model) = ai_model_to_run(&s, &state.app_dir) {
+                state.llm.warm(model, Some(s.gpu_backend.clone()));
+            }
             if s.engine == "local" {
                 let model_path = state
                     .app_dir
@@ -438,6 +567,7 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
                         &state.app_dir,
                         &state.whisper_engine,
                         &state.history,
+                        &state.llm,
                     )
                     .await
                 {
@@ -474,6 +604,7 @@ async fn do_toggle_recording(
                     &state.app_dir,
                     &state.whisper_engine,
                     &state.history,
+                    &state.llm,
                 )
                 .await?;
             Ok(result)
@@ -490,6 +621,15 @@ fn main() {
     let settings = Settings::load(&app_dir);
     startup_log::log("settings loaded");
     let history = Arc::new(History::load(&app_dir));
+    let llm = Arc::new(LlmServer::new(
+        llama_dir(),
+        app_dir.join("llm-server.log"),
+        Box::new(|status| {
+            if let Some(app) = APP_HANDLE.get() {
+                let _ = app.emit("ai-status", status);
+            }
+        }),
+    ));
     let initial_hotkey = settings.hotkey.clone();
     let initial_paste_last_hotkey = settings.paste_last_hotkey.clone();
     let initial_autostart = settings.autostart;
@@ -507,6 +647,8 @@ fn main() {
             app_dir,
             whisper_engine: Arc::new(WhisperEngine::new()),
             history,
+            llm,
+            ai_download: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -526,6 +668,11 @@ fn main() {
             history_clear,
             history_audio,
             history_rerun,
+            ai_status,
+            ai_download_model,
+            ai_test,
+            ai_restart,
+            list_open_apps,
             copy_text,
             diag_log,
         ])
@@ -540,6 +687,8 @@ fn main() {
         })
         .setup(move |app| {
             startup_log::log("setup() entered");
+            let _ = APP_HANDLE.set(app.handle().clone());
+            warm_ai(&app.state::<AppState>());
             // The CUDA runtime and Vulkan loader DLLs are load-time imports and
             // are installed next to rudariflow.exe (see tauri.conf.json).
             if let Ok(rd) = app.path().resource_dir() {
@@ -713,6 +862,11 @@ fn main() {
             startup_log::log("setup() completed successfully");
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let RunEvent::Exit = event {
+                app.state::<AppState>().llm.stop();
+            }
+        });
 }

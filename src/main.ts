@@ -5,6 +5,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { setLang, getLang, detectDefaultLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
+import { initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
+import { initDictionary, renderDictionary } from "./dictionary";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
 
 interface Settings {
@@ -25,6 +27,12 @@ interface Settings {
   history: string;
   pasteLastHotkey: string;
   muteAudio: boolean;
+  aiCleanup: boolean;
+  aiModel: string;
+  aiStyle: string;
+  aiInstructions: string;
+  aiRules: AppRule[];
+  swissSpelling: boolean;
 }
 
 interface Replacement {
@@ -38,6 +46,10 @@ interface HistoryEntry {
   durationMs: number;
   model: string;
   hasAudio: boolean;
+  /** Text before AI cleanup, when the AI changed it. */
+  raw?: string | null;
+  /** Program the dictation went into, e.g. "whatsapp.root". */
+  app?: string;
 }
 
 interface MicDevice {
@@ -73,8 +85,6 @@ const modeToggle = document.getElementById("mode-toggle")!;
 const modePtt = document.getElementById("mode-ptt")!;
 const hotkeyText = document.getElementById("hotkey-text")!;
 const hotkeyBtn = document.getElementById("hotkey-btn") as HTMLButtonElement;
-const customPromptTextarea = document.getElementById("custom-prompt") as HTMLTextAreaElement;
-const customPromptRow = document.getElementById("custom-prompt-row")!;
 const pasteLastBtn = document.getElementById("paste-last-btn") as HTMLButtonElement;
 const pasteLastText = document.getElementById("paste-last-text")!;
 const pasteLastClear = document.getElementById("paste-last-clear") as HTMLButtonElement;
@@ -182,7 +192,7 @@ async function loadSettings() {
 
   // Groq key
   groqKey.value = currentSettings.groqApiKey;
-  customPromptTextarea.value = currentSettings.customPrompt || "";
+  renderDictionary();
 
   // Recording mode
   setRecordingMode(currentSettings.recordingMode);
@@ -196,6 +206,7 @@ async function loadSettings() {
   renderReplacements();
   historyModeSelect.value = currentSettings.history || "audio";
   await refreshHistory();
+  await renderAiSettings();
 }
 
 interface GpuDevice {
@@ -232,8 +243,6 @@ function setEngine(engine: string) {
   engineCloud.classList.toggle("active", engine === "cloud");
   localSettings.classList.toggle("hidden", engine !== "local");
   cloudSettings.classList.toggle("hidden", engine !== "cloud");
-  // Custom vocab applies to both engines (whisper-cli's --prompt and Groq's prompt)
-  customPromptRow.classList.remove("hidden");
 }
 
 function setRecordingMode(mode: string) {
@@ -308,7 +317,6 @@ async function saveSettings() {
   currentSettings.gpuBackend = gpuBackendSelect.value;
   currentSettings.volume = parseFloat(volumeSlider.value);
   currentSettings.autostart = autostartToggle.checked;
-  currentSettings.customPrompt = customPromptTextarea.value;
   currentSettings.sendCommand = sendCommandSelect.value;
   currentSettings.muteAudio = muteAudioToggle.checked;
   currentSettings.history = historyModeSelect.value;
@@ -340,6 +348,8 @@ uiLanguageSelect.addEventListener("change", async () => {
   renderHotkeys();
   await saveSettings();
   await refreshHistory();
+  await renderAiSettings();
+  renderDictionary();
 });
 
 sendCommandSelect.addEventListener("change", () => saveSettings());
@@ -393,7 +403,6 @@ downloadBtn.addEventListener("click", async () => {
 });
 
 groqKey.addEventListener("change", () => saveSettings());
-customPromptTextarea.addEventListener("change", () => saveSettings());
 
 modeToggle.addEventListener("click", () => {
   setRecordingMode("toggle");
@@ -689,7 +698,9 @@ function renderHistoryEntry(e: HistoryEntry): HTMLElement {
   const meta = document.createElement("span");
   meta.className = "history-meta";
   const renderMeta = (entry: HistoryEntry) => {
-    meta.textContent = `${formatWhen(entry.id)} \u00b7 ${formatDuration(entry.durationMs)} \u00b7 ${entry.model}`;
+    const parts = [formatWhen(entry.id), formatDuration(entry.durationMs), entry.model];
+    if (entry.app) parts.push(entry.app);
+    meta.textContent = parts.join(" \u00b7 ");
   };
   renderMeta(e);
 
@@ -702,6 +713,16 @@ function renderHistoryEntry(e: HistoryEntry): HTMLElement {
       setTimeout(() => (b.textContent = t("history_copy")), 1200);
     }),
   );
+  if (e.raw) {
+    let showingRaw = false;
+    actions.appendChild(
+      smallButton(t("history_original"), (b) => {
+        showingRaw = !showingRaw;
+        text.textContent = showingRaw ? e.raw! : e.text;
+        b.textContent = showingRaw ? t("history_ai_version") : t("history_original");
+      }),
+    );
+  }
   if (e.hasAudio) {
     actions.appendChild(
       smallButton(t("history_play"), async (b) => {
@@ -727,9 +748,9 @@ function renderHistoryEntry(e: HistoryEntry): HTMLElement {
       b.textContent = t("history_rerunning");
       try {
         const updated = await invoke<HistoryEntry>("history_rerun", { id: e.id });
-        text.textContent = updated.text;
-        renderMeta(updated);
-        b.textContent = t("history_rerun");
+        if (playing && item.contains(playing.btn)) stopPlayback();
+        item.replaceWith(renderHistoryEntry(updated));
+        return;
       } catch (err) {
         console.error("history_rerun failed:", err);
         b.textContent = t("history_rerun_failed");
@@ -800,6 +821,9 @@ document.getElementById("credit-link")?.addEventListener("click", async (e) => {
     console.error("Failed to open URL:", err);
   }
 });
+
+initAiSettings({ settings: () => currentSettings, save: saveSettings });
+initDictionary({ settings: () => currentSettings, save: saveSettings });
 
 // Initialize
 getVersion()

@@ -3,12 +3,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::ai_cleanup::AppContext;
 use crate::audio::{lock, samples_to_wav, AudioRecorder};
 use crate::cleanup::cleanup_text;
+use crate::dictionary;
+use crate::foreground_app;
 use crate::history::History;
+use crate::llm_server::LlmServer;
 use crate::mute;
 use crate::paste::{paste_text, press_submit};
-use crate::replacements::apply_replacements;
+use crate::polish::polish;
 use crate::send_command::strip_send_command;
 use crate::settings::Settings;
 use crate::startup_log;
@@ -73,6 +77,15 @@ fn update_overlay(app: &AppHandle, state: &RecordingState) {
         "[overlay] update_overlay done state={:?} post_visible={}",
         state, post_visible
     ));
+}
+
+/// The pill shows the Whisper text with a "Polishing" label while the AI runs.
+fn show_polishing(app: &AppHandle) {
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.eval(
+            "document.body.dataset.state = 'polishing'; if (window.__overlayUpdate) window.__overlayUpdate('polishing');",
+        );
+    }
 }
 
 fn emit_audio_empty(app: &AppHandle, state: Arc<Mutex<RecordingState>>) {
@@ -182,7 +195,11 @@ impl Recorder {
         app_dir: &PathBuf,
         engine: &Arc<WhisperEngine>,
         history: &History,
+        llm: &Arc<LlmServer>,
     ) -> Result<String, String> {
+        // The app the text will go into, read before anything else can take focus.
+        let ctx = foreground_app::current();
+
         // Stop recording
         {
             let mut state = lock(&self.state);
@@ -199,7 +216,7 @@ impl Recorder {
         let _ready = ReadyOnDrop { app, state: &self.state };
 
         let result = self
-            .run_transcription_pipeline(app, settings, app_dir, engine, history)
+            .run_transcription_pipeline(app, settings, app_dir, engine, history, llm, &ctx)
             .await;
         if let Err(e) = &result {
             startup_log::log(&format!("[recorder] transcription failed: {}", e));
@@ -214,6 +231,8 @@ impl Recorder {
         app_dir: &PathBuf,
         engine: &Arc<WhisperEngine>,
         history: &History,
+        llm: &Arc<LlmServer>,
+        ctx: &AppContext,
     ) -> Result<String, String> {
         let taken = lock(&self.audio_recorder).stop_and_take_samples();
         let samples = match taken {
@@ -224,20 +243,23 @@ impl Recorder {
             other => other?,
         };
 
-        let raw_text = transcribe_samples(Some(app), settings, app_dir, engine, &samples).await?;
-        let cleaned = cleanup_text(&raw_text);
+        let (raw_text, language) = transcribe_samples(Some(app), settings, app_dir, engine, &samples).await?;
+        let cleaned = dictionary::apply_spelling(&cleanup_text(&raw_text), &dictionary::terms(&settings.custom_prompt));
 
         let (text, submit) = match strip_send_command(&cleaned) {
             Some(rest) if settings.send_command != "off" => (rest, true),
             _ => (cleaned, false),
         };
-        let text = apply_replacements(&text, &settings.replacements);
+        let polished =
+            polish(settings, app_dir, llm, ctx, &text, language.as_deref(), || show_polishing(app)).await;
+        let text = polished.text;
 
         let pasted = if text.is_empty() { Ok(()) } else { paste_text(&text) };
         if !text.is_empty() {
             // Recorded even when the paste failed, so the text is not lost.
             let model = model_label(settings);
-            if history.record(&text, &samples, &model, &settings.history).is_some() {
+            let raw = polished.raw.as_deref();
+            if history.record(&text, raw, ctx, &samples, &model, &settings.history).is_some() {
                 let _ = app.emit("history-updated", ());
             }
         }
@@ -276,13 +298,14 @@ pub fn model_label(settings: &Settings) -> String {
 
 /// Transcribe 16 kHz mono samples with the engine chosen in `settings`.
 /// With `overlay`, the local engine streams partial text into the pill.
+/// Also returns the spoken language when the engine reports it (local only).
 pub async fn transcribe_samples(
     overlay: Option<&AppHandle>,
     settings: &Settings,
     app_dir: &PathBuf,
     engine: &Arc<WhisperEngine>,
     samples: &[f32],
-) -> Result<String, String> {
+) -> Result<(String, Option<String>), String> {
     match settings.engine.as_str() {
         "local" => {
             let model_path =
@@ -305,7 +328,7 @@ pub async fn transcribe_samples(
             )
             .await;
             let _ = std::fs::remove_file(&temp_path);
-            text
+            text.map(|t| (t, None))
         }
         _ => Err(format!("Unknown engine: {}", settings.engine)),
     }
