@@ -65,6 +65,14 @@ pub struct Settings {
     /// (translating if needed); empty = the language that was spoken.
     #[serde(rename = "aiOutputLanguage", default)]
     pub ai_output_language: String,
+    /// Edit mode: with text selected, the hotkey edits it by voice (needs
+    /// AI cleanup).
+    #[serde(rename = "editMode", default = "default_true")]
+    pub edit_mode: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_volume() -> f32 {
@@ -126,6 +134,7 @@ impl Default for Settings {
             ai_rules: Vec::new(),
             swiss_spelling: false,
             ai_output_language: String::new(),
+            edit_mode: true,
         }
     }
 }

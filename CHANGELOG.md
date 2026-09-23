@@ -5,6 +5,27 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Edit mode** (AI cleanup tab, on by default). Select text in any app,
+  hold the hotkey and say what to change ("make it shorter", "more formal",
+  "translate this into Turkish", "change five to six", "make this a list"),
+  say the new wording itself, or say "delete that". The local model rewrites
+  the selection and RudariFlow pastes over it; Ctrl+Z in the app undoes it.
+  The pill shows "✎ 12 words" while you speak. With nothing selected the
+  hotkey dictates as before. The selection is read through Windows UI
+  Automation, so nothing is copied and no keys are pressed before you
+  speak; apps that do not share their text, terminals, address and search
+  bars, password fields, apps set to No AI and selections over 6,000
+  characters get a normal dictation. History keeps the original text and
+  what you said. Measured on an RX 6800: 0.2 to 0.7 s for a sentence,
+  1.4 s to shorten and 3.7 s to rewrite a 900-character email.
+
+### Changed
+- The AI server keeps 8,192 tokens of context (was 4,096), enough for a
+  6,000-character selection and its rewrite.
+
 ## [0.6.2] - 2026-09-23
 
 ### Improved

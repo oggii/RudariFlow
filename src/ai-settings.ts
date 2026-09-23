@@ -19,6 +19,7 @@ export interface AiFields {
   aiInstructions: string;
   aiRules: AppRule[];
   aiOutputLanguage: string;
+  editMode: boolean;
   /** Whisper's language setting (Engine tab), for the auto-detect hint. */
   language: string;
 }
@@ -77,6 +78,7 @@ const instructions = $<HTMLTextAreaElement>("ai-instructions");
 const outputSelect = $<HTMLSelectElement>("ai-output-select");
 const outputWarn = $("ai-output-warn");
 const outputSkip = $("ai-output-skip");
+const editToggle = $<HTMLInputElement>("ai-edit-toggle");
 const ruleList = $("ai-rule-list");
 const ruleEmpty = $("ai-rule-empty");
 const ruleAdd = $<HTMLButtonElement>("ai-rule-add");
@@ -379,6 +381,11 @@ export function initAiSettings(h: AiSettingsHost) {
     await host.save();
   });
 
+  editToggle.addEventListener("change", async () => {
+    host.settings().editMode = editToggle.checked;
+    await host.save();
+  });
+
   instructions.addEventListener("change", async () => {
     host.settings().aiInstructions = instructions.value;
     await host.save();
@@ -414,6 +421,7 @@ export function initAiSettings(h: AiSettingsHost) {
 export async function renderAiSettings() {
   const s = host.settings();
   toggle.checked = s.aiCleanup;
+  editToggle.checked = s.editMode ?? true;
   setStyle(s.aiStyle);
   instructions.value = s.aiInstructions ?? "";
   renderOutputLanguage();

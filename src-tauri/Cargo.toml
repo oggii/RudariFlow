@@ -64,6 +64,7 @@ windows = { version = "0.61", features = [
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
   "Win32_System_Variant",
+  "Win32_UI_Accessibility",
 ] }
 
 [[example]]
@@ -77,3 +78,7 @@ path = "examples/bench.rs"
 [[example]]
 name = "ai_bench"
 path = "examples/ai_bench.rs"
+
+[[example]]
+name = "uia_probe"
+path = "examples/uia_probe.rs"
