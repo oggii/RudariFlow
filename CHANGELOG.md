@@ -5,7 +5,7 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.1] - 2026-09-23 - Write in, dictionary import and export
 
 ### Added
 - **Write in** (AI cleanup tab): pick one language and the AI writes every
@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   who switch languages while speaking: set Engine > Language to Auto-detect
   so Whisper hears each language correctly, and the AI turns it into, say,
   English. The output check now makes sure the answer is in the chosen
-  language. Default is "Same as spoken", which keeps the old behaviour.
+  language. Default is "Same language as spoken", which keeps the old behaviour.
 - **Dictionary import and export.** Export saves the list as a text file,
   one entry per line; Import merges a file into the list and skips words
   that are already there (commas, a UTF-8 BOM and blank lines are fine). Use
