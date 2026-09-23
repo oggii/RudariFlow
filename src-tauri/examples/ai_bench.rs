@@ -153,7 +153,7 @@ fn main() {
         let load_ms = started.elapsed().as_millis();
 
         // Warm-up: fills the prompt cache like the first dictation after start.
-        let (system, user) = build_messages("polished", "", &[], &AppContext::default(), None, "Hello there.");
+        let (system, user) = build_messages("polished", "", &[], &[], &AppContext::default(), None, "Hello there.");
         let _ = runtime.block_on(complete(&endpoint, &system, &user, 0.2, 64, Duration::from_secs(60)));
 
         report.push_str(&format!("## {}\n\nLoaded in {} ms.\n\n", name, load_ms));
@@ -166,7 +166,7 @@ fn main() {
             let rules: Vec<&AppRule> = if sample.rule.is_empty() { vec![] } else { vec![&rule] };
             // Whisper reports the spoken language with every dictation.
             let language = if sample.name.starts_with("DE") { "German" } else { "English" };
-            let (system, user) = build_messages("polished", "", &rules, &ctx, Some(language), sample.text);
+            let (system, user) = build_messages("polished", "", &[], &rules, &ctx, Some(language), sample.text);
             let (temperature, max_tokens) = sampling("polished", sample.text);
 
             let mut times = Vec::new();

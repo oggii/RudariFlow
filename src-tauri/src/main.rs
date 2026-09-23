@@ -12,6 +12,7 @@ use rudariflow_lib::ai_cleanup::AppContext;
 use rudariflow_lib::ai_models;
 use rudariflow_lib::audio;
 use rudariflow_lib::cleanup::cleanup_text;
+use rudariflow_lib::dictionary;
 use rudariflow_lib::downloader;
 use rudariflow_lib::foreground_app;
 use rudariflow_lib::history::{self, History, HistoryEntry};
@@ -212,7 +213,7 @@ async fn history_rerun(state: State<'_, AppState>, id: u64) -> Result<HistoryEnt
     let settings = state.settings.lock().unwrap().clone();
     let (raw, language) =
         transcribe_samples(None, &settings, &state.app_dir, &state.whisper_engine, &samples).await?;
-    let cleaned = cleanup_text(&raw);
+    let cleaned = dictionary::apply_casing(&cleanup_text(&raw), &dictionary::terms(&settings.custom_prompt));
     let text = strip_send_command(&cleaned).unwrap_or(cleaned);
     let ctx = AppContext { exe: entry.app.clone(), title: entry.title.clone() };
     let polished = polish(&settings, &state.app_dir, &state.llm, &ctx, &text, language.as_deref(), || {}).await;
@@ -284,7 +285,7 @@ async fn ai_test(state: State<'_, AppState>, text: String, app: String) -> Resul
     let mut settings = state.settings.lock().unwrap().clone();
     settings.ai_cleanup = true;
     let ctx = AppContext { exe: app.trim().to_lowercase(), title: String::new() };
-    let text = cleanup_text(&text);
+    let text = dictionary::apply_casing(&cleanup_text(&text), &dictionary::terms(&settings.custom_prompt));
     Ok(polish(&settings, &state.app_dir, &state.llm, &ctx, &text, None, || {}).await)
 }
 

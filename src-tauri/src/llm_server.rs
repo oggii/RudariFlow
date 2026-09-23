@@ -342,6 +342,7 @@ impl LlmServer {
             "polished",
             "",
             &[],
+            &[],
             &crate::ai_cleanup::AppContext::default(),
             None,
             "Hello.",

@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   English dictation. Any failure,
   missing model or time limit pastes the plain Whisper text. Measured on
   an RX 6800: 0.2 to 0.8 s per dictation. Off by default.
+- **Dictionary tab** (replaces the Custom Vocabulary text box in Engine).
+  An input with Add and a list with Remove, like Aqua Voice's dictionary;
+  pasting a list with commas or line breaks adds every entry, duplicates
+  are skipped. Entries are still stored in `customPrompt` (no migration).
+  New: the transcript gets their exact spelling ("github" -> "GitHub",
+  whole words, any case), and AI cleanup receives the list in its cached
+  system prompt so it maps near-misses to it.
 - History keeps the app a dictation went into and, when the AI changed
   it, the original text ("Original" button).
 - `scripts/setup-llama.ps1` and `examples/ai_bench.rs` (model benchmark).

@@ -17,6 +17,7 @@ pub mod ai_models;
 pub mod llm_server;
 pub mod foreground_app;
 pub mod polish;
+pub mod dictionary;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

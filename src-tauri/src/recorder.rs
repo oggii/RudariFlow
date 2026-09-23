@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::ai_cleanup::AppContext;
 use crate::audio::{lock, samples_to_wav, AudioRecorder};
 use crate::cleanup::cleanup_text;
+use crate::dictionary;
 use crate::foreground_app;
 use crate::history::History;
 use crate::llm_server::LlmServer;
@@ -243,7 +244,7 @@ impl Recorder {
         };
 
         let (raw_text, language) = transcribe_samples(Some(app), settings, app_dir, engine, &samples).await?;
-        let cleaned = cleanup_text(&raw_text);
+        let cleaned = dictionary::apply_casing(&cleanup_text(&raw_text), &dictionary::terms(&settings.custom_prompt));
 
         let (text, submit) = match strip_send_command(&cleaned) {
             Some(rest) if settings.send_command != "off" => (rest, true),

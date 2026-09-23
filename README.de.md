@@ -24,7 +24,7 @@ Made by [oggi](https://0ggi.ch).
 - **Warmup beim Hotkey-Druck:** PTT-Druck lädt das Modell parallel vor, sodass es bereit ist, sobald du fertig gesprochen hast
 - **Streaming-Partial-Transkripte:** Text erscheint im Overlay, sobald Whisper jedes Segment ausgibt
 - **Auto-Backend-Erkennung:** NVIDIA CUDA wenn verfügbar, sonst Vulkan (AMD / Intel / NVIDIA), sonst CPU. Die Einstellungen zeigen die erkannten GPUs und erlauben, CUDA, Vulkan oder CPU zu erzwingen. Flash Attention ist bei CUDA an und bei Vulkan aus (auf einer RX 6800 doppelt so langsam); erzwingen mit `RUDARIFLOW_FLASH_ATTN=1` oder `=0`
-- **Eigenes Vokabular:** Domain-Begriffe (Namen, Fachjargon, Abkürzungen) zur Erkennungs-Steuerung einfügen
+- **Wörterbuch:** eigener Tab für Namen, Marken und Fachbegriffe. Wörter einzeln hinzufügen oder eine Liste einfügen (Kommas oder eines pro Zeile). Whisper bekommt sie als Prompt, der Text übernimmt ihre genaue Schreibweise („github“ wird zu „GitHub“), und die KI-Korrektur erhält die Liste ebenfalls
 - **No-Speech-Erkennung:** stumme Aufnahmen zeigen einen Hinweis statt nichts einzufügen
 - **Clipboard-sicheres Einfügen:** dein vorheriger Zwischenablage-Inhalt wird vor dem Auto-Paste gesichert und danach wiederhergestellt; Diktate landen nicht im Windows-Zwischenablageverlauf (Win+V) und nicht in der Cloud-Zwischenablage
 - **Ersetzungen:** sag einen kurzen Ausdruck, erhalte längeren Text, z. B. wird aus „meine Mail“ deine Adresse. Ganze Wörter, Groß-/Kleinschreibung egal; besteht ein Diktat nur aus dem Ausdruck, wird nur die Ersetzung eingefügt

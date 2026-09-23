@@ -24,7 +24,7 @@ Made by [oggi](https://0ggi.ch).
 - **Hotkey-press warmup:** pressing PTT preloads the model in parallel so it's hot by the time you finish speaking
 - **Streaming partial transcripts:** text appears in the overlay as Whisper emits each segment
 - **Auto backend detection:** NVIDIA CUDA when available, otherwise Vulkan (AMD / Intel / NVIDIA), otherwise CPU. Settings show the detected GPUs and let you force CUDA, Vulkan or CPU. Flash attention is on for CUDA and off for Vulkan (2× slower on an RX 6800); force it with `RUDARIFLOW_FLASH_ATTN=1` or `=0`
-- **Custom Vocabulary:** inject domain terms (names, jargon, acronyms) to bias recognition
+- **Dictionary:** its own tab for names, brands and jargon. Add words one at a time or paste a list (commas or one per line). Whisper gets them as its prompt, the transcript uses their exact spelling ("github" becomes "GitHub"), and AI cleanup gets the list too
 - **No-speech detection:** silent recordings show an overlay notice instead of pasting nothing
 - **Clipboard-safe paste:** your previous clipboard contents are saved and restored around auto-paste, and dictations stay out of the Windows clipboard history (Win+V) and cloud clipboard
 - **Replacements:** say a short phrase, get longer text, e.g. "my email" becomes your address. Matched as whole words, any capitalisation; a dictation that is only the phrase inserts just the replacement

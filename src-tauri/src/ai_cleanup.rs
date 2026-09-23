@@ -89,6 +89,10 @@ const STYLE_POLISHED: &str = "Style: polished. Improve phrasing and flow so it r
 
 const STYLE_LIGHT: &str = "Style: light. Keep the speaker's own words and sentence structure. Only make the fixes listed above.";
 
+/// Dictionary entries passed to the model; the list is part of the cached
+/// system prompt, so it costs time only after it changes.
+const MAX_DICTIONARY_TERMS: usize = 150;
+
 /// Window titles can hold long page names; the model only needs a hint.
 const MAX_TITLE_CHARS: usize = 120;
 
@@ -98,6 +102,7 @@ const MAX_TITLE_CHARS: usize = 120;
 pub fn build_messages(
     style: &str,
     global_instructions: &str,
+    dictionary: &[String],
     rules: &[&AppRule],
     ctx: &AppContext,
     language: Option<&str>,
@@ -106,6 +111,11 @@ pub fn build_messages(
     let mut system = String::from(SYSTEM_BASE);
     system.push_str("\n\n");
     system.push_str(if style == "light" { STYLE_LIGHT } else { STYLE_POLISHED });
+    if !dictionary.is_empty() {
+        let listed: Vec<&str> = dictionary.iter().take(MAX_DICTIONARY_TERMS).map(String::as_str).collect();
+        system.push_str("\n\nThe user's dictionary. When one of these words or names occurs, or something that sounds like it, write it exactly like this: ");
+        system.push_str(&listed.join(", "));
+    }
     let global = global_instructions.trim();
     if !global.is_empty() {
         system.push_str("\n\nThe user's instructions for all apps (they take priority over the style):\n");
@@ -366,6 +376,7 @@ mod tests {
         let (system, user) = build_messages(
             "polished",
             "Use ss instead of ß.",
+            &[],
             &[&r],
             &ctx("whatsapp.root", "WhatsApp"),
             Some("English"),
@@ -382,8 +393,16 @@ mod tests {
     }
 
     #[test]
+    fn dictionary_goes_into_the_system_prompt() {
+        let dict = vec!["GitHub".to_string(), "oggi".to_string()];
+        let (system, user) = build_messages("polished", "", &dict, &[], &AppContext::default(), None, "hi");
+        assert!(system.ends_with("write it exactly like this: GitHub, oggi"));
+        assert!(!user.contains("GitHub"));
+    }
+
+    #[test]
     fn messages_without_app_or_instructions() {
-        let (system, user) = build_messages("light", "  ", &[], &AppContext::default(), None, "Hello.");
+        let (system, user) = build_messages("light", "  ", &[], &[], &AppContext::default(), None, "Hello.");
         assert!(system.contains(STYLE_LIGHT));
         assert!(!system.contains("instructions for all apps"));
         assert_eq!(user, "<dictation>\nHello.\n</dictation>");
@@ -392,7 +411,7 @@ mod tests {
     #[test]
     fn long_window_titles_are_cut() {
         let title = "x".repeat(500);
-        let (_, user) = build_messages("polished", "", &[], &ctx("chrome", &title), None, "Hi.");
+        let (_, user) = build_messages("polished", "", &[], &[], &ctx("chrome", &title), None, "Hi.");
         assert!(user.contains(&"x".repeat(MAX_TITLE_CHARS)));
         assert!(!user.contains(&"x".repeat(MAX_TITLE_CHARS + 1)));
     }
@@ -467,7 +486,7 @@ mod tests {
     #[test]
     fn prompt_keeps_language_over_instructions() {
         let r = rule("outlook", "formal, German: Sie-Form", false);
-        let (system, user) = build_messages("polished", "", &[&r], &ctx("outlook", "Inbox"), Some("English"), "Done.");
+        let (system, user) = build_messages("polished", "", &[], &[&r], &ctx("outlook", "Inbox"), Some("English"), "Done.");
         assert!(system.contains("never change the language"));
         assert!(user.contains("never over the language of the dictation"));
     }

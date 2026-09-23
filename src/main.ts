@@ -6,6 +6,7 @@ import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { setLang, getLang, detectDefaultLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
 import { initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
+import { initDictionary, renderDictionary } from "./dictionary";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
 
 interface Settings {
@@ -83,8 +84,6 @@ const modeToggle = document.getElementById("mode-toggle")!;
 const modePtt = document.getElementById("mode-ptt")!;
 const hotkeyText = document.getElementById("hotkey-text")!;
 const hotkeyBtn = document.getElementById("hotkey-btn") as HTMLButtonElement;
-const customPromptTextarea = document.getElementById("custom-prompt") as HTMLTextAreaElement;
-const customPromptRow = document.getElementById("custom-prompt-row")!;
 const pasteLastBtn = document.getElementById("paste-last-btn") as HTMLButtonElement;
 const pasteLastText = document.getElementById("paste-last-text")!;
 const pasteLastClear = document.getElementById("paste-last-clear") as HTMLButtonElement;
@@ -192,7 +191,7 @@ async function loadSettings() {
 
   // Groq key
   groqKey.value = currentSettings.groqApiKey;
-  customPromptTextarea.value = currentSettings.customPrompt || "";
+  renderDictionary();
 
   // Recording mode
   setRecordingMode(currentSettings.recordingMode);
@@ -243,8 +242,6 @@ function setEngine(engine: string) {
   engineCloud.classList.toggle("active", engine === "cloud");
   localSettings.classList.toggle("hidden", engine !== "local");
   cloudSettings.classList.toggle("hidden", engine !== "cloud");
-  // Custom vocab applies to both engines (whisper-cli's --prompt and Groq's prompt)
-  customPromptRow.classList.remove("hidden");
 }
 
 function setRecordingMode(mode: string) {
@@ -319,7 +316,6 @@ async function saveSettings() {
   currentSettings.gpuBackend = gpuBackendSelect.value;
   currentSettings.volume = parseFloat(volumeSlider.value);
   currentSettings.autostart = autostartToggle.checked;
-  currentSettings.customPrompt = customPromptTextarea.value;
   currentSettings.sendCommand = sendCommandSelect.value;
   currentSettings.muteAudio = muteAudioToggle.checked;
   currentSettings.history = historyModeSelect.value;
@@ -352,6 +348,7 @@ uiLanguageSelect.addEventListener("change", async () => {
   await saveSettings();
   await refreshHistory();
   await renderAiSettings();
+  renderDictionary();
 });
 
 sendCommandSelect.addEventListener("change", () => saveSettings());
@@ -405,7 +402,6 @@ downloadBtn.addEventListener("click", async () => {
 });
 
 groqKey.addEventListener("change", () => saveSettings());
-customPromptTextarea.addEventListener("change", () => saveSettings());
 
 modeToggle.addEventListener("click", () => {
   setRecordingMode("toggle");
@@ -826,6 +822,7 @@ document.getElementById("credit-link")?.addEventListener("click", async (e) => {
 });
 
 initAiSettings({ settings: () => currentSettings, save: saveSettings });
+initDictionary({ settings: () => currentSettings, save: saveSettings });
 
 // Initialize
 getVersion()

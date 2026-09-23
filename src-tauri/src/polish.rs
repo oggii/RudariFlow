@@ -75,9 +75,11 @@ pub async fn polish(
             .await?;
         let rules = ai_cleanup::matching_rules(&settings.ai_rules, ctx);
         let language = language.map(str::to_string).or_else(|| ai_cleanup::detect_language(&protected));
+        let dictionary = crate::dictionary::terms(&settings.custom_prompt);
         let (system, user) = ai_cleanup::build_messages(
             &settings.ai_style,
             &settings.ai_instructions,
+            &dictionary,
             &rules,
             ctx,
             language.as_deref(),
