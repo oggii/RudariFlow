@@ -5,7 +5,7 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.0] - 2026-09-23 - Local AI cleanup, dictionary and history
 
 ### Added
 - **AI cleanup, fully local.** New tab. After Whisper, a language model on
