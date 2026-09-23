@@ -36,6 +36,7 @@ dirs = "6"
 arboard = "3"
 regex = "1"
 getrandom = "0.3"
+whatlang = "0.18"
 futures-util = "0.3"
 tauri-plugin-autostart = "2.5.1"
 # raw-api re-exports whisper-rs-sys for ggml device enumeration.

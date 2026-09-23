@@ -36,13 +36,16 @@ impl Polished {
 }
 
 /// `text` is Whisper's text after capitalisation and "send it" stripping.
-/// `on_ai_start` runs right before the model is asked (overlay state).
+/// `language` is the language Whisper heard (English name); without it, it
+/// is detected from the text. `on_ai_start` runs right before the model is
+/// asked (overlay state).
 pub async fn polish(
     settings: &Settings,
     app_dir: &Path,
     llm: &Arc<LlmServer>,
     ctx: &AppContext,
     text: &str,
+    language: Option<&str>,
     on_ai_start: impl FnOnce(),
 ) -> Polished {
     let plain = apply_replacements(text, &settings.replacements);
@@ -71,11 +74,13 @@ pub async fn polish(
             .wait_ready(&model_path, Some(settings.gpu_backend.clone()), WAIT_FOR_MODEL)
             .await?;
         let rules = ai_cleanup::matching_rules(&settings.ai_rules, ctx);
+        let language = language.map(str::to_string).or_else(|| ai_cleanup::detect_language(&protected));
         let (system, user) = ai_cleanup::build_messages(
             &settings.ai_style,
             &settings.ai_instructions,
             &rules,
             ctx,
+            language.as_deref(),
             &protected,
         );
         let (temperature, max_tokens) = ai_cleanup::sampling(&settings.ai_style, &protected);
@@ -128,7 +133,7 @@ mod tests {
         let mut asked = false;
         let result = tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(polish(settings, dir, llm, ctx, text, || asked = true));
+            .block_on(polish(settings, dir, llm, ctx, text, None, || asked = true));
         (result, asked)
     }
 

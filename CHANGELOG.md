@@ -16,7 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Runs Gemma 4 E4B (default), 12B or E2B in a bundled llama.cpp server
   (b11100, Vulkan) on 127.0.0.1, on the GPU Whisper uses; the model
   downloads once. A test box shows the result and time. Replacement
-  triggers are hidden from the model behind placeholders. Any failure,
+  triggers are hidden from the model behind placeholders. The language
+  Whisper heard is named in the request and answers in another language are
+  discarded, so a rule such as "German: Sie-Form" cannot translate an
+  English dictation. Any failure,
   missing model or time limit pastes the plain Whisper text. Measured on
   an RX 6800: 0.2 to 0.8 s per dictation. Off by default.
 - History keeps the app a dictation went into and, when the AI changed

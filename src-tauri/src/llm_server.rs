@@ -343,6 +343,7 @@ impl LlmServer {
             "",
             &[],
             &crate::ai_cleanup::AppContext::default(),
+            None,
             "Hello.",
         );
         if let Err(e) = crate::ai_cleanup::complete(&endpoint, &system, &user, 0.0, 8, LOAD_TIMEOUT).await {

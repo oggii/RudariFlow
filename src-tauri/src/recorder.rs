@@ -242,14 +242,15 @@ impl Recorder {
             other => other?,
         };
 
-        let raw_text = transcribe_samples(Some(app), settings, app_dir, engine, &samples).await?;
+        let (raw_text, language) = transcribe_samples(Some(app), settings, app_dir, engine, &samples).await?;
         let cleaned = cleanup_text(&raw_text);
 
         let (text, submit) = match strip_send_command(&cleaned) {
             Some(rest) if settings.send_command != "off" => (rest, true),
             _ => (cleaned, false),
         };
-        let polished = polish(settings, app_dir, llm, ctx, &text, || show_polishing(app)).await;
+        let polished =
+            polish(settings, app_dir, llm, ctx, &text, language.as_deref(), || show_polishing(app)).await;
         let text = polished.text;
 
         let pasted = if text.is_empty() { Ok(()) } else { paste_text(&text) };
@@ -296,13 +297,14 @@ pub fn model_label(settings: &Settings) -> String {
 
 /// Transcribe 16 kHz mono samples with the engine chosen in `settings`.
 /// With `overlay`, the local engine streams partial text into the pill.
+/// Also returns the spoken language when the engine reports it (local only).
 pub async fn transcribe_samples(
     overlay: Option<&AppHandle>,
     settings: &Settings,
     app_dir: &PathBuf,
     engine: &Arc<WhisperEngine>,
     samples: &[f32],
-) -> Result<String, String> {
+) -> Result<(String, Option<String>), String> {
     match settings.engine.as_str() {
         "local" => {
             let model_path =
@@ -325,7 +327,7 @@ pub async fn transcribe_samples(
             )
             .await;
             let _ = std::fs::remove_file(&temp_path);
-            text
+            text.map(|t| (t, None))
         }
         _ => Err(format!("Unknown engine: {}", settings.engine)),
     }

@@ -210,12 +210,12 @@ async fn history_rerun(state: State<'_, AppState>, id: u64) -> Result<HistoryEnt
     }
     let samples = history::read_wav(&state.history.audio_path(id))?;
     let settings = state.settings.lock().unwrap().clone();
-    let raw = transcribe_samples(None, &settings, &state.app_dir, &state.whisper_engine, &samples)
-        .await?;
+    let (raw, language) =
+        transcribe_samples(None, &settings, &state.app_dir, &state.whisper_engine, &samples).await?;
     let cleaned = cleanup_text(&raw);
     let text = strip_send_command(&cleaned).unwrap_or(cleaned);
     let ctx = AppContext { exe: entry.app.clone(), title: entry.title.clone() };
-    let polished = polish(&settings, &state.app_dir, &state.llm, &ctx, &text, || {}).await;
+    let polished = polish(&settings, &state.app_dir, &state.llm, &ctx, &text, language.as_deref(), || {}).await;
     state
         .history
         .update_text(id, &polished.text, polished.raw.as_deref(), &model_label(&settings))
@@ -285,7 +285,7 @@ async fn ai_test(state: State<'_, AppState>, text: String, app: String) -> Resul
     settings.ai_cleanup = true;
     let ctx = AppContext { exe: app.trim().to_lowercase(), title: String::new() };
     let text = cleanup_text(&text);
-    Ok(polish(&settings, &state.app_dir, &state.llm, &ctx, &text, || {}).await)
+    Ok(polish(&settings, &state.app_dir, &state.llm, &ctx, &text, None, || {}).await)
 }
 
 /// Restart the AI server, e.g. after it failed twice.
