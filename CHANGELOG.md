@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Settings rows: long hints wrap instead of squeezing the dropdown next to
   them, and dropdowns are as wide as their longest option.
 - The sidebar shows the real app version (it was stuck at v0.4.0).
+- The settings window has a fixed size (900 x 600) and cannot be maximized.
 
 ### Fixed
 - **Microphone dropdown was blank** with the default setting, because the
