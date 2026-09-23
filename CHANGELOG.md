@@ -5,6 +5,14 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.2] - 2026-09-23
+
+### Improved
+- **Write in** now says where it does not translate: a line under the
+  setting names the apps whose rule says No AI ("Not translated in: code
+  (No AI).") and warns when AI cleanup is off. Before, a No AI rule for the
+  app you dictated into silently kept the spoken language.
+
 ## [0.6.1] - 2026-09-23 - Write in, dictionary import and export
 
 ### Added
