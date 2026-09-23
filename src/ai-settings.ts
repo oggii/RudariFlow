@@ -76,6 +76,7 @@ const styleLight = $<HTMLButtonElement>("ai-style-light");
 const instructions = $<HTMLTextAreaElement>("ai-instructions");
 const outputSelect = $<HTMLSelectElement>("ai-output-select");
 const outputWarn = $("ai-output-warn");
+const outputSkip = $("ai-output-skip");
 const ruleList = $("ai-rule-list");
 const ruleEmpty = $("ai-rule-empty");
 const ruleAdd = $<HTMLButtonElement>("ai-rule-add");
@@ -219,6 +220,18 @@ function renderOutputLanguage() {
   populateLanguageSelect(outputSelect, getLang(), t("ai_output_same"), "");
   outputSelect.value = s.aiOutputLanguage ?? "";
   outputWarn.classList.toggle("hidden", !s.aiOutputLanguage || s.language === "auto");
+  renderOutputSkip();
+}
+
+/// Where "Write in" does nothing: AI cleanup off, or apps whose rule says No AI.
+function renderOutputSkip() {
+  const s = host.settings();
+  const noAi = (s.aiRules ?? []).filter((r) => r.off && r.app.trim()).map((r) => r.app.trim());
+  let text = "";
+  if (s.aiOutputLanguage && !s.aiCleanup) text = t("ai_output_skip_off");
+  else if (s.aiOutputLanguage && noAi.length) text = t("ai_output_skip_apps").replace("{apps}", noAi.join(", "));
+  outputSkip.textContent = text;
+  outputSkip.classList.toggle("hidden", !text);
 }
 
 function setStyle(style: string) {
@@ -238,6 +251,7 @@ function readRules(): AppRule[] {
 
 async function saveRules() {
   host.settings().aiRules = readRules();
+  renderOutputSkip();
   await host.save();
 }
 
@@ -334,6 +348,7 @@ export function initAiSettings(h: AiSettingsHost) {
 
   toggle.addEventListener("change", async () => {
     host.settings().aiCleanup = toggle.checked;
+    renderOutputSkip();
     await host.save();
     await refreshStatus();
   });
