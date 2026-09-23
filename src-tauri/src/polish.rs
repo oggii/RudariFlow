@@ -35,11 +35,33 @@ impl Polished {
     }
 }
 
+/// Swiss spelling on everything that is pasted or shown as the original.
+fn finish(settings: &Settings, mut polished: Polished) -> Polished {
+    if settings.swiss_spelling {
+        polished.text = crate::dictionary::swiss_spelling(&polished.text);
+        polished.raw = polished.raw.map(|raw| crate::dictionary::swiss_spelling(&raw));
+    }
+    polished
+}
+
 /// `text` is Whisper's text after capitalisation and "send it" stripping.
 /// `language` is the language Whisper heard (English name); without it, it
 /// is detected from the text. `on_ai_start` runs right before the model is
 /// asked (overlay state).
 pub async fn polish(
+    settings: &Settings,
+    app_dir: &Path,
+    llm: &Arc<LlmServer>,
+    ctx: &AppContext,
+    text: &str,
+    language: Option<&str>,
+    on_ai_start: impl FnOnce(),
+) -> Polished {
+    let polished = polish_inner(settings, app_dir, llm, ctx, text, language, on_ai_start).await;
+    finish(settings, polished)
+}
+
+async fn polish_inner(
     settings: &Settings,
     app_dir: &Path,
     llm: &Arc<LlmServer>,
@@ -160,6 +182,14 @@ mod tests {
         let (p, _) = run(&settings, &dir, &llm, &AppContext::default(), "hello");
         assert_eq!(p.text, "hello");
         assert_eq!(p.fallback.as_deref(), Some("The AI model is not downloaded"));
+    }
+
+    #[test]
+    fn swiss_spelling_applies_without_ai() {
+        let (dir, llm, mut settings) = setup("swiss");
+        settings.swiss_spelling = true;
+        let (p, _) = run(&settings, &dir, &llm, &AppContext::default(), "Grüße, ich weiß es.");
+        assert_eq!(p.text, "Grüsse, ich weiss es.");
     }
 
     #[test]

@@ -244,7 +244,7 @@ impl Recorder {
         };
 
         let (raw_text, language) = transcribe_samples(Some(app), settings, app_dir, engine, &samples).await?;
-        let cleaned = dictionary::apply_casing(&cleanup_text(&raw_text), &dictionary::terms(&settings.custom_prompt));
+        let cleaned = dictionary::apply_spelling(&cleanup_text(&raw_text), &dictionary::terms(&settings.custom_prompt));
 
         let (text, submit) = match strip_send_command(&cleaned) {
             Some(rest) if settings.send_command != "off" => (rest, true),

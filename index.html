@@ -278,7 +278,21 @@
         <section id="section-dictionary" class="content-section">
           <div class="section-header">
             <h2 class="section-title" data-i18n="dictionary_title">Dictionary</h2>
-            <p class="section-desc"><span data-i18n="dictionary_desc">Words Whisper should know: names, brands and jargon. They are also written exactly like this in your text.</span> <span id="dict-count"></span></p>
+            <p class="section-desc"><span data-i18n="dictionary_desc">Words Whisper should know: names, brands and jargon. Your text gets exactly this spelling, even when Whisper hears them slightly differently.</span> <span id="dict-count"></span></p>
+          </div>
+          <div class="settings-list dict-options">
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="swiss_spelling_label">Swiss spelling</span>
+                <span class="label-hint" data-i18n="swiss_spelling_hint">ss instead of ß in every dictation, with or without AI</span>
+              </div>
+              <div class="setting-control">
+                <label class="switch">
+                  <input id="swiss-toggle" type="checkbox" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
           <div class="dict-card">
             <form id="dict-form" class="dict-add">

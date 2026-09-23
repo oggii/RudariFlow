@@ -26,9 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   An input with Add and a list with Remove, like Aqua Voice's dictionary;
   pasting a list with commas or line breaks adds every entry, duplicates
   are skipped. Entries are still stored in `customPrompt` (no migration).
-  New: the transcript gets their exact spelling ("github" -> "GitHub",
-  whole words, any case), and AI cleanup receives the list in its cached
-  system prompt so it maps near-misses to it.
+  New: the transcript gets their exact spelling, also when Whisper hears
+  them differently: case, spaces, hyphens, apostrophes and ß/ss are
+  ignored when comparing, and entries of 8+ letters allow one letter off
+  (12+: two), so "Grüß'n shop" becomes "Grüssen-Shop" without AI. Short
+  entries need an exact match ("polar" never becomes "Polars"), and word
+  forms that only add an ending ("Heinrichs") stay. AI cleanup receives
+  the list in its cached system prompt.
+- **Swiss spelling** switch in the Dictionary tab: ss instead of ß in
+  every dictation, with or without AI.
 - History keeps the app a dictation went into and, when the AI changed
   it, the original text ("Original" button).
 - `scripts/setup-llama.ps1` and `examples/ai_bench.rs` (model benchmark).

@@ -957,6 +957,10 @@ kbd {
   opacity: 0.75;
 }
 
+.dict-options {
+  margin-bottom: 16px;
+}
+
 .dict-card {
   background: var(--surface);
   border: 1px solid var(--border);

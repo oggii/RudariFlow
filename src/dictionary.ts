@@ -4,7 +4,7 @@
 import { t } from "./i18n";
 
 export interface DictionaryHost {
-  settings(): { customPrompt: string };
+  settings(): { customPrompt: string; swissSpelling: boolean };
   save(): Promise<void>;
 }
 
@@ -14,6 +14,7 @@ const list = document.getElementById("dict-list")!;
 const empty = document.getElementById("dict-empty")!;
 const count = document.getElementById("dict-count")!;
 const longHint = document.getElementById("dict-long")!;
+const swissToggle = document.getElementById("swiss-toggle") as HTMLInputElement;
 
 /// Whisper reads about the last 224 tokens of its prompt; past this many
 /// characters the oldest entries start to drop out.
@@ -51,6 +52,7 @@ async function add(text: string) {
 }
 
 export function renderDictionary() {
+  swissToggle.checked = !!host.settings().swissSpelling;
   const terms = stored();
   list.innerHTML = "";
   const sorted = [...terms].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
@@ -75,6 +77,10 @@ export function renderDictionary() {
 
 export function initDictionary(h: DictionaryHost) {
   host = h;
+  swissToggle.addEventListener("change", async () => {
+    host.settings().swissSpelling = swissToggle.checked;
+    await host.save();
+  });
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     await add(input.value);

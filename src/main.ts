@@ -32,6 +32,7 @@ interface Settings {
   aiStyle: string;
   aiInstructions: string;
   aiRules: AppRule[];
+  swissSpelling: boolean;
 }
 
 interface Replacement {

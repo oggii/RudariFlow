@@ -58,6 +58,9 @@ pub struct Settings {
     pub ai_instructions: String,
     #[serde(rename = "aiRules", default)]
     pub ai_rules: Vec<AppRule>,
+    /// Swiss spelling: ss instead of ß in every dictation.
+    #[serde(rename = "swissSpelling", default)]
+    pub swiss_spelling: bool,
 }
 
 fn default_volume() -> f32 {
@@ -117,6 +120,7 @@ impl Default for Settings {
             ai_style: default_ai_style(),
             ai_instructions: String::new(),
             ai_rules: Vec::new(),
+            swiss_spelling: false,
         }
     }
 }
