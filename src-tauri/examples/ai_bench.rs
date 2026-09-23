@@ -161,7 +161,7 @@ fn main() {
         let mut worst = 0u128;
         let mut guard_failures = 0;
         for sample in SAMPLES {
-            let ctx = AppContext { exe: sample.exe.into(), title: sample.title.into() };
+            let ctx = AppContext { exe: sample.exe.into(), title: sample.title.into(), ..Default::default() };
             let rule = AppRule { app: sample.exe.into(), instructions: sample.rule.into(), off: false };
             let rules: Vec<&AppRule> = if sample.rule.is_empty() { vec![] } else { vec![&rule] };
             // Whisper reports the spoken language with every dictation.

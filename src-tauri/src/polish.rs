@@ -176,7 +176,7 @@ mod tests {
         let (dir, llm, mut settings) = setup("skip");
         settings.ai_cleanup = true;
         settings.ai_rules = vec![AppRule { app: "code".into(), instructions: String::new(), off: true }];
-        let code = AppContext { exe: "code".into(), title: "main.rs".into() };
+        let code = AppContext { exe: "code".into(), title: "main.rs".into(), ..Default::default() };
         let (p, asked) = run(&settings, &dir, &llm, &code, "hello");
         assert_eq!(p.fallback.as_deref(), Some("AI is off for this app"));
         assert!(!asked);

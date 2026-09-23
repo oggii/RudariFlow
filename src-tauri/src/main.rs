@@ -20,7 +20,7 @@ use rudariflow_lib::llm_server::{LlmServer, ServerStatus};
 use rudariflow_lib::mouse_hotkey;
 use rudariflow_lib::paste::paste_text;
 use rudariflow_lib::polish::{polish, Polished};
-use rudariflow_lib::recorder::{announce_edit_target, model_label, transcribe_samples, Recorder, RecordingState};
+use rudariflow_lib::recorder::{model_label, transcribe_samples, Recorder, RecordingState};
 use rudariflow_lib::send_command::strip_send_command;
 use rudariflow_lib::settings::Settings;
 use rudariflow_lib::startup_log;
@@ -216,10 +216,10 @@ async fn history_rerun(state: State<'_, AppState>, id: u64) -> Result<HistoryEnt
     let samples = history::read_wav(&state.history.audio_path(id))?;
     let settings = state.settings.lock().unwrap().clone();
     let (raw, language) =
-        transcribe_samples(None, &settings, &state.app_dir, &state.whisper_engine, &samples).await?;
+        transcribe_samples(None, &settings, &state.app_dir, &state.whisper_engine, &samples, &[]).await?;
     let cleaned = dictionary::apply_spelling(&cleanup_text(&raw), &dictionary::terms(&settings.custom_prompt));
     let text = strip_send_command(&cleaned).unwrap_or(cleaned);
-    let ctx = AppContext { exe: entry.app.clone(), title: entry.title.clone() };
+    let ctx = AppContext { exe: entry.app.clone(), title: entry.title.clone(), ..Default::default() };
     let polished = polish(&settings, &state.app_dir, &state.llm, &ctx, &text, language.as_deref(), || {}).await;
     state
         .history
@@ -285,10 +285,19 @@ async fn ai_download_model(app: AppHandle, state: State<'_, AppState>, id: Strin
 /// Clean up a sample text as if it were dictated into `app` (settings test
 /// box). Works before the AI cleanup switch is on.
 #[tauri::command]
-async fn ai_test(state: State<'_, AppState>, text: String, app: String) -> Result<Polished, String> {
+async fn ai_test(
+    state: State<'_, AppState>,
+    text: String,
+    app: String,
+    screen_terms: Option<Vec<String>>,
+) -> Result<Polished, String> {
     let mut settings = state.settings.lock().unwrap().clone();
     settings.ai_cleanup = true;
-    let ctx = AppContext { exe: app.trim().to_lowercase(), title: String::new() };
+    let ctx = AppContext {
+        exe: app.trim().to_lowercase(),
+        screen_terms: screen_terms.unwrap_or_default(),
+        ..Default::default()
+    };
     let text = dictionary::apply_spelling(&cleanup_text(&text), &dictionary::terms(&settings.custom_prompt));
     Ok(polish(&settings, &state.app_dir, &state.llm, &ctx, &text, None, || {}).await)
 }
@@ -313,7 +322,7 @@ async fn ai_edit_test(
     app: String,
 ) -> Result<EditTestResult, String> {
     let settings = state.settings.lock().unwrap().clone();
-    let ctx = AppContext { exe: app.trim().to_lowercase(), title: String::new() };
+    let ctx = AppContext { exe: app.trim().to_lowercase(), ..Default::default() };
     let (result, ai_ms) =
         voice_edit::edit(&settings, &state.app_dir, &state.llm, &ctx, &selection, &cleanup_text(&spoken), || {}).await;
     Ok(match result {
@@ -353,6 +362,39 @@ async fn edit_live_test(state: State<'_, AppState>, spoken: String) -> Result<St
             Ok(format!("{} ms in '{}': deleted {:?}", ai_ms, ctx.exe, selection))
         }
     }
+}
+
+#[derive(serde::Serialize)]
+struct ScreenTestResult {
+    exe: String,
+    chars: usize,
+    ms: u64,
+    terms: Vec<String>,
+}
+
+/// Test hook: the screen context of the focused window right now (terms
+/// and how long reading took). Only with RUDARIFLOW_TEST_COMMANDS=1.
+#[tauri::command]
+async fn screen_context_test(state: State<'_, AppState>) -> Result<ScreenTestResult, String> {
+    if std::env::var("RUDARIFLOW_TEST_COMMANDS").as_deref() != Ok("1") {
+        return Err("test commands are off".to_string());
+    }
+    let dictionary = dictionary::terms(&state.settings.lock().unwrap().custom_prompt);
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let text = rudariflow_lib::screen_context::read_window_text(rudariflow_lib::screen_context::MAX_CHARS)
+            .unwrap_or_default();
+        let terms =
+            rudariflow_lib::screen_context::terms(&text, &dictionary, rudariflow_lib::screen_context::MAX_TERMS);
+        ScreenTestResult {
+            exe: foreground_app::current().exe,
+            chars: text.chars().count(),
+            ms: started.elapsed().as_millis() as u64,
+            terms,
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Restart the AI server, e.g. after it failed twice.
@@ -627,7 +669,7 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
                             (s.microphone.clone(), s.mute_audio)
                         };
                         match state.recorder.start_recording(&handle, &mic, mute) {
-                            Ok(_) => announce_edit_target(&handle, &s, &state.app_dir),
+                            Ok(_) => state.recorder.capture_context(&handle, &s, &state.app_dir),
                             Err(e) => startup_log::log(&format!("[hotkey] start error: {}", e)),
                         }
                     }
@@ -675,7 +717,7 @@ async fn do_toggle_recording(
             };
             state.recorder.start_recording(app, &mic, mute)?;
             let settings = state.settings.lock().unwrap().clone();
-            announce_edit_target(app, &settings, &state.app_dir);
+            state.recorder.capture_context(app, &settings, &state.app_dir);
             Ok("recording".to_string())
         }
         RecordingState::Recording => {
@@ -758,6 +800,7 @@ fn main() {
             ai_test,
             ai_edit_test,
             edit_live_test,
+            screen_context_test,
             ai_restart,
             list_open_apps,
             dictionary_export,

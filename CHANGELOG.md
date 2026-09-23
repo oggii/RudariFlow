@@ -5,6 +5,23 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Words on screen** (Dictionary tab, on by default), like Aqua Voice's
+  Deep Context. When you press the hotkey, RudariFlow reads the visible
+  text of the window you dictate into through Windows UI Automation (about
+  20 ms for a web page, 200 ms for VS Code, while you speak) and picks out
+  names, brands and technical terms: "Yılmaz", "Paperless-ngx", "GitLab",
+  "Salon-Agenda". Up to 20 name-like terms go into Whisper's prompt ahead
+  of the dictionary, up to 40 into the AI cleanup and Edit mode request
+  with the instruction to use their spelling but never add them. Measured:
+  "Umit Yilmaz" becomes "Ümit Yılmaz", "Paperless NGX" becomes
+  "Paperless-ngx", an unrelated sentence stays unchanged. Only the word
+  list is used, nothing is stored; the log records counts only. Ordinary
+  words, words at the start of a line, links, emails, code fragments,
+  measurements ("13h", "0.32s") and dictionary entries are left out.
+
 ## [0.7.0] - 2026-09-23 - Edit mode
 
 ### Added

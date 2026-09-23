@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -13,6 +13,7 @@ use crate::llm_server::LlmServer;
 use crate::mute;
 use crate::paste::{paste_text, press_delete, press_submit};
 use crate::polish::polish;
+use crate::screen_context;
 use crate::selection::{self, Target};
 use crate::send_command::strip_send_command;
 use crate::settings::Settings;
@@ -99,19 +100,12 @@ fn emit_edit_target(app: &AppHandle, words: Option<usize>) {
     let _ = app.emit("edit-target", words);
 }
 
-/// Called right after recording starts: when text is selected where Edit
-/// mode works, the pill shows it. The decision is made again on release.
-pub fn announce_edit_target(app: &AppHandle, settings: &Settings, app_dir: &Path) {
-    if !voice_edit::available(settings, app_dir, &foreground_app::current()) {
-        return;
-    }
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        if let Target::Selected(text) = selection::read() {
-            emit_edit_target(&app, Some(selection::word_count(&text)));
-        }
-    });
-}
+/// Screen terms of the recording `generation`, filled in the background.
+type ScreenSlot = Arc<Mutex<Option<(u64, Vec<String>)>>>;
+
+/// How long the release waits for the screen terms of a very short
+/// recording before it goes on without them.
+const SCREEN_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The selection the dictation edits, read on release; `None` means a normal
 /// dictation.
@@ -165,6 +159,10 @@ pub struct Recorder {
     /// Set while the microphone is being opened, so the state lock is never
     /// held across device I/O.
     starting: AtomicBool,
+    /// Screen context read when the recording started.
+    screen: ScreenSlot,
+    /// Counts recordings, so a slow read never lands in a later one.
+    generation: AtomicU64,
 }
 
 /// Resets the recorder to Ready when dropped, including when transcription
@@ -189,11 +187,69 @@ impl Recorder {
             state: Arc::new(Mutex::new(RecordingState::Ready)),
             audio_recorder: Arc::new(Mutex::new(AudioRecorder::new())),
             starting: AtomicBool::new(false),
+            screen: Arc::new(Mutex::new(None)),
+            generation: AtomicU64::new(0),
         }
     }
 
     pub fn get_state(&self) -> RecordingState {
         lock(&self.state).clone()
+    }
+
+    /// Called right after recording starts, in the background: shows the
+    /// Edit mode chip when text is selected (decided again on release) and
+    /// reads the screen context for this recording.
+    pub fn capture_context(&self, app: &AppHandle, settings: &Settings, app_dir: &Path) {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        *lock(&self.screen) = None;
+        let edit = voice_edit::available(settings, app_dir, &foreground_app::current());
+        let screen = settings.screen_context;
+        if !edit && !screen {
+            return;
+        }
+        let dictionary = dictionary::terms(&settings.custom_prompt);
+        let (app, slot) = (app.clone(), self.screen.clone());
+        tauri::async_runtime::spawn_blocking(move || {
+            if edit {
+                if let Target::Selected(text) = selection::read() {
+                    emit_edit_target(&app, Some(selection::word_count(&text)));
+                }
+            }
+            if screen {
+                let started = std::time::Instant::now();
+                let text = screen_context::read_window_text(screen_context::MAX_CHARS).unwrap_or_default();
+                let terms = screen_context::terms(&text, &dictionary, screen_context::MAX_TERMS);
+                startup_log::log(&format!(
+                    "[screen] {} terms from {} chars in {} ms",
+                    terms.len(),
+                    text.chars().count(),
+                    started.elapsed().as_millis()
+                ));
+                *lock(&slot) = Some((generation, terms));
+            }
+        });
+    }
+
+    /// The screen terms of the current recording, waiting briefly when the
+    /// read is still running.
+    async fn take_screen_terms(&self, settings: &Settings) -> Vec<String> {
+        if !settings.screen_context {
+            return Vec::new();
+        }
+        let generation = self.generation.load(Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        loop {
+            if let Some((g, terms)) = lock(&self.screen).take() {
+                if g == generation {
+                    return terms;
+                }
+            }
+            if started.elapsed() >= SCREEN_WAIT {
+                startup_log::log("[screen] not ready, dictating without it");
+                return Vec::new();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     /// Start capturing. With `mute_others`, other apps are muted until the
@@ -241,7 +297,7 @@ impl Recorder {
         llm: &Arc<LlmServer>,
     ) -> Result<String, String> {
         // The app the text will go into, read before anything else can take focus.
-        let ctx = foreground_app::current();
+        let mut ctx = foreground_app::current();
         let selection = if *lock(&self.state) == RecordingState::Recording {
             edit_selection(settings, app_dir, &ctx).await
         } else {
@@ -264,6 +320,7 @@ impl Recorder {
         // Always reset state to Ready, regardless of success, failure or panic.
         let ready = ReadyOnDrop { app, state: &self.state };
 
+        ctx.screen_terms = self.take_screen_terms(settings).await;
         let result = self
             .run_transcription_pipeline(app, settings, app_dir, engine, history, llm, &ctx, selection)
             .await;
@@ -297,7 +354,8 @@ impl Recorder {
             other => other?,
         };
 
-        let (raw_text, language) = transcribe_samples(Some(app), settings, app_dir, engine, &samples).await?;
+        let (raw_text, language) =
+            transcribe_samples(Some(app), settings, app_dir, engine, &samples, &ctx.screen_terms).await?;
         if let Some(selection) = selection {
             return self.run_edit(app, settings, app_dir, history, llm, ctx, &selection, &raw_text, &samples).await;
         }
@@ -397,6 +455,7 @@ pub fn model_label(settings: &Settings) -> String {
 
 /// Transcribe 16 kHz mono samples with the engine chosen in `settings`.
 /// With `overlay`, the local engine streams partial text into the pill.
+/// `screen_terms` go into Whisper's prompt ahead of the dictionary.
 /// Also returns the spoken language when the engine reports it (local only).
 pub async fn transcribe_samples(
     overlay: Option<&AppHandle>,
@@ -404,7 +463,9 @@ pub async fn transcribe_samples(
     app_dir: &PathBuf,
     engine: &Arc<WhisperEngine>,
     samples: &[f32],
+    screen_terms: &[String],
 ) -> Result<(String, Option<String>), String> {
+    let prompt = screen_context::whisper_prompt(screen_terms, &settings.custom_prompt);
     match settings.engine.as_str() {
         "local" => {
             let model_path =
@@ -413,7 +474,7 @@ pub async fn transcribe_samples(
                 return Err("Whisper model not found. Please download a model first.".to_string());
             }
             engine.ensure_loaded(&model_path, &settings.gpu_backend)?;
-            engine.transcribe(overlay, samples, &settings.language, &settings.custom_prompt)
+            engine.transcribe(overlay, samples, &settings.language, &prompt)
         }
         "cloud" => {
             // Groq takes a WAV upload.
@@ -423,7 +484,7 @@ pub async fn transcribe_samples(
                 &settings.groq_api_key,
                 &temp_path,
                 &settings.language,
-                &settings.custom_prompt,
+                &prompt,
             )
             .await;
             let _ = std::fs::remove_file(&temp_path);

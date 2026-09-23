@@ -82,3 +82,7 @@ path = "examples/ai_bench.rs"
 [[example]]
 name = "uia_probe"
 path = "examples/uia_probe.rs"
+
+[[example]]
+name = "screen_probe"
+path = "examples/screen_probe.rs"

@@ -69,6 +69,10 @@ pub struct Settings {
     /// AI cleanup).
     #[serde(rename = "editMode", default = "default_true")]
     pub edit_mode: bool,
+    /// Screen context: names and terms visible in the window help Whisper
+    /// and the AI spell them.
+    #[serde(rename = "screenContext", default = "default_true")]
+    pub screen_context: bool,
 }
 
 fn default_true() -> bool {
@@ -135,6 +139,7 @@ impl Default for Settings {
             swiss_spelling: false,
             ai_output_language: String::new(),
             edit_mode: true,
+            screen_context: true,
         }
     }
 }

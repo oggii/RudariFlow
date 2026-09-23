@@ -6,7 +6,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { t } from "./i18n";
 
 export interface DictionaryHost {
-  settings(): { customPrompt: string; swissSpelling: boolean };
+  settings(): { customPrompt: string; swissSpelling: boolean; screenContext: boolean };
   save(): Promise<void>;
 }
 
@@ -17,6 +17,7 @@ const empty = document.getElementById("dict-empty")!;
 const count = document.getElementById("dict-count")!;
 const longHint = document.getElementById("dict-long")!;
 const swissToggle = document.getElementById("swiss-toggle") as HTMLInputElement;
+const screenToggle = document.getElementById("screen-toggle") as HTMLInputElement;
 const importBtn = document.getElementById("dict-import") as HTMLButtonElement;
 const exportBtn = document.getElementById("dict-export") as HTMLButtonElement;
 const ioStatus = document.getElementById("dict-io-status")!;
@@ -95,6 +96,7 @@ async function importDictionary() {
 
 export function renderDictionary() {
   swissToggle.checked = !!host.settings().swissSpelling;
+  screenToggle.checked = host.settings().screenContext ?? true;
   const terms = stored();
   list.innerHTML = "";
   const sorted = [...terms].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
@@ -123,6 +125,10 @@ export function initDictionary(h: DictionaryHost) {
   importBtn.addEventListener("click", importDictionary);
   swissToggle.addEventListener("change", async () => {
     host.settings().swissSpelling = swissToggle.checked;
+    await host.save();
+  });
+  screenToggle.addEventListener("change", async () => {
+    host.settings().screenContext = screenToggle.checked;
     await host.save();
   });
   form.addEventListener("submit", async (e) => {
