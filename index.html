@@ -44,9 +44,23 @@
             </svg>
             <span data-i18n="nav_recording">Recording</span>
           </a>
+          <a class="nav-item" data-section="replacements">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M3 5.5h9.5M10 3l2.5 2.5L10 8M13 10.5H3.5M6 8l-2.5 2.5L6 13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span data-i18n="nav_replacements">Replacements</span>
+          </a>
+          <a class="nav-item" data-section="history">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M2.8 9.5A5.5 5.5 0 1 0 4 4.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+              <path d="M2.5 2.2v2.6h2.6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M8 5.3V8l1.8 1.3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span data-i18n="nav_history">History</span>
+          </a>
         </nav>
         <div class="sidebar-footer">
-          <span class="version-text">v0.4.0</span>
+          <span class="version-text" id="version-text"></span>
           <a href="#" id="credit-link" class="credit-text">by oggi</a>
         </div>
       </aside>
@@ -142,23 +156,7 @@
                 <span class="label-hint" data-i18n="language_hint">Auto-detect or pick a preferred language</span>
               </div>
               <div class="setting-control">
-                <select id="language-select">
-                  <option value="auto" selected data-i18n="language_auto">Auto-detect</option>
-                  <option value="en">English</option>
-                  <option value="de">German (Deutsch)</option>
-                  <option value="fr">French (Français)</option>
-                  <option value="it">Italian (Italiano)</option>
-                  <option value="es">Spanish (Español)</option>
-                  <option value="pt">Portuguese (Português)</option>
-                  <option value="nl">Dutch (Nederlands)</option>
-                  <option value="ru">Russian (Русский)</option>
-                  <option value="zh">Chinese (中文)</option>
-                  <option value="ja">Japanese (日本語)</option>
-                  <option value="ko">Korean (한국어)</option>
-                  <option value="ar">Arabic (العربية)</option>
-                  <option value="tr">Turkish (Türkçe)</option>
-                  <option value="pl">Polish (Polski)</option>
-                </select>
+                <select id="language-select"></select>
               </div>
             </div>
             <div class="setting-row" id="local-settings">
@@ -237,7 +235,82 @@
                 <button id="hotkey-btn" class="hotkey-btn"><kbd id="hotkey-text">Cmd+Shift+D</kbd></button>
               </div>
             </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="paste_last_label">Paste last transcript</span>
+                <span class="label-hint" data-i18n="paste_last_hint">Pastes your last dictation again, for example when it landed in the wrong window</span>
+              </div>
+              <div class="setting-control hotkey-control">
+                <button id="paste-last-btn" class="hotkey-btn"><kbd id="paste-last-text"></kbd></button>
+                <button id="paste-last-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
+                  <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="send_command_label">Voice command "send it"</span>
+                <span class="label-hint" data-i18n="send_command_hint">End with "Send it." as its own sentence to submit, for example in chats. German: "Abschicken."</span>
+              </div>
+              <div class="setting-control">
+                <select id="send-command-select">
+                  <option value="off" data-i18n="send_command_off">Off</option>
+                  <option value="enter" data-i18n="send_command_enter">Press Enter</option>
+                  <option value="ctrl+enter" data-i18n="send_command_ctrl_enter">Press Ctrl+Enter</option>
+                </select>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="mute_audio_label">Mute other apps while recording</span>
+                <span class="label-hint" data-i18n="mute_audio_hint">Music and videos go quiet while you dictate and come back afterwards</span>
+              </div>
+              <div class="setting-control">
+                <label class="switch">
+                  <input id="mute-audio-toggle" type="checkbox" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
+        </section>
+
+        <section id="section-replacements" class="content-section">
+          <div class="section-header">
+            <h2 class="section-title" data-i18n="replacements_title">Replacements</h2>
+            <p class="section-desc" data-i18n="replacements_desc">Say a short phrase, get longer text. Good for email addresses, links and signatures.</p>
+          </div>
+          <div id="replacement-list" class="replacement-list"></div>
+          <p id="replacement-empty" class="empty-state hidden" data-i18n="replacements_empty">No replacements yet.</p>
+          <button id="replacement-add" class="btn-secondary" data-i18n="replacements_add">Add replacement</button>
+        </section>
+
+        <section id="section-history" class="content-section">
+          <div class="section-header">
+            <h2 class="section-title" data-i18n="history_title">History</h2>
+            <p class="section-desc" data-i18n="history_desc">Your recent dictations. Stored only on this computer.</p>
+          </div>
+          <div class="settings-list">
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="history_mode_label">Keep history</span>
+                <span class="label-hint" data-i18n="history_mode_hint">Recordings allow re-running a dictation with another model. The last 200 texts and 50 recordings are kept.</span>
+              </div>
+              <div class="setting-control">
+                <select id="history-mode-select">
+                  <option value="audio" data-i18n="history_mode_audio">Text and recordings</option>
+                  <option value="text" data-i18n="history_mode_text">Text only</option>
+                  <option value="off" data-i18n="history_mode_off">Off</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="history-toolbar">
+            <span id="history-count" class="label-hint"></span>
+            <button id="history-clear" class="btn-secondary" data-i18n="history_clear">Clear history</button>
+          </div>
+          <p id="history-empty" class="empty-state hidden"></p>
+          <div id="history-list" class="history-list"></div>
         </section>
       </main>
       </div>

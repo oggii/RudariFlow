@@ -26,9 +26,14 @@ Made by [oggi](https://0ggi.ch).
 - **Auto-Backend-Erkennung:** NVIDIA CUDA wenn verfügbar, sonst Vulkan (AMD / Intel / NVIDIA), sonst CPU. Die Einstellungen zeigen die erkannten GPUs und erlauben, CUDA, Vulkan oder CPU zu erzwingen. Flash Attention ist bei CUDA an und bei Vulkan aus (auf einer RX 6800 doppelt so langsam); erzwingen mit `RUDARIFLOW_FLASH_ATTN=1` oder `=0`
 - **Eigenes Vokabular:** Domain-Begriffe (Namen, Fachjargon, Abkürzungen) zur Erkennungs-Steuerung einfügen
 - **No-Speech-Erkennung:** stumme Aufnahmen zeigen einen Hinweis statt nichts einzufügen
-- **Clipboard-sicheres Einfügen:** dein vorheriger Zwischenablage-Inhalt wird vor dem Auto-Paste gesichert und danach wiederhergestellt
+- **Clipboard-sicheres Einfügen:** dein vorheriger Zwischenablage-Inhalt wird vor dem Auto-Paste gesichert und danach wiederhergestellt; Diktate landen nicht im Windows-Zwischenablageverlauf (Win+V) und nicht in der Cloud-Zwischenablage
+- **Ersetzungen:** sag einen kurzen Ausdruck, erhalte längeren Text, z. B. wird aus „meine Mail“ deine Adresse. Ganze Wörter, Groß-/Kleinschreibung egal; besteht ein Diktat nur aus dem Ausdruck, wird nur die Ersetzung eingefügt
+- **Sprachbefehl „Abschicken“:** beende ein Diktat mit „Abschicken.“ (Englisch: „Send it.“) als eigenem Satz, und RudariFlow drückt nach dem Einfügen Enter oder Strg+Enter. Standardmäßig aus
+- **Verlauf:** die letzten 200 Diktate bleiben auf deinem Computer, die letzten 50 mit Aufnahme. Kopieren, abspielen, löschen oder eine Aufnahme mit dem aktuellen Modell neu transkribieren. Lässt sich auf „Nur Text“ stellen oder ausschalten
+- **Letztes Diktat einfügen:** ein zweites Tastenkürzel (Standard Alt+Umschalt+V) fügt dein letztes Diktat erneut ein
+- **Andere Apps während der Aufnahme stummschalten:** Musik und Videos verstummen, während du diktierst, und kommen danach zurück (standardmäßig aus)
 - Mehrere Whisper-Modelle wählbar: tiny → large-v3-turbo, mit Auto-Download bei Auswahl
-- Sprachen: Auto-Erkennung oder fest 14 Sprachen (DE, EN, FR, IT, ES, …)
+- Sprachen: Auto-Erkennung oder eine der rund 100 Sprachen, die Whisper kann
 - Push-to-Talk **und** Toggle-Modi
 - Konfigurierbarer globaler Hotkey, auch Maus-Seitentasten (Maus 4 / Maus 5, allein oder mit Strg/Umschalt/Alt/Win). Eine belegte Seitentaste wird abgefangen und löst in anderen Programmen kein „Zurück“/„Vorwärts“ mehr aus
 - Schwebende Aufnahme-Pille mit Live-Wellenform und Cancel-Button
@@ -98,6 +103,14 @@ Erzeugt (unter `CARGO_TARGET_DIR`):
 - `release/rudariflow.exe` (portable, braucht die DLLs aus Schritt 3 daneben)
 - `release/bundle/nsis/RudariFlow_x.y.z_x64-setup.exe` (Installer)
 - `release/bundle/msi/RudariFlow_x.y.z_x64_en-US.msi`
+
+### Testdaten getrennt von der installierten App
+
+Einstellungen, Modelle und Verlauf liegen in `%APPDATA%\com.rudariflow.app`. Damit ein Dev-Build neben einer installierten RudariFlow deren Daten nicht anfasst, einen anderen Ordner angeben:
+
+```powershell
+$env:RUDARIFLOW_DATA_DIR = "C:\t\rf-test-data"
+```
 
 ### Benchmark
 

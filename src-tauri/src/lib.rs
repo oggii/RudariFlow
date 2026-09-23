@@ -8,6 +8,10 @@ pub mod recorder;
 pub mod downloader;
 pub mod mouse_hotkey;
 pub mod startup_log;
+pub mod replacements;
+pub mod send_command;
+pub mod history;
+pub mod mute;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

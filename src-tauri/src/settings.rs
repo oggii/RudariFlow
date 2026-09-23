@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+use crate::replacements::Replacement;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     pub microphone: String,
@@ -25,6 +27,22 @@ pub struct Settings {
     pub autostart: bool,
     #[serde(rename = "customPrompt", default)]
     pub custom_prompt: String,
+    /// Spoken phrases expanded into longer text after transcription.
+    #[serde(default)]
+    pub replacements: Vec<Replacement>,
+    /// Key pressed after a dictation that ends with "send it":
+    /// "off", "enter" or "ctrl+enter".
+    #[serde(rename = "sendCommand", default = "default_send_command")]
+    pub send_command: String,
+    /// "off", "text" (transcripts only) or "audio" (transcripts and recordings).
+    #[serde(default = "default_history")]
+    pub history: String,
+    /// Keyboard chord that pastes the last transcript again; empty = none.
+    #[serde(rename = "pasteLastHotkey", default = "default_paste_last_hotkey")]
+    pub paste_last_hotkey: String,
+    /// Mute other apps while recording.
+    #[serde(rename = "muteAudio", default)]
+    pub mute_audio: bool,
 }
 
 fn default_volume() -> f32 {
@@ -37,6 +55,18 @@ fn default_gpu_backend() -> String {
 
 fn default_language() -> String {
     "auto".to_string()
+}
+
+fn default_send_command() -> String {
+    "off".to_string()
+}
+
+fn default_history() -> String {
+    "audio".to_string()
+}
+
+fn default_paste_last_hotkey() -> String {
+    "Alt+Shift+V".to_string()
 }
 
 impl Default for Settings {
@@ -54,6 +84,11 @@ impl Default for Settings {
             volume: 0.4,
             autostart: false,
             custom_prompt: String::new(),
+            replacements: Vec::new(),
+            send_command: default_send_command(),
+            history: default_history(),
+            paste_last_hotkey: default_paste_last_hotkey(),
+            mute_audio: false,
         }
     }
 }
@@ -84,6 +119,17 @@ impl Settings {
         // "gpu" value from a pre-release build) behaves like and becomes auto.
         if !matches!(settings.gpu_backend.as_str(), "auto" | "cuda" | "vulkan" | "cpu") {
             settings.gpu_backend = "auto".to_string();
+        }
+        // An empty microphone (saved by the settings UI before it listed
+        // "default") means the system default input.
+        if settings.microphone.trim().is_empty() {
+            settings.microphone = "default".to_string();
+        }
+        if !matches!(settings.send_command.as_str(), "off" | "enter" | "ctrl+enter") {
+            settings.send_command = default_send_command();
+        }
+        if !matches!(settings.history.as_str(), "off" | "text" | "audio") {
+            settings.history = default_history();
         }
         settings
     }
@@ -208,6 +254,57 @@ mod tests {
 
         let loaded = Settings::load(&dir);
         assert_eq!(loaded.custom_prompt, "");
+        assert!(loaded.replacements.is_empty());
+        assert_eq!(loaded.send_command, "off");
+        assert_eq!(loaded.history, "audio");
+        assert_eq!(loaded.paste_last_hotkey, "Alt+Shift+V");
+        assert!(!loaded.mute_audio);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_new_fields_roundtrip() {
+        let dir = temp_dir().join("typr_test_v06_fields");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut settings = Settings::default();
+        settings.replacements = vec![Replacement { from: "my email".into(), to: "a@b.ch".into() }];
+        settings.send_command = "ctrl+enter".to_string();
+        settings.history = "off".to_string();
+        settings.paste_last_hotkey = String::new();
+        settings.mute_audio = true;
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir), settings);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_empty_microphone_loads_as_default() {
+        let dir = temp_dir().join("typr_test_empty_mic");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut settings = Settings::default();
+        settings.microphone = String::new();
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).microphone, "default");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_unknown_send_command_and_history_fall_back() {
+        let dir = temp_dir().join("typr_test_v06_invalid");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut settings = Settings::default();
+        settings.send_command = "shift+enter".to_string();
+        settings.history = "forever".to_string();
+        settings.save(&dir).unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!(loaded.send_command, "off");
+        assert_eq!(loaded.history, "audio");
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -184,14 +184,6 @@ impl AudioRecorder {
         println!("[RudariFlow] Resampled to {} samples at 16kHz", resampled.len());
         Ok(resampled)
     }
-
-    /// Stop the stream and write a 16 kHz mono 16-bit WAV. Used by the Groq
-    /// path which uploads a WAV file. Wraps `stop_and_take_samples`.
-    pub fn stop_and_save(&mut self, output_path: &PathBuf) -> Result<PathBuf, String> {
-        let samples = self.stop_and_take_samples()?;
-        samples_to_wav(&samples, output_path)?;
-        Ok(output_path.clone())
-    }
 }
 
 struct OpenedStream {

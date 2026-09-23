@@ -233,10 +233,11 @@ impl WhisperEngine {
 
     /// Run a one-shot transcription on the provided 16 kHz mono samples.
     /// Caller is responsible for `ensure_loaded` before this; this fails
-    /// loudly if no model is resident.
+    /// loudly if no model is resident. With `overlay`, partial transcripts
+    /// stream into the recording pill.
     pub fn transcribe(
         &self,
-        app: &AppHandle,
+        overlay: Option<&AppHandle>,
         samples: &[f32],
         language: &str,
         custom_prompt: &str,
@@ -269,17 +270,19 @@ impl WhisperEngine {
         }
 
         // Per-segment callback: emit cumulative text to the overlay.
-        let app_for_cb = app.clone();
-        params.set_segment_callback_safe(move |seg: whisper_rs::SegmentCallbackData| {
-            let payload = PartialTranscript {
-                text: seg.text.trim().to_string(),
-                is_final: false,
-            };
-            // Emit only to the overlay window — main window doesn't need this.
-            if let Some(overlay) = app_for_cb.get_webview_window("overlay") {
-                let _ = overlay.emit("partial-transcript", payload);
-            }
-        });
+        if let Some(app) = overlay {
+            let app_for_cb = app.clone();
+            params.set_segment_callback_safe(move |seg: whisper_rs::SegmentCallbackData| {
+                let payload = PartialTranscript {
+                    text: seg.text.trim().to_string(),
+                    is_final: false,
+                };
+                // Emit only to the overlay window — main window doesn't need this.
+                if let Some(overlay) = app_for_cb.get_webview_window("overlay") {
+                    let _ = overlay.emit("partial-transcript", payload);
+                }
+            });
+        }
 
         wstate
             .full(params, samples)
@@ -288,7 +291,7 @@ impl WhisperEngine {
         let text = collect_segments(&wstate)?;
 
         // Final event so the overlay knows to stop accumulating.
-        if let Some(overlay) = app.get_webview_window("overlay") {
+        if let Some(overlay) = overlay.and_then(|app| app.get_webview_window("overlay")) {
             let _ = overlay.emit(
                 "partial-transcript",
                 PartialTranscript {
