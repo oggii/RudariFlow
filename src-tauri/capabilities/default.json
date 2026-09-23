@@ -6,6 +6,7 @@
     "core:default",
     "core:window:allow-start-dragging",
     "global-shortcut:default",
+    "dialog:default",
     "autostart:default",
     "autostart:allow-enable",
     "autostart:allow-disable",

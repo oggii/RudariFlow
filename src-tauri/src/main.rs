@@ -296,6 +296,22 @@ fn ai_restart(state: State<AppState>) {
     warm_ai(&state);
 }
 
+/// Save the dictionary as a text file, one entry per line (to move it to
+/// another PC). Returns how many entries were written.
+#[tauri::command]
+fn dictionary_export(state: State<AppState>, path: String) -> Result<usize, String> {
+    let terms = dictionary::terms(&state.settings.lock().unwrap().custom_prompt);
+    std::fs::write(&path, dictionary::to_file_text(&terms)).map_err(|e| e.to_string())?;
+    Ok(terms.len())
+}
+
+/// Entries of a dictionary file; the UI merges them into the dictionary.
+#[tauri::command]
+fn dictionary_read_file(path: String) -> Result<Vec<String>, String> {
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    Ok(dictionary::from_file_bytes(&bytes))
+}
+
 #[tauri::command]
 fn list_open_apps() -> Vec<String> {
     foreground_app::open_apps()
@@ -637,6 +653,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--start-minimized"]),
@@ -673,6 +690,8 @@ fn main() {
             ai_test,
             ai_restart,
             list_open_apps,
+            dictionary_export,
+            dictionary_read_file,
             copy_text,
             diag_log,
         ])
