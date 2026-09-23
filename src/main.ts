@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { setLang, getLang, detectDefaultLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
+import { initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
 
 interface Settings {
@@ -25,6 +26,11 @@ interface Settings {
   history: string;
   pasteLastHotkey: string;
   muteAudio: boolean;
+  aiCleanup: boolean;
+  aiModel: string;
+  aiStyle: string;
+  aiInstructions: string;
+  aiRules: AppRule[];
 }
 
 interface Replacement {
@@ -38,6 +44,10 @@ interface HistoryEntry {
   durationMs: number;
   model: string;
   hasAudio: boolean;
+  /** Text before AI cleanup, when the AI changed it. */
+  raw?: string | null;
+  /** Program the dictation went into, e.g. "whatsapp.root". */
+  app?: string;
 }
 
 interface MicDevice {
@@ -196,6 +206,7 @@ async function loadSettings() {
   renderReplacements();
   historyModeSelect.value = currentSettings.history || "audio";
   await refreshHistory();
+  await renderAiSettings();
 }
 
 interface GpuDevice {
@@ -340,6 +351,7 @@ uiLanguageSelect.addEventListener("change", async () => {
   renderHotkeys();
   await saveSettings();
   await refreshHistory();
+  await renderAiSettings();
 });
 
 sendCommandSelect.addEventListener("change", () => saveSettings());
@@ -689,7 +701,9 @@ function renderHistoryEntry(e: HistoryEntry): HTMLElement {
   const meta = document.createElement("span");
   meta.className = "history-meta";
   const renderMeta = (entry: HistoryEntry) => {
-    meta.textContent = `${formatWhen(entry.id)} \u00b7 ${formatDuration(entry.durationMs)} \u00b7 ${entry.model}`;
+    const parts = [formatWhen(entry.id), formatDuration(entry.durationMs), entry.model];
+    if (entry.app) parts.push(entry.app);
+    meta.textContent = parts.join(" \u00b7 ");
   };
   renderMeta(e);
 
@@ -702,6 +716,16 @@ function renderHistoryEntry(e: HistoryEntry): HTMLElement {
       setTimeout(() => (b.textContent = t("history_copy")), 1200);
     }),
   );
+  if (e.raw) {
+    let showingRaw = false;
+    actions.appendChild(
+      smallButton(t("history_original"), (b) => {
+        showingRaw = !showingRaw;
+        text.textContent = showingRaw ? e.raw! : e.text;
+        b.textContent = showingRaw ? t("history_ai_version") : t("history_original");
+      }),
+    );
+  }
   if (e.hasAudio) {
     actions.appendChild(
       smallButton(t("history_play"), async (b) => {
@@ -727,9 +751,9 @@ function renderHistoryEntry(e: HistoryEntry): HTMLElement {
       b.textContent = t("history_rerunning");
       try {
         const updated = await invoke<HistoryEntry>("history_rerun", { id: e.id });
-        text.textContent = updated.text;
-        renderMeta(updated);
-        b.textContent = t("history_rerun");
+        if (playing && item.contains(playing.btn)) stopPlayback();
+        item.replaceWith(renderHistoryEntry(updated));
+        return;
       } catch (err) {
         console.error("history_rerun failed:", err);
         b.textContent = t("history_rerun_failed");
@@ -800,6 +824,8 @@ document.getElementById("credit-link")?.addEventListener("click", async (e) => {
     console.error("Failed to open URL:", err);
   }
 });
+
+initAiSettings({ settings: () => currentSettings, save: saveSettings });
 
 // Initialize
 getVersion()

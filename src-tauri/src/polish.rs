@@ -80,7 +80,13 @@ pub async fn polish(
         );
         let (temperature, max_tokens) = ai_cleanup::sampling(&settings.ai_style, &protected);
         let timeout = ai_cleanup::request_timeout(protected.split_whitespace().count(), endpoint.on_cpu);
-        let answer = ai_cleanup::complete(&endpoint, &system, &user, temperature, max_tokens, timeout).await?;
+        let answer = ai_cleanup::complete(&endpoint, &system, &user, temperature, max_tokens, timeout)
+            .await
+            .inspect_err(|e| {
+                if e.starts_with(ai_cleanup::UNREACHABLE) {
+                    llm.request_failed(model_path.clone(), Some(settings.gpu_backend.clone()));
+                }
+            })?;
         ai_cleanup::guard(&protected, &answer, values.len()).map_err(str::to_string)
     }
     .await;

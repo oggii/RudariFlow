@@ -148,20 +148,46 @@ impl LlmServer {
     /// The endpoint if a server for `model` is running and ready. Notices a
     /// server that crashed since the last call.
     pub fn ready_endpoint_now(&self, model: &Path) -> Option<Endpoint> {
-        let mut running = lock(&self.running);
-        let r = running.as_mut()?;
-        if let Ok(Some(code)) = r.child.try_wait() {
-            *running = None;
-            drop(running);
-            startup_log::log(&format!("[ai] llama-server stopped unexpectedly ({})", code));
-            self.failures.fetch_add(1, Ordering::SeqCst);
-            self.set_status(ServerStatus::Failed {
-                error: format!("The AI model stopped unexpectedly ({})", code),
-            });
+        if self.reap_if_exited() {
             return None;
         }
+        let running = lock(&self.running);
+        let r = running.as_ref()?;
         let ready = r.model == model && matches!(*lock(&self.status), ServerStatus::Ready { .. });
         ready.then(|| r.endpoint.clone())
+    }
+
+    /// If the server process has exited on its own, forget it, count the
+    /// failure and report it. Returns whether it had exited.
+    fn reap_if_exited(&self) -> bool {
+        let mut running = lock(&self.running);
+        let Some(r) = running.as_mut() else { return false };
+        let Ok(Some(code)) = r.child.try_wait() else { return false };
+        *running = None;
+        drop(running);
+        startup_log::log(&format!("[ai] llama-server stopped unexpectedly ({})", code));
+        self.failures.fetch_add(1, Ordering::SeqCst);
+        self.set_status(ServerStatus::Failed {
+            error: format!("The AI model stopped unexpectedly ({})", code),
+        });
+        true
+    }
+
+    /// A request could not reach the server. That usually means it died, but
+    /// a process holding gigabytes of GPU memory takes a moment to exit, so
+    /// watch for a few seconds; once it is gone, start it again in the
+    /// background (within the failure limit) so the next dictation finds it.
+    pub fn request_failed(self: &Arc<Self>, model: PathBuf, gpu_backend: Option<String>) {
+        let this = self.clone();
+        tauri::async_runtime::spawn(async move {
+            for _ in 0..25 {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                if this.reap_if_exited() {
+                    this.warm(model, gpu_backend);
+                    return;
+                }
+            }
+        });
     }
 
     fn gave_up(&self) -> Option<String> {
@@ -309,6 +335,19 @@ impl LlmServer {
         });
 
         self.wait_healthy(&endpoint).await?;
+        // The first inference compiles GPU pipelines and fills the prompt
+        // cache with the shared system prompt. Do it before reporting Ready,
+        // so the first dictation is as fast as the ones after it.
+        let (system, user) = crate::ai_cleanup::build_messages(
+            "polished",
+            "",
+            &[],
+            &crate::ai_cleanup::AppContext::default(),
+            "Hello.",
+        );
+        if let Err(e) = crate::ai_cleanup::complete(&endpoint, &system, &user, 0.0, 8, LOAD_TIMEOUT).await {
+            startup_log::log(&format!("[ai] warm-up request failed: {}", e));
+        }
         startup_log::log(&format!(
             "[ai] llama-server ready on {} after {} ms",
             label,

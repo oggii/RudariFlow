@@ -206,6 +206,9 @@ pub fn guard(input: &str, output: &str, placeholders: usize) -> Result<String, &
     Ok(out)
 }
 
+/// Start of the error `complete` returns when the server cannot be reached.
+pub const UNREACHABLE: &str = "the AI model is not reachable";
+
 /// Ask the server for the edited text. Non-streaming; `timeout` covers the
 /// whole request.
 pub async fn complete(
@@ -229,6 +232,8 @@ pub async fn complete(
     });
     let client = reqwest::Client::builder()
         .timeout(timeout)
+        // A closed local port takes Windows about 2 s to refuse by default.
+        .connect_timeout(Duration::from_millis(800))
         .build()
         .map_err(|e| e.to_string())?;
     let response = client
@@ -237,7 +242,14 @@ pub async fn complete(
         .json(&body)
         .send()
         .await
-        .map_err(|e| if e.is_timeout() { "timed out".to_string() } else { format!("request failed: {}", e) })?;
+        .map_err(|e| {
+            if e.is_timeout() && !e.is_connect() {
+                "timed out".to_string()
+            } else {
+                // Refused or reset: the server is gone or going.
+                format!("{}: {}", UNREACHABLE, e)
+            }
+        })?;
     if !response.status().is_success() {
         return Err(format!("llama-server answered {}", response.status()));
     }
