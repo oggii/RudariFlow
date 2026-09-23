@@ -369,6 +369,16 @@
             </div>
             <div class="setting-row">
               <div class="setting-label">
+                <span class="label-text" data-i18n="ai_output_label">Write in</span>
+                <span class="label-hint" data-i18n="ai_output_hint">Translates every dictation into this language. Only while AI cleanup runs; apps set to No AI keep the spoken language.</span>
+                <span class="label-hint ai-output-warn hidden" id="ai-output-warn" data-i18n="ai_output_warn">Set Engine → Language to Auto-detect, so Whisper hears other languages correctly before they are translated.</span>
+              </div>
+              <div class="setting-control">
+                <select id="ai-output-select"></select>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
                 <span class="label-text" data-i18n="ai_instructions_label">Instructions for all apps</span>
                 <span class="label-hint" data-i18n="ai_instructions_hint">How the AI should write everywhere</span>
               </div>

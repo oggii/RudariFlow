@@ -317,6 +317,18 @@ impl WhisperEngine {
     }
 }
 
+/// English name of a Whisper language code ("de" -> "German"); `None` for
+/// "auto", empty or unknown codes.
+pub fn language_name(code: &str) -> Option<String> {
+    let code = code.trim();
+    if code.is_empty() || code == "auto" || code.contains('\0') {
+        return None;
+    }
+    whisper_rs::get_lang_id(code)
+        .and_then(whisper_rs::get_lang_str_full)
+        .map(capitalize)
+}
+
 fn capitalize(word: &str) -> String {
     let mut chars = word.chars();
     match chars.next() {

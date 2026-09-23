@@ -1025,3 +1025,7 @@ kbd {
 .dict-long {
   color: var(--yellow);
 }
+
+.ai-output-warn {
+  color: var(--yellow);
+}

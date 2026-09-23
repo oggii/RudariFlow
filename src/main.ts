@@ -33,6 +33,7 @@ interface Settings {
   aiInstructions: string;
   aiRules: AppRule[];
   swissSpelling: boolean;
+  aiOutputLanguage: string;
 }
 
 interface Replacement {
@@ -337,7 +338,10 @@ engineCloud.addEventListener("click", () => {
 
 micSelect.addEventListener("change", () => saveSettings());
 
-languageSelect.addEventListener("change", () => saveSettings());
+languageSelect.addEventListener("change", async () => {
+  await saveSettings();
+  await renderAiSettings();
+});
 
 gpuBackendSelect.addEventListener("change", () => saveSettings());
 

@@ -98,6 +98,7 @@ async fn polish_inner(
         let rules = ai_cleanup::matching_rules(&settings.ai_rules, ctx);
         let language = language.map(str::to_string).or_else(|| ai_cleanup::detect_language(&protected));
         let dictionary = crate::dictionary::terms(&settings.custom_prompt);
+        let target = crate::whisper_engine::language_name(&settings.ai_output_language);
         let (system, user) = ai_cleanup::build_messages(
             &settings.ai_style,
             &settings.ai_instructions,
@@ -105,6 +106,7 @@ async fn polish_inner(
             &rules,
             ctx,
             language.as_deref(),
+            target.as_deref(),
             &protected,
         );
         let (temperature, max_tokens) = ai_cleanup::sampling(&settings.ai_style, &protected);
@@ -116,7 +118,7 @@ async fn polish_inner(
                     llm.request_failed(model_path.clone(), Some(settings.gpu_backend.clone()));
                 }
             })?;
-        ai_cleanup::guard(&protected, &answer, values.len()).map_err(str::to_string)
+        ai_cleanup::guard(&protected, &answer, values.len(), target.as_deref()).map_err(str::to_string)
     }
     .await;
     let ai_ms = started.elapsed().as_millis() as u64;

@@ -61,6 +61,10 @@ pub struct Settings {
     /// Swiss spelling: ss instead of ß in every dictation.
     #[serde(rename = "swissSpelling", default)]
     pub swiss_spelling: bool,
+    /// "Write in": Whisper language code the AI writes everything in
+    /// (translating if needed); empty = the language that was spoken.
+    #[serde(rename = "aiOutputLanguage", default)]
+    pub ai_output_language: String,
 }
 
 fn default_volume() -> f32 {
@@ -121,6 +125,7 @@ impl Default for Settings {
             ai_instructions: String::new(),
             ai_rules: Vec::new(),
             swiss_spelling: false,
+            ai_output_language: String::new(),
         }
     }
 }
@@ -168,6 +173,9 @@ impl Settings {
         }
         if !matches!(settings.ai_style.as_str(), "polished" | "light") {
             settings.ai_style = default_ai_style();
+        }
+        if crate::whisper_engine::language_name(&settings.ai_output_language).is_none() {
+            settings.ai_output_language = String::new();
         }
         settings
     }
@@ -343,6 +351,21 @@ mod tests {
         assert_eq!(loaded.ai_model, crate::ai_models::DEFAULT_MODEL);
         assert_eq!(loaded.ai_style, "polished");
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_output_language_roundtrip_and_fallback() {
+        let dir = temp_dir().join("typr_test_output_language");
+        let _ = fs::remove_dir_all(&dir);
+        let mut settings = Settings::default();
+        assert_eq!(settings.ai_output_language, "");
+        settings.ai_output_language = "en".to_string();
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).ai_output_language, "en");
+        settings.ai_output_language = "klingon".to_string();
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).ai_output_language, "");
         let _ = fs::remove_dir_all(&dir);
     }
 
