@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
-import { setLang, detectDefaultLang, t } from "./i18n";
+import { setLang, getLang, detectDefaultLang, t } from "./i18n";
+import { populateLanguageSelect } from "./languages";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
 
 interface Settings {
@@ -18,6 +20,24 @@ interface Settings {
   volume: number;
   autostart: boolean;
   customPrompt: string;
+  replacements: Replacement[];
+  sendCommand: string;
+  history: string;
+  pasteLastHotkey: string;
+  muteAudio: boolean;
+}
+
+interface Replacement {
+  from: string;
+  to: string;
+}
+
+interface HistoryEntry {
+  id: number;
+  text: string;
+  durationMs: number;
+  model: string;
+  hasAudio: boolean;
 }
 
 interface MicDevice {
@@ -55,6 +75,19 @@ const hotkeyText = document.getElementById("hotkey-text")!;
 const hotkeyBtn = document.getElementById("hotkey-btn") as HTMLButtonElement;
 const customPromptTextarea = document.getElementById("custom-prompt") as HTMLTextAreaElement;
 const customPromptRow = document.getElementById("custom-prompt-row")!;
+const pasteLastBtn = document.getElementById("paste-last-btn") as HTMLButtonElement;
+const pasteLastText = document.getElementById("paste-last-text")!;
+const pasteLastClear = document.getElementById("paste-last-clear") as HTMLButtonElement;
+const sendCommandSelect = document.getElementById("send-command-select") as HTMLSelectElement;
+const muteAudioToggle = document.getElementById("mute-audio-toggle") as HTMLInputElement;
+const replacementList = document.getElementById("replacement-list")!;
+const replacementEmpty = document.getElementById("replacement-empty")!;
+const replacementAdd = document.getElementById("replacement-add") as HTMLButtonElement;
+const historyModeSelect = document.getElementById("history-mode-select") as HTMLSelectElement;
+const historyList = document.getElementById("history-list")!;
+const historyEmpty = document.getElementById("history-empty")!;
+const historyCount = document.getElementById("history-count")!;
+const historyClear = document.getElementById("history-clear") as HTMLButtonElement;
 
 // Section navigation
 const navItems = document.querySelectorAll(".nav-item");
@@ -97,6 +130,7 @@ async function loadSettings() {
   }
   uiLanguageSelect.value = currentSettings.uiLanguage;
   setLang(currentSettings.uiLanguage);
+  populateLanguageSelect(languageSelect, getLang(), t("language_auto"));
 
   // Volume
   volumeSlider.value = String(currentSettings.volume);
@@ -138,8 +172,15 @@ async function loadSettings() {
   // Recording mode
   setRecordingMode(currentSettings.recordingMode);
 
-  // Hotkey
-  renderHotkey(currentSettings.hotkey);
+  // Hotkeys
+  renderHotkeys();
+
+  // Send command, mute, replacements, history
+  sendCommandSelect.value = currentSettings.sendCommand || "off";
+  muteAudioToggle.checked = currentSettings.muteAudio;
+  renderReplacements();
+  historyModeSelect.value = currentSettings.history || "audio";
+  await refreshHistory();
 }
 
 interface GpuDevice {
@@ -253,6 +294,10 @@ async function saveSettings() {
   currentSettings.volume = parseFloat(volumeSlider.value);
   currentSettings.autostart = autostartToggle.checked;
   currentSettings.customPrompt = customPromptTextarea.value;
+  currentSettings.sendCommand = sendCommandSelect.value;
+  currentSettings.muteAudio = muteAudioToggle.checked;
+  currentSettings.history = historyModeSelect.value;
+  currentSettings.replacements = readReplacements();
   await invoke("save_settings", { settings: currentSettings });
 }
 
@@ -273,9 +318,19 @@ languageSelect.addEventListener("change", () => saveSettings());
 
 gpuBackendSelect.addEventListener("change", () => saveSettings());
 
-uiLanguageSelect.addEventListener("change", () => {
+uiLanguageSelect.addEventListener("change", async () => {
   setLang(uiLanguageSelect.value);
-  saveSettings();
+  populateLanguageSelect(languageSelect, getLang(), t("language_auto"));
+  renderHotkeys();
+  await saveSettings();
+  await refreshHistory();
+});
+
+sendCommandSelect.addEventListener("change", () => saveSettings());
+muteAudioToggle.addEventListener("change", () => saveSettings());
+historyModeSelect.addEventListener("change", async () => {
+  await saveSettings();
+  await refreshHistory();
 });
 
 volumeSlider.addEventListener("input", () => {
@@ -366,15 +421,30 @@ listen<DownloadProgress>("download-progress", (event) => {
   progressFill.style.width = `${percent}%`;
 });
 
-// Hotkey capture
-let capturing = false;
+// Hotkey capture. "dictation" starts/stops recording (keyboard or mouse side
+// button), "pasteLast" pastes the last transcript again (keyboard only).
+type HotkeyTarget = "dictation" | "pasteLast";
+let capturing: HotkeyTarget | null = null;
 
-function renderHotkey(combo: string) {
+function hotkeyLabel(combo: string): string {
+  if (!combo) return t("hotkey_none");
   const isMac = navigator.userAgent.includes("Mac");
-  hotkeyText.textContent = combo
+  return combo
     .replace("CmdOrCtrl", isMac ? "Cmd" : "Ctrl")
     .replace("Mouse4", t("hotkey_mouse4"))
     .replace("Mouse5", t("hotkey_mouse5"));
+}
+
+function renderHotkeys() {
+  hotkeyText.textContent = hotkeyLabel(currentSettings.hotkey);
+  pasteLastText.textContent = hotkeyLabel(currentSettings.pasteLastHotkey);
+  pasteLastClear.classList.toggle("hidden", !currentSettings.pasteLastHotkey);
+}
+
+function captureElements(target: HotkeyTarget) {
+  return target === "dictation"
+    ? { btn: hotkeyBtn, text: hotkeyText }
+    : { btn: pasteLastBtn, text: pasteLastText };
 }
 
 function modifierTokens(e: KeyboardEvent | MouseEvent): string[] {
@@ -410,25 +480,26 @@ function keyEventToCombo(e: KeyboardEvent): string | null {
   return [...mods, key].join("+");
 }
 
-function startCapture() {
+function startCapture(target: HotkeyTarget) {
   if (capturing) return;
-  capturing = true;
-  // Release the global hotkey so pressing the current chord reaches this window.
+  capturing = target;
+  // Release the global hotkeys so pressing a current chord reaches this window.
   invoke("set_hotkey_paused", { paused: true }).catch(console.error);
-  hotkeyBtn.classList.add("capturing");
-  hotkeyText.textContent = t("hotkey_press_keys");
+  const { btn, text } = captureElements(target);
+  btn.classList.add("capturing");
+  text.textContent = t(target === "dictation" ? "hotkey_press_keys" : "hotkey_press_keys_keyboard");
   window.addEventListener("keydown", onCaptureKey, true);
   // Click outside cancels
   setTimeout(() => window.addEventListener("mousedown", onOutsideClick, true), 0);
 }
 
 function stopCapture() {
-  capturing = false;
-  hotkeyBtn.classList.remove("capturing");
+  if (capturing) captureElements(capturing).btn.classList.remove("capturing");
+  capturing = null;
   window.removeEventListener("keydown", onCaptureKey, true);
   window.removeEventListener("mousedown", onOutsideClick, true);
   invoke("set_hotkey_paused", { paused: false }).catch(console.error);
-  renderHotkey(currentSettings.hotkey);
+  renderHotkeys();
 }
 
 async function onCaptureKey(e: KeyboardEvent) {
@@ -444,28 +515,37 @@ async function onCaptureKey(e: KeyboardEvent) {
 }
 
 async function applyCapturedCombo(combo: string) {
+  const target = capturing;
+  if (!target) return;
   window.removeEventListener("keydown", onCaptureKey, true);
   window.removeEventListener("mousedown", onOutsideClick, true);
   try {
-    await invoke("change_hotkey", { newHotkey: combo });
-    currentSettings.hotkey = combo;
+    await setHotkey(target, combo);
     stopCapture();
   } catch (err) {
-    hotkeyText.textContent = t("hotkey_invalid");
+    captureElements(target).text.textContent = t("hotkey_invalid");
     console.error("change_hotkey failed:", err);
     setTimeout(stopCapture, 1500);
   }
 }
 
+async function setHotkey(target: HotkeyTarget, combo: string) {
+  await invoke("change_hotkey", { target, newHotkey: combo });
+  if (target === "dictation") currentSettings.hotkey = combo;
+  else currentSettings.pasteLastHotkey = combo;
+}
+
 function onOutsideClick(e: MouseEvent) {
+  if (!capturing) return;
   const combo = mouseEventToCombo(e);
   if (combo) {
     e.preventDefault();
     e.stopPropagation();
-    applyCapturedCombo(combo);
+    if (capturing === "dictation") applyCapturedCombo(combo);
+    else captureElements(capturing).text.textContent = t("hotkey_keyboard_only");
     return;
   }
-  if (!hotkeyBtn.contains(e.target as Node)) stopCapture();
+  if (!captureElements(capturing).btn.contains(e.target as Node)) stopCapture();
 }
 
 // Side buttons would otherwise trigger history navigation in the webview.
@@ -473,7 +553,227 @@ window.addEventListener("mouseup", (e) => {
   if (e.button === 3 || e.button === 4) e.preventDefault();
 });
 
-hotkeyBtn.addEventListener("click", startCapture);
+hotkeyBtn.addEventListener("click", () => startCapture("dictation"));
+pasteLastBtn.addEventListener("click", () => startCapture("pasteLast"));
+pasteLastClear.addEventListener("click", async () => {
+  try {
+    await setHotkey("pasteLast", "");
+  } catch (err) {
+    console.error("clearing paste-last hotkey failed:", err);
+  }
+  renderHotkeys();
+});
+
+// ── Replacements ──────────────────────────────────────
+
+function renderReplacements() {
+  replacementList.innerHTML = "";
+  for (const r of currentSettings.replacements ?? []) addReplacementRow(r);
+  replacementEmpty.classList.toggle("hidden", replacementList.children.length > 0);
+}
+
+function addReplacementRow(r: Replacement): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "replacement-row";
+
+  const from = document.createElement("input");
+  from.type = "text";
+  from.className = "replacement-from";
+  from.value = r.from;
+  from.placeholder = t("replacement_from_placeholder");
+  from.spellcheck = false;
+
+  const arrow = document.createElement("span");
+  arrow.className = "replacement-arrow";
+  arrow.textContent = "\u2192";
+
+  const to = document.createElement("textarea");
+  to.className = "replacement-to";
+  to.rows = 1;
+  to.value = r.to;
+  to.placeholder = t("replacement_to_placeholder");
+  to.spellcheck = false;
+
+  const remove = document.createElement("button");
+  remove.className = "icon-btn";
+  remove.title = t("replacement_remove");
+  remove.setAttribute("aria-label", t("replacement_remove"));
+  remove.innerHTML =
+    '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+  remove.addEventListener("click", () => {
+    row.remove();
+    replacementEmpty.classList.toggle("hidden", replacementList.children.length > 0);
+    saveSettings();
+  });
+
+  from.addEventListener("change", () => saveSettings());
+  to.addEventListener("change", () => saveSettings());
+
+  row.append(from, arrow, to, remove);
+  replacementList.appendChild(row);
+  return row;
+}
+
+function readReplacements(): Replacement[] {
+  return Array.from(replacementList.querySelectorAll<HTMLElement>(".replacement-row")).map((row) => ({
+    from: (row.querySelector(".replacement-from") as HTMLInputElement).value,
+    to: (row.querySelector(".replacement-to") as HTMLTextAreaElement).value,
+  }));
+}
+
+replacementAdd.addEventListener("click", () => {
+  const row = addReplacementRow({ from: "", to: "" });
+  replacementEmpty.classList.add("hidden");
+  (row.querySelector(".replacement-from") as HTMLInputElement).focus();
+});
+
+// ── History ───────────────────────────────────────────
+
+let playing: { audio: HTMLAudioElement; url: string; btn: HTMLButtonElement } | null = null;
+
+function stopPlayback() {
+  if (!playing) return;
+  playing.audio.pause();
+  URL.revokeObjectURL(playing.url);
+  playing.btn.textContent = t("history_play");
+  playing = null;
+}
+
+// Dates follow the system locale (24 h in Switzerland even with an English UI).
+function formatWhen(ms: number): string {
+  const d = new Date(ms);
+  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === new Date().toDateString()) return time;
+  return `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })}, ${time}`;
+}
+
+function formatDuration(ms: number): string {
+  const secs = Math.max(1, Math.round(ms / 1000));
+  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+}
+
+function smallButton(label: string, onClick: (btn: HTMLButtonElement) => void): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.className = "btn-ghost";
+  b.textContent = label;
+  b.addEventListener("click", () => onClick(b));
+  return b;
+}
+
+function renderHistoryEntry(e: HistoryEntry): HTMLElement {
+  const item = document.createElement("article");
+  item.className = "history-item";
+
+  const text = document.createElement("p");
+  text.className = "history-text";
+  text.textContent = e.text;
+
+  const footer = document.createElement("div");
+  footer.className = "history-footer";
+  const meta = document.createElement("span");
+  meta.className = "history-meta";
+  const renderMeta = (entry: HistoryEntry) => {
+    meta.textContent = `${formatWhen(entry.id)} \u00b7 ${formatDuration(entry.durationMs)} \u00b7 ${entry.model}`;
+  };
+  renderMeta(e);
+
+  const actions = document.createElement("div");
+  actions.className = "history-actions";
+  actions.appendChild(
+    smallButton(t("history_copy"), async (b) => {
+      await invoke("copy_text", { text: text.textContent ?? "" });
+      b.textContent = t("history_copied");
+      setTimeout(() => (b.textContent = t("history_copy")), 1200);
+    }),
+  );
+  if (e.hasAudio) {
+    actions.appendChild(
+      smallButton(t("history_play"), async (b) => {
+        const wasThis = playing?.btn === b;
+        stopPlayback();
+        if (wasThis) return;
+        try {
+          const bytes = await invoke<ArrayBuffer>("history_audio", { id: e.id });
+          const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+          const audio = new Audio(url);
+          playing = { audio, url, btn: b };
+          b.textContent = t("history_stop");
+          audio.addEventListener("ended", stopPlayback);
+          await audio.play();
+        } catch (err) {
+          console.error("playback failed:", err);
+          stopPlayback();
+        }
+      }),
+    );
+    const rerun = smallButton(t("history_rerun"), async (b) => {
+      b.disabled = true;
+      b.textContent = t("history_rerunning");
+      try {
+        const updated = await invoke<HistoryEntry>("history_rerun", { id: e.id });
+        text.textContent = updated.text;
+        renderMeta(updated);
+        b.textContent = t("history_rerun");
+      } catch (err) {
+        console.error("history_rerun failed:", err);
+        b.textContent = t("history_rerun_failed");
+        setTimeout(() => (b.textContent = t("history_rerun")), 2500);
+      } finally {
+        b.disabled = false;
+      }
+    });
+    rerun.title = t("history_rerun_title");
+    actions.appendChild(rerun);
+  }
+  actions.appendChild(
+    smallButton(t("history_delete"), async () => {
+      if (playing && item.contains(playing.btn)) stopPlayback();
+      await invoke("history_delete", { id: e.id });
+      item.remove();
+      await refreshHistory();
+    }),
+  );
+
+  footer.append(meta, actions);
+  item.append(text, footer);
+  return item;
+}
+
+async function refreshHistory() {
+  const entries = await invoke<HistoryEntry[]>("history_list");
+  stopPlayback();
+  historyList.innerHTML = "";
+  for (const e of entries) historyList.appendChild(renderHistoryEntry(e));
+
+  const off = historyModeSelect.value === "off";
+  historyEmpty.textContent = off ? t("history_off") : t("history_empty");
+  historyEmpty.classList.toggle("hidden", entries.length > 0 && !off);
+  historyCount.textContent =
+    entries.length === 1 ? t("history_count_one") : t("history_count").replace("{n}", String(entries.length));
+  historyClear.classList.toggle("hidden", entries.length === 0);
+  resetClearButton();
+}
+
+let clearArmed: number | undefined;
+function resetClearButton() {
+  window.clearTimeout(clearArmed);
+  clearArmed = undefined;
+  historyClear.classList.remove("armed");
+  historyClear.textContent = t("history_clear");
+}
+
+historyClear.addEventListener("click", async () => {
+  if (clearArmed === undefined) {
+    historyClear.classList.add("armed");
+    historyClear.textContent = t("history_clear_confirm");
+    clearArmed = window.setTimeout(resetClearButton, 3000);
+    return;
+  }
+  await invoke("history_clear");
+  await refreshHistory();
+});
+
+listen("history-updated", () => refreshHistory());
 
 // Credit link -> opens 0ggi.ch in default browser
 document.getElementById("credit-link")?.addEventListener("click", async (e) => {
@@ -486,4 +786,7 @@ document.getElementById("credit-link")?.addEventListener("click", async (e) => {
 });
 
 // Initialize
+getVersion()
+  .then((v) => (document.getElementById("version-text")!.textContent = `v${v}`))
+  .catch(console.error);
 loadSettings();

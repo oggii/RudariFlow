@@ -53,7 +53,7 @@ const en: Translations = {
   mode_toggle: "Toggle",
   mode_ptt: "Push to Talk",
   hotkey_label: "Hotkey",
-  hotkey_hint: "Global keyboard shortcut to trigger recording",
+  hotkey_hint: "Global keyboard shortcut or mouse side button to start and stop recording",
   hotkey_press_keys: "Press a key combination or mouse side button…",
   hotkey_mouse4: "Mouse 4 (Back)",
   hotkey_mouse5: "Mouse 5 (Forward)",
@@ -63,6 +63,50 @@ const en: Translations = {
   custom_prompt_placeholder: "e.g. Tauri, whisper.cpp, ggml, oggi",
   audio_empty_message: "No speech detected",
   transcribing_message: "Transcribing…",
+  nav_replacements: "Replacements",
+  nav_history: "History",
+  hotkey_none: "Not set",
+  hotkey_press_keys_keyboard: "Press a key combination…",
+  hotkey_keyboard_only: "Keyboard shortcuts only here",
+  paste_last_label: "Paste last transcript",
+  paste_last_hint: "Pastes your last dictation again, for example when it landed in the wrong window",
+  paste_last_clear: "Turn off",
+  send_command_label: "Voice command “send it”",
+  send_command_hint: "End with “Send it.” as its own sentence to submit, for example in chats. German: “Abschicken.”",
+  send_command_off: "Off",
+  send_command_enter: "Press Enter",
+  send_command_ctrl_enter: "Press Ctrl+Enter",
+  mute_audio_label: "Mute other apps while recording",
+  mute_audio_hint: "Music and videos go quiet while you dictate and come back afterwards",
+  replacements_title: "Replacements",
+  replacements_desc: "Say a short phrase, get longer text. Good for email addresses, links and signatures.",
+  replacements_empty: "No replacements yet.",
+  replacements_add: "Add replacement",
+  replacement_from_placeholder: "When I say…",
+  replacement_to_placeholder: "Insert this",
+  replacement_remove: "Remove",
+  history_title: "History",
+  history_desc: "Your recent dictations. Stored only on this computer.",
+  history_mode_label: "Keep history",
+  history_mode_hint: "Recordings let you re-run a dictation with another model. The last 200 texts and 50 recordings are kept.",
+  history_mode_audio: "Text and recordings",
+  history_mode_text: "Text only",
+  history_mode_off: "Off",
+  history_clear: "Clear history",
+  history_clear_confirm: "Click again to delete all",
+  history_empty: "No dictations yet. They show up here after you dictate.",
+  history_off: "History is off. The last dictation is still kept in memory for the paste-last hotkey.",
+  history_count: "{n} dictations",
+  history_count_one: "1 dictation",
+  history_copy: "Copy",
+  history_copied: "Copied",
+  history_play: "Play",
+  history_stop: "Stop",
+  history_rerun: "Re-run",
+  history_rerun_title: "Transcribe the recording again with the current model",
+  history_rerunning: "Transcribing…",
+  history_rerun_failed: "Re-run failed",
+  history_delete: "Delete",
 };
 
 const de: Translations = {
@@ -118,7 +162,7 @@ const de: Translations = {
   mode_toggle: "Umschalten",
   mode_ptt: "Push-to-Talk",
   hotkey_label: "Tastenkürzel",
-  hotkey_hint: "Globales Tastenkürzel zum Auslösen der Aufnahme",
+  hotkey_hint: "Globales Tastenkürzel oder Maus-Seitentaste zum Starten und Stoppen der Aufnahme",
   hotkey_press_keys: "Tastenkombination oder Maus-Seitentaste drücken…",
   hotkey_mouse4: "Maus 4 (Zurück)",
   hotkey_mouse5: "Maus 5 (Vorwärts)",
@@ -128,11 +172,59 @@ const de: Translations = {
   custom_prompt_placeholder: "z. B. Tauri, whisper.cpp, ggml, oggi",
   audio_empty_message: "Keine Sprache erkannt",
   transcribing_message: "Wird transkribiert…",
+  nav_replacements: "Ersetzungen",
+  nav_history: "Verlauf",
+  hotkey_none: "Nicht gesetzt",
+  hotkey_press_keys_keyboard: "Tastenkombination drücken…",
+  hotkey_keyboard_only: "Hier nur Tastenkombinationen",
+  paste_last_label: "Letztes Diktat einfügen",
+  paste_last_hint: "Fügt dein letztes Diktat erneut ein, zum Beispiel wenn es im falschen Fenster gelandet ist",
+  paste_last_clear: "Ausschalten",
+  send_command_label: "Sprachbefehl „Abschicken“",
+  send_command_hint: "Beende mit „Abschicken.“ als eigenem Satz, um abzusenden, zum Beispiel im Chat. Englisch: „Send it.“",
+  send_command_off: "Aus",
+  send_command_enter: "Enter drücken",
+  send_command_ctrl_enter: "Strg+Enter drücken",
+  mute_audio_label: "Andere Apps während der Aufnahme stummschalten",
+  mute_audio_hint: "Musik und Videos verstummen, während du diktierst, und kommen danach zurück",
+  replacements_title: "Ersetzungen",
+  replacements_desc: "Sag einen kurzen Ausdruck, erhalte längeren Text. Praktisch für E-Mail-Adressen, Links und Signaturen.",
+  replacements_empty: "Noch keine Ersetzungen.",
+  replacements_add: "Ersetzung hinzufügen",
+  replacement_from_placeholder: "Wenn ich sage…",
+  replacement_to_placeholder: "Das einfügen",
+  replacement_remove: "Entfernen",
+  history_title: "Verlauf",
+  history_desc: "Deine letzten Diktate. Nur auf diesem Computer gespeichert.",
+  history_mode_label: "Verlauf speichern",
+  history_mode_hint: "Mit Aufnahmen kannst du ein Diktat mit einem anderen Modell neu transkribieren. Behalten werden die letzten 200 Texte und 50 Aufnahmen.",
+  history_mode_audio: "Text und Aufnahmen",
+  history_mode_text: "Nur Text",
+  history_mode_off: "Aus",
+  history_clear: "Verlauf löschen",
+  history_clear_confirm: "Nochmals klicken, um alles zu löschen",
+  history_empty: "Noch keine Diktate. Sie erscheinen hier, sobald du diktierst.",
+  history_off: "Der Verlauf ist aus. Das letzte Diktat bleibt für das Einfüge-Tastenkürzel im Speicher.",
+  history_count: "{n} Diktate",
+  history_count_one: "1 Diktat",
+  history_copy: "Kopieren",
+  history_copied: "Kopiert",
+  history_play: "Abspielen",
+  history_stop: "Stopp",
+  history_rerun: "Neu transkribieren",
+  history_rerun_title: "Die Aufnahme mit dem aktuellen Modell erneut transkribieren",
+  history_rerunning: "Wird transkribiert…",
+  history_rerun_failed: "Neu transkribieren fehlgeschlagen",
+  history_delete: "Löschen",
 };
 
 const dictionaries: Record<string, Translations> = { en, de };
 
 let currentLang = "en";
+
+export function getLang(): string {
+  return currentLang;
+}
 
 export function detectDefaultLang(): string {
   const nav = navigator.language.toLowerCase();
@@ -155,6 +247,9 @@ function applyTranslations() {
   document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((el) => {
     const key = el.getAttribute("data-i18n")!;
     el.textContent = t(key);
+  });
+  document.querySelectorAll<HTMLElement>("[data-i18n-title]").forEach((el) => {
+    el.title = t(el.getAttribute("data-i18n-title")!);
   });
   document.querySelectorAll<HTMLElement>("[data-i18n-placeholder]").forEach((el) => {
     const key = el.getAttribute("data-i18n-placeholder")!;

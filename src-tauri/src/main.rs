@@ -9,9 +9,14 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use rudariflow_lib::audio;
+use rudariflow_lib::cleanup::cleanup_text;
 use rudariflow_lib::downloader;
+use rudariflow_lib::history::{self, History, HistoryEntry};
 use rudariflow_lib::mouse_hotkey;
-use rudariflow_lib::recorder::{Recorder, RecordingState};
+use rudariflow_lib::paste::paste_text;
+use rudariflow_lib::recorder::{model_label, transcribe_samples, Recorder, RecordingState};
+use rudariflow_lib::replacements::apply_replacements;
+use rudariflow_lib::send_command::strip_send_command;
 use rudariflow_lib::settings::Settings;
 use rudariflow_lib::startup_log;
 use rudariflow_lib::whisper_engine::WhisperEngine;
@@ -21,9 +26,34 @@ struct AppState {
     settings: Mutex<Settings>,
     app_dir: PathBuf,
     whisper_engine: Arc<WhisperEngine>,
+    history: Arc<History>,
 }
 
+/// What a global hotkey does.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum HotkeyAction {
+    /// Start / stop dictation (the main hotkey, keyboard or mouse button).
+    Dictation,
+    /// Paste the last transcript again (keyboard chords only).
+    PasteLast,
+}
+
+impl HotkeyAction {
+    fn from_target(target: &str) -> Result<Self, String> {
+        match target {
+            "dictation" => Ok(Self::Dictation),
+            "pasteLast" => Ok(Self::PasteLast),
+            _ => Err(format!("Unknown hotkey target: {}", target)),
+        }
+    }
+}
+
+/// Settings, models and history. `RUDARIFLOW_DATA_DIR` points a test build at
+/// a separate folder, so it never touches the installed app's data.
 fn get_app_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("RUDARIFLOW_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("com.rudariflow.app")
@@ -103,6 +133,56 @@ async fn detect_gpus() -> Vec<rudariflow_lib::whisper_engine::GpuDevice> {
 }
 
 #[tauri::command]
+fn history_list(state: State<AppState>) -> Vec<HistoryEntry> {
+    state.history.list()
+}
+
+#[tauri::command]
+fn history_delete(state: State<AppState>, id: u64) {
+    state.history.delete(id);
+}
+
+#[tauri::command]
+fn history_clear(state: State<AppState>) {
+    state.history.clear();
+}
+
+/// The recording of a history entry as WAV bytes, for playback in the UI.
+#[tauri::command]
+fn history_audio(state: State<AppState>, id: u64) -> Result<tauri::ipc::Response, String> {
+    let bytes = std::fs::read(state.history.audio_path(id)).map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// Transcribe a history recording again with the current engine and model,
+/// e.g. after switching to a larger model. Nothing is pasted.
+#[tauri::command]
+async fn history_rerun(state: State<'_, AppState>, id: u64) -> Result<HistoryEntry, String> {
+    let entry = state.history.get(id).ok_or("History entry not found")?;
+    if !entry.has_audio {
+        return Err("This entry has no recording".to_string());
+    }
+    let samples = history::read_wav(&state.history.audio_path(id))?;
+    let settings = state.settings.lock().unwrap().clone();
+    let raw = transcribe_samples(None, &settings, &state.app_dir, &state.whisper_engine, &samples)
+        .await?;
+    let cleaned = cleanup_text(&raw);
+    let text = strip_send_command(&cleaned).unwrap_or(cleaned);
+    let text = apply_replacements(&text, &settings.replacements);
+    state
+        .history
+        .update_text(id, &text, &model_label(&settings))
+        .ok_or_else(|| "History entry not found".to_string())
+}
+
+#[tauri::command]
+fn copy_text(text: String) -> Result<(), String> {
+    arboard::Clipboard::new()
+        .and_then(|mut cb| cb.set_text(text))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn diag_log(source: String, message: String) {
     startup_log::log(&format!("[{}] {}", source, message));
 }
@@ -129,51 +209,114 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     }
 }
 
+/// `target` is "dictation" or "pasteLast". An empty `new_hotkey` turns the
+/// paste-last hotkey off; dictation always needs one.
 #[tauri::command]
 fn change_hotkey(
     app: tauri::AppHandle,
     state: State<AppState>,
+    target: String,
     new_hotkey: String,
 ) -> Result<(), String> {
-    let current = state.settings.lock().unwrap().hotkey.clone();
+    let action = HotkeyAction::from_target(&target)?;
+    let (current, other) = {
+        let s = state.settings.lock().unwrap();
+        match action {
+            HotkeyAction::Dictation => (s.hotkey.clone(), s.paste_last_hotkey.clone()),
+            HotkeyAction::PasteLast => (s.paste_last_hotkey.clone(), s.hotkey.clone()),
+        }
+    };
+    if new_hotkey.is_empty() && action == HotkeyAction::Dictation {
+        return Err("The dictation hotkey cannot be empty".to_string());
+    }
+    if !new_hotkey.is_empty() && new_hotkey.eq_ignore_ascii_case(&other) {
+        return Err(format!("'{}' is already used by the other hotkey", new_hotkey));
+    }
+    if action == HotkeyAction::PasteLast && mouse_hotkey::parse(&new_hotkey).is_some() {
+        return Err("Mouse buttons can only start dictation".to_string());
+    }
     if new_hotkey != current {
         // Register the new chord before dropping the old one, so a rejected
         // chord (invalid name, taken by another app) leaves the old one working.
-        register_hotkey(&app, &new_hotkey)?;
-        unregister_hotkey(&app, &current);
-    } else if !hotkey_is_registered(&app, &current) {
-        register_hotkey(&app, &new_hotkey)?;
+        if !new_hotkey.is_empty() {
+            register_hotkey(&app, &new_hotkey, action)?;
+        }
+        if !current.is_empty() {
+            unregister_hotkey(&app, &current);
+        }
+    } else if !new_hotkey.is_empty() && !hotkey_is_registered(&app, &current) {
+        register_hotkey(&app, &new_hotkey, action)?;
     }
-    startup_log::log(&format!("[hotkey] changed {} -> {}", current, new_hotkey));
+    startup_log::log(&format!("[hotkey] {:?} changed {} -> {}", action, current, new_hotkey));
     let mut settings = state.settings.lock().unwrap();
-    settings.hotkey = new_hotkey;
+    match action {
+        HotkeyAction::Dictation => settings.hotkey = new_hotkey,
+        HotkeyAction::PasteLast => settings.paste_last_hotkey = new_hotkey,
+    }
     settings.save(&state.app_dir)?;
     Ok(())
 }
 
-/// Temporarily release the global hotkey while the settings UI captures a new
-/// chord; a registered chord never reaches the webview as a keydown.
+/// Temporarily release the global hotkeys while the settings UI captures a
+/// new chord; a registered chord never reaches the webview as a keydown.
 #[tauri::command]
 fn set_hotkey_paused(
     app: tauri::AppHandle,
     state: State<AppState>,
     paused: bool,
 ) -> Result<(), String> {
-    let current = state.settings.lock().unwrap().hotkey.clone();
-    if paused {
-        unregister_hotkey(&app, &current);
-        Ok(())
-    } else if hotkey_is_registered(&app, &current) {
-        Ok(())
-    } else {
-        register_hotkey(&app, &current)
+    let (dictation, paste_last) = {
+        let s = state.settings.lock().unwrap();
+        (s.hotkey.clone(), s.paste_last_hotkey.clone())
+    };
+    let mut result = Ok(());
+    for (hotkey, action) in [
+        (dictation, HotkeyAction::Dictation),
+        (paste_last, HotkeyAction::PasteLast),
+    ] {
+        if hotkey.is_empty() {
+            continue;
+        }
+        if paused {
+            unregister_hotkey(&app, &hotkey);
+        } else if !hotkey_is_registered(&app, &hotkey) {
+            if let Err(e) = register_hotkey(&app, &hotkey, action) {
+                // A paste-last chord taken by another app must not block the
+                // dictation hotkey; it is logged by register_hotkey.
+                if action == HotkeyAction::Dictation {
+                    result = Err(e);
+                }
+            }
+        }
     }
+    result
+}
+
+fn on_hotkey_event(handle: &AppHandle, action: HotkeyAction, pressed: bool) {
+    match action {
+        HotkeyAction::Dictation => on_hotkey(handle, pressed),
+        HotkeyAction::PasteLast if pressed => paste_last_transcript(handle),
+        HotkeyAction::PasteLast => {}
+    }
+}
+
+/// Paste the last transcript into the focused app again.
+fn paste_last_transcript(handle: &AppHandle) {
+    let history = handle.state::<AppState>().history.clone();
+    tauri::async_runtime::spawn_blocking(move || match history.last_text() {
+        Some(text) => {
+            if let Err(e) = paste_text(&text) {
+                startup_log::log(&format!("[paste-last] {}", e));
+            }
+        }
+        None => startup_log::log("[paste-last] nothing to paste yet"),
+    });
 }
 
 /// Keyboard chords go through the global-shortcut plugin; mouse side buttons
 /// (`Mouse4`, `Mouse5`, optionally with modifiers) through a mouse hook.
-fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
-    startup_log::log(&format!("[hotkey] registering {}", hotkey));
+fn register_hotkey(app: &AppHandle, hotkey: &str, action: HotkeyAction) -> Result<(), String> {
+    startup_log::log(&format!("[hotkey] registering {} for {:?}", hotkey, action));
     if let Some(binding) = mouse_hotkey::parse(hotkey) {
         let handle = app.clone();
         let label = hotkey.to_string();
@@ -185,7 +328,7 @@ fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
                     label,
                     if pressed { "Pressed" } else { "Released" }
                 ));
-                on_hotkey(&handle, pressed);
+                on_hotkey_event(&handle, action, pressed);
             }),
         )
         .map_err(|e| {
@@ -203,7 +346,7 @@ fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
                 shortcut.into_string(),
                 event.state
             ));
-            on_hotkey(&handle, event.state == ShortcutState::Pressed);
+            on_hotkey_event(&handle, action, event.state == ShortcutState::Pressed);
         })
         .map_err(|e| {
             let msg = format!("Failed to register hotkey '{}': {}", hotkey, e);
@@ -268,8 +411,11 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
                     let current = state.recorder.get_state();
                     println!("[RudariFlow] PTT mode, current state: {:?}", current);
                     if current == RecordingState::Ready {
-                        let mic = state.settings.lock().unwrap().microphone.clone();
-                        match state.recorder.start_recording(&handle, &mic) {
+                        let (mic, mute) = {
+                            let s = state.settings.lock().unwrap();
+                            (s.microphone.clone(), s.mute_audio)
+                        };
+                        match state.recorder.start_recording(&handle, &mic, mute) {
                             Ok(_) => println!("[RudariFlow] Recording started"),
                             Err(e) => startup_log::log(&format!("[hotkey] start error: {}", e)),
                         }
@@ -286,7 +432,13 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
                 let settings = state.settings.lock().unwrap().clone();
                 match state
                     .recorder
-                    .stop_and_transcribe(&handle, &settings, &state.app_dir, &state.whisper_engine)
+                    .stop_and_transcribe(
+                        &handle,
+                        &settings,
+                        &state.app_dir,
+                        &state.whisper_engine,
+                        &state.history,
+                    )
                     .await
                 {
                     Ok(result) => println!("[RudariFlow] Transcription: {}", result),
@@ -305,15 +457,24 @@ async fn do_toggle_recording(
     let current_state = state.recorder.get_state();
     match current_state {
         RecordingState::Ready => {
-            let mic = state.settings.lock().unwrap().microphone.clone();
-            state.recorder.start_recording(app, &mic)?;
+            let (mic, mute) = {
+                let s = state.settings.lock().unwrap();
+                (s.microphone.clone(), s.mute_audio)
+            };
+            state.recorder.start_recording(app, &mic, mute)?;
             Ok("recording".to_string())
         }
         RecordingState::Recording => {
             let settings = state.settings.lock().unwrap().clone();
             let result = state
                 .recorder
-                .stop_and_transcribe(app, &settings, &state.app_dir, &state.whisper_engine)
+                .stop_and_transcribe(
+                    app,
+                    &settings,
+                    &state.app_dir,
+                    &state.whisper_engine,
+                    &state.history,
+                )
                 .await?;
             Ok(result)
         }
@@ -328,7 +489,9 @@ fn main() {
     startup_log::init(&app_dir);
     let settings = Settings::load(&app_dir);
     startup_log::log("settings loaded");
+    let history = Arc::new(History::load(&app_dir));
     let initial_hotkey = settings.hotkey.clone();
+    let initial_paste_last_hotkey = settings.paste_last_hotkey.clone();
     let initial_autostart = settings.autostart;
 
     tauri::Builder::default()
@@ -343,6 +506,7 @@ fn main() {
             settings: Mutex::new(settings),
             app_dir,
             whisper_engine: Arc::new(WhisperEngine::new()),
+            history,
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -357,6 +521,12 @@ fn main() {
             set_hotkey_paused,
             set_autostart,
             detect_gpus,
+            history_list,
+            history_delete,
+            history_clear,
+            history_audio,
+            history_rerun,
+            copy_text,
             diag_log,
         ])
         .on_window_event(|window, event| {
@@ -444,19 +614,29 @@ fn main() {
                 Err(e) => eprintln!("[RudariFlow] Failed to create overlay: {}", e),
             }
 
-            if let Err(e) = register_hotkey(app.handle(), &initial_hotkey) {
+            if let Err(e) = register_hotkey(app.handle(), &initial_hotkey, HotkeyAction::Dictation) {
                 eprintln!("[RudariFlow] ERROR: {}", e);
                 // A saved chord that no longer registers would leave the app
                 // with no hotkey at all; fall back to the default chord.
                 let default_hotkey = Settings::default().hotkey;
                 if initial_hotkey != default_hotkey
-                    && register_hotkey(app.handle(), &default_hotkey).is_ok()
+                    && register_hotkey(app.handle(), &default_hotkey, HotkeyAction::Dictation).is_ok()
                 {
                     let state = app.state::<AppState>();
                     let mut settings = state.settings.lock().unwrap();
                     settings.hotkey = default_hotkey;
                     let _ = settings.save(&state.app_dir);
                 }
+            }
+
+            // Paste-last is optional: if another app owns the chord, the
+            // setting stays and the failure is in startup.log.
+            if !initial_paste_last_hotkey.is_empty() {
+                let _ = register_hotkey(
+                    app.handle(),
+                    &initial_paste_last_hotkey,
+                    HotkeyAction::PasteLast,
+                );
             }
 
             // Sync persisted autostart preference with the OS — but never

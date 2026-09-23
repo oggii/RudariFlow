@@ -5,6 +5,45 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Replacements.** A new tab maps spoken phrases to longer text ("my email" ->
+  your address, links, signatures). Matched as whole words in any
+  capitalisation, in one pass, longest phrase first; a dictation that is only
+  the phrase inserts just the replacement, without Whisper's punctuation.
+- **"Send it" voice command.** With Recording > Voice command set to Enter or
+  Ctrl+Enter, a dictation ending in "Send it." / "Abschicken." (also "Send.",
+  "Senden.", "Absenden.", "Schick es ab.") as its own sentence is pasted
+  without the phrase and then submitted. The phrase only counts as a separate
+  sentence, so "I'll send it." is pasted as dictated. Off by default.
+- **History tab.** The last 200 dictations are stored in
+  `history/history.json`, the last 50 with a 16 kHz WAV. Copy, play, delete,
+  clear, and re-run a recording with the current engine and model (nothing is
+  pasted). Setting: text and recordings (default), text only, or off.
+  Dictations are saved even when the paste fails.
+- **Paste last transcript hotkey** (default Alt+Shift+V, keyboard chords only,
+  can be turned off). Works with history off, from memory.
+- **Mute other apps while recording.** Mutes every audio session on every
+  playback device except RudariFlow's own (the start/stop sounds keep
+  playing) and sessions that were already muted, and unmutes exactly those
+  when recording stops or is cancelled. Off by default.
+- The language picker lists all ~100 Whisper languages, named in the UI
+  language with the native name.
+- `RUDARIFLOW_DATA_DIR` points a build at a separate settings/history folder.
+
+### Changed
+- Dictations are kept out of the Windows clipboard history (Win+V) and the
+  cloud clipboard; so is the restored previous clipboard content.
+- Settings rows: long hints wrap instead of squeezing the dropdown next to
+  them, and dropdowns are as wide as their longest option.
+- The sidebar shows the real app version (it was stuck at v0.4.0).
+
+### Fixed
+- Pasting waits (up to 1.5 s) until Ctrl, Shift, Alt and Win are released, so
+  a hotkey that is still held cannot turn Ctrl+V into Ctrl+Shift+V.
+- The two clipboard unit tests no longer race each other.
+
 ## [0.5.1] - 2026-09-15 - Mouse side buttons as hotkey
 
 ### Added

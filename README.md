@@ -26,9 +26,14 @@ Made by [oggi](https://0ggi.ch).
 - **Auto backend detection:** NVIDIA CUDA when available, otherwise Vulkan (AMD / Intel / NVIDIA), otherwise CPU. Settings show the detected GPUs and let you force CUDA, Vulkan or CPU. Flash attention is on for CUDA and off for Vulkan (2× slower on an RX 6800); force it with `RUDARIFLOW_FLASH_ATTN=1` or `=0`
 - **Custom Vocabulary:** inject domain terms (names, jargon, acronyms) to bias recognition
 - **No-speech detection:** silent recordings show an overlay notice instead of pasting nothing
-- **Clipboard-safe paste:** your previous clipboard contents are saved and restored around auto-paste
+- **Clipboard-safe paste:** your previous clipboard contents are saved and restored around auto-paste, and dictations stay out of the Windows clipboard history (Win+V) and cloud clipboard
+- **Replacements:** say a short phrase, get longer text, e.g. "my email" becomes your address. Matched as whole words, any capitalisation; a dictation that is only the phrase inserts just the replacement
+- **"Send it" voice command:** end a dictation with "Send it." (German: "Abschicken.") as its own sentence and RudariFlow presses Enter or Ctrl+Enter after pasting. Off by default
+- **History:** the last 200 dictations stay on your computer, the last 50 with their recording. Copy, play, delete, or re-run a recording with the current model. Can be set to text only or turned off
+- **Paste last transcript:** a second hotkey (default Alt+Shift+V) pastes your last dictation again
+- **Mute other apps while recording:** music and videos go quiet while you dictate and come back afterwards (off by default)
 - Multiple Whisper models selectable: tiny → large-v3-turbo, auto-downloaded on selection
-- Languages: auto-detect or pick from 14 fixed languages (EN, DE, FR, IT, ES, …)
+- Languages: auto-detect or any of the ~100 languages Whisper supports
 - **Push-to-talk** and **toggle** modes
 - Configurable global hotkey (capture any chord from the settings UI), including mouse side buttons (Mouse 4 / Mouse 5, alone or with Ctrl/Shift/Alt/Win). A bound side button is consumed, so it no longer triggers "Back" / "Forward" in other apps
 - Floating recording pill with live waveform and cancel button
@@ -100,6 +105,14 @@ Produces (under `CARGO_TARGET_DIR`):
 - `release/rudariflow.exe` (portable, needs the DLLs from step 3 next to it)
 - `release/bundle/nsis/RudariFlow_x.y.z_x64-setup.exe` (NSIS installer)
 - `release/bundle/msi/RudariFlow_x.y.z_x64_en-US.msi` (MSI installer)
+
+### Test data separate from your installed app
+
+Settings, models and history live in `%APPDATA%\com.rudariflow.app`. To run a dev build next to an installed RudariFlow without touching its data, point it at another folder:
+
+```powershell
+$env:RUDARIFLOW_DATA_DIR = "C:\t\rf-test-data"
+```
 
 ### Benchmark
 

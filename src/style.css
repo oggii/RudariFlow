@@ -339,7 +339,7 @@ input[type="range"] {
 }
 
 .setting-label {
-  flex-shrink: 0;
+  flex: 0 1 auto;
   min-width: 200px;
 }
 
@@ -362,13 +362,20 @@ input[type="range"] {
   flex: 1;
   display: flex;
   justify-content: flex-end;
-  min-width: 0;
+  /* Controls keep their natural width; the label's hint wraps instead. */
+  min-width: min-content;
+}
+
+.setting-control > select {
+  width: auto;
+  min-width: 200px;
 }
 
 /* ── Form Controls ──────────────────────────────────── */
 
 select,
-input[type="password"] {
+input[type="password"],
+input[type="text"] {
   width: 100%;
   max-width: 280px;
   padding: 7px 12px;
@@ -393,13 +400,17 @@ select {
 }
 
 select:focus,
-input[type="password"]:focus {
+input[type="password"]:focus,
+input[type="text"]:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-subtle);
 }
 
-input[type="password"]::placeholder {
-  color: var(--text-tertiary);
+input[type="password"]::placeholder,
+input[type="text"]::placeholder,
+textarea::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.6;
 }
 
 /* ── Toggle Group ───────────────────────────────────── */
@@ -586,4 +597,203 @@ kbd {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+/* ── Small buttons ──────────────────────────────────── */
+
+.btn-secondary {
+  padding: 7px 14px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+  white-space: nowrap;
+}
+.btn-secondary:hover {
+  background: var(--surface-hover);
+}
+.btn-secondary.armed {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
+
+.btn-ghost {
+  padding: 3px 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  border-radius: 4px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+  white-space: nowrap;
+}
+.btn-ghost:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.btn-ghost:disabled {
+  cursor: default;
+}
+
+.icon-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.icon-btn svg {
+  width: 11px;
+  height: 11px;
+}
+.icon-btn:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.btn-secondary:focus-visible,
+.btn-ghost:focus-visible,
+.icon-btn:focus-visible,
+.hotkey-btn:focus-visible kbd {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.hotkey-control {
+  align-items: center;
+  gap: 4px;
+}
+
+.empty-state {
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 4px 0 16px;
+}
+
+/* ── Replacements ───────────────────────────────────── */
+
+.replacement-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.replacement-list:empty {
+  display: none;
+}
+
+.replacement-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.6fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+
+.replacement-row input[type="text"] {
+  max-width: none;
+}
+
+.replacement-arrow {
+  color: var(--text-secondary);
+  padding-top: 7px;
+}
+
+.replacement-to {
+  width: 100%;
+  min-height: 33px;
+  field-sizing: content;
+  resize: none;
+  overflow: hidden;
+  font: inherit;
+  line-height: 1.4;
+  padding: 7px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  transition: border-color var(--transition);
+}
+.replacement-to:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+.replacement-row .icon-btn {
+  margin-top: 3px;
+}
+
+/* ── History ────────────────────────────────────────── */
+
+.history-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 8px 0 12px;
+  min-height: 31px;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 24px;
+}
+
+.history-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px 8px;
+}
+
+.history-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.history-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.history-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-actions {
+  display: flex;
+  gap: 2px;
+  margin-right: -6px;
 }

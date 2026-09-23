@@ -3,9 +3,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::audio::{lock, AudioRecorder};
+use crate::audio::{lock, samples_to_wav, AudioRecorder};
 use crate::cleanup::cleanup_text;
-use crate::paste::paste_text;
+use crate::history::History;
+use crate::mute;
+use crate::paste::{paste_text, press_submit};
+use crate::replacements::apply_replacements;
+use crate::send_command::strip_send_command;
 use crate::settings::Settings;
 use crate::startup_log;
 use crate::transcribe_groq;
@@ -116,6 +120,7 @@ struct ReadyOnDrop<'a> {
 
 impl Drop for ReadyOnDrop<'_> {
     fn drop(&mut self) {
+        mute::restore();
         *lock(self.state) = RecordingState::Ready;
         let _ = self.app.emit("recording-state", RecordingState::Ready);
         update_overlay(self.app, &RecordingState::Ready);
@@ -135,7 +140,9 @@ impl Recorder {
         lock(&self.state).clone()
     }
 
-    pub fn start_recording(&self, app: &AppHandle, mic_name: &str) -> Result<(), String> {
+    /// Start capturing. With `mute_others`, other apps are muted until the
+    /// recording stops or is cancelled.
+    pub fn start_recording(&self, app: &AppHandle, mic_name: &str, mute_others: bool) -> Result<(), String> {
         if *lock(&self.state) != RecordingState::Ready {
             return Err("Already recording or transcribing".to_string());
         }
@@ -150,6 +157,9 @@ impl Recorder {
         let opened = lock(&self.audio_recorder).start(app, mic_name);
         let result = match opened {
             Ok(()) => {
+                if mute_others {
+                    mute::mute_others();
+                }
                 *lock(&self.state) = RecordingState::Recording;
                 let _ = app.emit("recording-state", RecordingState::Recording);
                 update_overlay(app, &RecordingState::Recording);
@@ -171,6 +181,7 @@ impl Recorder {
         settings: &Settings,
         app_dir: &PathBuf,
         engine: &Arc<WhisperEngine>,
+        history: &History,
     ) -> Result<String, String> {
         // Stop recording
         {
@@ -180,6 +191,7 @@ impl Recorder {
             }
             *state = RecordingState::Transcribing;
         }
+        mute::restore();
         let _ = app.emit("recording-state", RecordingState::Transcribing);
         update_overlay(app, &RecordingState::Transcribing);
 
@@ -187,7 +199,7 @@ impl Recorder {
         let _ready = ReadyOnDrop { app, state: &self.state };
 
         let result = self
-            .run_transcription_pipeline(app, settings, app_dir, engine)
+            .run_transcription_pipeline(app, settings, app_dir, engine, history)
             .await;
         if let Err(e) = &result {
             startup_log::log(&format!("[recorder] transcription failed: {}", e));
@@ -201,58 +213,40 @@ impl Recorder {
         settings: &Settings,
         app_dir: &PathBuf,
         engine: &Arc<WhisperEngine>,
+        history: &History,
     ) -> Result<String, String> {
-        let raw_text = match settings.engine.as_str() {
-            "local" => {
-                // Local path: take samples, hand directly to in-process whisper.
-                let samples_result = lock(&self.audio_recorder).stop_and_take_samples();
-                if let Err(e) = &samples_result {
-                    if e == "no_speech" {
-                        emit_audio_empty(app, self.state.clone());
-                        return Ok(String::new());
-                    }
-                }
-                let samples = samples_result?;
-
-                let model_path = app_dir
-                    .join(crate::whisper_engine::model_filename(&settings.whisper_model));
-                if !model_path.exists() {
-                    return Err("Whisper model not found. Please download a model first.".to_string());
-                }
-                engine.ensure_loaded(&model_path, &settings.gpu_backend)?;
-                engine.transcribe(app, &samples, &settings.language, &settings.custom_prompt)?
+        let taken = lock(&self.audio_recorder).stop_and_take_samples();
+        let samples = match taken {
+            Err(e) if e == "no_speech" => {
+                emit_audio_empty(app, self.state.clone());
+                return Ok(String::new());
             }
-            "cloud" => {
-                // Cloud path: still uses a WAV file because Groq accepts uploads.
-                let temp_path = app_dir.join("temp_recording.wav");
-                let save_result = lock(&self.audio_recorder).stop_and_save(&temp_path);
-                if let Err(e) = &save_result {
-                    if e == "no_speech" {
-                        emit_audio_empty(app, self.state.clone());
-                        return Ok(String::new());
-                    }
-                }
-                save_result?;
-                let text = transcribe_groq::transcribe_groq(
-                    &settings.groq_api_key,
-                    &temp_path,
-                    &settings.language,
-                    &settings.custom_prompt,
-                )
-                .await?;
-                let _ = std::fs::remove_file(&temp_path);
-                text
-            }
-            _ => return Err(format!("Unknown engine: {}", settings.engine)),
+            other => other?,
         };
 
+        let raw_text = transcribe_samples(Some(app), settings, app_dir, engine, &samples).await?;
         let cleaned = cleanup_text(&raw_text);
 
-        if !cleaned.is_empty() {
-            paste_text(&cleaned)?;
+        let (text, submit) = match strip_send_command(&cleaned) {
+            Some(rest) if settings.send_command != "off" => (rest, true),
+            _ => (cleaned, false),
+        };
+        let text = apply_replacements(&text, &settings.replacements);
+
+        let pasted = if text.is_empty() { Ok(()) } else { paste_text(&text) };
+        if !text.is_empty() {
+            // Recorded even when the paste failed, so the text is not lost.
+            let model = model_label(settings);
+            if history.record(&text, &samples, &model, &settings.history).is_some() {
+                let _ = app.emit("history-updated", ());
+            }
+        }
+        pasted?;
+        if submit {
+            press_submit(&settings.send_command)?;
         }
 
-        Ok(cleaned)
+        Ok(text)
     }
 
     pub fn cancel_recording(&self, app: &AppHandle) -> Result<(), String> {
@@ -263,10 +257,57 @@ impl Recorder {
             }
             *state = RecordingState::Ready;
         }
+        mute::restore();
         lock(&self.audio_recorder).discard();
         let _ = app.emit("recording-state", RecordingState::Ready);
         update_overlay(app, &RecordingState::Ready);
         Ok(())
+    }
+}
+
+/// Model name stored with a history entry.
+pub fn model_label(settings: &Settings) -> String {
+    if settings.engine == "cloud" {
+        "groq".to_string()
+    } else {
+        settings.whisper_model.clone()
+    }
+}
+
+/// Transcribe 16 kHz mono samples with the engine chosen in `settings`.
+/// With `overlay`, the local engine streams partial text into the pill.
+pub async fn transcribe_samples(
+    overlay: Option<&AppHandle>,
+    settings: &Settings,
+    app_dir: &PathBuf,
+    engine: &Arc<WhisperEngine>,
+    samples: &[f32],
+) -> Result<String, String> {
+    match settings.engine.as_str() {
+        "local" => {
+            let model_path =
+                app_dir.join(crate::whisper_engine::model_filename(&settings.whisper_model));
+            if !model_path.exists() {
+                return Err("Whisper model not found. Please download a model first.".to_string());
+            }
+            engine.ensure_loaded(&model_path, &settings.gpu_backend)?;
+            engine.transcribe(overlay, samples, &settings.language, &settings.custom_prompt)
+        }
+        "cloud" => {
+            // Groq takes a WAV upload.
+            let temp_path = app_dir.join("temp_recording.wav");
+            samples_to_wav(samples, &temp_path)?;
+            let text = transcribe_groq::transcribe_groq(
+                &settings.groq_api_key,
+                &temp_path,
+                &settings.language,
+                &settings.custom_prompt,
+            )
+            .await;
+            let _ = std::fs::remove_file(&temp_path);
+            text
+        }
+        _ => Err(format!("Unknown engine: {}", settings.engine)),
     }
 }
 

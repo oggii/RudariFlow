@@ -3515,6 +3515,7 @@ dependencies = [
  "enigo",
  "futures-util",
  "hound",
+ "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3525,6 +3526,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tokio",
  "whisper-rs",
+ "windows 0.61.3",
  "windows-sys 0.59.0",
 ]
 
