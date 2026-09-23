@@ -11,7 +11,7 @@
 
 Local speech-to-text dictation app for Windows, powered by [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Global hotkey, push-to-talk or toggle mode, automatic paste of the transcribed text.
 
-> **v0.6.0, Windows.** New: local AI cleanup with per-app rules, a dictionary, history, replacements and a "send it" command (see the [changelog](CHANGELOG.md)). One installer for every GPU: NVIDIA GeForce RTX runs on CUDA, AMD Radeon and Intel Arc run on Vulkan, and everything else falls back to the CPU. The backend is picked automatically at runtime.
+> **v0.6.1, Windows.** New: "Write in" turns every dictation into one language, and the dictionary can be imported and exported. Since 0.6.0: local AI cleanup with per-app rules, a dictionary, history, replacements and a "send it" command (see the [changelog](CHANGELOG.md)). One installer for every GPU: NVIDIA GeForce RTX runs on CUDA, AMD Radeon and Intel Arc run on Vulkan, and everything else falls back to the CPU. The backend is picked automatically at runtime.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
@@ -24,7 +24,7 @@ Made by [oggi](https://0ggi.ch).
 - **Hotkey-press warmup:** pressing PTT preloads the model in parallel so it's hot by the time you finish speaking
 - **Streaming partial transcripts:** text appears in the overlay as Whisper emits each segment
 - **Auto backend detection:** NVIDIA CUDA when available, otherwise Vulkan (AMD / Intel / NVIDIA), otherwise CPU. Settings show the detected GPUs and let you force CUDA, Vulkan or CPU. Flash attention is on for CUDA and off for Vulkan (2× slower on an RX 6800); force it with `RUDARIFLOW_FLASH_ATTN=1` or `=0`
-- **Dictionary:** its own tab for names, brands and jargon. Add words one at a time or paste a list (commas or one per line). Whisper gets them as its prompt, the transcript uses their exact spelling even when Whisper hears them slightly differently ("github" becomes "GitHub", "Grüß'n shop" becomes "Grüssen-Shop"), and AI cleanup gets the list too. A Swiss spelling switch writes ss instead of ß
+- **Dictionary:** its own tab for names, brands and jargon. Add words one at a time or paste a list (commas or one per line). Whisper gets them as its prompt, the transcript uses their exact spelling even when Whisper hears them slightly differently ("github" becomes "GitHub", "Grüß'n shop" becomes "Grüssen-Shop"), and AI cleanup gets the list too. A Swiss spelling switch writes ss instead of ß. Import and Export move the list to another PC as a plain text file
 - **No-speech detection:** silent recordings show an overlay notice instead of pasting nothing
 - **Clipboard-safe paste:** your previous clipboard contents are saved and restored around auto-paste, and dictations stay out of the Windows clipboard history (Win+V) and cloud clipboard
 - **Replacements:** say a short phrase, get longer text, e.g. "my email" becomes your address. Matched as whole words, any capitalisation; a dictation that is only the phrase inserts just the replacement
@@ -32,7 +32,7 @@ Made by [oggi](https://0ggi.ch).
 - **History:** the last 200 dictations stay on your computer, the last 50 with their recording. Copy, play, delete, or re-run a recording with the current model. Can be set to text only or turned off
 - **Paste last transcript:** a second hotkey (default Alt+Shift+V) pastes your last dictation again
 - **Mute other apps while recording:** music and videos go quiet while you dictate and come back afterwards (off by default)
-- **AI cleanup, fully local:** a language model on your PC removes filler words, applies spoken corrections ("Tuesday, no, Wednesday"), fixes grammar and punctuation, formats lists and, in the Polished style, smooths your sentences. It never translates and never answers what you dictate. Per-app rules ("lowercase in WhatsApp", "formal in Outlook", "no AI in VS Code") match the program or a word in the window title, so they also work for websites. Runs Gemma 4 (E4B by default, 12B or E2B selectable) in a bundled llama.cpp server; the model downloads once (3 to 7 GB), then nothing leaves your PC. If the model is not ready or too slow, the plain Whisper text is pasted. Off by default
+- **AI cleanup, fully local:** a language model on your PC removes filler words, applies spoken corrections ("Tuesday, no, Wednesday"), fixes grammar and punctuation, formats lists and, in the Polished style, smooths your sentences. It keeps the language you spoke and never answers what you dictate; set "Write in" to a language and it writes every dictation in that language instead, translating when you switch languages while speaking. Per-app rules ("lowercase in WhatsApp", "formal in Outlook", "no AI in VS Code") match the program or a word in the window title, so they also work for websites. Runs Gemma 4 (E4B by default, 12B or E2B selectable) in a bundled llama.cpp server; the model downloads once (3 to 7 GB), then nothing leaves your PC. If the model is not ready or too slow, the plain Whisper text is pasted. Off by default
 - Multiple Whisper models selectable: tiny → large-v3-turbo, auto-downloaded on selection
 - Languages: auto-detect or any of the ~100 languages Whisper supports
 - **Push-to-talk** and **toggle** modes

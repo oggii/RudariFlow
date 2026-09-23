@@ -24,8 +24,8 @@ function displayName(code: string, inLang: string): string {
 
 /// Fill the language dropdown: "Auto-detect" first, then every Whisper
 /// language as "Name (native name)", sorted in the UI language.
-export function populateLanguageSelect(select: HTMLSelectElement, uiLang: string, autoLabel: string) {
-  const selected = select.value || "auto";
+export function populateLanguageSelect(select: HTMLSelectElement, uiLang: string, autoLabel: string, autoValue = "auto") {
+  const selected = select.value || autoValue;
   const options = WHISPER_LANGUAGES.map((code) => {
     const name = displayName(code, uiLang);
     const native = displayName(code, INTL_CODE[code] ?? code);
@@ -36,7 +36,7 @@ export function populateLanguageSelect(select: HTMLSelectElement, uiLang: string
 
   select.innerHTML = "";
   const auto = document.createElement("option");
-  auto.value = "auto";
+  auto.value = autoValue;
   auto.textContent = autoLabel;
   select.appendChild(auto);
   for (const { code, label } of options) {

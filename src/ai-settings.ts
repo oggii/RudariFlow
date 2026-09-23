@@ -3,7 +3,8 @@
 // edits the AI fields and asks main.ts to save.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { t } from "./i18n";
+import { t, getLang } from "./i18n";
+import { populateLanguageSelect } from "./languages";
 
 export interface AppRule {
   app: string;
@@ -17,6 +18,9 @@ export interface AiFields {
   aiStyle: string;
   aiInstructions: string;
   aiRules: AppRule[];
+  aiOutputLanguage: string;
+  /** Whisper's language setting (Engine tab), for the auto-detect hint. */
+  language: string;
 }
 
 interface ServerStatus {
@@ -70,6 +74,8 @@ const progressText = $("ai-progress-text");
 const stylePolished = $<HTMLButtonElement>("ai-style-polished");
 const styleLight = $<HTMLButtonElement>("ai-style-light");
 const instructions = $<HTMLTextAreaElement>("ai-instructions");
+const outputSelect = $<HTMLSelectElement>("ai-output-select");
+const outputWarn = $("ai-output-warn");
 const ruleList = $("ai-rule-list");
 const ruleEmpty = $("ai-rule-empty");
 const ruleAdd = $<HTMLButtonElement>("ai-rule-add");
@@ -205,6 +211,14 @@ async function download() {
     statusLine.dataset.tone = "error";
   }
   await refreshStatus();
+}
+
+function renderOutputLanguage() {
+  const s = host.settings();
+  outputSelect.value = "";
+  populateLanguageSelect(outputSelect, getLang(), t("ai_output_same"), "");
+  outputSelect.value = s.aiOutputLanguage ?? "";
+  outputWarn.classList.toggle("hidden", !s.aiOutputLanguage || s.language === "auto");
 }
 
 function setStyle(style: string) {
@@ -344,6 +358,12 @@ export function initAiSettings(h: AiSettingsHost) {
     });
   }
 
+  outputSelect.addEventListener("change", async () => {
+    host.settings().aiOutputLanguage = outputSelect.value;
+    renderOutputLanguage();
+    await host.save();
+  });
+
   instructions.addEventListener("change", async () => {
     host.settings().aiInstructions = instructions.value;
     await host.save();
@@ -381,6 +401,7 @@ export async function renderAiSettings() {
   toggle.checked = s.aiCleanup;
   setStyle(s.aiStyle);
   instructions.value = s.aiInstructions ?? "";
+  renderOutputLanguage();
   renderRules();
   await refreshStatus();
 }

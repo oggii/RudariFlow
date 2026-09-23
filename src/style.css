@@ -1018,10 +1018,24 @@ kbd {
   padding: 16px;
 }
 
+.dict-io {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+#dict-io-status[data-tone="error"] {
+  color: var(--red);
+}
+
 .dict-tip {
   margin: 10px 0 0;
 }
 
 .dict-long {
+  color: var(--yellow);
+}
+
+.ai-output-warn {
   color: var(--yellow);
 }

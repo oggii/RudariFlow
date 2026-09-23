@@ -1,6 +1,8 @@
 // Dictionary tab: names, brands and jargon Whisper should know. Entries are
 // stored as the comma-separated `customPrompt` setting (Whisper's initial
 // prompt); the backend also uses them to fix spelling and to guide the AI.
+import { invoke } from "@tauri-apps/api/core";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { t } from "./i18n";
 
 export interface DictionaryHost {
@@ -15,6 +17,9 @@ const empty = document.getElementById("dict-empty")!;
 const count = document.getElementById("dict-count")!;
 const longHint = document.getElementById("dict-long")!;
 const swissToggle = document.getElementById("swiss-toggle") as HTMLInputElement;
+const importBtn = document.getElementById("dict-import") as HTMLButtonElement;
+const exportBtn = document.getElementById("dict-export") as HTMLButtonElement;
+const ioStatus = document.getElementById("dict-io-status")!;
 
 /// Whisper reads about the last 224 tokens of its prompt; past this many
 /// characters the oldest entries start to drop out.
@@ -45,10 +50,47 @@ async function store(terms: string[]) {
   renderDictionary();
 }
 
-async function add(text: string) {
+/// Adds the new entries of `text`; returns how many were new.
+async function add(text: string): Promise<number> {
   const current = stored();
   const fresh = parseTerms(text).filter((term) => !current.some((c) => c.toLowerCase() === term.toLowerCase()));
   if (fresh.length) await store([...current, ...fresh]);
+  return fresh.length;
+}
+
+const FILE_FILTERS = [{ name: "Text", extensions: ["txt", "csv"] }];
+
+function showIoStatus(text: string, tone = "") {
+  ioStatus.textContent = text;
+  ioStatus.dataset.tone = tone;
+}
+
+async function exportDictionary() {
+  const path = await save({ defaultPath: "rudariflow-dictionary.txt", filters: FILE_FILTERS });
+  if (!path) return;
+  try {
+    const n = await invoke<number>("dictionary_export", { path });
+    const file = path.split(/[\\/]/).pop() ?? path;
+    showIoStatus(t("dictionary_exported").replace("{n}", String(n)).replace("{file}", file));
+  } catch (e) {
+    showIoStatus(`${t("dictionary_io_failed")}: ${e}`, "error");
+  }
+}
+
+async function importDictionary() {
+  const path = await open({ multiple: false, directory: false, filters: FILE_FILTERS });
+  if (!path || Array.isArray(path)) return;
+  try {
+    const entries = await invoke<string[]>("dictionary_read_file", { path });
+    const added = await add(entries.join("\n"));
+    showIoStatus(
+      added > 0
+        ? t("dictionary_imported").replace("{n}", String(added)).replace("{total}", String(entries.length))
+        : t("dictionary_imported_none").replace("{total}", String(entries.length)),
+    );
+  } catch (e) {
+    showIoStatus(`${t("dictionary_io_failed")}: ${e}`, "error");
+  }
 }
 
 export function renderDictionary() {
@@ -77,6 +119,8 @@ export function renderDictionary() {
 
 export function initDictionary(h: DictionaryHost) {
   host = h;
+  exportBtn.addEventListener("click", exportDictionary);
+  importBtn.addEventListener("click", importDictionary);
   swissToggle.addEventListener("change", async () => {
     host.settings().swissSpelling = swissToggle.checked;
     await host.save();

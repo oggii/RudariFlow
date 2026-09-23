@@ -131,6 +131,23 @@ pub fn apply_spelling(text: &str, terms: &[String]) -> String {
     out
 }
 
+/// The export file: one entry per line, Windows line endings, so it opens
+/// cleanly in Notepad and can be edited by hand.
+pub fn to_file_text(terms: &[String]) -> String {
+    let mut text = terms.join("\r\n");
+    if !text.is_empty() {
+        text.push_str("\r\n");
+    }
+    text
+}
+
+/// Entries from an imported file: one per line or comma-separated, a UTF-8
+/// byte order mark and blank lines ignored.
+pub fn from_file_bytes(bytes: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(bytes);
+    terms(text.trim_start_matches('\u{feff}'))
+}
+
 /// Swiss spelling: no ß.
 pub fn swiss_spelling(text: &str) -> String {
     text.replace('ß', "ss").replace('ẞ', "SS")
@@ -185,6 +202,17 @@ mod tests {
         assert_eq!(apply_spelling("Heinrichs Auto steht da.", &dict), "Heinrichs Auto steht da.");
         assert_eq!(apply_spelling("We run kubernetis in prod.", &dict), "We run Kubernetes in prod.");
         assert_eq!(apply_spelling("", &dict), "");
+    }
+
+    #[test]
+    fn export_and_import_roundtrip() {
+        let dict = t(&["Grüssen-Shop", "GitHub", "Finn Brown"]);
+        let text = to_file_text(&dict);
+        assert_eq!(text, "Grüssen-Shop\r\nGitHub\r\nFinn Brown\r\n");
+        assert_eq!(from_file_bytes(text.as_bytes()), dict);
+        let with_bom = [&[0xEF, 0xBB, 0xBF][..], "oggi, Tauri\n\nUli".as_bytes()].concat();
+        assert_eq!(from_file_bytes(&with_bom), t(&["oggi", "Tauri", "Uli"]));
+        assert_eq!(to_file_text(&[]), "");
     }
 
     #[test]
