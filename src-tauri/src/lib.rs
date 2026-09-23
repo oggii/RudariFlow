@@ -13,6 +13,10 @@ pub mod send_command;
 pub mod history;
 pub mod mute;
 pub mod ai_cleanup;
+pub mod ai_models;
+pub mod llm_server;
+pub mod foreground_app;
+pub mod polish;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

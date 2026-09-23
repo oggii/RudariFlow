@@ -92,6 +92,18 @@ Downloaded once from Hugging Face into `<data folder>\llm\`, with the same progr
 
 **Selection (first implementation step):** a benchmark on the RX 6800 with 10 dictations (5 English, 5 German) covering fillers, self-corrections, a list, a question addressed to "the AI" that must not be answered, a chat rule ("lowercase, no final period"), and a replacement placeholder. Measured: warm latency (median and worst), rule adherence, placeholders kept, nothing answered, and output quality compared side by side. The best-quality candidate within the latency goal becomes the default. The 12B is offered as a second, slower choice only if its median stays under 3 s. The settings list only the models that pass.
 
+### Benchmark result (2026-09-23, RX 6800, llama.cpp b11100 Vulkan, Polished style)
+
+| Model | Load | Median | Worst | Verdict |
+|---|---|---|---|---|
+| Qwen3 4B Instruct 2507 | 4.3 s | 198 ms | 536 ms | Out: translated two German dictations into English. |
+| Qwen3.5 4B | 3.4 s | 206 ms | 737 ms | Out: turned plain sentences into bullet lists and changed meaning ("copy in the finance team" became "copy it for the finance team"). |
+| Gemma 4 E4B | 5.0 s | 262 ms | 813 ms | **Default.** All 10 correct: languages kept, question and request left alone, rules applied, placeholder kept. |
+| Gemma 4 12B | 6.5 s | 518 ms | 1554 ms | **Best quality option.** Like E4B, slightly more polished (also formats the German shopping list). |
+| Gemma 4 E2B | 2.7 s | 240 ms | 727 ms | **Small option** for less video memory. Safe, but skipped the German self-correction and the formal Outlook style. |
+
+All five passed the output guard on every sample; latency is far inside the goal, so quality decided. The settings offer E4B, 12B and E2B (Gemma 4 E2B, `unsloth/gemma-4-E2B-it-GGUF` / `gemma-4-E2B-it-Q4_K_M.gguf`, 3.11 GB, Apache-2.0).
+
 ### Prompt
 
 One fixed system prompt in English (models follow English instructions best; the output language is the dictation's):

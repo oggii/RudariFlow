@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+use crate::llm_server::Endpoint;
 use crate::replacements::placeholder;
 
 /// The app the dictation goes into, read from the foreground window.
@@ -203,6 +204,51 @@ pub fn guard(input: &str, output: &str, placeholders: usize) -> Result<String, &
         }
     }
     Ok(out)
+}
+
+/// Ask the server for the edited text. Non-streaming; `timeout` covers the
+/// whole request.
+pub async fn complete(
+    endpoint: &Endpoint,
+    system: &str,
+    user: &str,
+    temperature: f32,
+    max_tokens: u32,
+    timeout: Duration,
+) -> Result<String, String> {
+    let body = serde_json::json!({
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user },
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": false,
+        "cache_prompt": true,
+        "chat_template_kwargs": { "enable_thinking": false },
+    });
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .post(format!("{}/v1/chat/completions", endpoint.base_url))
+        .bearer_auth(&endpoint.api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| if e.is_timeout() { "timed out".to_string() } else { format!("request failed: {}", e) })?;
+    if !response.status().is_success() {
+        return Err(format!("llama-server answered {}", response.status()));
+    }
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| if e.is_timeout() { "timed out".to_string() } else { e.to_string() })?;
+    json["choices"][0]["message"]["content"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "no text in the answer".to_string())
 }
 
 #[cfg(test)]

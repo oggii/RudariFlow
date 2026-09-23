@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+use crate::ai_cleanup::AppRule;
 use crate::replacements::Replacement;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -43,6 +44,20 @@ pub struct Settings {
     /// Mute other apps while recording.
     #[serde(rename = "muteAudio", default)]
     pub mute_audio: bool,
+    /// Polish dictations with the local language model.
+    #[serde(rename = "aiCleanup", default)]
+    pub ai_cleanup: bool,
+    /// Id from `ai_models::MODELS`.
+    #[serde(rename = "aiModel", default = "default_ai_model")]
+    pub ai_model: String,
+    /// "polished" or "light".
+    #[serde(rename = "aiStyle", default = "default_ai_style")]
+    pub ai_style: String,
+    /// Instructions for all apps.
+    #[serde(rename = "aiInstructions", default)]
+    pub ai_instructions: String,
+    #[serde(rename = "aiRules", default)]
+    pub ai_rules: Vec<AppRule>,
 }
 
 fn default_volume() -> f32 {
@@ -69,6 +84,14 @@ fn default_paste_last_hotkey() -> String {
     "Alt+Shift+V".to_string()
 }
 
+fn default_ai_model() -> String {
+    crate::ai_models::DEFAULT_MODEL.to_string()
+}
+
+fn default_ai_style() -> String {
+    "polished".to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -89,6 +112,11 @@ impl Default for Settings {
             history: default_history(),
             paste_last_hotkey: default_paste_last_hotkey(),
             mute_audio: false,
+            ai_cleanup: false,
+            ai_model: default_ai_model(),
+            ai_style: default_ai_style(),
+            ai_instructions: String::new(),
+            ai_rules: Vec::new(),
         }
     }
 }
@@ -130,6 +158,12 @@ impl Settings {
         }
         if !matches!(settings.history.as_str(), "off" | "text" | "audio") {
             settings.history = default_history();
+        }
+        if crate::ai_models::find(&settings.ai_model).is_none() {
+            settings.ai_model = default_ai_model();
+        }
+        if !matches!(settings.ai_style.as_str(), "polished" | "light") {
+            settings.ai_style = default_ai_style();
         }
         settings
     }
@@ -259,6 +293,10 @@ mod tests {
         assert_eq!(loaded.history, "audio");
         assert_eq!(loaded.paste_last_hotkey, "Alt+Shift+V");
         assert!(!loaded.mute_audio);
+        assert!(!loaded.ai_cleanup);
+        assert_eq!(loaded.ai_model, crate::ai_models::DEFAULT_MODEL);
+        assert_eq!(loaded.ai_style, "polished");
+        assert!(loaded.ai_rules.is_empty());
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -276,6 +314,30 @@ mod tests {
         settings.mute_audio = true;
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), settings);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_ai_fields_roundtrip_and_fallbacks() {
+        let dir = temp_dir().join("typr_test_ai_fields");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut settings = Settings::default();
+        settings.ai_cleanup = true;
+        settings.ai_model = "gemma-4-12b".to_string();
+        settings.ai_style = "light".to_string();
+        settings.ai_instructions = "Use ss instead of ß.".to_string();
+        settings.ai_rules = vec![AppRule { app: "whatsapp".into(), instructions: "lowercase".into(), off: false }];
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir), settings);
+
+        settings.ai_model = "gpt-9".to_string();
+        settings.ai_style = "shouty".to_string();
+        settings.save(&dir).unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!(loaded.ai_model, crate::ai_models::DEFAULT_MODEL);
+        assert_eq!(loaded.ai_style, "polished");
 
         let _ = fs::remove_dir_all(&dir);
     }

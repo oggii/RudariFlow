@@ -44,6 +44,15 @@ impl ActiveBackend {
     }
 }
 
+/// Name of the GPU Whisper uses (or will use) for this `gpuBackend` setting;
+/// `None` for CPU. The AI cleanup server runs on the same card.
+pub fn preferred_gpu_name(gpu_backend: &str) -> Option<String> {
+    match backend_candidates(gpu_backend, &list_gpu_devices()).into_iter().next()? {
+        ActiveBackend::Gpu(device) => Some(device.name),
+        ActiveBackend::Cpu => None,
+    }
+}
+
 /// Enumerate GPU devices the same way whisper.cpp does when it resolves
 /// `gpu_device`, tagging each with its backend.
 pub fn list_gpu_devices() -> Vec<GpuDevice> {

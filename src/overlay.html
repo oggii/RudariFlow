@@ -108,7 +108,31 @@
         white-space: nowrap;
         transition: opacity 120ms ease;
       }
-      body[data-state="transcribing"] .transcript { opacity: 1; }
+      body[data-state="transcribing"] .transcript,
+      body[data-state="polishing"] .transcript { opacity: 1; }
+      /* AI cleanup: the Whisper text stays visible, labelled and gently pulsing. */
+      body[data-state="polishing"] .transcript {
+        justify-content: flex-start;
+        gap: 10px;
+        animation: polish 1.4s ease-in-out infinite;
+      }
+      body[data-state="polishing"] .transcript::before {
+        content: attr(data-phase);
+        flex: 0 0 auto;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(124, 138, 255, 0.22);
+        color: #c9cfff;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      @keyframes polish {
+        0%, 100% { color: rgba(255, 255, 255, 0.95); }
+        50% { color: rgba(255, 255, 255, 0.6); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        body[data-state="polishing"] .transcript { animation: none; }
+      }
       .notice {
         position: absolute;
         inset: 0;
@@ -203,6 +227,9 @@
           cumulative = "";
           transcriptEl.textContent = "";
         }
+        if (state === "polishing") {
+          transcriptEl.dataset.phase = NOTICE_TEXT[pickLang()].polishing;
+        }
       };
 
       const transcriptEl = document.getElementById("transcript");
@@ -236,8 +263,8 @@
       // since the overlay is a separate webview without access to the main
       // window's dictionary.
       const NOTICE_TEXT = {
-        en: { audio_empty: "No speech detected", mic_error: "Microphone unavailable" },
-        de: { audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar" },
+        en: { audio_empty: "No speech detected", mic_error: "Microphone unavailable", polishing: "Polishing" },
+        de: { audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar", polishing: "Überarbeitung" },
       };
       function pickLang() {
         const nav = (navigator.language || "en").toLowerCase();
