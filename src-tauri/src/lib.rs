@@ -12,6 +12,7 @@ pub mod replacements;
 pub mod send_command;
 pub mod history;
 pub mod mute;
+pub mod ai_cleanup;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
