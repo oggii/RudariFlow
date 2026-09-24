@@ -10,6 +10,8 @@ export interface AppRule {
   app: string;
   instructions: string;
   off: boolean;
+  /** Whisper language in this app; "" uses the Engine setting. */
+  language?: string;
 }
 
 export interface AiFields {
@@ -248,6 +250,7 @@ function readRules(): AppRule[] {
     app: (row.querySelector(".rule-app") as HTMLInputElement).value,
     instructions: (row.querySelector(".rule-instructions") as HTMLTextAreaElement).value,
     off: (row.querySelector(".rule-off input") as HTMLInputElement).checked,
+    language: (row.querySelector(".rule-language") as HTMLSelectElement).value,
   }));
 }
 
@@ -276,6 +279,14 @@ function addRuleRow(rule: AppRule): HTMLElement {
   text.value = rule.instructions;
   text.placeholder = t("ai_rule_instructions_placeholder");
   text.disabled = rule.off;
+
+  // The language Whisper hears in this app; works with AI cleanup off too.
+  const language = document.createElement("select");
+  language.className = "rule-language";
+  language.title = t("ai_rule_language_hint");
+  populateLanguageSelect(language, getLang(), t("ai_rule_language_default"), "");
+  language.value = rule.language ?? "";
+  language.addEventListener("change", saveRules);
 
   const off = document.createElement("label");
   off.className = "rule-off";
@@ -306,7 +317,7 @@ function addRuleRow(rule: AppRule): HTMLElement {
   app.addEventListener("change", saveRules);
   text.addEventListener("change", saveRules);
 
-  row.append(app, text, off, remove);
+  row.append(app, text, language, off, remove);
   ruleList.appendChild(row);
   return row;
 }
@@ -392,7 +403,7 @@ export function initAiSettings(h: AiSettingsHost) {
   });
 
   ruleAdd.addEventListener("click", () => {
-    const row = addRuleRow({ app: "", instructions: "", off: false });
+    const row = addRuleRow({ app: "", instructions: "", off: false, language: "" });
     ruleEmpty.classList.add("hidden");
     (row.querySelector(".rule-app") as HTMLInputElement).focus();
   });

@@ -32,6 +32,10 @@ pub struct AppRule {
     /// Skip AI cleanup in this app.
     #[serde(default)]
     pub off: bool,
+    /// The language Whisper hears in this app (a Whisper code such as
+    /// "tr"); empty uses the Engine setting.
+    #[serde(default)]
+    pub language: String,
 }
 
 fn normalize_app(s: &str) -> String {
@@ -66,6 +70,17 @@ pub fn rule_matches(rule: &AppRule, ctx: &AppContext) -> bool {
 
 pub fn matching_rules<'a>(rules: &'a [AppRule], ctx: &AppContext) -> Vec<&'a AppRule> {
     rules.iter().filter(|r| rule_matches(r, ctx)).collect()
+}
+
+/// The language Whisper should hear for a dictation into `ctx`: the first
+/// matching rule that sets one, else `default` (the Engine setting). A set
+/// language also keeps short utterances from being detected as another one.
+pub fn whisper_language<'a>(rules: &'a [AppRule], ctx: &AppContext, default: &'a str) -> &'a str {
+    matching_rules(rules, ctx)
+        .into_iter()
+        .map(|r| r.language.trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or(default)
 }
 
 /// Whether a matching rule says "no AI here".
@@ -428,7 +443,7 @@ mod tests {
     }
 
     fn rule(app: &str, instructions: &str, off: bool) -> AppRule {
-        AppRule { app: app.into(), instructions: instructions.into(), off }
+        AppRule { app: app.into(), instructions: instructions.into(), off, ..Default::default() }
     }
 
     #[test]
@@ -449,6 +464,17 @@ mod tests {
         assert!(rule_matches(&rule("code", "", false), &ctx("code", "main.rs - RudariFlow")));
         assert!(!rule_matches(&rule("  ", "", false), &ctx("anything", "anything")));
         assert!(!rule_matches(&rule("slack", "", false), &ctx("", "")));
+    }
+
+    #[test]
+    fn a_rule_can_set_the_language_whisper_hears() {
+        let whatsapp = AppRule { app: "whatsapp".into(), language: "tr".into(), ..Default::default() };
+        let outlook = AppRule { app: "outlook".into(), instructions: "formal".into(), ..Default::default() };
+        let rules = vec![outlook, whatsapp];
+        assert_eq!(whisper_language(&rules, &ctx("whatsapp.root", "WhatsApp"), "auto"), "tr");
+        assert_eq!(whisper_language(&rules, &ctx("chrome", "(2) WhatsApp - Chrome"), "de"), "tr");
+        assert_eq!(whisper_language(&rules, &ctx("outlook", "Inbox"), "de"), "de", "rule without a language");
+        assert_eq!(whisper_language(&rules, &ctx("code", "main.rs"), "auto"), "auto", "no rule");
     }
 
     #[test]

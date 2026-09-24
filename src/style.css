@@ -866,7 +866,7 @@ kbd {
 
 .rule-row {
   display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 2fr) auto auto;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 2fr) auto auto auto;
   align-items: start;
   gap: 8px;
 }
@@ -897,6 +897,11 @@ kbd {
 }
 .rule-instructions:disabled {
   opacity: 0.4;
+}
+
+.rule-language {
+  width: 132px;
+  height: 33px;
 }
 
 .rule-off {

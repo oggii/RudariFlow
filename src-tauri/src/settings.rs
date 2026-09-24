@@ -354,7 +354,7 @@ mod tests {
         settings.ai_model = "gemma-4-12b".to_string();
         settings.ai_style = "light".to_string();
         settings.ai_instructions = "Use ss instead of ß.".to_string();
-        settings.ai_rules = vec![AppRule { app: "whatsapp".into(), instructions: "lowercase".into(), off: false }];
+        settings.ai_rules = vec![AppRule { app: "whatsapp".into(), instructions: "lowercase".into(), ..Default::default() }];
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), settings);
 

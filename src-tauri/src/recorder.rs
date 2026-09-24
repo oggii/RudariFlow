@@ -446,8 +446,9 @@ impl Recorder {
         };
         laps.audio_secs = Some(samples.len() as f32 / 16_000.0);
 
+        let whisper_language = crate::ai_cleanup::whisper_language(&settings.ai_rules, ctx, &settings.language);
         let (raw_text, language) =
-            transcribe_samples(Some(app), settings, app_dir, engine, &samples, &ctx.screen_terms).await?;
+            transcribe_samples(Some(app), settings, app_dir, engine, &samples, &ctx.screen_terms, &whisper_language).await?;
         laps.lap("whisper");
         // Only the screen terms the dictation (or the selection it edits)
         // mentions go to the AI; each one costs prompt time.
@@ -591,7 +592,8 @@ pub fn model_label(settings: &Settings) -> String {
 
 /// Transcribe 16 kHz mono samples with the engine chosen in `settings`.
 /// With `overlay`, the local engine streams partial text into the pill.
-/// `screen_terms` go into Whisper's prompt ahead of the dictionary.
+/// `screen_terms` go into Whisper's prompt ahead of the dictionary;
+/// `language` is the Whisper language (an app rule's or the Engine setting).
 /// Also returns the spoken language when the engine reports it (local only).
 pub async fn transcribe_samples(
     overlay: Option<&AppHandle>,
@@ -600,6 +602,7 @@ pub async fn transcribe_samples(
     engine: &Arc<WhisperEngine>,
     samples: &[f32],
     screen_terms: &[String],
+    language: &str,
 ) -> Result<(String, Option<String>), String> {
     let prompt = screen_context::whisper_prompt(screen_terms, &settings.custom_prompt);
     match settings.engine.as_str() {
@@ -612,7 +615,7 @@ pub async fn transcribe_samples(
             let engine = engine.clone();
             let overlay = overlay.cloned();
             let samples = samples.to_vec();
-            let (backend, language) = (settings.gpu_backend.clone(), settings.language.clone());
+            let (backend, language) = (settings.gpu_backend.clone(), language.to_string());
             blocking(move || {
                 engine.ensure_loaded(&model_path, &backend)?;
                 engine.transcribe(overlay.as_ref(), &samples, &language, &prompt)
@@ -626,7 +629,7 @@ pub async fn transcribe_samples(
             let text = transcribe_groq::transcribe_groq(
                 &settings.groq_api_key,
                 &temp_path,
-                &settings.language,
+                language,
                 &prompt,
             )
             .await;

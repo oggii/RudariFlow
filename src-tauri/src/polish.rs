@@ -192,7 +192,7 @@ mod tests {
         settings.ai_instructions = "Use ss instead of ß.".into();
         settings.ai_output_language = "en".into();
         settings.ai_style = "light".into();
-        let rule = AppRule { app: "code".into(), instructions: "short".into(), off: false };
+        let rule = AppRule { app: "code".into(), instructions: "short".into(), ..Default::default() };
         let ctx = AppContext {
             exe: "code".into(),
             title: "main.rs".into(),
@@ -223,7 +223,7 @@ mod tests {
     fn no_ai_rule_and_missing_model_fall_back() {
         let (dir, llm, mut settings) = setup("skip");
         settings.ai_cleanup = true;
-        settings.ai_rules = vec![AppRule { app: "code".into(), instructions: String::new(), off: true }];
+        settings.ai_rules = vec![AppRule { app: "code".into(), off: true, ..Default::default() }];
         let code = AppContext { exe: "code".into(), title: "main.rs".into(), ..Default::default() };
         let (p, asked) = run(&settings, &dir, &llm, &code, "hello");
         assert_eq!(p.fallback.as_deref(), Some("AI is off for this app"));

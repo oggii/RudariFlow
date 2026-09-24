@@ -245,7 +245,7 @@ mod tests {
     use super::*;
 
     fn rule(app: &str, instructions: &str) -> AppRule {
-        AppRule { app: app.into(), instructions: instructions.into(), off: false }
+        AppRule { app: app.into(), instructions: instructions.into(), ..Default::default() }
     }
 
     #[test]
@@ -311,7 +311,7 @@ mod tests {
         settings.edit_mode = false;
         assert!(!available(&settings, &dir, &ctx));
         settings.edit_mode = true;
-        settings.ai_rules = vec![AppRule { app: "code".into(), instructions: String::new(), off: true }];
+        settings.ai_rules = vec![AppRule { app: "code".into(), off: true, ..Default::default() }];
         assert!(!available(&settings, &dir, &ctx));
         settings.ai_rules.clear();
         settings.ai_cleanup = false;

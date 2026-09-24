@@ -288,11 +288,21 @@ async fn history_rerun(state: State<'_, AppState>, id: u64) -> Result<HistoryEnt
     }
     let samples = history::read_wav(&state.history.audio_path(id))?;
     let settings = state.settings.lock().unwrap().clone();
-    let (raw, language) =
-        transcribe_samples(None, &settings, &state.app_dir, &state.whisper_engine, &samples, &[]).await?;
+    let ctx = AppContext { exe: entry.app.clone(), title: entry.title.clone(), ..Default::default() };
+    // The app's rule may set the language, as for the dictation itself.
+    let whisper_language = rudariflow_lib::ai_cleanup::whisper_language(&settings.ai_rules, &ctx, &settings.language);
+    let (raw, language) = transcribe_samples(
+        None,
+        &settings,
+        &state.app_dir,
+        &state.whisper_engine,
+        &samples,
+        &[],
+        whisper_language,
+    )
+    .await?;
     let cleaned = dictionary::apply_spelling(&cleanup_text(&raw), &dictionary::terms(&settings.custom_prompt));
     let text = strip_send_command(&cleaned).unwrap_or(cleaned);
-    let ctx = AppContext { exe: entry.app.clone(), title: entry.title.clone(), ..Default::default() };
     let polished = polish(&settings, &state.app_dir, &state.llm, &ctx, &text, language.as_deref(), || {}).await;
     state
         .history
