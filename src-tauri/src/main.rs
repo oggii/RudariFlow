@@ -139,12 +139,11 @@ fn warm_ai(state: &AppState) {
 /// What a global hotkey does.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum HotkeyAction {
-    /// Start / stop dictation (the main hotkey, keyboard or mouse button).
+    /// Start / stop dictation (the main hotkey).
     Dictation,
-    /// Paste the last transcript again (keyboard chords only).
+    /// Paste the last transcript again.
     PasteLast,
-    /// Select the last dictation and record what to change about it
-    /// (keyboard chords only).
+    /// Select the last dictation and record what to change about it.
     RewriteLast,
 }
 
@@ -924,8 +923,9 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     }
 }
 
-/// `target` is "dictation" or "pasteLast". An empty `new_hotkey` turns the
-/// paste-last hotkey off; dictation always needs one.
+/// `target` is "dictation", "pasteLast" or "rewriteLast"; each takes a
+/// keyboard chord or a mouse side button. An empty `new_hotkey` turns
+/// paste-last or rewrite off; dictation always needs one.
 #[tauri::command]
 fn change_hotkey(
     app: tauri::AppHandle,
@@ -939,12 +939,13 @@ fn change_hotkey(
     if new_hotkey.is_empty() && action == HotkeyAction::Dictation {
         return Err("The dictation hotkey cannot be empty".to_string());
     }
-    let taken = all.iter().any(|(a, h)| *a != action && !h.is_empty() && new_hotkey.eq_ignore_ascii_case(h));
+    let same = |h: &str| match (mouse_hotkey::parse(&new_hotkey), mouse_hotkey::parse(h)) {
+        (Some(a), Some(b)) => a == b,
+        _ => new_hotkey.eq_ignore_ascii_case(h),
+    };
+    let taken = all.iter().any(|(a, h)| *a != action && !h.is_empty() && same(h));
     if !new_hotkey.is_empty() && taken {
         return Err(format!("'{}' is already used by another hotkey", new_hotkey));
-    }
-    if action != HotkeyAction::Dictation && mouse_hotkey::parse(&new_hotkey).is_some() {
-        return Err("Mouse buttons can only start dictation".to_string());
     }
     if new_hotkey != current {
         // Register the new chord before dropping the old one, so a rejected

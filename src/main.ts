@@ -516,9 +516,9 @@ listen<DownloadProgress>("download-progress", (event) => {
   progressFill.style.width = `${percent}%`;
 });
 
-// Hotkey capture. "dictation" starts/stops recording (keyboard or mouse side
-// button), "pasteLast" pastes the last transcript again, "rewriteLast"
-// selects it and records an edit (both keyboard only).
+// Hotkey capture. "dictation" starts/stops recording, "pasteLast" pastes the
+// last transcript again, "rewriteLast" selects it and records an edit. Each
+// takes a key combination or a mouse side button (with or without modifiers).
 type HotkeyTarget = "dictation" | "pasteLast" | "rewriteLast";
 let capturing: HotkeyTarget | null = null;
 
@@ -585,7 +585,7 @@ function startCapture(target: HotkeyTarget) {
   invoke("set_hotkey_paused", { paused: true }).catch(console.error);
   const { btn, text } = captureElements(target);
   btn.classList.add("capturing");
-  text.textContent = t(target === "dictation" ? "hotkey_press_keys" : "hotkey_press_keys_keyboard");
+  text.textContent = t("hotkey_press_keys");
   window.addEventListener("keydown", onCaptureKey, true);
   // Click outside cancels
   setTimeout(() => window.addEventListener("mousedown", onOutsideClick, true), 0);
@@ -621,7 +621,7 @@ async function applyCapturedCombo(combo: string) {
     await setHotkey(target, combo);
     stopCapture();
   } catch (err) {
-    captureElements(target).text.textContent = t("hotkey_invalid");
+    captureElements(target).text.textContent = t(String(err).includes("already used") ? "hotkey_taken" : "hotkey_invalid");
     console.error("change_hotkey failed:", err);
     setTimeout(stopCapture, 1500);
   }
@@ -640,8 +640,7 @@ function onOutsideClick(e: MouseEvent) {
   if (combo) {
     e.preventDefault();
     e.stopPropagation();
-    if (capturing === "dictation") applyCapturedCombo(combo);
-    else captureElements(capturing).text.textContent = t("hotkey_keyboard_only");
+    applyCapturedCombo(combo);
     return;
   }
   if (!captureElements(capturing).btn.contains(e.target as Node)) stopCapture();

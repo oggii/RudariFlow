@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   model can summarise the transcript: key points and next steps, long
   recordings in parts. Dictating while a file runs works; the dictation
   waits for the current minute at most.
+- **Mouse side buttons for every hotkey:** paste last and rewrite last
+  take Mouse 4 / Mouse 5 too, alone or with Ctrl, Shift, Alt or Win, so
+  one button can serve two hotkeys (Mouse 5 dictates, Shift+Mouse 5
+  rewrites).
 
 ## [0.9.0] - 2026-09-24 - Faster AI, Large v3 Turbo q8
 
