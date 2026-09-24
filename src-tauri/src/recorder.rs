@@ -131,6 +131,10 @@ struct Pieces {
     /// Source frame where the audio not transcribed yet begins.
     cut_frame: usize,
     texts: Vec<String>,
+    /// The Whisper language of the pieces: the app rule's at the press, or
+    /// with "auto" the one the first piece detected, so the rest of the
+    /// dictation does not detect again on a few seconds.
+    language: String,
 }
 
 /// Step times of one dictation from the stop press on, logged as one
@@ -402,8 +406,8 @@ impl Recorder {
         let generations = self.generation.clone();
         let ctx = foreground_app::current();
         tauri::async_runtime::spawn(async move {
-            *pieces.lock().await = Pieces { generation, ..Default::default() };
             let language = crate::ai_cleanup::whisper_language(&settings.ai_rules, &ctx, &settings.language).to_string();
+            *pieces.lock().await = Pieces { generation, language, ..Default::default() };
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 if *lock(&state) != RecordingState::Recording || generations.load(Ordering::SeqCst) != generation {
@@ -425,8 +429,14 @@ impl Recorder {
                     _ => Vec::new(),
                 };
                 let started = Instant::now();
+                let language = p.language.clone();
                 match transcribe_samples(None, &settings, &app_dir, &engine, &recorded[..cut], &terms, &language).await {
-                    Ok((text, _)) => {
+                    Ok((text, detected)) => {
+                        if language == "auto" {
+                            if let Some(code) = detected.as_deref().and_then(crate::whisper_engine::language_code) {
+                                p.language = code;
+                            }
+                        }
                         startup_log::log(&format!(
                             "[pieces] piece {} ({:.1} s) transcribed in {} ms while recording",
                             p.texts.len() + 1,
@@ -533,6 +543,9 @@ impl Recorder {
             }
             *state = RecordingState::Transcribing;
         }
+        // The microphone closes now, not after the wait for the screen words
+        // and for a piece of a long dictation (up to seconds on a CPU).
+        lock(&self.audio_recorder).stop_capture();
         mute::restore();
         let _ = app.emit("recording-state", RecordingState::Transcribing);
         emit_edit_target(app, selection.as_deref().map(selection::word_count));
@@ -571,6 +584,13 @@ impl Recorder {
         selection: Option<String>,
         laps: &mut Laps,
     ) -> Result<String, String> {
+        // Whether the previous dictation stands right before the caret
+        // decides the space in front of the text; read while Whisper runs.
+        let last_dictation = history.last_text();
+        let look_back = last_dictation.as_ref().map_or(0, |t| t.trim().chars().count());
+        let before_caret = tauri::async_runtime::spawn_blocking(move || {
+            (look_back > 0).then(|| selection::text_before_caret(look_back)).flatten()
+        });
         // A piece still being transcribed finishes first.
         let mut pieces = self.pieces.lock().await;
         let generation = self.generation.load(Ordering::SeqCst);
@@ -582,6 +602,7 @@ impl Recorder {
             (lock(&self.audio_recorder).stop_and_take_samples(), None)
         };
         let done_pieces = std::mem::take(&mut pieces.texts);
+        let pieces_language = std::mem::take(&mut pieces.language);
         pieces.generation = 0;
         drop(pieces);
         laps.lap("audio");
@@ -598,11 +619,12 @@ impl Recorder {
         let whisper_language = crate::ai_cleanup::whisper_language(&settings.ai_rules, ctx, &settings.language);
         let (raw_text, language) = match rest {
             // A long dictation: only the part after the last piece is left.
+            // The rest keeps the pieces' language (the app at the press).
             Some(rest) => {
                 let (tail, language) = if rest.is_empty() {
-                    (String::new(), None)
+                    (String::new(), crate::whisper_engine::language_name(&pieces_language))
                 } else {
-                    transcribe_samples(Some(app), settings, app_dir, engine, &rest, &ctx.screen_terms, whisper_language)
+                    transcribe_samples(Some(app), settings, app_dir, engine, &rest, &ctx.screen_terms, &pieces_language)
                         .await?
                 };
                 laps.note(format!("pieces {} + rest {:.1} s", done_pieces.len(), rest.len() as f32 / 16_000.0));
@@ -646,7 +668,13 @@ impl Recorder {
         laps.lap("ai");
         let text = polished.text;
 
-        let pasted = if text.is_empty() { Ok(()) } else { paste_timed(&text, laps).await };
+        let pasted = if text.is_empty() {
+            Ok(())
+        } else {
+            let before = before_caret.await.ok().flatten();
+            let spaced = selection::space_after_dictation(&text, before.as_deref(), last_dictation.as_deref());
+            paste_timed(&spaced, laps).await
+        };
         if !text.is_empty() {
             // Recorded even when the paste failed, so the text is not lost.
             let model = model_label(settings);
@@ -788,9 +816,9 @@ pub async fn transcribe_samples(
     screen_terms: &[String],
     language: &str,
 ) -> Result<(String, Option<String>), String> {
-    let prompt = screen_context::whisper_prompt(screen_terms, &settings.custom_prompt);
     match settings.engine.as_str() {
         "local" => {
+            let prompt = screen_context::whisper_prompt(screen_terms, &settings.custom_prompt);
             let model_path =
                 app_dir.join(crate::whisper_engine::model_filename(&settings.whisper_model));
             if !model_path.exists() {
@@ -807,6 +835,9 @@ pub async fn transcribe_samples(
             .await
         }
         "cloud" => {
+            // Words on screen are read to stay on this PC: Groq gets the
+            // dictionary only.
+            let prompt = screen_context::whisper_prompt(&[], &settings.custom_prompt);
             // Groq takes a WAV upload.
             let temp_path = app_dir.join("temp_recording.wav");
             samples_to_wav(samples, &temp_path)?;

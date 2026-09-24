@@ -385,7 +385,8 @@ impl LlmServer {
         let generation = self.generation.load(Ordering::SeqCst);
         self.draft_crashed.store(false, Ordering::SeqCst);
         let mut result = self.start(model, gpu_backend).await;
-        if result.is_err() && self.draft_crashed.swap(false, Ordering::SeqCst) {
+        let stopped = self.generation.load(Ordering::SeqCst) != generation;
+        if result.is_err() && self.draft_crashed.swap(false, Ordering::SeqCst) && !stopped {
             self.kill();
             startup_log::log("[ai] starting again without the MTP drafter");
             result = self.start(model, gpu_backend).await;
@@ -498,7 +499,9 @@ impl LlmServer {
             .arg(model)
             .args(["--host", "127.0.0.1", "--port", &port_arg, "--api-key", &api_key])
             .args(["-dev", device.as_ref().map_or("none", |d| d.id.as_str())])
-            .args(["--fit", "on", "-c", "8192", "-np", "1", "--reasoning-budget", "0", "--no-webui"])
+            // Two slots of 8192 tokens (ai_cleanup::DICTATION_SLOT and
+            // LONG_SLOT); the second costs about 100 MB of video memory.
+            .args(["--fit", "on", "-c", "16384", "-np", "2", "--reasoning-budget", "0", "--no-webui"])
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err));
@@ -543,7 +546,9 @@ impl LlmServer {
         });
 
         if let Err(e) = self.wait_healthy(&endpoint).await {
-            if let Some(draft) = &draft {
+            // Only a crash counts against the drafter: not a stop (AI turned
+            // off, model switched) and not a slow disk.
+            if let Some(draft) = draft.as_ref().filter(|_| self.exited_on_its_own()) {
                 self.disable_draft(draft);
             }
             return Err(e);
@@ -555,8 +560,7 @@ impl LlmServer {
         if let Err(e) = self.prime(&endpoint, 8, LOAD_TIMEOUT).await {
             startup_log::log(&format!("[ai] warm-up request failed: {}", e));
             // The drafter can crash the server at the first generation.
-            let exited = lock(&self.running).as_mut().is_some_and(|r| r.child.try_wait().ok().flatten().is_some());
-            if exited {
+            if self.exited_on_its_own() {
                 if let Some(draft) = &draft {
                     self.disable_draft(draft);
                 }
@@ -570,6 +574,12 @@ impl LlmServer {
         ));
         self.set_status(ServerStatus::Ready { device: label });
         Ok(endpoint)
+    }
+
+    /// The server process of this start has exited (a stop takes it out of
+    /// `running` first, so that does not count).
+    fn exited_on_its_own(&self) -> bool {
+        lock(&self.running).as_mut().is_some_and(|r| r.child.try_wait().ok().flatten().is_some())
     }
 
     async fn wait_healthy(&self, endpoint: &Endpoint) -> Result<(), String> {

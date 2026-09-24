@@ -92,9 +92,10 @@ fn name_like(word: &str) -> bool {
     word.chars().filter(|c| c.is_alphabetic()).count() >= 3 && crate::screen_context::term_score(word) > 0
 }
 
-/// Mixed case beyond the first letter, as in "GitHub" or "iPhone".
+/// Mixed case beyond the first letter, as in "GitHub" or "iPhone". A word
+/// in capitals only is emphasis ("sofort" -> "SOFORT"), not a spelling.
 fn has_inner_capital(word: &str) -> bool {
-    word.chars().skip(1).any(char::is_uppercase)
+    word.chars().skip(1).any(char::is_uppercase) && word.chars().any(char::is_lowercase)
 }
 
 /// Endings grammar changes; "Tisch" corrected to "Tische" is no spelling.
@@ -121,9 +122,12 @@ pub fn corrections(pasted: &str, field: &str) -> Vec<(String, String)> {
     }
     let pf: Vec<String> = p.iter().map(|w| fold(w)).collect();
     let ff: Vec<String> = f.iter().map(|w| fold(w)).collect();
-    // Words differ when they fold differently, or when the field's has
-    // brand capitals the dictation lacked ("github" -> "GitHub").
-    let differs = |a: usize, b: usize| pf[a] != ff[b] || p[a] != f[b] && has_inner_capital(f[b]);
+    // Words differ when they fold differently, when only their accents
+    // differ ("Umit" -> "Ümit": the dictionary puts them back), or when the
+    // field's has brand capitals the dictation lacked ("github" -> "GitHub").
+    let differs = |a: usize, b: usize| {
+        pf[a] != ff[b] || p[a].to_lowercase() != f[b].to_lowercase() || p[a] != f[b] && has_inner_capital(f[b])
+    };
 
     // Semi-global alignment: all of the dictation against any stretch of
     // the field (free start and end in the field).
@@ -179,8 +183,20 @@ mod tests {
     fn corrected_names_become_suggestions() {
         let pasted = "Done, I booked Glyfert plus 6 at the Red Bull. Let's check with Umit tomorrow.";
         let field = "Hi team,\nDone, I booked Gleifert plus 6 at the Red Bull. Let's check with Ümit tomorrow.\nCheers";
-        // "Umit" -> "Ümit" folds to the same word: nothing to learn there.
-        assert_eq!(corrections(pasted, field), vec![("Glyfert".to_string(), "Gleifert".to_string())]);
+        // "Umit" -> "Ümit" folds to the same word, and the dictionary then
+        // writes every "Umit" as "Ümit".
+        assert_eq!(
+            corrections(pasted, field),
+            vec![("Glyfert".to_string(), "Gleifert".to_string()), ("Umit".to_string(), "Ümit".to_string())]
+        );
+    }
+
+    #[test]
+    fn capitals_for_emphasis_are_no_spelling() {
+        let pasted = "Bitte ruf Anna sofort an, es ist wichtig.";
+        let field = "Bitte ruf Anna SOFORT an, es ist WICHTIG.";
+        assert!(corrections(pasted, field).is_empty());
+        assert!(!has_inner_capital("WICHTIG") && has_inner_capital("GitHub") && has_inner_capital("iPhone"));
     }
 
     #[test]

@@ -136,6 +136,13 @@ impl AudioRecorder {
         }
     }
 
+    /// Stop capturing and keep what was recorded, for the release of the
+    /// hotkey: the samples are taken once a piece still being transcribed is
+    /// done, and nothing said after the release may get into them.
+    pub fn stop_capture(&mut self) {
+        self.release_stream();
+    }
+
     pub fn discard(&mut self) {
         self.release_stream();
         lock(&self.samples).clear();
@@ -420,9 +427,50 @@ pub fn trim_silence(samples: &[f32], sample_rate: u32) -> Option<(usize, usize)>
     Some((padded_start, padded_end))
 }
 
+/// The stretches of sound in `samples`, split where at least `min_gap_secs`
+/// are silent, each padded like `trim_silence`. Empty when all is silent.
+pub fn speech_spans(samples: &[f32], sample_rate: u32, min_gap_secs: f32) -> Vec<(usize, usize)> {
+    let window = (sample_rate / 50) as usize; // 20 ms
+    if window == 0 || samples.len() < window {
+        return trim_silence(samples, sample_rate).into_iter().collect();
+    }
+    let pad = ((TRIM_PAD_MS as u64 * sample_rate as u64) / 1000) as usize;
+    let min_gap = (min_gap_secs * sample_rate as f32) as usize;
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i + window <= samples.len() {
+        let chunk = &samples[i..i + window];
+        let rms = (chunk.iter().map(|s| s * s).sum::<f32>() / window as f32).sqrt();
+        if rms >= TRIM_RMS_THRESHOLD {
+            match spans.last_mut() {
+                Some((_, end)) if i < *end + min_gap => *end = i + window,
+                _ => spans.push((i, i + window)),
+            }
+        }
+        i += window;
+    }
+    spans.into_iter().map(|(start, end)| (start.saturating_sub(pad), (end + pad).min(samples.len()))).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speech_spans_split_at_long_pauses_only() {
+        let sr = 16_000;
+        // 1 s silence, 2 s sound, 0.5 s pause, 1 s sound, 10 s silence, 1 s sound, 3 s silence.
+        let mut buf = synth(1.0, 2.0, 0.5, sr);
+        buf.extend(synth(0.0, 1.0, 10.0, sr));
+        buf.extend(synth(0.0, 1.0, 3.0, sr));
+        let spans = speech_spans(&buf, sr, 2.0);
+        let secs: Vec<(f32, f32)> = spans.iter().map(|&(s, e)| (s as f32 / sr as f32, e as f32 / sr as f32)).collect();
+        assert_eq!(spans.len(), 2, "{:?}", secs);
+        assert!((secs[0].0 - 0.8).abs() < 0.05 && (secs[0].1 - 4.7).abs() < 0.05, "{:?}", secs);
+        assert!((secs[1].0 - 14.3).abs() < 0.05 && (secs[1].1 - 15.7).abs() < 0.05, "{:?}", secs);
+        assert!(speech_spans(&vec![0.0; sr as usize * 5], sr, 2.0).is_empty());
+        assert!(speech_spans(&[], sr, 2.0).is_empty());
+    }
 
     fn synth(silent_secs: f32, tone_secs: f32, trail_secs: f32, sr: u32) -> Vec<f32> {
         let n_silent = (silent_secs * sr as f32) as usize;

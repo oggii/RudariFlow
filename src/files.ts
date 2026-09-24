@@ -55,6 +55,9 @@ let running = false;
 let transcript: FileTranscript | null = null;
 let fileName = "";
 let languageSet = false;
+/** Counts summaries; a new file or summary makes older results stale. */
+let summaryRun = 0;
+let summarizing = false;
 
 /// "4:05" or "1:02:03", like the backend's `clock`.
 function clock(ms: number): string {
@@ -110,6 +113,8 @@ async function transcribe(path: string) {
   job.classList.remove("hidden");
   cancelBtn.classList.remove("hidden");
   result.classList.remove("hidden");
+  summaryRun++;
+  summarizing = false;
   summaryBox.classList.add("hidden");
   summaryEl.textContent = "";
   textArea.value = "";
@@ -177,17 +182,26 @@ async function chooseFile() {
 async function summarize() {
   const text = transcript?.text ?? textArea.value;
   if (!text.trim()) return;
+  // A summary still running for an earlier file must not land in this one.
+  const run = ++summaryRun;
+  summarizing = true;
   summarizeBtn.disabled = true;
   summaryBox.classList.remove("hidden");
   summaryEl.textContent = t("files_summarizing");
   summaryEl.dataset.tone = "";
   try {
-    summaryEl.textContent = await invoke<string>("summarize_text", { text });
+    const summary = await invoke<string>("summarize_text", { text });
+    if (run === summaryRun) summaryEl.textContent = summary;
   } catch (e) {
-    summaryEl.textContent = errorText(e);
-    summaryEl.dataset.tone = "error";
+    if (run === summaryRun) {
+      summaryEl.textContent = errorText(e);
+      summaryEl.dataset.tone = "error";
+    }
   } finally {
-    summarizeBtn.disabled = false;
+    if (run === summaryRun) {
+      summarizing = false;
+      summarizeBtn.disabled = running;
+    }
   }
 }
 
@@ -196,7 +210,8 @@ async function saveText() {
   const path = await save({ defaultPath: `${base}.txt`, filters: [{ name: "Text", extensions: ["txt"] }] });
   if (!path) return;
   let text = textArea.value;
-  if (!summaryBox.classList.contains("hidden") && summaryEl.dataset.tone !== "error" && summaryEl.textContent) {
+  const summaryReady = !summarizing && !summaryBox.classList.contains("hidden") && summaryEl.dataset.tone !== "error";
+  if (summaryReady && summaryEl.textContent) {
     text = `${t("files_summary")}\n\n${summaryEl.textContent}\n\n${t("files_transcript")}\n\n${text}`;
   }
   try {
@@ -235,7 +250,7 @@ export function initFiles(h: FilesHost) {
   listen<FileProgress>("file-progress", (e) => onProgress(e.payload));
   listen<[number, number]>("summary-progress", (e) => {
     const [done, total] = e.payload;
-    if (total > 1) summaryEl.textContent = t("files_summarizing_parts").replace("{done}", String(done + 1)).replace("{total}", String(total));
+    if (summarizing && total > 1) summaryEl.textContent = t("files_summarizing_parts").replace("{done}", String(done + 1)).replace("{total}", String(total));
   });
   // A file dropped anywhere on the window is transcribed.
   getCurrentWebview().onDragDropEvent((event) => {

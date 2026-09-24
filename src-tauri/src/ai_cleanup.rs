@@ -370,16 +370,41 @@ pub struct Answer {
 /// The per-token times from the `timings` llama-server adds to an answer.
 fn speed_of(json: &serde_json::Value) -> Option<Speed> {
     let t = &json["timings"];
+    // llama-server stops the generation clock at the first token, so a
+    // one-token answer (the cache warm-up) reports about 0.001 ms per token.
+    if t["predicted_n"].as_f64().unwrap_or(0.0) < 2.0 {
+        return None;
+    }
     let prompt = t["prompt_per_token_ms"].as_f64()?;
     let gen = t["predicted_per_token_ms"].as_f64()?;
     let valid = |ms: f64| ms.is_finite() && ms > 0.0;
     (valid(prompt) && valid(gen)).then_some(Speed { prompt_ms_per_token: prompt, gen_ms_per_token: gen })
 }
 
-/// Ask the server for the edited text. Non-streaming; `timeout` covers the
-/// whole request.
+/// llama-server runs two slots: dictations, edits and the warm-up share
+/// the first, which keeps their system prompt cached; file summaries use the
+/// second, so a dictation never waits behind one (a summary part takes
+/// seconds, a dictation's time limit is about 3 s).
+pub const DICTATION_SLOT: i32 = 0;
+pub const LONG_SLOT: i32 = 1;
+
+/// Ask the server for the edited text in the dictation slot. Non-streaming;
+/// `timeout` covers the whole request.
 pub async fn complete(
     endpoint: &Endpoint,
+    system: &str,
+    user: &str,
+    temperature: f32,
+    max_tokens: u32,
+    timeout: Duration,
+) -> Result<Answer, String> {
+    complete_in(endpoint, DICTATION_SLOT, system, user, temperature, max_tokens, timeout).await
+}
+
+/// `complete` in the server slot `slot`.
+pub async fn complete_in(
+    endpoint: &Endpoint,
+    slot: i32,
     system: &str,
     user: &str,
     temperature: f32,
@@ -395,6 +420,7 @@ pub async fn complete(
         "max_tokens": max_tokens,
         "stream": false,
         "cache_prompt": true,
+        "id_slot": slot,
         "chat_template_kwargs": { "enable_thinking": false },
     });
     let client = reqwest::Client::builder()
@@ -576,11 +602,14 @@ mod tests {
 
     #[test]
     fn speed_comes_from_the_timings_of_an_answer() {
-        let json = serde_json::json!({ "timings": { "prompt_per_token_ms": 1.65, "predicted_per_token_ms": 11.3 } });
+        let json = serde_json::json!({ "timings": { "prompt_per_token_ms": 1.65, "predicted_per_token_ms": 11.3, "predicted_n": 12 } });
         assert_eq!(speed_of(&json), Some(Speed { prompt_ms_per_token: 1.65, gen_ms_per_token: 11.3 }));
         assert_eq!(speed_of(&serde_json::json!({})), None);
-        let cached = serde_json::json!({ "timings": { "prompt_per_token_ms": null, "predicted_per_token_ms": 11.3 } });
+        let cached = serde_json::json!({ "timings": { "prompt_per_token_ms": null, "predicted_per_token_ms": 11.3, "predicted_n": 12 } });
         assert_eq!(speed_of(&cached), None);
+        // The one-token warm-up: the clock stops at the first token.
+        let warm_up = serde_json::json!({ "timings": { "prompt_per_token_ms": 0.3, "predicted_per_token_ms": 0.001, "predicted_n": 1 } });
+        assert_eq!(speed_of(&warm_up), None);
     }
 
     #[test]
