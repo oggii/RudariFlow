@@ -1,6 +1,6 @@
 [package]
 name = "rudariflow"
-version = "0.7.0"
+version = "0.8.0"
 description = "Sprache-zu-Text Diktier-App, lokal angetrieben von Whisper.cpp mit GPU-Beschleunigung"
 authors = ["oggi <info@0ggi.ch>"]
 edition = "2021"
@@ -43,12 +43,19 @@ tauri-plugin-autostart = "2.5.1"
 # raw-api re-exports whisper-rs-sys for ggml device enumeration.
 whisper-rs = { version = "0.16", features = ["raw-api"] }
 
+# whisper.cpp with RudariFlow's patches (patches/whisper-rs-sys); created by
+# scripts/setup-whisper-patch.ps1.
+[patch.crates-io]
+whisper-rs-sys = { path = "vendor/whisper-rs-sys" }
+
 [target.'cfg(windows)'.dependencies]
 # Low-level mouse hook for side-button hotkeys (src/mouse_hotkey.rs); the
-# foreground app for AI cleanup rules (src/foreground_app.rs).
+# foreground app for AI cleanup rules (src/foreground_app.rs); battery state
+# (src/power.rs).
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
+  "Win32_System_Power",
   "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
@@ -82,3 +89,27 @@ path = "examples/ai_bench.rs"
 [[example]]
 name = "uia_probe"
 path = "examples/uia_probe.rs"
+
+[[example]]
+name = "screen_probe"
+path = "examples/screen_probe.rs"
+
+[[example]]
+name = "warm_bench"
+path = "examples/warm_bench.rs"
+
+[[example]]
+name = "state_bench"
+path = "examples/state_bench.rs"
+
+[[example]]
+name = "terms_bench"
+path = "examples/terms_bench.rs"
+
+[[example]]
+name = "ctx_bench"
+path = "examples/ctx_bench.rs"
+
+[[example]]
+name = "lang_bench"
+path = "examples/lang_bench.rs"

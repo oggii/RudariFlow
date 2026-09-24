@@ -1,0 +1,68 @@
+Reuse the encoder pass of the language detection
+
+With language "auto", whisper_full_with_state() ran the encoder on the
+first 30 s window twice: once in whisper_lang_auto_detect_with_state()
+and again at the start of the main loop, on the same mel frames. The main
+loop now skips that first encode; audio_ctx is set before the detection,
+so both passes use the same window. Measured with large-v3-turbo on an
+RX 6800 (Vulkan), 20 dictations of 6.2 s: 631 ms with auto, 332 ms with
+the language set.
+
+diff --git a/whisper.cpp/src/whisper.cpp b/whisper.cpp/src/whisper.cpp
+index 5b6e4b4..8b754bf 100644
+--- a/whisper.cpp/src/whisper.cpp
++++ b/whisper.cpp/src/whisper.cpp
+@@ -6808,6 +6808,17 @@ int whisper_full_with_state(
+         }
+     }
+ 
++    // overwrite audio_ctx, max allowed is hparams.n_audio_ctx
++    // (before the language detection, which runs the encoder too)
++    if (params.audio_ctx > whisper_n_audio_ctx(ctx)) {
++        WHISPER_LOG_ERROR("%s: audio_ctx is larger than the maximum allowed (%d > %d)\n", __func__, params.audio_ctx, whisper_n_audio_ctx(ctx));
++        return -5;
++    }
++    state->exp_n_audio_ctx = params.audio_ctx;
++
++    // the language detection encodes the window at seek 0; the main loop reuses it
++    bool encoded_at_zero = false;
++
+     // auto-detect language if not specified
+     if (params.language == nullptr || strlen(params.language) == 0 || strcmp(params.language, "auto") == 0 || params.detect_language) {
+         std::vector<float> probs(whisper_lang_max_id() + 1, 0.0f);
+@@ -6817,6 +6828,7 @@ int whisper_full_with_state(
+             WHISPER_LOG_ERROR("%s: failed to auto-detect language\n", __func__);
+             return -3;
+         }
++        encoded_at_zero = true;
+         state->lang_id = lang_id;
+         params.language = whisper_lang_str(lang_id);
+ 
+@@ -6943,13 +6955,6 @@ int whisper_full_with_state(
+         }
+     }
+ 
+-    // overwrite audio_ctx, max allowed is hparams.n_audio_ctx
+-    if (params.audio_ctx > whisper_n_audio_ctx(ctx)) {
+-        WHISPER_LOG_ERROR("%s: audio_ctx is larger than the maximum allowed (%d > %d)\n", __func__, params.audio_ctx, whisper_n_audio_ctx(ctx));
+-        return -5;
+-    }
+-    state->exp_n_audio_ctx = params.audio_ctx;
+-
+     // these tokens determine the task that will be performed
+     std::vector<whisper_token> prompt_init = { whisper_token_sot(ctx), };
+ 
+@@ -7016,8 +7021,11 @@ int whisper_full_with_state(
+             }
+         }
+ 
+-        // encode audio features starting at offset seek
+-        if (!whisper_encode_internal(*ctx, *state, seek, params.n_threads, params.abort_callback, params.abort_callback_user_data)) {
++        // encode audio features starting at offset seek, unless the language
++        // detection just encoded this window
++        if (encoded_at_zero && seek == 0) {
++            encoded_at_zero = false;
++        } else if (!whisper_encode_internal(*ctx, *state, seek, params.n_threads, params.abort_callback, params.abort_callback_user_data)) {
+             WHISPER_LOG_ERROR("%s: failed to encode\n", __func__);
+             return -6;
+         }

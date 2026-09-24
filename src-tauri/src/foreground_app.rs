@@ -108,7 +108,7 @@ mod imp {
         if hwnd.is_null() {
             return AppContext::default();
         }
-        AppContext { exe: app_of(hwnd), title: window_title(hwnd) }
+        AppContext { exe: app_of(hwnd), title: window_title(hwnd), ..Default::default() }
     }
 
     fn is_cloaked(hwnd: HWND) -> bool {

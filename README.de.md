@@ -11,7 +11,7 @@
 
 Lokale Sprache-zu-Text Diktier-App für Windows, angetrieben von [whisper.cpp](https://github.com/ggml-org/whisper.cpp) mit GPU-Beschleunigung. Globaler Hotkey, Push-to-Talk oder Toggle-Modus, automatisches Einfügen des transkribierten Texts.
 
-> **v0.7.0, Windows.** Neu: Bearbeiten per Stimme, Text markieren und sagen, was sich ändern soll. Seit 0.6: „Schreiben in“ macht aus jedem Diktat eine Sprache, Wörterbuch-Import und -Export, lokale KI-Korrektur mit Regeln pro App, Wörterbuch, Verlauf, Ersetzungen und der Befehl „Abschicken“ (siehe [Changelog](CHANGELOG.md)). Ein Installer für jede GPU: NVIDIA GeForce RTX läuft über CUDA, AMD Radeon und Intel Arc über Vulkan, alles andere fällt auf die CPU zurück. Das Backend wird zur Laufzeit automatisch gewählt.
+> **v0.8.0, Windows.** Neu: Wörter auf dem Bildschirm helfen bei Namen und Fachbegriffen, und Diktieren ist schneller: das erste Diktat nach dem Start, die automatische Spracherkennung und der KI-Schritt. Seit 0.6: Bearbeiten per Stimme (Text markieren und sagen, was sich ändern soll), „Schreiben in“ macht aus jedem Diktat eine Sprache, Wörterbuch-Import und -Export, lokale KI-Korrektur mit Regeln pro App, Wörterbuch, Verlauf, Ersetzungen und der Befehl „Abschicken“ (siehe [Changelog](CHANGELOG.md)). Ein Installer für jede GPU: NVIDIA GeForce GTX 16 / RTX läuft über CUDA, AMD Radeon, Intel Arc und ältere NVIDIA-Karten über Vulkan, alles andere fällt auf die CPU zurück. Das Backend wird zur Laufzeit automatisch gewählt.
 
 Vollständige Versionshistorie siehe [CHANGELOG.md](CHANGELOG.md).
 
@@ -20,8 +20,8 @@ Made by [oggi](https://0ggi.ch).
 ## Features
 
 - Lokale Transkription via In-Process whisper-rs — keine Cloud nötig, kein Subprozess pro Diktat
-- **Persistentes Modell:** beim ersten Gebrauch einmal geladen und für weitere Diktate wiederverwendet
-- **Warmup beim Hotkey-Druck:** PTT-Druck lädt das Modell parallel vor, sodass es bereit ist, sobald du fertig gesprochen hast
+- **Persistentes Modell:** beim Start der App geladen und für weitere Diktate wiederverwendet (im Akkubetrieb nach 10 Minuten ohne Diktat entladen)
+- **Warmup beim Hotkey-Druck:** ist das Modell nicht geladen, lädt der Hotkey es parallel, sodass es bereit ist, sobald du fertig gesprochen hast
 - **Streaming-Partial-Transkripte:** Text erscheint im Overlay, sobald Whisper jedes Segment ausgibt
 - **Auto-Backend-Erkennung:** NVIDIA CUDA wenn verfügbar, sonst Vulkan (AMD / Intel / NVIDIA), sonst CPU. Die Einstellungen zeigen die erkannten GPUs und erlauben, CUDA, Vulkan oder CPU zu erzwingen. Flash Attention ist bei CUDA an und bei Vulkan aus (auf einer RX 6800 doppelt so langsam); erzwingen mit `RUDARIFLOW_FLASH_ATTN=1` oder `=0`
 - **Wörterbuch:** eigener Tab für Namen, Marken und Fachbegriffe. Wörter einzeln hinzufügen oder eine Liste einfügen (Kommas oder eines pro Zeile). Whisper bekommt sie als Prompt, der Text übernimmt ihre genaue Schreibweise, auch wenn Whisper sie leicht anders hört („github“ wird zu „GitHub“, „Grüß'n shop“ zu „Grüssen-Shop“), und die KI-Korrektur erhält die Liste ebenfalls. Ein Schalter für Schweizer Rechtschreibung schreibt ss statt ß. Importieren und Exportieren bringen die Liste als einfache Textdatei auf einen anderen PC
@@ -32,6 +32,7 @@ Made by [oggi](https://0ggi.ch).
 - **Verlauf:** die letzten 200 Diktate bleiben auf deinem Computer, die letzten 50 mit Aufnahme. Kopieren, abspielen, löschen oder eine Aufnahme mit dem aktuellen Modell neu transkribieren. Lässt sich auf „Nur Text“ stellen oder ausschalten
 - **Letztes Diktat einfügen:** ein zweites Tastenkürzel (Standard Alt+Umschalt+V) fügt dein letztes Diktat erneut ein
 - **Andere Apps während der Aufnahme stummschalten:** Musik und Videos verstummen, während du diktierst, und kommen danach zurück (standardmäßig aus)
+- **Wörter auf dem Bildschirm:** Namen und Begriffe im Fenster, in das du diktierst (der Name in einer E-Mail, eine Marke auf einer Website, Bezeichner im Editor), helfen Whisper und der KI bei der Schreibweise. Wird lokal beim Drücken des Hotkeys gelesen, nie gespeichert
 - **Bearbeiten per Stimme:** Text in einer beliebigen App markieren, Hotkey halten und sagen, was sich ändern soll („kürzer“, „förmlicher“, „auf Türkisch“, „lösch das“), oder den neuen Wortlaut sprechen; das lokale Modell schreibt die Markierung an Ort und Stelle um, Strg+Z macht es rückgängig. Terminals, Adressleisten und Passwortfelder bleiben unberührt
 - **KI-Korrektur, komplett lokal:** ein Sprachmodell auf deinem PC entfernt Füllwörter, übernimmt gesprochene Korrekturen („Dienstag, nein, Mittwoch“), korrigiert Grammatik und Satzzeichen, macht Listen und glättet im Stil „Geschliffen“ deine Sätze. Es behält die gesprochene Sprache und beantwortet nie, was du diktierst; stellst du bei „Schreiben in“ eine Sprache ein, schreibt es jedes Diktat in dieser Sprache und übersetzt, wenn du beim Sprechen die Sprache wechselst. Regeln pro App („kleingeschrieben in WhatsApp“, „formell in Outlook“, „keine KI in VS Code“) passen auf das Programm oder ein Wort im Fenstertitel und funktionieren so auch für Websites. Läuft mit Gemma 4 (standardmäßig E4B, wahlweise 12B oder E2B) in einem mitgelieferten llama.cpp-Server; das Modell wird einmal heruntergeladen (3 bis 7 GB), danach verlässt nichts deinen PC. Ist das Modell nicht bereit oder zu langsam, wird der reine Whisper-Text eingefügt. Standardmäßig aus
 - Mehrere Whisper-Modelle wählbar: tiny → large-v3-turbo, mit Auto-Download bei Auswahl
@@ -48,11 +49,13 @@ Made by [oggi](https://0ggi.ch).
 
 - **OS:** Windows 10/11 x64
 - **GPU (empfohlen), nur aktueller Treiber, keine zusätzliche Runtime:**
-  - NVIDIA GeForce RTX 20 oder neuer: CUDA (Treiber 525 oder neuer)
+  - NVIDIA GeForce GTX 16 / RTX 20 oder neuer: CUDA (Treiber 528.33 oder neuer); ältere NVIDIA-Karten nutzen Vulkan
   - AMD Radeon RX 6000 oder neuer (AMD Software: Adrenalin Edition): Vulkan
   - Intel Arc und andere Vulkan-1.2-GPUs: Vulkan
+  - Mit integrierter und dedizierter GPU wird die dedizierte genutzt.
 - **CPU-Fallback:** Funktioniert auch ohne nutzbare GPU, dann deutlich langsamer (~10-30×). Für CPU-Nutzer: small oder medium Modell empfohlen
-- **RAM:** Das gewählte Whisper-Modell bleibt ab dem ersten Diktat resident. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB.
+- **RAM:** Das gewählte Whisper-Modell lädt beim Start und bleibt resident. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB. Im Akkubetrieb werden die Modelle nach 10 Minuten ohne Diktat entladen und beim nächsten Hotkey wieder geladen.
+- **KI-Korrektur (optional):** Das Standardmodell belegt etwa 3,6 GB Grafikspeicher zusätzlich zu Whisper und etwa 3,3 GB RAM.
 
 ## Installation (für Endbenutzer)
 
@@ -85,6 +88,9 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1
 
 # 3b. llama.cpp-Server für die KI-Korrektur holen (festgelegter Build, SHA-256 geprüft)
 powershell -ExecutionPolicy Bypass -File scripts/setup-llama.ps1
+
+# 3c. whisper-rs-sys entpacken und die whisper.cpp-Patches aus patches\ anwenden
+powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-patch.ps1
 
 # 4. Build-Pfad kurz halten: der verschachtelte Vulkan-Shader-Build von
 #    whisper.cpp sprengt unter src-tauri\target das 260-Zeichen-Limit

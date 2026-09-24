@@ -16,6 +16,10 @@ pub struct AppContext {
     pub exe: String,
     /// Title of the foreground window.
     pub title: String,
+    /// Names and terms read from the window (screen context); per
+    /// dictation only, never stored.
+    #[serde(skip)]
+    pub screen_terms: Vec<String>,
 }
 
 /// Extra instructions for one app, or "no AI here".
@@ -154,6 +158,12 @@ pub fn build_messages(
         for i in app_instructions {
             user.push_str(&format!("- {}\n", i));
         }
+    }
+    if !ctx.screen_terms.is_empty() {
+        user.push_str(&format!(
+            "Names and terms on the user's screen (spell them exactly like this when the dictation mentions them; never add them otherwise): {}\n",
+            ctx.screen_terms.join(", ")
+        ));
     }
     match (language, target) {
         (Some(spoken), Some(t)) => user.push_str(&format!(
@@ -335,6 +345,9 @@ pub async fn complete(
     });
     let client = reqwest::Client::builder()
         .timeout(timeout)
+        // The server is on 127.0.0.1; a Windows system proxy (company PCs)
+        // must not route the request.
+        .no_proxy()
         // A closed local port takes Windows about 2 s to refuse by default.
         .connect_timeout(Duration::from_millis(800))
         .build()
@@ -371,7 +384,7 @@ mod tests {
     use super::*;
 
     fn ctx(exe: &str, title: &str) -> AppContext {
-        AppContext { exe: exe.into(), title: title.into() }
+        AppContext { exe: exe.into(), title: title.into(), ..Default::default() }
     }
 
     fn rule(app: &str, instructions: &str, off: bool) -> AppRule {
@@ -451,6 +464,15 @@ mod tests {
         assert!(system.contains(STYLE_LIGHT));
         assert!(!system.contains("instructions for all apps"));
         assert_eq!(user, "<dictation>\nHello.\n</dictation>");
+    }
+
+    #[test]
+    fn screen_terms_go_into_the_user_message() {
+        let mut c = ctx("brave", "Inbox");
+        c.screen_terms = vec!["Yılmaz".into(), "Pratteln".into()];
+        let (system, user) = build_messages("polished", "", &[], &[], &c, None, None, "hi");
+        assert!(user.contains("on the user's screen (spell them exactly like this when the dictation mentions them; never add them otherwise): Yılmaz, Pratteln\n"));
+        assert!(!system.contains("Yılmaz"));
     }
 
     #[test]

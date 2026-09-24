@@ -90,6 +90,14 @@ const MAX_START_FAILURES: u32 = 2;
 /// Loading a large model from a slow disk can take a while.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(180);
 const LIST_DEVICES_TIMEOUT: Duration = Duration::from_secs(20);
+/// An empty device list is asked again this often, this far apart.
+const LIST_DEVICES_TRIES: u32 = 3;
+const LIST_DEVICES_RETRY: Duration = Duration::from_millis(1500);
+/// After this long without a request, a hotkey press first sends a tiny
+/// request while the user speaks: after a night of idling the first
+/// dictation waited 1.1 s for the server and ran into its time limit.
+const IDLE_TOUCH: Duration = Duration::from_secs(10 * 60);
+const PRIME_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct LlmServer {
     llama_dir: PathBuf,
@@ -102,6 +110,12 @@ pub struct LlmServer {
     failures: AtomicU32,
     /// Bumped by `stop`, so a start that was cut short does not report failure.
     generation: AtomicU64,
+    /// The dictation system prompt for the current settings. The warm-up and
+    /// idle touches send it, so llama-server keeps it in its prompt cache.
+    /// Empty until the app sets it.
+    warm_system: Mutex<String>,
+    /// When a request last went to the server.
+    last_used: Mutex<Option<Instant>>,
     on_status: StatusCallback,
     #[cfg(windows)]
     job: Option<job::Job>,
@@ -118,6 +132,8 @@ impl LlmServer {
             devices: Mutex::new(None),
             failures: AtomicU32::new(0),
             generation: AtomicU64::new(0),
+            warm_system: Mutex::new(String::new()),
+            last_used: Mutex::new(None),
             on_status,
             #[cfg(windows)]
             job: job::Job::new(),
@@ -155,6 +171,88 @@ impl LlmServer {
         let r = running.as_ref()?;
         let ready = r.model == model && matches!(*lock(&self.status), ServerStatus::Ready { .. });
         ready.then(|| r.endpoint.clone())
+    }
+
+    /// The endpoint of the running server when it is ready, whatever its model.
+    fn ready_endpoint(&self) -> Option<Endpoint> {
+        if self.reap_if_exited() {
+            return None;
+        }
+        let running = lock(&self.running);
+        let r = running.as_ref()?;
+        matches!(*lock(&self.status), ServerStatus::Ready { .. }).then(|| r.endpoint.clone())
+    }
+
+    /// Set the dictation system prompt for the current settings (see
+    /// `polish::system_prompt`). A changed prompt goes to a running server
+    /// right away, so the next dictation finds it in the cache.
+    pub fn set_warm_prompt(self: &Arc<Self>, system: String) {
+        {
+            let mut current = lock(&self.warm_system);
+            if *current == system {
+                return;
+            }
+            *current = system;
+        }
+        if let Some(endpoint) = self.ready_endpoint() {
+            self.spawn_prime(endpoint, "settings changed");
+        }
+    }
+
+    /// The warm-up request: the dictation system prompt and a short text.
+    fn warm_messages(&self) -> (String, String) {
+        let (default_system, user) = crate::ai_cleanup::build_messages(
+            "polished",
+            "",
+            &[],
+            &[],
+            &crate::ai_cleanup::AppContext::default(),
+            None,
+            None,
+            "Hello.",
+        );
+        let system = lock(&self.warm_system).clone();
+        (if system.is_empty() { default_system } else { system }, user)
+    }
+
+    fn mark_used(&self) {
+        *lock(&self.last_used) = Some(Instant::now());
+    }
+
+    /// One request with the warm system prompt, which puts it into the
+    /// prompt cache again (and on the first run compiles the GPU pipelines).
+    async fn prime(&self, endpoint: &Endpoint, max_tokens: u32, timeout: Duration) -> Result<(), String> {
+        let (system, user) = self.warm_messages();
+        self.mark_used();
+        crate::ai_cleanup::complete(endpoint, &system, &user, 0.0, max_tokens, timeout).await.map(|_| ())
+    }
+
+    fn spawn_prime(self: &Arc<Self>, endpoint: Endpoint, reason: &'static str) {
+        let this = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let started = Instant::now();
+            match this.prime(&endpoint, 1, PRIME_TIMEOUT).await {
+                Ok(()) => startup_log::log(&format!(
+                    "[ai] prompt cache refreshed ({}) in {} ms",
+                    reason,
+                    started.elapsed().as_millis()
+                )),
+                Err(e) => startup_log::log(&format!("[ai] prompt cache refresh ({}) failed: {}", reason, e)),
+            }
+        });
+    }
+
+    /// After `IDLE_TOUCH` without requests, refresh the prompt cache in the
+    /// background (hotkey press: the user is still speaking).
+    fn touch_if_idle(self: &Arc<Self>, endpoint: Endpoint) {
+        {
+            let mut last = lock(&self.last_used);
+            if last.is_some_and(|t| t.elapsed() < IDLE_TOUCH) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        self.spawn_prime(endpoint, "idle");
     }
 
     /// If the server process has exited on its own, forget it, count the
@@ -231,8 +329,13 @@ impl LlmServer {
     }
 
     /// Start (or keep) the server in the background, e.g. on hotkey press.
+    /// A server that sat idle gets its prompt cache refreshed.
     pub fn warm(self: &Arc<Self>, model: PathBuf, gpu_backend: Option<String>) {
-        if self.gave_up().is_some() || self.ready_endpoint_now(&model).is_some() {
+        if self.gave_up().is_some() {
+            return;
+        }
+        if let Some(endpoint) = self.ready_endpoint_now(&model) {
+            self.touch_if_idle(endpoint);
             return;
         }
         let this = self.clone();
@@ -250,6 +353,7 @@ impl LlmServer {
         wait: Duration,
     ) -> Result<Endpoint, String> {
         if let Some(endpoint) = self.ready_endpoint_now(model) {
+            self.mark_used();
             return Ok(endpoint);
         }
         if let Some(error) = self.gave_up() {
@@ -260,6 +364,7 @@ impl LlmServer {
         loop {
             tokio::time::sleep(Duration::from_millis(50)).await;
             if let Some(endpoint) = self.ready_endpoint_now(model) {
+                self.mark_used();
                 return Ok(endpoint);
             }
             // Once the start had time to begin, a failed and finished start
@@ -299,6 +404,8 @@ impl LlmServer {
         let device = pick_device(&devices, whisper_gpu.as_deref()).cloned();
         let port = free_port()?;
         let api_key = random_key();
+        // The log of the previous run stays as llm-server.prev.log.
+        let _ = std::fs::rename(&self.log_path, self.log_path.with_extension("prev.log"));
         let log = File::create(&self.log_path).map_err(|e| format!("llm-server.log: {}", e))?;
         let log_err = log.try_clone().map_err(|e| e.to_string())?;
         let port_arg = port.to_string();
@@ -336,19 +443,10 @@ impl LlmServer {
 
         self.wait_healthy(&endpoint).await?;
         // The first inference compiles GPU pipelines and fills the prompt
-        // cache with the shared system prompt. Do it before reporting Ready,
-        // so the first dictation is as fast as the ones after it.
-        let (system, user) = crate::ai_cleanup::build_messages(
-            "polished",
-            "",
-            &[],
-            &[],
-            &crate::ai_cleanup::AppContext::default(),
-            None,
-            None,
-            "Hello.",
-        );
-        if let Err(e) = crate::ai_cleanup::complete(&endpoint, &system, &user, 0.0, 8, LOAD_TIMEOUT).await {
+        // cache with the dictation system prompt of the current settings. Do
+        // it before reporting Ready, so the first dictation is as fast as the
+        // ones after it.
+        if let Err(e) = self.prime(&endpoint, 8, LOAD_TIMEOUT).await {
             startup_log::log(&format!("[ai] warm-up request failed: {}", e));
         }
         startup_log::log(&format!(
@@ -363,6 +461,7 @@ impl LlmServer {
     async fn wait_healthy(&self, endpoint: &Endpoint) -> Result<(), String> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(2))
+            .no_proxy()
             .build()
             .map_err(|e| e.to_string())?;
         let url = format!("{}/health", endpoint.base_url);
@@ -388,10 +487,30 @@ impl LlmServer {
     }
 
     /// Devices from `llama-server --list-devices`, asked once per app run.
+    /// Right after another process let go of the GPU (or early at login)
+    /// the list can come back empty, and the model would then run on the
+    /// CPU all day; so an empty answer is asked again first. A PC without a
+    /// usable GPU pays those 3 s once per run.
     async fn devices(&self) -> Vec<LlamaDevice> {
         if let Some(devices) = lock(&self.devices).clone() {
             return devices;
         }
+        let mut devices = Vec::new();
+        for attempt in 1..=LIST_DEVICES_TRIES {
+            devices = self.list_devices().await;
+            startup_log::log(&format!("[ai] devices (try {}): {:?}", attempt, devices));
+            if !devices.is_empty() {
+                break;
+            }
+            if attempt < LIST_DEVICES_TRIES {
+                tokio::time::sleep(LIST_DEVICES_RETRY).await;
+            }
+        }
+        *lock(&self.devices) = Some(devices.clone());
+        devices
+    }
+
+    async fn list_devices(&self) -> Vec<LlamaDevice> {
         let mut cmd = Command::new(self.server_exe());
         cmd.current_dir(&self.llama_dir).arg("--list-devices").stdin(Stdio::null());
         no_window(&mut cmd);
@@ -400,17 +519,14 @@ impl LlmServer {
             tokio::task::spawn_blocking(move || cmd.output()),
         )
         .await;
-        let devices = match output {
+        match output {
             Ok(Ok(Ok(out))) => parse_devices(&format!(
                 "{}\n{}",
                 String::from_utf8_lossy(&out.stdout),
                 String::from_utf8_lossy(&out.stderr)
             )),
             _ => Vec::new(),
-        };
-        startup_log::log(&format!("[ai] devices: {:?}", devices));
-        *lock(&self.devices) = Some(devices.clone());
-        devices
+        }
     }
 
     fn kill(&self) {
@@ -537,6 +653,18 @@ Available devices:
         assert_eq!(pick_device(&devices, Some("NVIDIA GeForce RTX 4070")).unwrap().id, "Vulkan0");
         assert_eq!(pick_device(&devices, None).unwrap().id, "Vulkan0");
         assert!(pick_device(&[], None).is_none());
+    }
+
+    #[test]
+    fn warm_up_sends_the_dictation_prompt_once_set() {
+        let dir = std::env::temp_dir().join("rudariflow_warm_prompt");
+        let llm = Arc::new(LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {})));
+        let (system, user) = llm.warm_messages();
+        assert!(system.starts_with("You are the editing step"));
+        assert_eq!(user, "<dictation>\nHello.\n</dictation>");
+        // No server runs, so this only stores the prompt.
+        llm.set_warm_prompt("The system prompt of these settings.".into());
+        assert_eq!(llm.warm_messages().0, "The system prompt of these settings.");
     }
 
     #[test]

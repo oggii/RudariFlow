@@ -3540,7 +3540,7 @@ dependencies = [
 
 [[package]]
 name = "rudariflow"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "arboard",
  "cpal",
@@ -5508,8 +5508,6 @@ dependencies = [
 [[package]]
 name = "whisper-rs-sys"
 version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6986c0fe081241d391f09b9a071fbcbb59720c3563628c3c829057cf69f2a56f"
 dependencies = [
  "bindgen",
  "cfg-if",

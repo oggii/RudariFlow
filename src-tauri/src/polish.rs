@@ -44,6 +44,25 @@ fn finish(settings: &Settings, mut polished: Polished) -> Polished {
     polished
 }
 
+/// The system message of every dictation with these settings. It only
+/// changes with the settings; the AI server keeps it in its prompt cache
+/// (`LlmServer::set_warm_prompt`), so a dictation only computes its own part.
+pub fn system_prompt(settings: &Settings) -> String {
+    let dictionary = crate::dictionary::terms(&settings.custom_prompt);
+    let target = crate::whisper_engine::language_name(&settings.ai_output_language);
+    ai_cleanup::build_messages(
+        &settings.ai_style,
+        &settings.ai_instructions,
+        &dictionary,
+        &[],
+        &AppContext::default(),
+        None,
+        target.as_deref(),
+        "",
+    )
+    .0
+}
+
 /// `text` is Whisper's text after capitalisation and "send it" stripping.
 /// `language` is the language Whisper heard (English name); without it, it
 /// is detected from the text. `on_ai_start` runs right before the model is
@@ -164,6 +183,32 @@ mod tests {
     }
 
     #[test]
+    fn warm_prompt_matches_the_system_prompt_of_a_dictation() {
+        let mut settings = Settings::default();
+        settings.custom_prompt = "Grüssen-Shop, GitHub".into();
+        settings.ai_instructions = "Use ss instead of ß.".into();
+        settings.ai_output_language = "en".into();
+        settings.ai_style = "light".into();
+        let rule = AppRule { app: "code".into(), instructions: "short".into(), off: false };
+        let ctx = AppContext {
+            exe: "code".into(),
+            title: "main.rs".into(),
+            screen_terms: vec!["Yılmaz".into()],
+        };
+        let (system, _) = ai_cleanup::build_messages(
+            &settings.ai_style,
+            &settings.ai_instructions,
+            &crate::dictionary::terms(&settings.custom_prompt),
+            &[&rule],
+            &ctx,
+            Some("German"),
+            Some("English"),
+            "hallo zusammen",
+        );
+        assert_eq!(system_prompt(&settings), system);
+    }
+
+    #[test]
     fn off_applies_replacements_only() {
         let (dir, llm, settings) = setup("off");
         let (p, asked) = run(&settings, &dir, &llm, &AppContext::default(), "Write to my email.");
@@ -176,7 +221,7 @@ mod tests {
         let (dir, llm, mut settings) = setup("skip");
         settings.ai_cleanup = true;
         settings.ai_rules = vec![AppRule { app: "code".into(), instructions: String::new(), off: true }];
-        let code = AppContext { exe: "code".into(), title: "main.rs".into() };
+        let code = AppContext { exe: "code".into(), title: "main.rs".into(), ..Default::default() };
         let (p, asked) = run(&settings, &dir, &llm, &code, "hello");
         assert_eq!(p.fallback.as_deref(), Some("AI is off for this app"));
         assert!(!asked);

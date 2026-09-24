@@ -35,6 +35,7 @@ interface Settings {
   swissSpelling: boolean;
   aiOutputLanguage: string;
   editMode: boolean;
+  screenContext: boolean;
 }
 
 interface Replacement {

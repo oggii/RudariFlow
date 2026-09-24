@@ -316,7 +316,7 @@ mod tests {
     fn stores_app_title_and_raw_and_reads_old_entries() {
         let dir = temp_app_dir("app_raw");
         let h = History::load(&dir);
-        let ctx = AppContext { exe: "whatsapp.root".into(), title: "WhatsApp".into() };
+        let ctx = AppContext { exe: "whatsapp.root".into(), title: "WhatsApp".into(), ..Default::default() };
         let e = h.record("hi there", Some("Hi there."), &ctx, &[], "large-v3-turbo", "text").unwrap();
         assert_eq!((e.app.as_str(), e.title.as_str(), e.raw.as_deref()), ("whatsapp.root", "WhatsApp", Some("Hi there.")));
         assert_eq!(History::load(&dir).get(e.id).unwrap(), e);

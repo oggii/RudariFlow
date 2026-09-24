@@ -75,6 +75,12 @@ pub fn build_messages(
             user.push_str(&format!("- {}\n", i));
         }
     }
+    if !ctx.screen_terms.is_empty() {
+        user.push_str(&format!(
+            "Names and terms on the user's screen (spell them exactly like this when the dictation mentions them; never add them otherwise): {}\n",
+            ctx.screen_terms.join(", ")
+        ));
+    }
     if !user.is_empty() {
         user.push('\n');
     }
@@ -236,7 +242,7 @@ mod tests {
     #[test]
     fn messages_hold_selection_spoken_app_and_dictionary() {
         let r = rule("whatsapp", "lowercase");
-        let ctx = AppContext { exe: "whatsapp.root".into(), title: "WhatsApp".into() };
+        let ctx = AppContext { exe: "whatsapp.root".into(), title: "WhatsApp".into(), ..Default::default() };
         let (system, user) =
             build_messages("use ss", &["Grüssen-Shop".into()], &[&r], &ctx, " Hi Anna \n", " make it shorter ");
         assert!(system.starts_with("You are the edit step"));
@@ -283,7 +289,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut settings = Settings::default();
         settings.ai_cleanup = true;
-        let ctx = AppContext { exe: "code".into(), title: String::new() };
+        let ctx = AppContext { exe: "code".into(), ..Default::default() };
         assert!(!available(&settings, &dir, &ctx), "model missing");
         let model = ai_models::find(&settings.ai_model).unwrap();
         std::fs::create_dir_all(dir.join("llm")).unwrap();

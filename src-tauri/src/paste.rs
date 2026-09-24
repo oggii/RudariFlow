@@ -51,6 +51,13 @@ fn wait_for_modifiers_released(timeout: std::time::Duration) {
 const MODIFIER_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 pub fn paste_text(text: &str) -> Result<(), String> {
+    paste_text_timed(text).map(|_| ())
+}
+
+/// `paste_text`, returning how long it took until Ctrl+V was sent (the rest
+/// is the wait before the previous clipboard comes back).
+pub fn paste_text_timed(text: &str) -> Result<std::time::Duration, String> {
+    let started = std::time::Instant::now();
     wait_for_modifiers_released(MODIFIER_WAIT);
 
     // Capture whatever the user had in the clipboard so we can put it back
@@ -83,13 +90,14 @@ pub fn paste_text(text: &str) -> Result<(), String> {
         enigo.key(Key::Unicode('v'), Direction::Click).map_err(|e| e.to_string())?;
         enigo.key(Key::Control, Direction::Release).map_err(|e| e.to_string())?;
     }
+    let to_keystroke = started.elapsed();
 
     // Give the target app time to actually consume the paste before we
     // overwrite the clipboard with the previous content.
     std::thread::sleep(std::time::Duration::from_millis(100));
     restore_clipboard(previous);
 
-    Ok(())
+    Ok(to_keystroke)
 }
 
 /// Remove the selection (Edit mode, "delete that").

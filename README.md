@@ -11,7 +11,7 @@
 
 Local speech-to-text dictation app for Windows, powered by [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Global hotkey, push-to-talk or toggle mode, automatic paste of the transcribed text.
 
-> **v0.7.0, Windows.** New: Edit mode, select text and say what to change. Since 0.6: "Write in" turns every dictation into one language, dictionary import and export, local AI cleanup with per-app rules, a dictionary, history, replacements and a "send it" command (see the [changelog](CHANGELOG.md)). One installer for every GPU: NVIDIA GeForce RTX runs on CUDA, AMD Radeon and Intel Arc run on Vulkan, and everything else falls back to the CPU. The backend is picked automatically at runtime.
+> **v0.8.0, Windows.** New: words on screen help spell names and terms, and dictation is faster: the first dictation after start, Auto-detect and the AI step. Since 0.6: Edit mode (select text and say what to change), "Write in" turns every dictation into one language, dictionary import and export, local AI cleanup with per-app rules, a dictionary, history, replacements and a "send it" command (see the [changelog](CHANGELOG.md)). One installer for every GPU: NVIDIA GeForce GTX 16 / RTX runs on CUDA, AMD Radeon, Intel Arc and older NVIDIA cards run on Vulkan, and everything else falls back to the CPU. The backend is picked automatically at runtime.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
@@ -20,8 +20,8 @@ Made by [oggi](https://0ggi.ch).
 ## Features
 
 - Local transcription via in-process whisper-rs — no cloud required, no subprocess per dictation
-- **Persistent model:** loaded once on first use and reused across dictations
-- **Hotkey-press warmup:** pressing PTT preloads the model in parallel so it's hot by the time you finish speaking
+- **Persistent model:** loaded when the app starts and reused across dictations (on battery it is unloaded after 10 minutes without dictation)
+- **Hotkey-press warmup:** if the model is not loaded, pressing the hotkey loads it in parallel so it's hot by the time you finish speaking
 - **Streaming partial transcripts:** text appears in the overlay as Whisper emits each segment
 - **Auto backend detection:** NVIDIA CUDA when available, otherwise Vulkan (AMD / Intel / NVIDIA), otherwise CPU. Settings show the detected GPUs and let you force CUDA, Vulkan or CPU. Flash attention is on for CUDA and off for Vulkan (2× slower on an RX 6800); force it with `RUDARIFLOW_FLASH_ATTN=1` or `=0`
 - **Dictionary:** its own tab for names, brands and jargon. Add words one at a time or paste a list (commas or one per line). Whisper gets them as its prompt, the transcript uses their exact spelling even when Whisper hears them slightly differently ("github" becomes "GitHub", "Grüß'n shop" becomes "Grüssen-Shop"), and AI cleanup gets the list too. A Swiss spelling switch writes ss instead of ß. Import and Export move the list to another PC as a plain text file
@@ -32,6 +32,7 @@ Made by [oggi](https://0ggi.ch).
 - **History:** the last 200 dictations stay on your computer, the last 50 with their recording. Copy, play, delete, or re-run a recording with the current model. Can be set to text only or turned off
 - **Paste last transcript:** a second hotkey (default Alt+Shift+V) pastes your last dictation again
 - **Mute other apps while recording:** music and videos go quiet while you dictate and come back afterwards (off by default)
+- **Words on screen:** names and terms visible in the window you dictate into (a colleague's name in an email, a brand on a web page, identifiers in your editor) help Whisper and the AI spell them. Read locally when you press the hotkey, never stored
 - **Edit mode:** select text in any app, hold the hotkey and say what to change ("shorter", "more formal", "in Turkish", "delete that") or say the new wording; the local model rewrites the selection in place, Ctrl+Z undoes it. Terminals, address bars and password fields are left alone
 - **AI cleanup, fully local:** a language model on your PC removes filler words, applies spoken corrections ("Tuesday, no, Wednesday"), fixes grammar and punctuation, formats lists and, in the Polished style, smooths your sentences. It keeps the language you spoke and never answers what you dictate; set "Write in" to a language and it writes every dictation in that language instead, translating when you switch languages while speaking. Per-app rules ("lowercase in WhatsApp", "formal in Outlook", "no AI in VS Code") match the program or a word in the window title, so they also work for websites. Runs Gemma 4 (E4B by default, 12B or E2B selectable) in a bundled llama.cpp server; the model downloads once (3 to 7 GB), then nothing leaves your PC. If the model is not ready or too slow, the plain Whisper text is pasted. Off by default
 - Multiple Whisper models selectable: tiny → large-v3-turbo, auto-downloaded on selection
@@ -48,12 +49,13 @@ Made by [oggi](https://0ggi.ch).
 
 - **OS:** Windows 10/11 x64
 - **GPU (recommended), current driver only, no extra runtime to install:**
-  - NVIDIA GeForce RTX 20 series or newer: CUDA (driver 525 or newer)
+  - NVIDIA GeForce GTX 16 / RTX 20 series or newer: CUDA (driver 528.33 or newer); older NVIDIA cards use Vulkan
   - AMD Radeon RX 6000 or newer (AMD Software: Adrenalin Edition): Vulkan
   - Intel Arc and other Vulkan 1.2 GPUs: Vulkan
+  - With an integrated and a dedicated GPU, the dedicated one is used.
 - **CPU fallback:** Works without a usable GPU, but significantly slower (~10-30×). For CPU-only users we recommend the `small` or `medium` model.
-- **RAM:** the selected whisper model stays resident from first dictation onward. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB.
-- **AI cleanup (optional):** runs on Vulkan on AMD, NVIDIA and Intel GPUs with the normal driver, on the same card as Whisper. The default model needs about 5 GB of video memory on top of Whisper, so 8 GB cards and up are fine; smaller cards move part of the model to the CPU. Measured on an AMD Radeon RX 6800: about 0.3 s per dictation. NVIDIA and Intel Arc use the same Vulkan path but have not been tested yet. Without a usable GPU expect 5 to 10 s per dictation.
+- **RAM:** the selected whisper model is loaded at start and stays resident. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB. On battery, the models are unloaded after 10 minutes without dictation and load again at the next hotkey press.
+- **AI cleanup (optional):** runs on Vulkan on AMD, NVIDIA and Intel GPUs with the normal driver, on the same card as Whisper. The default model takes about 3.6 GB of video memory on top of Whisper plus about 3.3 GB of RAM (its per-layer embeddings stay in RAM), so 8 GB cards and up are fine; smaller cards move part of the model to the CPU. Measured on an AMD Radeon RX 6800: about 0.3 s per dictation. NVIDIA and Intel Arc use the same Vulkan path but have not been tested yet. Without a usable GPU expect 5 to 10 s per dictation.
 
 ## Installation (for end users)
 
@@ -88,6 +90,9 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1
 
 # 3b. Fetch the llama.cpp server used for AI cleanup (pinned build, SHA-256 checked)
 powershell -ExecutionPolicy Bypass -File scripts/setup-llama.ps1
+
+# 3c. Unpack whisper-rs-sys and apply the whisper.cpp patches in patches\
+powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-patch.ps1
 
 # 4. Keep the build path short: whisper.cpp's nested Vulkan shader build
 #    exceeds the 260-character path limit under src-tauri\target
