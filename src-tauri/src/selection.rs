@@ -149,6 +149,22 @@ fn read_tries(tries: usize) -> Target {
     Target::None("no focused element")
 }
 
+/// Field text read to see what the user corrected after a dictation.
+pub const MAX_FIELD_CHARS: usize = 20_000;
+
+/// The focused field's program and text, to learn from what the user
+/// corrected after a dictation. Only the fields Edit mode works in: no
+/// terminals, address or search bars, password fields or web pages.
+pub fn read_field() -> Option<(String, String)> {
+    let info = read_focus()?;
+    let probe = FocusInfo { selection: Some("x".into()), ..info };
+    if decide(&probe) != Target::Selected("x".into()) {
+        return None;
+    }
+    let text = imp::field_text(MAX_FIELD_CHARS)?;
+    Some((probe.exe, normalize_newlines(&text)))
+}
+
 /// Why "rewrite last" did not find the last dictation to work on.
 pub const NOT_FOUND: &str = "the last dictation is not in this field";
 
@@ -219,6 +235,21 @@ mod imp {
         }
     }
 
+    /// The focused element's whole text (up to `max` characters).
+    pub fn field_text(max: usize) -> Option<String> {
+        let uia = crate::uia::automation()?;
+        unsafe {
+            let el = uia.GetFocusedElement().ok()?;
+            if let Ok(pattern) = el.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) {
+                if let Ok(text) = pattern.DocumentRange().and_then(|r| r.GetText(max as i32)) {
+                    return Some(text.to_string());
+                }
+            }
+            let value = el.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId).ok()?;
+            value.CurrentValue().ok().map(|b| b.to_string())
+        }
+    }
+
     pub fn read_focus() -> Option<FocusInfo> {
         let uia = crate::uia::automation()?;
         unsafe {
@@ -264,6 +295,10 @@ mod imp {
 
     pub fn find_and_select(_variants: &[String]) -> bool {
         false
+    }
+
+    pub fn field_text(_max: usize) -> Option<String> {
+        None
     }
 }
 

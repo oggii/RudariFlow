@@ -104,6 +104,20 @@ fn emit_edit_target(app: &AppHandle, words: Option<usize>) {
 /// Screen terms of the recording `generation`, filled in the background.
 type ScreenSlot = Arc<Mutex<Option<(u64, Vec<String>)>>>;
 
+/// The last dictation pasted, until the field is read again to see what the
+/// user corrected: at the next hotkey press or after `LEARN_AFTER`.
+struct LastPaste {
+    generation: u64,
+    text: String,
+    exe: String,
+    dictionary: Vec<String>,
+    app_dir: PathBuf,
+}
+
+type LearnSlot = Arc<Mutex<Option<LastPaste>>>;
+
+const LEARN_AFTER: Duration = Duration::from_secs(20);
+
 /// A long dictation is transcribed in pieces while it goes on: once this
 /// much is recorded since the last cut, a piece is cut off...
 const PIECE_AT_SECS: f32 = 29.0;
@@ -260,6 +274,8 @@ pub struct Recorder {
     /// Long dictations: pieces transcribed while recording. The lock is
     /// held while a piece is transcribed, so the release waits for it.
     pieces: Arc<tokio::sync::Mutex<Pieces>>,
+    /// Learning dictionary: the last dictation, until it is checked.
+    last_paste: LearnSlot,
 }
 
 /// Resets the recorder to Ready when dropped, including when transcription
@@ -287,6 +303,7 @@ impl Recorder {
             screen: Arc::new(Mutex::new(None)),
             generation: Arc::new(AtomicU64::new(0)),
             pieces: Arc::new(tokio::sync::Mutex::new(Pieces::default())),
+            last_paste: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -306,6 +323,11 @@ impl Recorder {
     pub fn capture_context(&self, app: &AppHandle, settings: &Settings, app_dir: &Path) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         *lock(&self.screen) = None;
+        // The next press: see what the user corrected in the last dictation.
+        if let Some(last) = lock(&self.last_paste).take() {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || learn_from_field(&app, last));
+        }
         let edit = voice_edit::available(settings, app_dir, &foreground_app::current());
         let screen = settings.screen_context;
         if !edit && !screen {
@@ -330,6 +352,37 @@ impl Recorder {
                     started.elapsed().as_millis()
                 ));
                 *lock(&slot) = Some((generation, terms));
+            }
+        });
+    }
+
+    /// Learning dictionary: keep the dictation just pasted and read its
+    /// field again at the next press or after `LEARN_AFTER`, whichever
+    /// comes first.
+    fn remember_paste(&self, app: &AppHandle, settings: &Settings, app_dir: &Path, text: &str, exe: &str) {
+        if !settings.learn_dictionary || exe.is_empty() {
+            return;
+        }
+        let generation = self.generation.load(Ordering::SeqCst);
+        *lock(&self.last_paste) = Some(LastPaste {
+            generation,
+            text: text.to_string(),
+            exe: exe.to_string(),
+            dictionary: dictionary::terms(&settings.custom_prompt),
+            app_dir: app_dir.to_path_buf(),
+        });
+        let (app, slot) = (app.clone(), self.last_paste.clone());
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(LEARN_AFTER).await;
+            let last = {
+                let mut slot = lock(&slot);
+                match slot.as_ref() {
+                    Some(last) if last.generation == generation => slot.take(),
+                    _ => None,
+                }
+            };
+            if let Some(last) = last {
+                let _ = tauri::async_runtime::spawn_blocking(move || learn_from_field(&app, last)).await;
             }
         });
     }
@@ -608,6 +661,8 @@ impl Recorder {
             let key = settings.send_command.clone();
             blocking(move || press_submit(&key)).await?;
             laps.lap("send");
+        } else if !text.is_empty() {
+            self.remember_paste(app, settings, app_dir, &text, &ctx.exe);
         }
 
         Ok(text)
@@ -672,6 +727,23 @@ impl Recorder {
         let _ = app.emit("recording-state", RecordingState::Ready);
         update_overlay(app, &RecordingState::Ready);
         Ok(())
+    }
+}
+
+/// Read the field the last dictation went into and keep the names the user
+/// corrected as dictionary suggestions. Only counts are logged.
+fn learn_from_field(app: &AppHandle, last: LastPaste) {
+    let Some((exe, field)) = selection::read_field() else {
+        return;
+    };
+    if exe != last.exe {
+        return;
+    }
+    let found = crate::learn::corrections(&last.text, &field);
+    let new = crate::learn::record(&last.app_dir, &found, &last.dictionary);
+    startup_log::log(&format!("[learn] {} corrected names, {} suggested", found.len(), new));
+    if new > 0 {
+        let _ = app.emit("dictionary-suggestions", crate::learn::suggestions(&last.app_dir));
     }
 }
 

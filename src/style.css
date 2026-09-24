@@ -1044,6 +1044,30 @@ kbd {
   padding: 16px;
 }
 
+.dict-suggest {
+  margin-bottom: 12px;
+  border-color: var(--accent);
+}
+.dict-suggest-title {
+  margin: 0;
+  padding: 10px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.dict-suggest-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dict-suggest-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .dict-io {
   display: flex;
   align-items: center;

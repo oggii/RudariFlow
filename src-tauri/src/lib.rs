@@ -24,6 +24,7 @@ pub mod uia;
 pub mod voice_edit;
 pub mod power;
 pub mod pc_check;
+pub mod learn;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

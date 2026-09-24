@@ -269,6 +269,19 @@ async fn detect_gpus() -> Vec<rudariflow_lib::whisper_engine::GpuDevice> {
         .unwrap_or_default()
 }
 
+/// Dictionary entries suggested from the user's corrections.
+#[tauri::command]
+fn learn_suggestions(state: State<AppState>) -> Vec<rudariflow_lib::learn::Suggestion> {
+    rudariflow_lib::learn::suggestions(&state.app_dir)
+}
+
+/// A suggestion was added to the dictionary (`dismiss` false) or dismissed.
+#[tauri::command]
+fn learn_resolve(state: State<AppState>, word: String, dismiss: bool) -> Vec<rudariflow_lib::learn::Suggestion> {
+    rudariflow_lib::learn::resolve(&state.app_dir, &word, dismiss);
+    rudariflow_lib::learn::suggestions(&state.app_dir)
+}
+
 #[tauri::command]
 fn history_list(state: State<AppState>) -> Vec<HistoryEntry> {
     state.history.list()
@@ -1128,6 +1141,8 @@ fn main() {
             list_open_apps,
             dictionary_export,
             dictionary_read_file,
+            learn_suggestions,
+            learn_resolve,
             copy_text,
             diag_log,
         ])

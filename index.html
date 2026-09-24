@@ -331,6 +331,22 @@
                 </label>
               </div>
             </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="learn_label">Learn from corrections</span>
+                <span class="label-hint" data-i18n="learn_hint">Names you correct right after dictating are suggested here.</span>
+              </div>
+              <div class="setting-control">
+                <label class="switch">
+                  <input id="learn-toggle" type="checkbox" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div id="dict-suggest" class="dict-card dict-suggest hidden">
+            <p class="dict-suggest-title" data-i18n="learn_title">Suggested from your corrections</p>
+            <div id="dict-suggest-list" class="dict-list"></div>
           </div>
           <div class="dict-card">
             <form id="dict-form" class="dict-add">

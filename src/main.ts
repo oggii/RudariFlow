@@ -38,6 +38,7 @@ interface Settings {
   aiOutputLanguage: string;
   editMode: boolean;
   screenContext: boolean;
+  learnDictionary: boolean;
 }
 
 interface Replacement {

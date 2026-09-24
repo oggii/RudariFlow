@@ -5,6 +5,30 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Language per app:** an app rule can set the language Whisper listens
+  for, e.g. German in WhatsApp and English in VS Code, with auto-detect
+  everywhere else.
+- **Snippets with variables:** replacements can hold `{date}`, `{time}`,
+  `{weekday}`, `{year}` and `{iso_date}`, filled in when you dictate
+  the trigger.
+- **Rewrite the last dictation:** a hotkey selects your last dictation in
+  the field, and what you say next edits it like Edit mode (needs AI
+  cleanup).
+- **PC check** (Engine tab): measures Whisper on every GPU with flash
+  attention on and off, keeps the fastest setup and gives a report to
+  copy.
+- **Long dictations are transcribed in pieces while you speak:** every
+  29 s a piece is cut in a pause, so after the release only the rest is
+  left (40 to 70 s dictations: 295 to 364 ms instead of 629 to 796 ms).
+- **The dictionary learns from your corrections:** correct a name right
+  after dictating ("Glyfert" to "Gleifert") and it is suggested in the
+  Dictionary tab to add or dismiss. The field is read once more at the
+  next hotkey press or after 20 s, in the same app only; only the
+  corrected word is kept, never your text. Can be switched off.
+
 ## [0.9.0] - 2026-09-24 - Faster AI, Large v3 Turbo q8
 
 ### Improved

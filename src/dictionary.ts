@@ -2,11 +2,12 @@
 // stored as the comma-separated `customPrompt` setting (Whisper's initial
 // prompt); the backend also uses them to fix spelling and to guide the AI.
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { t } from "./i18n";
 
 export interface DictionaryHost {
-  settings(): { customPrompt: string; swissSpelling: boolean; screenContext: boolean };
+  settings(): { customPrompt: string; swissSpelling: boolean; screenContext: boolean; learnDictionary: boolean };
   save(): Promise<void>;
 }
 
@@ -18,6 +19,9 @@ const count = document.getElementById("dict-count")!;
 const longHint = document.getElementById("dict-long")!;
 const swissToggle = document.getElementById("swiss-toggle") as HTMLInputElement;
 const screenToggle = document.getElementById("screen-toggle") as HTMLInputElement;
+const learnToggle = document.getElementById("learn-toggle") as HTMLInputElement;
+const suggestCard = document.getElementById("dict-suggest")!;
+const suggestList = document.getElementById("dict-suggest-list")!;
 const importBtn = document.getElementById("dict-import") as HTMLButtonElement;
 const exportBtn = document.getElementById("dict-export") as HTMLButtonElement;
 const ioStatus = document.getElementById("dict-io-status")!;
@@ -59,6 +63,59 @@ async function add(text: string): Promise<number> {
   return fresh.length;
 }
 
+/// A word the user corrected after a dictation (backend `learn::Suggestion`).
+interface Suggestion {
+  word: string;
+  heard: string;
+  count: number;
+}
+
+function renderSuggestions(suggestions: Suggestion[]) {
+  suggestList.innerHTML = "";
+  for (const s of suggestions) {
+    const row = document.createElement("div");
+    row.className = "dict-row";
+    const text = document.createElement("span");
+    text.className = "dict-suggest-text";
+    const word = document.createElement("span");
+    word.className = "dict-term";
+    word.textContent = s.word;
+    const heard = document.createElement("span");
+    heard.className = "label-hint";
+    heard.textContent =
+      t("learn_heard").replace("{heard}", s.heard) + (s.count > 1 ? ` · ${t("learn_seen").replace("{n}", String(s.count))}` : "");
+    text.append(word, heard);
+    const actions = document.createElement("span");
+    actions.className = "dict-suggest-actions";
+    const addBtn = document.createElement("button");
+    addBtn.className = "btn-secondary";
+    addBtn.textContent = t("dictionary_add");
+    addBtn.addEventListener("click", () => resolve(s.word, false));
+    const dismiss = document.createElement("button");
+    dismiss.className = "btn-ghost";
+    dismiss.textContent = t("learn_dismiss");
+    dismiss.addEventListener("click", () => resolve(s.word, true));
+    actions.append(addBtn, dismiss);
+    row.append(text, actions);
+    suggestList.appendChild(row);
+  }
+  suggestCard.classList.toggle("hidden", suggestions.length === 0);
+}
+
+/// Add a suggestion to the dictionary (or dismiss it for good).
+async function resolve(word: string, dismiss: boolean) {
+  if (!dismiss) await add(word);
+  renderSuggestions(await invoke<Suggestion[]>("learn_resolve", { word, dismiss }));
+}
+
+async function loadSuggestions() {
+  try {
+    renderSuggestions(await invoke<Suggestion[]>("learn_suggestions"));
+  } catch {
+    renderSuggestions([]);
+  }
+}
+
 const FILE_FILTERS = [{ name: "Text", extensions: ["txt", "csv"] }];
 
 function showIoStatus(text: string, tone = "") {
@@ -97,6 +154,7 @@ async function importDictionary() {
 export function renderDictionary() {
   swissToggle.checked = !!host.settings().swissSpelling;
   screenToggle.checked = host.settings().screenContext ?? true;
+  learnToggle.checked = host.settings().learnDictionary ?? true;
   const terms = stored();
   list.innerHTML = "";
   const sorted = [...terms].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
@@ -131,6 +189,12 @@ export function initDictionary(h: DictionaryHost) {
     host.settings().screenContext = screenToggle.checked;
     await host.save();
   });
+  learnToggle.addEventListener("change", async () => {
+    host.settings().learnDictionary = learnToggle.checked;
+    await host.save();
+  });
+  loadSuggestions();
+  listen<Suggestion[]>("dictionary-suggestions", (e) => renderSuggestions(e.payload));
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     await add(input.value);

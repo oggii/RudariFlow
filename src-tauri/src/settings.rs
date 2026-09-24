@@ -81,6 +81,10 @@ pub struct Settings {
     /// and the AI spell them.
     #[serde(rename = "screenContext", default = "default_true")]
     pub screen_context: bool,
+    /// Suggest dictionary entries from names the user corrects by hand
+    /// after a dictation.
+    #[serde(rename = "learnDictionary", default = "default_true")]
+    pub learn_dictionary: bool,
 }
 
 fn default_auto() -> String {
@@ -165,6 +169,7 @@ impl Default for Settings {
             ai_output_language: String::new(),
             edit_mode: true,
             screen_context: true,
+            learn_dictionary: true,
         }
     }
 }
