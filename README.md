@@ -11,7 +11,7 @@
 
 Local speech-to-text dictation app for Windows, powered by [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Global hotkey, push-to-talk or toggle mode, automatic paste of the transcribed text.
 
-> **v0.8.0, Windows.** New: words on screen help spell names and terms, and dictation is faster: the first dictation after start, Auto-detect and the AI step. Since 0.6: Edit mode (select text and say what to change), "Write in" turns every dictation into one language, dictionary import and export, local AI cleanup with per-app rules, a dictionary, history, replacements and a "send it" command (see the [changelog](CHANGELOG.md)). One installer for every GPU: NVIDIA GeForce GTX 16 / RTX runs on CUDA, AMD Radeon, Intel Arc and older NVIDIA cards run on Vulkan, and everything else falls back to the CPU. The backend is picked automatically at runtime.
+> **v0.9.0, Windows.** New: AI cleanup about 30 % faster with Gemma 4's drafter, Large v3 Turbo q8 (same text as Turbo, faster, half the memory), AI time limits that follow your hardware and model downloads that resume. Since 0.8: words on screen help spell names and terms, and Auto-detect is as fast as a set language. Since 0.6: Edit mode (select text and say what to change), "Write in", dictionary import and export, local AI cleanup with per-app rules, a dictionary, history, replacements and a "send it" command (see the [changelog](CHANGELOG.md)). One installer for every GPU: NVIDIA GeForce GTX 16 / RTX runs on CUDA, AMD Radeon, Intel Arc and older NVIDIA cards run on Vulkan, and everything else falls back to the CPU. The backend is picked automatically at runtime.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 

@@ -5,7 +5,7 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.9.0] - 2026-09-24 - Faster AI, Large v3 Turbo q8
 
 ### Improved
 Measured on an AMD Radeon RX 6800.
@@ -16,6 +16,10 @@ Measured on an AMD Radeon RX 6800.
   installs fetch it once in the background. If the AI server ever fails
   with it, RudariFlow restarts it without the drafter and keeps it off
   until the next update.
+- **The first dictation after start or a model switch is as fast as the
+  rest:** Whisper does one short run right after loading, so the graphics
+  card sets itself up then (first dictation 535 ms -> 297 ms live; up to
+  1.8 s before when the driver had nothing cached yet).
 - **Large v3 Turbo q8** (Engine tab): the same text as Large v3 Turbo in
   49 of 49 test recordings, 18 % faster (274 vs 336 ms) and half the
   memory (870 MB).
