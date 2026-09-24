@@ -127,6 +127,23 @@ fn default_ai_style() -> String {
     "polished".to_string()
 }
 
+/// Ctrl+A, C, V, X, Z, Y and S: as a global hotkey one of these would stop
+/// working in every app (and Ctrl+V would catch RudariFlow's own paste).
+pub fn is_windows_shortcut(hotkey: &str) -> bool {
+    let mut ctrl = false;
+    let mut others = 0;
+    let mut key = String::new();
+    for token in hotkey.split('+').map(|t| t.trim().to_ascii_lowercase()) {
+        match token.as_str() {
+            "cmdorctrl" | "commandorcontrol" | "ctrl" | "control" => ctrl = true,
+            "shift" | "alt" | "option" | "super" | "win" | "meta" | "cmd" | "command" => others += 1,
+            _ => key = token,
+        }
+    }
+    let key = key.strip_prefix("key").unwrap_or(&key);
+    ctrl && others == 0 && matches!(key, "a" | "c" | "v" | "x" | "z" | "y" | "s")
+}
+
 impl Settings {
     /// `whisper_flash_attn` for the engine: `None` = per API.
     pub fn flash_attn_pref(&self) -> Option<bool> {
@@ -285,6 +302,16 @@ mod tests {
         assert_eq!(settings, Settings::default());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn windows_editing_shortcuts_are_not_hotkeys() {
+        for reserved in ["CmdOrCtrl+A", "Ctrl+C", "CmdOrCtrl+V", "control+x", "CmdOrCtrl+Z", "CmdOrCtrl+KeyY", "Ctrl+S"] {
+            assert!(is_windows_shortcut(reserved), "{}", reserved);
+        }
+        for free in ["CmdOrCtrl+Shift+A", "Alt+Shift+F10", "CmdOrCtrl+Space", "Mouse4", "Shift+Mouse5", "CmdOrCtrl+B", "Alt+V", ""] {
+            assert!(!is_windows_shortcut(free), "{}", free);
+        }
     }
 
     #[test]

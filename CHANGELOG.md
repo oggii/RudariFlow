@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   take Mouse 4 / Mouse 5 too, alone or with Ctrl, Shift, Alt or Win, so
   one button can serve two hotkeys (Mouse 5 dictates, Shift+Mouse 5
   rewrites).
+- Ctrl+A, C, V, X, Z, Y and S can no longer be set as a hotkey: taken by
+  RudariFlow they stopped working in every app (Ctrl+V would also catch
+  RudariFlow's own paste). A chord like that saved earlier is not
+  registered.
 
 ## [0.9.0] - 2026-09-24 - Faster AI, Large v3 Turbo q8
 

@@ -621,9 +621,12 @@ async function applyCapturedCombo(combo: string) {
     await setHotkey(target, combo);
     stopCapture();
   } catch (err) {
-    captureElements(target).text.textContent = t(String(err).includes("already used") ? "hotkey_taken" : "hotkey_invalid");
+    const reason = String(err);
+    captureElements(target).text.textContent = reason.includes("Windows shortcut")
+      ? t("hotkey_reserved").replace("{combo}", hotkeyLabel(combo))
+      : t(reason.includes("already used") ? "hotkey_taken" : "hotkey_invalid");
     console.error("change_hotkey failed:", err);
-    setTimeout(stopCapture, 1500);
+    setTimeout(stopCapture, 2500);
   }
 }
 

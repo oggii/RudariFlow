@@ -1079,6 +1079,12 @@ fn paste_last_transcript(handle: &AppHandle) {
 /// (`Mouse4`, `Mouse5`, optionally with modifiers) through a mouse hook.
 fn register_hotkey(app: &AppHandle, hotkey: &str, action: HotkeyAction) -> Result<(), String> {
     startup_log::log(&format!("[hotkey] registering {} for {:?}", hotkey, action));
+    // Also refuses such a chord saved before this check existed.
+    if rudariflow_lib::settings::is_windows_shortcut(hotkey) {
+        let msg = format!("'{}' is a Windows shortcut (select all, copy, paste, ...)", hotkey);
+        startup_log::log(&format!("[hotkey] {}", msg));
+        return Err(msg);
+    }
     if let Some(binding) = mouse_hotkey::parse(hotkey) {
         let handle = app.clone();
         let label = hotkey.to_string();
