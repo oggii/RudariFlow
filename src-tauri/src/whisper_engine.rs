@@ -766,4 +766,38 @@ mod tests {
         // construct in a unit test. End-to-end coverage moved to manual
         // smoke testing of the running app.
     }
+
+    #[test]
+    fn segments_serialize_camel_case_and_omit_a_missing_speaker() {
+        use serde_json;
+
+        // speaker: None is omitted from JSON
+        let seg_no_speaker = Segment {
+            start_ms: 1000,
+            end_ms: 2000,
+            text: "Hi".to_string(),
+            speaker: None,
+        };
+        let json = serde_json::to_string(&seg_no_speaker).expect("serialize");
+        assert_eq!(json, r#"{"startMs":1000,"endMs":2000,"text":"Hi"}"#);
+        assert!(!json.contains("speaker"));
+
+        // speaker: Some(1) is included in JSON
+        let seg_with_speaker = Segment {
+            start_ms: 1000,
+            end_ms: 2000,
+            text: "Hi".to_string(),
+            speaker: Some(1),
+        };
+        let json = serde_json::to_string(&seg_with_speaker).expect("serialize");
+        assert!(json.contains("\"speaker\":1"));
+
+        // Deserializing without speaker field gives speaker: None
+        let seg_from_json: Segment =
+            serde_json::from_str(r#"{"startMs":1000,"endMs":2000,"text":"Hi"}"#).expect("deserialize");
+        assert_eq!(seg_from_json.speaker, None);
+        assert_eq!(seg_from_json.start_ms, 1000);
+        assert_eq!(seg_from_json.end_ms, 2000);
+        assert_eq!(seg_from_json.text, "Hi");
+    }
 }
