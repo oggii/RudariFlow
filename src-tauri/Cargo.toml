@@ -61,6 +61,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Globalization",
   "Win32_Graphics_Dwm",
+  "Win32_System_LibraryLoader",
   "Win32_System_Power",
   "Win32_System_Registry",
   "Win32_System_SystemInformation",
@@ -83,6 +84,11 @@ windows = { version = "0.61", features = [
   "Win32_System_Variant",
   "Win32_UI_Accessibility",
 ] }
+# Speaker separation in the Files tab (src/speakers.rs): the C API of
+# sherpa-onnx v1.12.9 from the shared build in binaries/sherpa-onnx
+# (scripts/setup-speakers.ps1). Not the sherpa-rs wrapper: it runs the
+# models on one thread, three times slower.
+sherpa-rs-sys = { version = "=0.6.8", default-features = false }
 
 [[example]]
 name = "spike"
@@ -155,3 +161,7 @@ path = "examples/media_probe.rs"
 [[example]]
 name = "file_bench"
 path = "examples/file_bench.rs"
+
+[[example]]
+name = "speakers_probe"
+path = "examples/speakers_probe.rs"

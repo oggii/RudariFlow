@@ -1,0 +1,5 @@
+[env]
+# sherpa-onnx (speaker separation in the Files tab), unpacked by
+# scripts/setup-speakers.ps1; sherpa-rs-sys links its import library
+# instead of downloading or building sherpa-onnx.
+SHERPA_LIB_PATH = { value = "binaries/sherpa-onnx", relative = true }

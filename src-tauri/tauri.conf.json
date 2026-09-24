@@ -46,6 +46,9 @@
       "binaries/gpu-runtime/cublas64_13.dll": "cublas64_13.dll",
       "binaries/gpu-runtime/cublasLt64_13.dll": "cublasLt64_13.dll",
       "binaries/gpu-runtime/vulkan-1.dll": "vulkan-1.dll",
+      "binaries/sherpa-onnx/lib/sherpa-onnx-c-api.dll": "sherpa-onnx-c-api.dll",
+      "binaries/sherpa-onnx/lib/onnxruntime.dll": "onnxruntime.dll",
+      "binaries/sherpa-onnx/lib/onnxruntime_providers_shared.dll": "onnxruntime_providers_shared.dll",
       "binaries/llama/*": "llama/"
     },
     "icon": [
