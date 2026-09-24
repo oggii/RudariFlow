@@ -276,9 +276,13 @@ async fn detect_gpus() -> Vec<rudariflow_lib::whisper_engine::GpuDevice> {
 
 #[derive(serde::Serialize)]
 struct FileTranscript {
-    text: String,
-    #[serde(rename = "textWithTimes")]
-    text_with_times: String,
+    segments: Vec<rudariflow_lib::whisper_engine::Segment>,
+    /// Speakers found; 0 when not separated.
+    speakers: u8,
+    /// Why speakers are missing although asked for: "no_model",
+    /// "no_runtime" or an error text.
+    #[serde(rename = "speakersError", skip_serializing_if = "Option::is_none")]
+    speakers_error: Option<String>,
     language: String,
     #[serde(rename = "durationMs")]
     duration_ms: u64,
@@ -286,8 +290,9 @@ struct FileTranscript {
     elapsed_ms: u64,
 }
 
-/// A "file-progress" event: `phase` "reading", "loading" or "transcribing";
-/// `text` is the text of the block just done.
+/// A "file-progress" event: `phase` "reading", "loading", "transcribing" or
+/// "speakers" (for "speakers" `done` is the percent, `total` = 100); `text`
+/// is the text of the block just done.
 #[derive(Clone, serde::Serialize)]
 struct FileProgress {
     phase: &'static str,
@@ -306,6 +311,7 @@ async fn transcribe_file(
     state: State<'_, AppState>,
     path: String,
     language: String,
+    speakers: String,
 ) -> Result<FileTranscript, String> {
     use std::sync::atomic::Ordering::SeqCst;
     if FILE_RUNNING.swap(true, SeqCst) {
@@ -329,6 +335,7 @@ async fn transcribe_file(
     let started = std::time::Instant::now();
     let handle = app.clone();
     let worker_settings = settings.clone();
+    let (speaker_setting, app_dir) = (speakers, state.app_dir.clone());
     let result = tauri::async_runtime::spawn_blocking(move || {
         let settings = worker_settings;
         let emit = |phase, done, total, text: String| {
@@ -344,6 +351,40 @@ async fn transcribe_file(
         if audio::trim_silence(&audio, 16_000).is_none() {
             return Err("no_speech".to_string());
         }
+        let audio = std::sync::Arc::new(audio);
+
+        // Speakers: on the CPU while Whisper runs on the GPU.
+        use rudariflow_lib::speakers;
+        let mut speakers_error = None;
+        let percent = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let separation = match speakers::parse_setting(&speaker_setting) {
+            None => None,
+            Some(_) if !speakers::models_ready(&app_dir) => {
+                speakers_error = Some("no_model".to_string());
+                None
+            }
+            Some(_) if !speakers::runtime_available() => {
+                speakers_error = Some("no_runtime".to_string());
+                None
+            }
+            Some(count) => {
+                let (audio, app_dir, percent) = (audio.clone(), app_dir.clone(), percent.clone());
+                let started = std::time::Instant::now();
+                let handle = std::thread::Builder::new()
+                    .name("rf-speakers".into())
+                    .spawn(move || {
+                        let turns = speakers::separate(&audio, count, &app_dir, &mut |done, total| {
+                            if total > 0 {
+                                percent.store(done * 100 / total, SeqCst);
+                            }
+                        });
+                        (turns, started.elapsed())
+                    })
+                    .map_err(|e| e.to_string())?;
+                Some(handle)
+            }
+        };
+
         emit("loading", 0, 1, String::new());
         engine.ensure_loaded(&model, &settings.gpu_backend)?;
         let terms = dictionary::terms(&settings.custom_prompt);
@@ -352,14 +393,49 @@ async fn transcribe_file(
             let text = dictionary::apply_spelling(&file_transcribe::tidy_segment(text), &terms);
             if settings.swiss_spelling { dictionary::swiss_spelling(&text) } else { text }
         };
-        let (segments, language) =
+        let (mut segments, language) =
             file_transcribe::transcribe(&engine, &audio, &language, &prompt, spelling, &FILE_CANCEL, |p| {
                 let text = p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
                 emit("transcribing", p.done_ms, p.total_ms, text);
             })?;
+
+        let mut found = 0u8;
+        if let Some(handle) = separation {
+            while !handle.is_finished() {
+                if FILE_CANCEL.load(SeqCst) {
+                    // The thread finishes on its own; its result is dropped.
+                    return Err(file_transcribe::CANCELLED.to_string());
+                }
+                emit("speakers", percent.load(SeqCst) as u64, 100, String::new());
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            match handle.join() {
+                Ok((Ok(turns), took)) => {
+                    let spans: Vec<(u64, u64)> = segments.iter().map(|s| (s.start_ms, s.end_ms)).collect();
+                    for (segment, speaker) in segments.iter_mut().zip(speakers::assign(&spans, &turns)) {
+                        segment.speaker = speaker;
+                    }
+                    found = segments.iter().filter_map(|s| s.speaker).max().map_or(0, |m| m + 1);
+                    startup_log::log(&format!(
+                        "[speakers] {} speakers, {} turns in {:.1} s ({:.0} s of audio, {} threads)",
+                        found,
+                        turns.len(),
+                        took.as_secs_f64(),
+                        audio.len() as f64 / 16_000.0,
+                        speakers::threads()
+                    ));
+                }
+                Ok((Err(e), _)) => {
+                    startup_log::log(&format!("[speakers] failed: {}", e));
+                    speakers_error = Some(e);
+                }
+                Err(_) => speakers_error = Some("speaker separation stopped unexpectedly".to_string()),
+            }
+        }
         Ok(FileTranscript {
-            text: file_transcribe::format(&segments, &[], false),
-            text_with_times: file_transcribe::format(&segments, &[], true),
+            segments,
+            speakers: found,
+            speakers_error,
             language,
             duration_ms: audio.len() as u64 / 16,
             elapsed_ms: 0,
@@ -375,11 +451,12 @@ async fn transcribe_file(
     let mut transcript = result.inspect_err(|e| startup_log::log(&format!("[file] failed: {}", e)))?;
     transcript.elapsed_ms = started.elapsed().as_millis() as u64;
     startup_log::log(&format!(
-        "[file] {:.0} s of audio in {:.1} s, language {}, {} characters",
+        "[file] {:.0} s of audio in {:.1} s, language {}, {} segments, {} speakers",
         transcript.duration_ms as f64 / 1000.0,
         transcript.elapsed_ms as f64 / 1000.0,
         transcript.language,
-        transcript.text.chars().count()
+        transcript.segments.len(),
+        transcript.speakers
     ));
     Ok(transcript)
 }
@@ -460,6 +537,58 @@ async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String
         started.elapsed().as_secs_f64()
     ));
     Ok(answer.text.trim().to_string())
+}
+
+/// The Files tab's transcript text: paragraphs, optional times, speaker
+/// names (`names[n]` for speaker n; empty = "Speaker n+1").
+#[tauri::command]
+fn format_file_text(segments: Vec<rudariflow_lib::whisper_engine::Segment>, names: Vec<String>, times: bool) -> String {
+    file_transcribe::format(&segments, &names, times)
+}
+
+#[derive(serde::Serialize)]
+struct SpeakerModelStatus {
+    downloaded: bool,
+    runtime: bool,
+    downloading: bool,
+}
+
+static SPEAKER_DOWNLOAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command]
+fn speaker_model_status(state: State<AppState>) -> SpeakerModelStatus {
+    use std::sync::atomic::Ordering::SeqCst;
+    SpeakerModelStatus {
+        downloaded: rudariflow_lib::speakers::models_ready(&state.app_dir),
+        runtime: rudariflow_lib::speakers::runtime_available(),
+        downloading: SPEAKER_DOWNLOAD.load(SeqCst),
+    }
+}
+
+/// Download the speaker models (about 45 MB), with "speaker-model-progress"
+/// events. "busy" while a download runs.
+#[tauri::command]
+async fn speaker_model_download(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    if SPEAKER_DOWNLOAD.swap(true, SeqCst) {
+        return Err("busy".to_string());
+    }
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            SPEAKER_DOWNLOAD.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _done = Done;
+    let result = rudariflow_lib::speakers::download_models(&state.app_dir, |p| {
+        let _ = app.emit("speaker-model-progress", p);
+    })
+    .await;
+    startup_log::log(&match &result {
+        Ok(()) => "[speakers] models downloaded".to_string(),
+        Err(e) => format!("[speakers] model download failed: {}", e),
+    });
+    result
 }
 
 /// Dictionary entries suggested from the user's corrections.
@@ -1378,6 +1507,9 @@ fn main() {
             transcribe_file,
             cancel_file,
             summarize_text,
+            format_file_text,
+            speaker_model_status,
+            speaker_model_download,
             save_text,
             copy_text,
             diag_log,
