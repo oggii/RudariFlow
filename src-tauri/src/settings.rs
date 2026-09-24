@@ -41,6 +41,14 @@ pub struct Settings {
     /// Keyboard chord that pastes the last transcript again; empty = none.
     #[serde(rename = "pasteLastHotkey", default = "default_paste_last_hotkey")]
     pub paste_last_hotkey: String,
+    /// Selects the last dictation in the focused field, then records what to
+    /// change about it (Edit mode). Empty = off.
+    #[serde(rename = "rewriteLastHotkey", default)]
+    pub rewrite_last_hotkey: String,
+    /// Whisper flash attention: "auto" (on for CUDA, off for Vulkan), "on"
+    /// or "off", as the PC check found fastest on this PC.
+    #[serde(rename = "whisperFlashAttn", default = "default_auto")]
+    pub whisper_flash_attn: String,
     /// Mute other apps while recording.
     #[serde(rename = "muteAudio", default)]
     pub mute_audio: bool,
@@ -73,6 +81,14 @@ pub struct Settings {
     /// and the AI spell them.
     #[serde(rename = "screenContext", default = "default_true")]
     pub screen_context: bool,
+    /// Suggest dictionary entries from names the user corrects by hand
+    /// after a dictation.
+    #[serde(rename = "learnDictionary", default = "default_true")]
+    pub learn_dictionary: bool,
+}
+
+fn default_auto() -> String {
+    "auto".to_string()
 }
 
 fn default_true() -> bool {
@@ -111,6 +127,34 @@ fn default_ai_style() -> String {
     "polished".to_string()
 }
 
+/// Ctrl+A, C, V, X, Z, Y and S: as a global hotkey one of these would stop
+/// working in every app (and Ctrl+V would catch RudariFlow's own paste).
+pub fn is_windows_shortcut(hotkey: &str) -> bool {
+    let mut ctrl = false;
+    let mut others = 0;
+    let mut key = String::new();
+    for token in hotkey.split('+').map(|t| t.trim().to_ascii_lowercase()) {
+        match token.as_str() {
+            "cmdorctrl" | "commandorcontrol" | "ctrl" | "control" => ctrl = true,
+            "shift" | "alt" | "option" | "super" | "win" | "meta" | "cmd" | "command" => others += 1,
+            _ => key = token,
+        }
+    }
+    let key = key.strip_prefix("key").unwrap_or(&key);
+    ctrl && others == 0 && matches!(key, "a" | "c" | "v" | "x" | "z" | "y" | "s")
+}
+
+impl Settings {
+    /// `whisper_flash_attn` for the engine: `None` = per API.
+    pub fn flash_attn_pref(&self) -> Option<bool> {
+        match self.whisper_flash_attn.as_str() {
+            "on" => Some(true),
+            "off" => Some(false),
+            _ => None,
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -130,6 +174,8 @@ impl Default for Settings {
             send_command: default_send_command(),
             history: default_history(),
             paste_last_hotkey: default_paste_last_hotkey(),
+            rewrite_last_hotkey: String::new(),
+            whisper_flash_attn: default_auto(),
             mute_audio: false,
             ai_cleanup: false,
             ai_model: default_ai_model(),
@@ -140,6 +186,7 @@ impl Default for Settings {
             ai_output_language: String::new(),
             edit_mode: true,
             screen_context: true,
+            learn_dictionary: true,
         }
     }
 }
@@ -258,6 +305,16 @@ mod tests {
     }
 
     #[test]
+    fn windows_editing_shortcuts_are_not_hotkeys() {
+        for reserved in ["CmdOrCtrl+A", "Ctrl+C", "CmdOrCtrl+V", "control+x", "CmdOrCtrl+Z", "CmdOrCtrl+KeyY", "Ctrl+S"] {
+            assert!(is_windows_shortcut(reserved), "{}", reserved);
+        }
+        for free in ["CmdOrCtrl+Shift+A", "Alt+Shift+F10", "CmdOrCtrl+Space", "Mouse4", "Shift+Mouse5", "CmdOrCtrl+B", "Alt+V", ""] {
+            assert!(!is_windows_shortcut(free), "{}", free);
+        }
+    }
+
+    #[test]
     fn test_unknown_gpu_backend_becomes_auto() {
         let dir = temp_dir().join("typr_test_gpu_backend");
         let _ = fs::remove_dir_all(&dir);
@@ -354,7 +411,7 @@ mod tests {
         settings.ai_model = "gemma-4-12b".to_string();
         settings.ai_style = "light".to_string();
         settings.ai_instructions = "Use ss instead of ß.".to_string();
-        settings.ai_rules = vec![AppRule { app: "whatsapp".into(), instructions: "lowercase".into(), off: false }];
+        settings.ai_rules = vec![AppRule { app: "whatsapp".into(), instructions: "lowercase".into(), ..Default::default() }];
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), settings);
 

@@ -16,6 +16,107 @@ pub struct Replacement {
 
 const EDGE_PUNCTUATION: &[char] = &['.', ',', '!', '?', ';', ':', '…', '。'];
 
+/// The local date and time a replacement's variables are filled with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Moment {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    /// 0 = Sunday.
+    pub weekday: u8,
+}
+
+impl Moment {
+    pub fn now() -> Self {
+        imp::local_now()
+    }
+}
+
+const WEEKDAYS_EN: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const WEEKDAYS_DE: [&str; 7] = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
+
+/// Fill {date} (24.09.2026), {time} (16:45), {weekday}, {year} and
+/// {iso_date} (2026-09-24) in a replacement text; other braces stay as
+/// they are. `german` picks the weekday names.
+pub fn fill_variables(text: &str, at: &Moment, german: bool) -> String {
+    if !text.contains('{') {
+        return text.to_string();
+    }
+    let weekdays = if german { WEEKDAYS_DE } else { WEEKDAYS_EN };
+    text.replace("{date}", &format!("{:02}.{:02}.{}", at.day, at.month, at.year))
+        .replace("{time}", &format!("{:02}:{:02}", at.hour, at.minute))
+        .replace("{weekday}", weekdays[at.weekday as usize % 7])
+        .replace("{year}", &at.year.to_string())
+        .replace("{iso_date}", &format!("{}-{:02}-{:02}", at.year, at.month, at.day))
+}
+
+/// The replacements with their variables filled for this moment.
+pub fn with_variables(replacements: &[Replacement], ui_language: &str) -> Vec<Replacement> {
+    if !replacements.iter().any(|r| r.to.contains('{')) {
+        return replacements.to_vec();
+    }
+    let (now, german) = (Moment::now(), ui_is_german(ui_language));
+    replacements
+        .iter()
+        .map(|r| Replacement { from: r.from.clone(), to: fill_variables(&r.to, &now, german) })
+        .collect()
+}
+
+/// The UI language setting ("de", "en", or "" for the Windows language).
+fn ui_is_german(ui_language: &str) -> bool {
+    match ui_language {
+        "de" => true,
+        "" => imp::windows_ui_is_german(),
+        _ => false,
+    }
+}
+
+#[cfg(windows)]
+mod imp {
+    use super::Moment;
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+
+    pub fn local_now() -> Moment {
+        // SAFETY: fills a plain struct.
+        let t: SYSTEMTIME = unsafe {
+            let mut t = std::mem::zeroed();
+            GetLocalTime(&mut t);
+            t
+        };
+        Moment {
+            year: t.wYear,
+            month: t.wMonth as u8,
+            day: t.wDay as u8,
+            hour: t.wHour as u8,
+            minute: t.wMinute as u8,
+            weekday: t.wDayOfWeek as u8,
+        }
+    }
+
+    /// Primary language of the Windows display language: 0x07 = German.
+    pub fn windows_ui_is_german() -> bool {
+        // SAFETY: no arguments, returns a LANGID.
+        (unsafe { GetUserDefaultUILanguage() } & 0x3ff) == 0x07
+    }
+}
+
+#[cfg(not(windows))]
+mod imp {
+    use super::Moment;
+
+    pub fn local_now() -> Moment {
+        Moment { year: 1970, month: 1, day: 1, hour: 0, minute: 0, weekday: 4 }
+    }
+
+    pub fn windows_ui_is_german() -> bool {
+        false
+    }
+}
+
 /// Replace every spoken trigger in `text`. When the whole dictation is just a
 /// trigger ("My email."), the result is the replacement alone, without the
 /// punctuation Whisper added around it.
@@ -143,6 +244,20 @@ fn trigger_pattern(trigger: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn variables_are_filled_with_the_moment() {
+        let at = Moment { year: 2026, month: 9, day: 4, hour: 9, minute: 5, weekday: 4 };
+        assert_eq!(
+            fill_variables("Basel, {date} {time} ({weekday}, {iso_date}, {year}) {unknown}", &at, true),
+            "Basel, 04.09.2026 09:05 (Donnerstag, 2026-09-04, 2026) {unknown}"
+        );
+        assert_eq!(fill_variables("{weekday}", &at, false), "Thursday");
+        assert_eq!(fill_variables("no variables", &at, true), "no variables");
+        // A snippet that is the whole dictation still pastes alone.
+        let snippet = vec![Replacement { from: "today's date".into(), to: fill_variables("{date}", &at, true) }];
+        assert_eq!(apply_replacements("Today's date.", &snippet), "04.09.2026");
+    }
 
     fn r(from: &str, to: &str) -> Replacement {
         Replacement { from: from.into(), to: to.into() }

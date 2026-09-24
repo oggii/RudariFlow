@@ -5,6 +5,45 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] - 2026-09-24 - Files, rewrite last, a dictionary that learns
+
+### Added
+- **Language per app:** an app rule can set the language Whisper listens
+  for, e.g. German in WhatsApp and English in VS Code, with auto-detect
+  everywhere else.
+- **Snippets with variables:** replacements can hold `{date}`, `{time}`,
+  `{weekday}`, `{year}` and `{iso_date}`, filled in when you dictate
+  the trigger.
+- **Rewrite the last dictation:** a hotkey selects your last dictation in
+  the field, and what you say next edits it like Edit mode (needs AI
+  cleanup).
+- **PC check** (Engine tab): measures Whisper on every GPU with flash
+  attention on and off, keeps the fastest setup and gives a report to
+  copy.
+- **Long dictations are transcribed in pieces while you speak:** every
+  29 s a piece is cut in a pause, so after the release only the rest is
+  left (40 to 70 s dictations: 295 to 364 ms instead of 629 to 796 ms).
+- **The dictionary learns from your corrections:** correct a name right
+  after dictating ("Glyfert" to "Gleifert") and it is suggested in the
+  Dictionary tab to add or dismiss. The field is read once more at the
+  next hotkey press or after 20 s, in the same app only; only the
+  corrected word is kept, never your text. Can be switched off.
+- **Transcribe files** (new Files tab): drop an audio or video file on the
+  window (MP3, M4A, WAV, FLAC, WhatsApp voice messages, MP4, MOV, MKV,
+  WebM) and the text appears minute by minute, with optional timestamps,
+  copy and save as text. 4 minutes of MP3 took 6.6 s on an RX 6800. The AI
+  model can summarise the transcript: key points and next steps, long
+  recordings in parts. Dictating while a file runs works; the dictation
+  waits for the current minute at most.
+- **Mouse side buttons for every hotkey:** paste last and rewrite last
+  take Mouse 4 / Mouse 5 too, alone or with Ctrl, Shift, Alt or Win, so
+  one button can serve two hotkeys (Mouse 5 dictates, Shift+Mouse 5
+  rewrites).
+- Ctrl+A, C, V, X, Z, Y and S can no longer be set as a hotkey: taken by
+  RudariFlow they stopped working in every app (Ctrl+V would also catch
+  RudariFlow's own paste). A chord like that saved earlier is not
+  registered.
+
 ## [0.9.0] - 2026-09-24 - Faster AI, Large v3 Turbo q8
 
 ### Improved

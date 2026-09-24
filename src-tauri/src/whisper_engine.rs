@@ -182,17 +182,18 @@ pub(crate) fn backend_candidates(requested: &str, devices: &[GpuDevice]) -> Vec<
 /// only pays off with cooperative-matrix support (RX 7000+, Arc, RTX); on an
 /// RX 6800 (no matrix cores) large-v3-turbo ran 910 ms with it vs 434 ms
 /// without for 17.5 s of audio, so Vulkan defaults to off.
-/// Override with RUDARIFLOW_FLASH_ATTN=1 or =0.
-pub(crate) fn flash_attn_default(api: GpuApi, env_override: Option<&str>) -> bool {
+/// The PC check can set it per PC (`pref`); RUDARIFLOW_FLASH_ATTN=1 or =0
+/// overrides both.
+pub(crate) fn flash_attn_default(api: GpuApi, env_override: Option<&str>, pref: Option<bool>) -> bool {
     match env_override {
         Some("1") | Some("true") => true,
         Some("0") | Some("false") => false,
-        _ => api == GpuApi::Cuda,
+        _ => pref.unwrap_or(api == GpuApi::Cuda),
     }
 }
 
-fn flash_attn_enabled(api: GpuApi) -> bool {
-    flash_attn_default(api, std::env::var("RUDARIFLOW_FLASH_ATTN").ok().as_deref())
+fn flash_attn_enabled(api: GpuApi, pref: Option<bool>) -> bool {
+    flash_attn_default(api, std::env::var("RUDARIFLOW_FLASH_ATTN").ok().as_deref(), pref)
 }
 
 /// CPU thread count for whisper inference. Mirrors the Phase C clamp.
@@ -229,6 +230,8 @@ pub struct PartialTranscript {
 
 pub struct WhisperEngine {
     inner: Mutex<EngineState>,
+    /// Flash attention from the settings (PC check); `None` = per API.
+    flash_attn: Mutex<Option<bool>>,
 }
 
 struct EngineState {
@@ -248,6 +251,17 @@ impl WhisperEngine {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(EngineState { loaded: None }),
+            flash_attn: Mutex::new(None),
+        }
+    }
+
+    /// Flash attention setting; a change drops the loaded model.
+    pub fn set_flash_attn(&self, pref: Option<bool>) {
+        let mut current = self.flash_attn.lock().unwrap_or_else(|p| p.into_inner());
+        if *current != pref {
+            *current = pref;
+            drop(current);
+            self.invalidate();
         }
     }
 
@@ -288,7 +302,8 @@ impl WhisperEngine {
 
         let mut last_err = String::new();
         for backend in candidates {
-            let loaded = load_context(model_path, &backend).and_then(|ctx| {
+            let flash_attn = *self.flash_attn.lock().unwrap_or_else(|p| p.into_inner());
+            let loaded = load_context(model_path, &backend, flash_attn).and_then(|ctx| {
                 let mut wstate = new_state(&ctx)?;
                 warm_up(&mut wstate);
                 Ok((ctx, wstate))
@@ -402,6 +417,71 @@ impl WhisperEngine {
     }
 }
 
+/// A piece of a file transcript; times in ms from the start of the file.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Segment {
+    #[serde(rename = "startMs")]
+    pub start_ms: u64,
+    #[serde(rename = "endMs")]
+    pub end_ms: u64,
+    pub text: String,
+}
+
+/// A file being transcribed: a Whisper state of its own, so the text of
+/// earlier blocks carries over as context while dictations keep theirs.
+pub struct FileRun {
+    state: WhisperState,
+    /// The Whisper language; "auto" until the first block detected it,
+    /// then fixed, so a long file does not switch language midway.
+    pub language: String,
+}
+
+impl WhisperEngine {
+    /// Start transcribing a file with the loaded model.
+    pub fn start_file(&self, language: &str) -> Result<FileRun, String> {
+        let engine = self.lock();
+        let loaded = engine.loaded.as_ref().ok_or_else(|| "WhisperEngine: no model loaded".to_string())?;
+        Ok(FileRun { state: new_state(&loaded.ctx)?, language: language.to_string() })
+    }
+
+    /// Transcribe one block of a file that starts `offset_ms` into it. The
+    /// engine stays locked for this block only (one GPU user at a time), so
+    /// a dictation in between waits for one block at most.
+    pub fn file_block(&self, run: &mut FileRun, samples: &[f32], offset_ms: u64, prompt: &str) -> Result<Vec<Segment>, String> {
+        let _gpu = self.lock();
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_language(Some(&run.language));
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_temperature(0.0);
+        // The file's own state: the text so far is the context.
+        params.set_no_context(false);
+        params.set_n_threads(cpu_thread_count());
+        let prompt = prompt.trim();
+        if !prompt.is_empty() {
+            params.set_initial_prompt(prompt);
+        }
+        run.state.full(params, samples).map_err(|e| format!("whisper full() failed: {e:?}"))?;
+        if run.language == "auto" {
+            if let Some(code) = whisper_rs::get_lang_str(run.state.full_lang_id_from_state()) {
+                run.language = code.to_string();
+            }
+        }
+        let mut out = Vec::new();
+        for segment in run.state.as_iter() {
+            let text = segment.to_str_lossy().map_err(|e| format!("segment text: {e:?}"))?.trim().to_string();
+            if !text.is_empty() {
+                // Whisper counts in centiseconds.
+                let at = |cs: i64| offset_ms + cs.max(0) as u64 * 10;
+                out.push(Segment { start_ms: at(segment.start_timestamp()), end_ms: at(segment.end_timestamp()), text });
+            }
+        }
+        Ok(out)
+    }
+}
+
 /// English name of a Whisper language code ("de" -> "German"); `None` for
 /// "auto", empty or unknown codes.
 pub fn language_name(code: &str) -> Option<String> {
@@ -428,13 +508,21 @@ impl Default for WhisperEngine {
     }
 }
 
-fn load_context(model_path: &Path, backend: &ActiveBackend) -> Result<WhisperContext, String> {
+fn load_context(model_path: &Path, backend: &ActiveBackend, pref: Option<bool>) -> Result<WhisperContext, String> {
+    let flash_attn = match backend {
+        ActiveBackend::Gpu(dev) => flash_attn_enabled(dev.api, pref),
+        ActiveBackend::Cpu => false,
+    };
+    load_context_with(model_path, backend, flash_attn)
+}
+
+fn load_context_with(model_path: &Path, backend: &ActiveBackend, flash_attn: bool) -> Result<WhisperContext, String> {
     let mut params = WhisperContextParameters::default();
     match backend {
         ActiveBackend::Gpu(dev) => {
             params.use_gpu = true;
             params.gpu_device = dev.gpu_index;
-            params.flash_attn = flash_attn_enabled(dev.api);
+            params.flash_attn = flash_attn;
         }
         ActiveBackend::Cpu => {
             params.use_gpu = false;
@@ -455,6 +543,35 @@ fn load_context(model_path: &Path, backend: &ActiveBackend) -> Result<WhisperCon
         flash_attn
     ));
     Ok(ctx)
+}
+
+/// For the PC check: a model on `backend` with flash attention as given,
+/// warmed up, next to the engine's own.
+pub fn load_for_check(
+    model_path: &Path,
+    backend: &ActiveBackend,
+    flash_attn: bool,
+) -> Result<(WhisperContext, WhisperState), String> {
+    let ctx = load_context_with(model_path, backend, flash_attn)?;
+    let mut state = new_state(&ctx)?;
+    warm_up(&mut state);
+    Ok((ctx, state))
+}
+
+/// For the PC check: one transcription like a dictation, in milliseconds.
+pub fn timed_run(state: &mut WhisperState, samples: &[f32], language: &str) -> Result<u128, String> {
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    params.set_language(Some(language));
+    params.set_print_special(false);
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+    params.set_temperature(0.0);
+    params.set_no_context(true);
+    params.set_n_threads(cpu_thread_count());
+    let started = std::time::Instant::now();
+    state.full(params, samples).map_err(|e| format!("whisper full() failed: {e:?}"))?;
+    Ok(started.elapsed().as_millis())
 }
 
 /// One short run right after loading, so the GPU sets up its pipelines for
@@ -583,10 +700,14 @@ mod tests {
 
     #[test]
     fn flash_attn_defaults_per_api_and_env_wins() {
-        assert!(flash_attn_default(GpuApi::Cuda, None));
-        assert!(!flash_attn_default(GpuApi::Vulkan, None));
-        assert!(flash_attn_default(GpuApi::Vulkan, Some("1")));
-        assert!(!flash_attn_default(GpuApi::Cuda, Some("0")));
+        assert!(flash_attn_default(GpuApi::Cuda, None, None));
+        assert!(!flash_attn_default(GpuApi::Vulkan, None, None));
+        assert!(flash_attn_default(GpuApi::Vulkan, Some("1"), None));
+        assert!(!flash_attn_default(GpuApi::Cuda, Some("0"), None));
+        // The PC check's setting beats the per-API default, the env var beats both.
+        assert!(flash_attn_default(GpuApi::Vulkan, None, Some(true)));
+        assert!(!flash_attn_default(GpuApi::Cuda, None, Some(false)));
+        assert!(!flash_attn_default(GpuApi::Vulkan, Some("0"), Some(true)));
     }
 
     #[test]

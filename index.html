@@ -73,6 +73,14 @@
             </svg>
             <span data-i18n="nav_history">History</span>
           </a>
+          <a class="nav-item" data-section="files">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M4 2h5.5L12.5 5v8.5a.5.5 0 01-.5.5H4a.5.5 0 01-.5-.5v-11A.5.5 0 014 2z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+              <path d="M9.5 2v3h3" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+              <path d="M6 8.5v3M8 7.5v5M10 9v2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            <span data-i18n="nav_files">Files</span>
+          </a>
         </nav>
         <div class="sidebar-footer">
           <span class="version-text" id="version-text"></span>
@@ -165,6 +173,19 @@
                 </select>
               </div>
             </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="pc_check_label">PC check</span>
+                <span class="label-hint" data-i18n="pc_check_hint">Measures Whisper on your graphics card with and without flash attention, and the AI speed (about 20 seconds), then uses the fastest setup.</span>
+              </div>
+              <div class="setting-control">
+                <button id="pc-check-btn" class="btn-secondary" data-i18n="pc_check_run">Run check</button>
+              </div>
+            </div>
+            <div id="pc-check-result" class="pc-check-result hidden">
+              <pre id="pc-check-report"></pre>
+              <button id="pc-check-copy" class="btn-secondary" data-i18n="pc_check_copy">Copy report</button>
+            </div>
             <div class="setting-row" id="language-row">
               <div class="setting-label">
                 <span class="label-text" data-i18n="language_label">Language</span>
@@ -250,6 +271,18 @@
             </div>
             <div class="setting-row">
               <div class="setting-label">
+                <span class="label-text" data-i18n="rewrite_last_label">Rewrite last dictation</span>
+                <span class="label-hint" data-i18n="rewrite_last_hint">Selects your last dictation and changes it the way you say, e.g. "more formal" or "shorter". Needs AI cleanup and Edit mode.</span>
+              </div>
+              <div class="setting-control hotkey-control">
+                <button id="rewrite-last-btn" class="hotkey-btn"><kbd id="rewrite-last-text"></kbd></button>
+                <button id="rewrite-last-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
+                  <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
                 <span class="label-text" data-i18n="send_command_label">Voice command "send it"</span>
                 <span class="label-hint" data-i18n="send_command_hint">End with "Send it." as its own sentence to submit, for example in chats. German: "Abschicken."</span>
               </div>
@@ -306,6 +339,22 @@
                 </label>
               </div>
             </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="learn_label">Learn from corrections</span>
+                <span class="label-hint" data-i18n="learn_hint">Names you correct right after dictating are suggested here.</span>
+              </div>
+              <div class="setting-control">
+                <label class="switch">
+                  <input id="learn-toggle" type="checkbox" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div id="dict-suggest" class="dict-card dict-suggest hidden">
+            <p class="dict-suggest-title" data-i18n="learn_title">Suggested from your corrections</p>
+            <div id="dict-suggest-list" class="dict-list"></div>
           </div>
           <div class="dict-card">
             <form id="dict-form" class="dict-add">
@@ -331,7 +380,7 @@
         <section id="section-replacements" class="content-section">
           <div class="section-header">
             <h2 class="section-title" data-i18n="replacements_title">Replacements</h2>
-            <p class="section-desc" data-i18n="replacements_desc">Say a short phrase, get longer text. Good for email addresses, links and signatures.</p>
+            <p class="section-desc" data-i18n="replacements_desc">Say a short phrase, get longer text. Good for email addresses, links and signatures. {date}, {time}, {weekday}, {year} and {iso_date} in the text are filled in when it is pasted.</p>
           </div>
           <div id="replacement-list" class="replacement-list"></div>
           <p id="replacement-empty" class="empty-state hidden" data-i18n="replacements_empty">No replacements yet.</p>
@@ -422,7 +471,7 @@
           </div>
 
           <h3 class="subsection-title" data-i18n="ai_rules_title">Rules per app</h3>
-          <p class="subsection-desc" data-i18n="ai_rules_desc">Instructions that only apply in one app or website. A rule matches the program name or a word in the window title, e.g. "whatsapp" also covers WhatsApp Web.</p>
+          <p class="subsection-desc" data-i18n="ai_rules_desc">Instructions and the spoken language for one app or website. A rule matches the program name or a word in the window title, e.g. "whatsapp" also covers WhatsApp Web.</p>
           <div id="ai-rule-list" class="rule-list"></div>
           <p id="ai-rule-empty" class="empty-state hidden" data-i18n="ai_rules_empty">No rules yet.</p>
           <button id="ai-rule-add" class="btn-secondary" data-i18n="ai_rules_add">Add rule</button>
@@ -471,6 +520,62 @@
           </div>
           <p id="history-empty" class="empty-state hidden"></p>
           <div id="history-list" class="history-list"></div>
+        </section>
+
+        <section id="section-files" class="content-section">
+          <div class="section-header">
+            <h2 class="section-title" data-i18n="files_title">Transcribe a file</h2>
+            <p class="section-desc" data-i18n="files_desc">Audio or video to text: voice messages, meetings, interviews. Runs on your PC with your Whisper model; the file stays where it is.</p>
+          </div>
+          <div id="file-drop" class="file-drop">
+            <svg class="file-drop-icon" width="22" height="22" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 10.5V3M5 5.5L8 2.5l3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M2.5 10v2.5c0 .6.4 1 1 1h9c.6 0 1-.4 1-1V10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            <span class="file-drop-title" data-i18n="files_drop">Drop an audio or video file here</span>
+            <span class="label-hint" data-i18n="files_formats">MP3, M4A, WAV, FLAC, WhatsApp voice messages (OGG), MP4, MOV, MKV, WebM</span>
+            <button id="file-choose" class="btn-secondary" data-i18n="files_choose">Choose file…</button>
+          </div>
+          <div class="settings-list files-options">
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="files_language_label">Language</span>
+                <span class="label-hint" data-i18n="files_language_hint">Auto-detect listens to the first minute and keeps that language for the whole file.</span>
+              </div>
+              <div class="setting-control">
+                <select id="file-language"></select>
+              </div>
+            </div>
+          </div>
+          <div id="file-job" class="file-job hidden">
+            <div class="file-job-head">
+              <span id="file-name" class="file-name"></span>
+              <button id="file-cancel" class="btn-ghost hidden" data-i18n="files_cancel">Cancel</button>
+            </div>
+            <div class="progress-track"><div class="progress-fill" id="file-progress-fill"></div></div>
+            <span id="file-status" class="label-hint file-status"></span>
+          </div>
+          <div id="file-result" class="file-result hidden">
+            <div class="file-toolbar">
+              <label class="file-times">
+                <input type="checkbox" id="file-times" />
+                <span data-i18n="files_times">Timestamps</span>
+              </label>
+              <div class="file-actions">
+                <button id="file-copy" class="btn-secondary" data-i18n="files_copy">Copy</button>
+                <button id="file-save" class="btn-secondary" data-i18n="files_save">Save as text…</button>
+                <button id="file-summarize" class="btn-secondary" data-i18n="files_summarize">Summarise with AI</button>
+              </div>
+            </div>
+            <div id="file-summary-box" class="file-summary hidden">
+              <div class="file-summary-head">
+                <span class="file-summary-title" data-i18n="files_summary">Summary</span>
+                <button id="file-summary-copy" class="btn-ghost" data-i18n="files_copy">Copy</button>
+              </div>
+              <div id="file-summary" class="file-summary-text"></div>
+            </div>
+            <textarea id="file-text" class="file-text" spellcheck="false"></textarea>
+          </div>
         </section>
       </main>
       </div>

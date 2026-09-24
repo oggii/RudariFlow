@@ -82,6 +82,11 @@ fn score(word: &str, sentence_start: bool) -> u8 {
     0
 }
 
+/// How much a word inside a sentence looks like a name or term (0 = not).
+pub(crate) fn term_score(word: &str) -> u8 {
+    score(word, false)
+}
+
 /// Words from the screen text worth giving Whisper and the AI: names,
 /// brands and technical terms, best first. Common words, words at the start
 /// of a line or sentence, links, paths, emails and entries already in

@@ -149,12 +149,106 @@ fn read_tries(tries: usize) -> Target {
     Target::None("no focused element")
 }
 
+/// Field text read to see what the user corrected after a dictation.
+pub const MAX_FIELD_CHARS: usize = 20_000;
+
+/// The focused field's program and text, to learn from what the user
+/// corrected after a dictation. Only the fields Edit mode works in: no
+/// terminals, address or search bars, password fields or web pages.
+pub fn read_field() -> Option<(String, String)> {
+    let info = read_focus()?;
+    let probe = FocusInfo { selection: Some("x".into()), ..info };
+    if decide(&probe) != Target::Selected("x".into()) {
+        return None;
+    }
+    let text = imp::field_text(MAX_FIELD_CHARS)?;
+    Some((probe.exe, normalize_newlines(&text)))
+}
+
+/// Why "rewrite last" did not find the last dictation to work on.
+pub const NOT_FOUND: &str = "the last dictation is not in this field";
+
+/// "Rewrite last": select `text` (the last dictation) in the focused field,
+/// searching from the end, so the dictation that follows edits it like a
+/// selection in Edit mode. The same fields are excluded as for Edit mode;
+/// nothing changes when the text is not there (edited since, or another
+/// field).
+pub fn select_last(text: &str) -> Target {
+    let text = text.trim();
+    if text.is_empty() {
+        return Target::None("nothing dictated yet");
+    }
+    let Some(info) = read_focus() else {
+        return Target::None("no focused element");
+    };
+    if info.selection.is_none() {
+        return Target::None("the app does not expose its text");
+    }
+    // Edit mode's rules, with the selection still to be made.
+    let probe = FocusInfo { selection: Some(text.to_string()), ..info };
+    if let Target::None(reason) = decide(&probe) {
+        return Target::None(reason);
+    }
+    if imp::find_and_select(&line_break_variants(text)) {
+        Target::Selected(text.to_string())
+    } else {
+        Target::None(NOT_FOUND)
+    }
+}
+
+/// The text as it may sit in a field: `\n` as pasted, `\r` in RichEdit
+/// (Notepad), `\r\n` elsewhere.
+fn line_break_variants(text: &str) -> Vec<String> {
+    let mut out = vec![text.to_string()];
+    for variant in [text.replace('\n', "\r"), text.replace('\n', "\r\n")] {
+        if !out.contains(&variant) {
+            out.push(variant);
+        }
+    }
+    out
+}
+
 #[cfg(windows)]
 mod imp {
     use super::FocusInfo;
+    use windows::core::BSTR;
     use windows::Win32::UI::Accessibility::{
         IUIAutomationTextPattern, IUIAutomationValuePattern, UIA_TextPatternId, UIA_ValuePatternId,
     };
+
+    /// Select the last occurrence of the first variant found in the
+    /// focused element's text.
+    pub fn find_and_select(variants: &[String]) -> bool {
+        let Some(uia) = crate::uia::automation() else { return false };
+        unsafe {
+            let Ok(el) = uia.GetFocusedElement() else { return false };
+            let Ok(pattern) = el.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) else {
+                return false;
+            };
+            let Ok(document) = pattern.DocumentRange() else { return false };
+            for variant in variants {
+                if let Ok(found) = document.FindText(&BSTR::from(variant.as_str()), true, false) {
+                    return found.Select().is_ok();
+                }
+            }
+            false
+        }
+    }
+
+    /// The focused element's whole text (up to `max` characters).
+    pub fn field_text(max: usize) -> Option<String> {
+        let uia = crate::uia::automation()?;
+        unsafe {
+            let el = uia.GetFocusedElement().ok()?;
+            if let Ok(pattern) = el.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) {
+                if let Ok(text) = pattern.DocumentRange().and_then(|r| r.GetText(max as i32)) {
+                    return Some(text.to_string());
+                }
+            }
+            let value = el.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId).ok()?;
+            value.CurrentValue().ok().map(|b| b.to_string())
+        }
+    }
 
     pub fn read_focus() -> Option<FocusInfo> {
         let uia = crate::uia::automation()?;
@@ -196,6 +290,14 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     pub fn read_focus() -> Option<super::FocusInfo> {
+        None
+    }
+
+    pub fn find_and_select(_variants: &[String]) -> bool {
+        false
+    }
+
+    pub fn field_text(_max: usize) -> Option<String> {
         None
     }
 }
@@ -262,6 +364,19 @@ mod tests {
         assert!(chromium_waking_up(&chrome(CONTROL_DOCUMENT, "RootWebArea", Some(""))));
         assert!(!chromium_waking_up(&chrome(CONTROL_EDIT, "ta", Some(""))));
         assert!(!chromium_waking_up(&field("notepad", CONTROL_DOCUMENT, Some(""))));
+    }
+
+    #[test]
+    fn last_dictation_is_searched_with_each_line_break_style() {
+        assert_eq!(line_break_variants("one line"), vec!["one line".to_string()]);
+        assert_eq!(
+            line_break_variants("Hi Anna,\nsee you."),
+            vec![
+                "Hi Anna,\nsee you.".to_string(),
+                "Hi Anna,\rsee you.".to_string(),
+                "Hi Anna,\r\nsee you.".to_string()
+            ]
+        );
     }
 
     #[test]

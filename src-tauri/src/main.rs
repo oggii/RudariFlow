@@ -27,6 +27,12 @@ use rudariflow_lib::settings::Settings;
 use rudariflow_lib::startup_log;
 use rudariflow_lib::voice_edit::{self, Edit};
 use rudariflow_lib::whisper_engine::WhisperEngine;
+use rudariflow_lib::{ai_cleanup, file_transcribe, media, screen_context};
+
+/// One file is transcribed at a time; setting the flag stops it after the
+/// block that is running.
+static FILE_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static FILE_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 struct AppState {
     recorder: Recorder,
@@ -108,6 +114,7 @@ fn whisper_model_to_load(settings: &Settings, app_dir: &std::path::Path) -> Opti
 /// Load the Whisper model now instead of at the first dictation.
 async fn load_whisper(state: &AppState) {
     let settings = state.settings.lock().unwrap().clone();
+    state.whisper_engine.set_flash_attn(settings.flash_attn_pref());
     let Some(model) = whisper_model_to_load(&settings, &state.app_dir) else {
         return;
     };
@@ -132,10 +139,12 @@ fn warm_ai(state: &AppState) {
 /// What a global hotkey does.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum HotkeyAction {
-    /// Start / stop dictation (the main hotkey, keyboard or mouse button).
+    /// Start / stop dictation (the main hotkey).
     Dictation,
-    /// Paste the last transcript again (keyboard chords only).
+    /// Paste the last transcript again.
     PasteLast,
+    /// Select the last dictation and record what to change about it.
+    RewriteLast,
 }
 
 impl HotkeyAction {
@@ -143,9 +152,19 @@ impl HotkeyAction {
         match target {
             "dictation" => Ok(Self::Dictation),
             "pasteLast" => Ok(Self::PasteLast),
+            "rewriteLast" => Ok(Self::RewriteLast),
             _ => Err(format!("Unknown hotkey target: {}", target)),
         }
     }
+}
+
+/// Every hotkey setting with its action.
+fn hotkeys(s: &Settings) -> [(HotkeyAction, String); 3] {
+    [
+        (HotkeyAction::Dictation, s.hotkey.clone()),
+        (HotkeyAction::PasteLast, s.paste_last_hotkey.clone()),
+        (HotkeyAction::RewriteLast, s.rewrite_last_hotkey.clone()),
+    ]
 }
 
 /// Settings, models and history. `RUDARIFLOW_DATA_DIR` points a test build at
@@ -170,7 +189,9 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     let (engine_invalidate, ai_restart) = {
         let prev = state.settings.lock().unwrap();
         (
-            prev.gpu_backend != settings.gpu_backend || prev.whisper_model != settings.whisper_model,
+            prev.gpu_backend != settings.gpu_backend
+                || prev.whisper_model != settings.whisper_model
+                || prev.whisper_flash_attn != settings.whisper_flash_attn,
             prev.ai_cleanup != settings.ai_cleanup || prev.ai_model != settings.ai_model,
         )
     };
@@ -253,6 +274,191 @@ async fn detect_gpus() -> Vec<rudariflow_lib::whisper_engine::GpuDevice> {
         .unwrap_or_default()
 }
 
+#[derive(serde::Serialize)]
+struct FileTranscript {
+    text: String,
+    #[serde(rename = "textWithTimes")]
+    text_with_times: String,
+    language: String,
+    #[serde(rename = "durationMs")]
+    duration_ms: u64,
+    #[serde(rename = "elapsedMs")]
+    elapsed_ms: u64,
+}
+
+/// A "file-progress" event: `phase` "reading", "loading" or "transcribing";
+/// `text` is the text of the block just done.
+#[derive(Clone, serde::Serialize)]
+struct FileProgress {
+    phase: &'static str,
+    done: u64,
+    total: u64,
+    text: String,
+}
+
+/// Transcribe an audio or video file with the local Whisper model. Progress
+/// and the text so far arrive as "file-progress" events. `language` empty =
+/// the Engine setting. Errors "busy", "no_model", "no_speech", "cancelled"
+/// are shown by the UI in words.
+#[tauri::command]
+async fn transcribe_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    language: String,
+) -> Result<FileTranscript, String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    if FILE_RUNNING.swap(true, SeqCst) {
+        return Err("busy".to_string());
+    }
+    struct Running;
+    impl Drop for Running {
+        fn drop(&mut self) {
+            FILE_RUNNING.store(false, SeqCst);
+        }
+    }
+    let _running = Running;
+    FILE_CANCEL.store(false, SeqCst);
+    let settings = state.settings.lock().unwrap().clone();
+    let model = state.app_dir.join(rudariflow_lib::whisper_engine::model_filename(&settings.whisper_model));
+    if !model.exists() {
+        return Err("no_model".to_string());
+    }
+    let language = if language.trim().is_empty() { settings.language.clone() } else { language };
+    let engine = state.whisper_engine.clone();
+    let started = std::time::Instant::now();
+    let handle = app.clone();
+    let worker_settings = settings.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let settings = worker_settings;
+        let emit = |phase, done, total, text: String| {
+            let _ = handle.emit("file-progress", FileProgress { phase, done, total, text });
+        };
+        let mut last_emit = std::time::Instant::now();
+        let audio = media::decode_16k_mono(std::path::Path::new(&path), |done, total| {
+            if last_emit.elapsed() >= std::time::Duration::from_millis(100) {
+                emit("reading", done, total, String::new());
+                last_emit = std::time::Instant::now();
+            }
+        })?;
+        if audio::trim_silence(&audio, 16_000).is_none() {
+            return Err("no_speech".to_string());
+        }
+        emit("loading", 0, 1, String::new());
+        engine.ensure_loaded(&model, &settings.gpu_backend)?;
+        let terms = dictionary::terms(&settings.custom_prompt);
+        let prompt = screen_context::whisper_prompt(&[], &settings.custom_prompt);
+        let spelling = |text: &str| {
+            let text = dictionary::apply_spelling(&cleanup_text(text), &terms);
+            if settings.swiss_spelling { dictionary::swiss_spelling(&text) } else { text }
+        };
+        let (segments, language) =
+            file_transcribe::transcribe(&engine, &audio, &language, &prompt, spelling, &FILE_CANCEL, |p| {
+                let text = p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+                emit("transcribing", p.done_ms, p.total_ms, text);
+            })?;
+        Ok(FileTranscript {
+            text: file_transcribe::format(&segments, false),
+            text_with_times: file_transcribe::format(&segments, true),
+            language,
+            duration_ms: audio.len() as u64 / 16,
+            elapsed_ms: 0,
+        })
+    })
+    .await
+    .map_err(|e| format!("worker thread failed: {}", e))?;
+    // With the cloud engine the local model is not kept loaded.
+    if settings.engine != "local" {
+        state.whisper_engine.invalidate();
+    }
+    *state.last_activity.lock().unwrap() = std::time::Instant::now();
+    let mut transcript = result.inspect_err(|e| startup_log::log(&format!("[file] failed: {}", e)))?;
+    transcript.elapsed_ms = started.elapsed().as_millis() as u64;
+    startup_log::log(&format!(
+        "[file] {:.0} s of audio in {:.1} s, language {}, {} characters",
+        transcript.duration_ms as f64 / 1000.0,
+        transcript.elapsed_ms as f64 / 1000.0,
+        transcript.language,
+        transcript.text.chars().count()
+    ));
+    Ok(transcript)
+}
+
+/// Write a transcript (and its summary) to a text file.
+#[tauri::command]
+fn save_text(path: String, text: String) -> Result<(), String> {
+    std::fs::write(&path, text).map_err(|e| e.to_string())
+}
+
+/// Stop the file transcription after the block that is running.
+#[tauri::command]
+fn cancel_file() {
+    FILE_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Summarise a transcript with the AI model, even with AI cleanup off. A
+/// long one is summarised in parts first ("summary-progress" events with
+/// done and total requests).
+#[tauri::command]
+async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<String, String> {
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+    let settings = state.settings.lock().unwrap().clone();
+    let model = ai_models::find(&settings.ai_model).ok_or("no_ai_model")?;
+    let model_path = ai_models::model_path(&state.app_dir, model);
+    if !model_path.exists() {
+        return Err("no_ai_model".to_string());
+    }
+    let language = ai_cleanup::detect_language(&text);
+    let language = language.as_deref();
+    let endpoint = state
+        .llm
+        .wait_ready(&model_path, Some(settings.gpu_backend.clone()), std::time::Duration::from_secs(120))
+        .await?;
+    let started = std::time::Instant::now();
+    let mut material = text.trim().to_string();
+    let mut requests = 0;
+    // Each round turns parts into notes; three rounds cover hours of text.
+    for _ in 0..3 {
+        let parts = file_transcribe::chunks(&material, file_transcribe::SUMMARY_CHUNK_CHARS);
+        if parts.len() <= 1 {
+            break;
+        }
+        let mut notes = Vec::new();
+        for part in &parts {
+            let _ = app.emit("summary-progress", (requests, requests + parts.len() - notes.len() + 1));
+            let answer =
+                ai_cleanup::complete(&endpoint, &file_transcribe::notes_prompt(language), part, 0.2, 700, TIMEOUT)
+                    .await?;
+            notes.push(answer.text.trim().to_string());
+            requests += 1;
+        }
+        material = notes.join("\n");
+    }
+    let _ = app.emit("summary-progress", (requests, requests + 1));
+    let answer =
+        ai_cleanup::complete(&endpoint, &file_transcribe::summary_prompt(language), &material, 0.2, 900, TIMEOUT).await?;
+    startup_log::log(&format!(
+        "[file] summary of {} characters in {} requests, {:.1} s",
+        text.chars().count(),
+        requests + 1,
+        started.elapsed().as_secs_f64()
+    ));
+    Ok(answer.text.trim().to_string())
+}
+
+/// Dictionary entries suggested from the user's corrections.
+#[tauri::command]
+fn learn_suggestions(state: State<AppState>) -> Vec<rudariflow_lib::learn::Suggestion> {
+    rudariflow_lib::learn::suggestions(&state.app_dir)
+}
+
+/// A suggestion was added to the dictionary (`dismiss` false) or dismissed.
+#[tauri::command]
+fn learn_resolve(state: State<AppState>, word: String, dismiss: bool) -> Vec<rudariflow_lib::learn::Suggestion> {
+    rudariflow_lib::learn::resolve(&state.app_dir, &word, dismiss);
+    rudariflow_lib::learn::suggestions(&state.app_dir)
+}
+
 #[tauri::command]
 fn history_list(state: State<AppState>) -> Vec<HistoryEntry> {
     state.history.list()
@@ -288,16 +494,171 @@ async fn history_rerun(state: State<'_, AppState>, id: u64) -> Result<HistoryEnt
     }
     let samples = history::read_wav(&state.history.audio_path(id))?;
     let settings = state.settings.lock().unwrap().clone();
-    let (raw, language) =
-        transcribe_samples(None, &settings, &state.app_dir, &state.whisper_engine, &samples, &[]).await?;
+    let ctx = AppContext { exe: entry.app.clone(), title: entry.title.clone(), ..Default::default() };
+    // The app's rule may set the language, as for the dictation itself.
+    let whisper_language = rudariflow_lib::ai_cleanup::whisper_language(&settings.ai_rules, &ctx, &settings.language);
+    let (raw, language) = transcribe_samples(
+        None,
+        &settings,
+        &state.app_dir,
+        &state.whisper_engine,
+        &samples,
+        &[],
+        whisper_language,
+    )
+    .await?;
     let cleaned = dictionary::apply_spelling(&cleanup_text(&raw), &dictionary::terms(&settings.custom_prompt));
     let text = strip_send_command(&cleaned).unwrap_or(cleaned);
-    let ctx = AppContext { exe: entry.app.clone(), title: entry.title.clone(), ..Default::default() };
     let polished = polish(&settings, &state.app_dir, &state.llm, &ctx, &text, language.as_deref(), || {}).await;
     state
         .history
         .update_text(id, &polished.text, polished.raw.as_deref(), &model_label(&settings))
         .ok_or_else(|| "History entry not found".to_string())
+}
+
+#[derive(serde::Serialize)]
+struct PcCheckResult {
+    report: String,
+    #[serde(rename = "gpuBackend")]
+    gpu_backend: String,
+    #[serde(rename = "whisperFlashAttn")]
+    whisper_flash_attn: String,
+    changed: bool,
+}
+
+/// PC check (Engine tab): Whisper on every GPU with flash attention on and
+/// off on the user's latest recording, the fastest setup applied, the AI
+/// server's speed measured, and a report to copy.
+#[tauri::command]
+async fn pc_check(app: AppHandle, state: State<'_, AppState>) -> Result<PcCheckResult, String> {
+    use rudariflow_lib::pc_check as check;
+    let settings = state.settings.lock().unwrap().clone();
+    let model = whisper_model_to_load(&settings, &state.app_dir).ok_or("Download a Whisper model first")?;
+    // The newest recording in the history, else five seconds of silence.
+    let clip = state
+        .history
+        .list()
+        .iter()
+        .find(|e| e.has_audio)
+        .and_then(|e| history::read_wav(&state.history.audio_path(e.id)).ok())
+        .unwrap_or_else(|| vec![0.0; 16_000 * 5]);
+    let clip_secs = clip.len() as f32 / 16_000.0;
+    let language = settings.language.clone();
+    let model_for_check = model.clone();
+    startup_log::log("[pc-check] started");
+    // The engine's model gives up its video memory while the variants run.
+    state.whisper_engine.invalidate();
+    let progress_app = app.clone();
+    let (results, default) = tauri::async_runtime::spawn_blocking(move || {
+        let variants = check::variants();
+        let default = check::default_variant();
+        let results = check::measure(&model_for_check, &clip, &language, &variants, |done, total, label| {
+            let _ = progress_app.emit("pc-check-progress", (done, total, label.to_string()));
+        });
+        (results, default)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let chosen = check::choose(&results, &default);
+    let (gpu_backend, whisper_flash_attn) = match chosen {
+        Some(i) => check::settings_for(&results[i], &default),
+        None => (settings.gpu_backend.clone(), settings.whisper_flash_attn.clone()),
+    };
+    let changed = gpu_backend != settings.gpu_backend || whisper_flash_attn != settings.whisper_flash_attn;
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.gpu_backend = gpu_backend.clone();
+        s.whisper_flash_attn = whisper_flash_attn.clone();
+        s.save(&state.app_dir)?;
+    }
+    load_whisper(state.inner()).await;
+    let ai = ai_check_line(state.inner()).await;
+
+    let mut report = vec![
+        format!(
+            "RudariFlow {} PC check, {}",
+            env!("CARGO_PKG_VERSION"),
+            rudariflow_lib::replacements::fill_variables(
+                "{date} {time}",
+                &rudariflow_lib::replacements::Moment::now(),
+                true
+            )
+        ),
+        check::system_summary(),
+    ];
+    let gpus: Vec<String> = rudariflow_lib::whisper_engine::list_gpu_devices()
+        .iter()
+        .map(|d| format!("{} ({}, {:.0} GB{})", d.name, d.api.label(), d.memory_mib as f64 / 1024.0, if d.integrated { ", integrated" } else { "" }))
+        .collect();
+    report.push(format!("GPUs: {}", if gpus.is_empty() { "none".to_string() } else { gpus.join("; ") }));
+    report.push(format!("Whisper {} on a {:.1} s recording:", settings.whisper_model, clip_secs));
+    for (i, m) in results.iter().enumerate() {
+        let result = match (m.median_ms, &m.error) {
+            (Some(ms), _) => format!("{} ms (load {:.1} s)", ms, m.load_ms as f64 / 1000.0),
+            (None, Some(e)) => format!("failed: {}", e),
+            (None, None) => "failed".to_string(),
+        };
+        let mark = if Some(i) == chosen { "  <- in use" } else { "" };
+        report.push(format!("  {}: {}{}", m.label, result, mark));
+    }
+    report.push(format!(
+        "Setting: GPU backend {}, flash attention {}{}",
+        gpu_backend,
+        whisper_flash_attn,
+        if changed { " (changed)" } else { " (unchanged)" }
+    ));
+    report.push(ai);
+    let report = report.join("\n");
+    startup_log::log(&format!("[pc-check] done: backend {}, flash attention {}", gpu_backend, whisper_flash_attn));
+    Ok(PcCheckResult { report, gpu_backend, whisper_flash_attn, changed })
+}
+
+/// The AI part of the PC check: three sample cleanups with the user's
+/// settings, their times, the per-token speed and the drafter.
+async fn ai_check_line(state: &AppState) -> String {
+    let settings = state.settings.lock().unwrap().clone();
+    let Some(model_path) = ai_model_to_run(&settings, &state.app_dir) else {
+        return "AI cleanup: off or model not downloaded".to_string();
+    };
+    let label = ai_models::find(&settings.ai_model).map_or("AI model", |m| m.label);
+    let ctx = AppContext { exe: "notepad".into(), title: "Untitled - Notepad".into(), ..Default::default() };
+    const SAMPLES: [&str; 3] = [
+        "Um so I think we should, uh, meet on Tuesday, no wait, Wednesday at 3 and bring the slides.",
+        "For the trip we need sunscreen, a new phone charger, two beach towels and, uh, snacks for the kids.",
+        "Can you send me the invoice by the end of the week so I can pay it this month?",
+    ];
+    // One run that is not counted: after some idle minutes the GPU and the
+    // prompt cache are cold (1552 ms instead of 263 ms). A dictation gets
+    // this warm-up from the hotkey press.
+    let _ = polish(&settings, &state.app_dir, &state.llm, &ctx, SAMPLES[2], Some("English"), || {}).await;
+    let mut times = Vec::new();
+    for text in SAMPLES {
+        let p = polish(&settings, &state.app_dir, &state.llm, &ctx, text, Some("English"), || {}).await;
+        match p.fallback {
+            Some(reason) => return format!("AI cleanup: {} did not answer ({})", label, reason),
+            None => times.push(p.ai_ms),
+        }
+    }
+    let device = match state.llm.status() {
+        ServerStatus::Ready { device } => device,
+        _ => "?".to_string(),
+    };
+    let _ = model_path;
+    let mut sorted = times.clone();
+    sorted.sort();
+    let speed = state.llm.speed().map_or(String::new(), |s| {
+        format!("; {:.1} ms per prompt token, {:.1} ms per output token", s.prompt_ms_per_token, s.gen_ms_per_token)
+    });
+    format!(
+        "AI cleanup: {} on {}{}: {} ms (median {} ms){}",
+        label,
+        device,
+        if state.llm.drafter_active() { " with MTP drafter" } else { "" },
+        times.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" / "),
+        sorted[sorted.len() / 2],
+        speed
+    )
 }
 
 #[derive(serde::Serialize)]
@@ -566,8 +927,9 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     }
 }
 
-/// `target` is "dictation" or "pasteLast". An empty `new_hotkey` turns the
-/// paste-last hotkey off; dictation always needs one.
+/// `target` is "dictation", "pasteLast" or "rewriteLast"; each takes a
+/// keyboard chord or a mouse side button. An empty `new_hotkey` turns
+/// paste-last or rewrite off; dictation always needs one.
 #[tauri::command]
 fn change_hotkey(
     app: tauri::AppHandle,
@@ -576,21 +938,18 @@ fn change_hotkey(
     new_hotkey: String,
 ) -> Result<(), String> {
     let action = HotkeyAction::from_target(&target)?;
-    let (current, other) = {
-        let s = state.settings.lock().unwrap();
-        match action {
-            HotkeyAction::Dictation => (s.hotkey.clone(), s.paste_last_hotkey.clone()),
-            HotkeyAction::PasteLast => (s.paste_last_hotkey.clone(), s.hotkey.clone()),
-        }
-    };
+    let all = hotkeys(&state.settings.lock().unwrap());
+    let current = all.iter().find(|(a, _)| *a == action).map(|(_, h)| h.clone()).unwrap_or_default();
     if new_hotkey.is_empty() && action == HotkeyAction::Dictation {
         return Err("The dictation hotkey cannot be empty".to_string());
     }
-    if !new_hotkey.is_empty() && new_hotkey.eq_ignore_ascii_case(&other) {
-        return Err(format!("'{}' is already used by the other hotkey", new_hotkey));
-    }
-    if action == HotkeyAction::PasteLast && mouse_hotkey::parse(&new_hotkey).is_some() {
-        return Err("Mouse buttons can only start dictation".to_string());
+    let same = |h: &str| match (mouse_hotkey::parse(&new_hotkey), mouse_hotkey::parse(h)) {
+        (Some(a), Some(b)) => a == b,
+        _ => new_hotkey.eq_ignore_ascii_case(h),
+    };
+    let taken = all.iter().any(|(a, h)| *a != action && !h.is_empty() && same(h));
+    if !new_hotkey.is_empty() && taken {
+        return Err(format!("'{}' is already used by another hotkey", new_hotkey));
     }
     if new_hotkey != current {
         // Register the new chord before dropping the old one, so a rejected
@@ -609,6 +968,7 @@ fn change_hotkey(
     match action {
         HotkeyAction::Dictation => settings.hotkey = new_hotkey,
         HotkeyAction::PasteLast => settings.paste_last_hotkey = new_hotkey,
+        HotkeyAction::RewriteLast => settings.rewrite_last_hotkey = new_hotkey,
     }
     settings.save(&state.app_dir)?;
     Ok(())
@@ -622,15 +982,9 @@ fn set_hotkey_paused(
     state: State<AppState>,
     paused: bool,
 ) -> Result<(), String> {
-    let (dictation, paste_last) = {
-        let s = state.settings.lock().unwrap();
-        (s.hotkey.clone(), s.paste_last_hotkey.clone())
-    };
+    let all = hotkeys(&state.settings.lock().unwrap());
     let mut result = Ok(());
-    for (hotkey, action) in [
-        (dictation, HotkeyAction::Dictation),
-        (paste_last, HotkeyAction::PasteLast),
-    ] {
+    for (action, hotkey) in all {
         if hotkey.is_empty() {
             continue;
         }
@@ -638,8 +992,8 @@ fn set_hotkey_paused(
             unregister_hotkey(&app, &hotkey);
         } else if !hotkey_is_registered(&app, &hotkey) {
             if let Err(e) = register_hotkey(&app, &hotkey, action) {
-                // A paste-last chord taken by another app must not block the
-                // dictation hotkey; it is logged by register_hotkey.
+                // A paste-last or rewrite chord taken by another app must not
+                // block the dictation hotkey; it is logged by register_hotkey.
                 if action == HotkeyAction::Dictation {
                     result = Err(e);
                 }
@@ -654,7 +1008,62 @@ fn on_hotkey_event(handle: &AppHandle, action: HotkeyAction, pressed: bool) {
         HotkeyAction::Dictation => on_hotkey(handle, pressed),
         HotkeyAction::PasteLast if pressed => paste_last_transcript(handle),
         HotkeyAction::PasteLast => {}
+        HotkeyAction::RewriteLast => on_rewrite_hotkey(handle, pressed),
     }
+}
+
+/// Whether the rewrite hotkey is held (push-to-talk): a release that comes
+/// before the selection is made must not leave a recording running.
+static REWRITE_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// "Rewrite last": select the last dictation in the focused field, then
+/// record like the dictation hotkey; the release edits the selection with
+/// what was said (Edit mode). Pressed while recording (toggle mode) it
+/// stops like the dictation hotkey.
+fn on_rewrite_hotkey(handle: &AppHandle, pressed: bool) {
+    use rudariflow_lib::selection::{select_last, Target};
+    use std::sync::atomic::Ordering;
+    REWRITE_HELD.store(pressed, Ordering::SeqCst);
+    let state = handle.state::<AppState>();
+    if !pressed || state.recorder.get_state() != RecordingState::Ready {
+        on_hotkey(handle, pressed);
+        return;
+    }
+    let handle = handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = handle.state::<AppState>();
+        let settings = state.settings.lock().unwrap().clone();
+        let ctx = foreground_app::current();
+        if !voice_edit::available(&settings, &state.app_dir, &ctx) {
+            startup_log::log(&format!("[rewrite] needs AI cleanup and Edit mode ('{}')", ctx.exe));
+            state.recorder.notice(&handle, "rewrite-failed", "needs-ai");
+            return;
+        }
+        let Some(last) = state.history.last_text() else {
+            state.recorder.notice(&handle, "rewrite-failed", "missing");
+            return;
+        };
+        let started = std::time::Instant::now();
+        match tauri::async_runtime::spawn_blocking(move || select_last(&last)).await {
+            Ok(Target::Selected(text)) => {
+                startup_log::log(&format!(
+                    "[rewrite] selected the last dictation ({} words) in '{}' in {} ms",
+                    text.split_whitespace().count(),
+                    ctx.exe,
+                    started.elapsed().as_millis()
+                ));
+                let push_to_talk = settings.recording_mode == "push-to-talk";
+                if !push_to_talk || REWRITE_HELD.load(Ordering::SeqCst) {
+                    on_hotkey(&handle, true);
+                }
+            }
+            Ok(Target::None(reason)) => {
+                startup_log::log(&format!("[rewrite] not rewriting in '{}': {}", ctx.exe, reason));
+                state.recorder.notice(&handle, "rewrite-failed", "missing");
+            }
+            Err(_) => {}
+        }
+    });
 }
 
 /// Paste the last transcript into the focused app again.
@@ -674,6 +1083,12 @@ fn paste_last_transcript(handle: &AppHandle) {
 /// (`Mouse4`, `Mouse5`, optionally with modifiers) through a mouse hook.
 fn register_hotkey(app: &AppHandle, hotkey: &str, action: HotkeyAction) -> Result<(), String> {
     startup_log::log(&format!("[hotkey] registering {} for {:?}", hotkey, action));
+    // Also refuses such a chord saved before this check existed.
+    if rudariflow_lib::settings::is_windows_shortcut(hotkey) {
+        let msg = format!("'{}' is a Windows shortcut (select all, copy, paste, ...)", hotkey);
+        startup_log::log(&format!("[hotkey] {}", msg));
+        return Err(msg);
+    }
     if let Some(binding) = mouse_hotkey::parse(hotkey) {
         let handle = app.clone();
         let label = hotkey.to_string();
@@ -770,7 +1185,10 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
                             (s.microphone.clone(), s.mute_audio)
                         };
                         match state.recorder.start_recording(&handle, &mic, mute) {
-                            Ok(_) => state.recorder.capture_context(&handle, &s, &state.app_dir),
+                            Ok(_) => {
+                                state.recorder.capture_context(&handle, &s, &state.app_dir);
+                                state.recorder.start_pieces(&s, &state.app_dir, &state.whisper_engine);
+                            }
                             Err(e) => startup_log::log(&format!("[hotkey] start error: {}", e)),
                         }
                     }
@@ -820,6 +1238,7 @@ async fn do_toggle_recording(
             state.recorder.start_recording(app, &mic, mute)?;
             let settings = state.settings.lock().unwrap().clone();
             state.recorder.capture_context(app, &settings, &state.app_dir);
+            state.recorder.start_pieces(&settings, &state.app_dir, &state.whisper_engine);
             Ok("recording".to_string())
         }
         RecordingState::Recording => {
@@ -861,6 +1280,7 @@ fn main() {
     llm.set_warm_prompt(polish::system_prompt(&settings));
     let initial_hotkey = settings.hotkey.clone();
     let initial_paste_last_hotkey = settings.paste_last_hotkey.clone();
+    let initial_rewrite_last_hotkey = settings.rewrite_last_hotkey.clone();
     let initial_autostart = settings.autostart;
 
     tauri::Builder::default()
@@ -903,12 +1323,19 @@ fn main() {
             ai_download_model,
             ai_test,
             ai_edit_test,
+            pc_check,
             edit_live_test,
             screen_context_test,
             ai_restart,
             list_open_apps,
             dictionary_export,
             dictionary_read_file,
+            learn_suggestions,
+            learn_resolve,
+            transcribe_file,
+            cancel_file,
+            summarize_text,
+            save_text,
             copy_text,
             diag_log,
         ])
@@ -1028,14 +1455,17 @@ fn main() {
                 }
             }
 
-            // Paste-last is optional: if another app owns the chord, the
-            // setting stays and the failure is in startup.log.
+            // Paste-last and rewrite are optional: if another app owns the
+            // chord, the setting stays and the failure is in startup.log.
             if !initial_paste_last_hotkey.is_empty() {
                 let _ = register_hotkey(
                     app.handle(),
                     &initial_paste_last_hotkey,
                     HotkeyAction::PasteLast,
                 );
+            }
+            if !initial_rewrite_last_hotkey.is_empty() {
+                let _ = register_hotkey(app.handle(), &initial_rewrite_last_hotkey, HotkeyAction::RewriteLast);
             }
 
             // Sync persisted autostart preference with the OS — but never

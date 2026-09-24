@@ -1,12 +1,14 @@
-//! Mouse side buttons as the global hotkey.
+//! Mouse side buttons as global hotkeys (dictation, paste last, rewrite last).
 //!
 //! `RegisterHotKey` (used by tauri-plugin-global-shortcut) only accepts
 //! keyboard keys, so side buttons go through a low-level mouse hook
-//! (`WH_MOUSE_LL`) on a dedicated thread. The bound button is swallowed so it
+//! (`WH_MOUSE_LL`) on a dedicated thread. A bound button is swallowed so it
 //! does not also trigger "Back" / "Forward" in the focused app.
 //!
 //! Hotkey strings: `Mouse4` (XBUTTON1, usually "Back") and `Mouse5` (XBUTTON2,
 //! usually "Forward"), optionally with modifiers, e.g. `CmdOrCtrl+Mouse4`.
+//! Several bindings can be active, also on one button with different
+//! modifiers (`Mouse5` and `Shift+Mouse5`).
 
 use std::sync::Mutex;
 
@@ -55,44 +57,92 @@ pub fn parse(hotkey: &str) -> Option<MouseBinding> {
 /// Handler invoked with `true` on press and `false` on release.
 pub type Handler = Box<dyn Fn(bool) + Send + Sync + 'static>;
 
-struct Registration {
-    binding: MouseBinding,
-    #[cfg(windows)]
-    thread_id: u32,
+/// Most bindings at once (three hotkeys use them today).
+const SLOTS: usize = 8;
+
+/// A binding as the hook compares it: the button (1 = XBUTTON1, 2 =
+/// XBUTTON2) and the modifier bits. 0 is an empty slot.
+fn encode(binding: MouseBinding) -> u8 {
+    let button = match binding.button {
+        MouseButton::Mouse4 => 1,
+        MouseButton::Mouse5 => 2,
+    };
+    0x80 | button << 4 | mods_to_bits(binding.modifiers)
 }
 
-static REGISTRATION: Mutex<Option<Registration>> = Mutex::new(None);
+fn mods_to_bits(m: Modifiers) -> u8 {
+    (m.ctrl as u8) | (m.shift as u8) << 1 | (m.alt as u8) << 2 | (m.win as u8) << 3
+}
+
+/// The slot bound to `button` with exactly `mods` held.
+fn find_slot(slots: &[u8], button: u8, mods: u8) -> Option<usize> {
+    let wanted = 0x80 | button << 4 | mods;
+    slots.iter().position(|&s| s == wanted)
+}
+
+type Handlers = Vec<Option<(MouseBinding, std::sync::Arc<dyn Fn(bool) + Send + Sync>)>>;
+
+/// The handlers per slot, and the hook thread while any binding is active.
+struct State {
+    handlers: Handlers,
+    #[cfg(windows)]
+    hook_thread: Option<u32>,
+}
+
+static STATE: Mutex<State> = Mutex::new(State {
+    handlers: Vec::new(),
+    #[cfg(windows)]
+    hook_thread: None,
+});
+
+fn state() -> std::sync::MutexGuard<'static, State> {
+    STATE.lock().unwrap_or_else(|p| p.into_inner())
+}
 
 pub fn is_registered(binding: MouseBinding) -> bool {
-    REGISTRATION
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .as_ref()
-        .is_some_and(|r| r.binding == binding)
+    state().handlers.iter().flatten().any(|(b, _)| *b == binding)
 }
 
-/// Unregister `binding` if it is the active one. A different active binding
-/// is left alone, so switching Mouse4 -> Mouse5 can register the new binding
-/// before releasing the old one.
+/// Remove `binding`; the hook stops with the last one.
 pub fn unregister(binding: MouseBinding) {
-    let mut reg = REGISTRATION.lock().unwrap_or_else(|p| p.into_inner());
-    if reg.as_ref().is_some_and(|r| r.binding == binding) {
-        #[cfg(windows)]
-        imp::stop(reg.as_ref().unwrap().thread_id);
-        *reg = None;
+    let mut st = state();
+    let Some(slot) = st.handlers.iter().position(|h| h.as_ref().is_some_and(|(b, _)| *b == binding)) else {
+        return;
+    };
+    st.handlers[slot] = None;
+    #[cfg(windows)]
+    {
+        imp::set_slot(slot, 0);
+        if st.handlers.iter().all(Option::is_none) {
+            if let Some(thread_id) = st.hook_thread.take() {
+                imp::stop(thread_id);
+            }
+        }
     }
 }
 
-/// Install the hook for `binding`, replacing any previous mouse binding.
+/// Bind `binding` to `handler` (replacing its old handler), starting the
+/// hook with the first binding.
 pub fn register(binding: MouseBinding, handler: Handler) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let mut reg = REGISTRATION.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(old) = reg.take() {
-            imp::stop(old.thread_id);
+        let mut st = state();
+        let slot = match st.handlers.iter().position(|h| h.as_ref().is_some_and(|(b, _)| *b == binding)) {
+            Some(slot) => slot,
+            None => match st.handlers.iter().position(Option::is_none) {
+                Some(free) => free,
+                None if st.handlers.len() < SLOTS => {
+                    st.handlers.push(None);
+                    st.handlers.len() - 1
+                }
+                None => return Err("too many mouse hotkeys".to_string()),
+            },
+        };
+        if st.hook_thread.is_none() {
+            st.hook_thread = Some(imp::start()?);
         }
-        let thread_id = imp::start(binding, handler)?;
-        *reg = Some(Registration { binding, thread_id });
+        st.handlers[slot] = Some((binding, std::sync::Arc::from(handler)));
+        imp::set_slot(slot, encode(binding));
         Ok(())
     }
     #[cfg(not(windows))]
@@ -102,10 +152,19 @@ pub fn register(binding: MouseBinding, handler: Handler) -> Result<(), String> {
     }
 }
 
+/// Run the handler of `slot` (on the handler thread, outside the hook).
+#[cfg(windows)]
+fn dispatch(slot: usize, pressed: bool) {
+    let handler = state().handlers.get(slot).and_then(|h| h.as_ref().map(|(_, f)| f.clone()));
+    if let Some(handler) = handler {
+        handler(pressed);
+    }
+}
+
 #[cfg(windows)]
 mod imp {
-    use super::{Handler, Modifiers, MouseBinding, MouseButton};
-    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use super::{find_slot, mods_to_bits, Modifiers, SLOTS};
+    use std::sync::atomic::{AtomicU8, Ordering};
     use std::sync::mpsc;
     use std::sync::Mutex;
     use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
@@ -119,17 +178,17 @@ mod imp {
         WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1, XBUTTON2,
     };
 
-    // The hook procedure has no context pointer, so the active binding lives
-    // in statics. Only one mouse hotkey is active at a time.
-    static BUTTON: AtomicU8 = AtomicU8::new(0); // 0 none, 1 XBUTTON1, 2 XBUTTON2
-    static MODS: AtomicU8 = AtomicU8::new(0);
-    /// Whether we reported a press, so the matching release is reported and
-    /// swallowed even if modifiers changed in between.
-    static PRESSED: AtomicBool = AtomicBool::new(false);
-    static EVENTS: Mutex<Option<mpsc::Sender<bool>>> = Mutex::new(None);
+    // The hook procedure has no context pointer, so the bindings live in
+    // statics it can read without locking.
+    static BINDINGS: [AtomicU8; SLOTS] = [const { AtomicU8::new(0) }; SLOTS];
+    /// Per button (index 1 and 2): the slot + 1 whose press was reported, so
+    /// the release goes to the same binding and is swallowed even if the
+    /// modifiers changed in between.
+    static PRESSED: [AtomicU8; 3] = [const { AtomicU8::new(0) }; 3];
+    static EVENTS: Mutex<Option<mpsc::Sender<(usize, bool)>>> = Mutex::new(None);
 
-    fn mods_to_bits(m: Modifiers) -> u8 {
-        (m.ctrl as u8) | (m.shift as u8) << 1 | (m.alt as u8) << 2 | (m.win as u8) << 3
+    pub fn set_slot(slot: usize, code: u8) {
+        BINDINGS[slot].store(code, Ordering::Relaxed);
     }
 
     fn key_down(vk: u16) -> bool {
@@ -145,9 +204,9 @@ mod imp {
         })
     }
 
-    fn send(pressed: bool) {
+    fn send(slot: usize, pressed: bool) {
         if let Some(tx) = EVENTS.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
-            let _ = tx.send(pressed);
+            let _ = tx.send((slot, pressed));
         }
     }
 
@@ -156,39 +215,38 @@ mod imp {
     unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         if code >= 0 && (wparam as u32 == WM_XBUTTONDOWN || wparam as u32 == WM_XBUTTONUP) {
             let info = &*(lparam as *const MSLLHOOKSTRUCT);
-            let which = ((info.mouseData >> 16) & 0xFFFF) as u16;
-            let button = match which {
+            let button: u8 = match ((info.mouseData >> 16) & 0xFFFF) as u16 {
                 XBUTTON1 => 1,
                 XBUTTON2 => 2,
                 _ => 0,
             };
-            if button != 0 && button == BUTTON.load(Ordering::Relaxed) {
+            if button != 0 {
+                let pressed = &PRESSED[button as usize];
                 if wparam as u32 == WM_XBUTTONDOWN {
-                    if current_mods() == MODS.load(Ordering::Relaxed) {
-                        PRESSED.store(true, Ordering::Relaxed);
-                        send(true);
+                    let slots: [u8; SLOTS] = std::array::from_fn(|i| BINDINGS[i].load(Ordering::Relaxed));
+                    if let Some(slot) = find_slot(&slots, button, current_mods()) {
+                        pressed.store(slot as u8 + 1, Ordering::Relaxed);
+                        send(slot, true);
                         return 1; // swallow
                     }
-                } else if PRESSED.swap(false, Ordering::Relaxed) {
-                    send(false);
-                    return 1; // swallow
+                } else {
+                    let slot = pressed.swap(0, Ordering::Relaxed);
+                    if slot != 0 {
+                        send(slot as usize - 1, false);
+                        return 1; // swallow
+                    }
                 }
             }
         }
         CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
     }
 
-    pub fn start(binding: MouseBinding, handler: Handler) -> Result<u32, String> {
-        let (tx, rx) = mpsc::channel::<bool>();
-        BUTTON.store(
-            match binding.button {
-                MouseButton::Mouse4 => 1,
-                MouseButton::Mouse5 => 2,
-            },
-            Ordering::Relaxed,
-        );
-        MODS.store(mods_to_bits(binding.modifiers), Ordering::Relaxed);
-        PRESSED.store(false, Ordering::Relaxed);
+    /// Start the hook and its handler thread; returns the hook thread's id.
+    pub fn start() -> Result<u32, String> {
+        let (tx, rx) = mpsc::channel::<(usize, bool)>();
+        for p in &PRESSED {
+            p.store(0, Ordering::Relaxed);
+        }
         *EVENTS.lock().unwrap_or_else(|p| p.into_inner()) = Some(tx);
 
         // Handler thread: keeps app logic out of the hook procedure. Ends when
@@ -196,8 +254,8 @@ mod imp {
         std::thread::Builder::new()
             .name("rf-mouse-hotkey-handler".into())
             .spawn(move || {
-                for pressed in rx {
-                    handler(pressed);
+                for (slot, pressed) in rx {
+                    super::dispatch(slot, pressed);
                 }
             })
             .map_err(|e| e.to_string())?;
@@ -240,8 +298,9 @@ mod imp {
     }
 
     fn stop_events() {
-        BUTTON.store(0, Ordering::Relaxed);
-        PRESSED.store(false, Ordering::Relaxed);
+        for p in &PRESSED {
+            p.store(0, Ordering::Relaxed);
+        }
         *EVENTS.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
 
@@ -278,5 +337,21 @@ mod tests {
         assert_eq!(parse("CmdOrCtrl+Shift+Space"), None);
         assert_eq!(parse("CmdOrCtrl+Shift"), None);
         assert_eq!(parse(""), None);
+    }
+
+    #[test]
+    fn one_button_serves_several_hotkeys_by_modifiers() {
+        let dictation = encode(parse("Mouse5").unwrap());
+        let rewrite = encode(parse("Shift+Mouse5").unwrap());
+        let paste = encode(parse("Mouse4").unwrap());
+        let slots = [dictation, 0, rewrite, paste, 0, 0, 0, 0];
+        let shift = mods_to_bits(Modifiers { shift: true, ..Default::default() });
+        assert_eq!(find_slot(&slots, 2, 0), Some(0));
+        assert_eq!(find_slot(&slots, 2, shift), Some(2));
+        assert_eq!(find_slot(&slots, 1, 0), Some(3));
+        // Ctrl+Mouse5 is bound to nothing: the click goes to the app.
+        let ctrl = mods_to_bits(Modifiers { ctrl: true, ..Default::default() });
+        assert_eq!(find_slot(&slots, 2, ctrl), None);
+        assert_eq!(find_slot(&[0; 8], 1, 0), None);
     }
 }

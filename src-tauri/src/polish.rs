@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::ai_cleanup::{self, AppContext};
 use crate::ai_models;
 use crate::llm_server::LlmServer;
-use crate::replacements::{apply_replacements, protect, restore, Protected};
+use crate::replacements::{apply_replacements, protect, restore, with_variables, Protected};
 use crate::settings::Settings;
 use crate::startup_log;
 
@@ -89,7 +89,9 @@ async fn polish_inner(
     language: Option<&str>,
     on_ai_start: impl FnOnce(),
 ) -> Polished {
-    let plain = apply_replacements(text, &settings.replacements);
+    // {date}, {time} and the other variables are filled for this moment.
+    let replacements = with_variables(&settings.replacements, &settings.ui_language);
+    let plain = apply_replacements(text, &replacements);
     if !settings.ai_cleanup || text.trim().is_empty() {
         return Polished::plain(plain, None);
     }
@@ -103,7 +105,7 @@ async fn polish_inner(
     if !model_path.exists() {
         return Polished::plain(plain, Some("The AI model is not downloaded"));
     }
-    let (protected, values) = match protect(text, &settings.replacements) {
+    let (protected, values) = match protect(text, &replacements) {
         Protected::Whole(replacement) => return Polished::plain(replacement, None),
         Protected::Text { text, values } => (text, values),
     };
@@ -192,7 +194,7 @@ mod tests {
         settings.ai_instructions = "Use ss instead of ß.".into();
         settings.ai_output_language = "en".into();
         settings.ai_style = "light".into();
-        let rule = AppRule { app: "code".into(), instructions: "short".into(), off: false };
+        let rule = AppRule { app: "code".into(), instructions: "short".into(), ..Default::default() };
         let ctx = AppContext {
             exe: "code".into(),
             title: "main.rs".into(),
@@ -223,7 +225,7 @@ mod tests {
     fn no_ai_rule_and_missing_model_fall_back() {
         let (dir, llm, mut settings) = setup("skip");
         settings.ai_cleanup = true;
-        settings.ai_rules = vec![AppRule { app: "code".into(), instructions: String::new(), off: true }];
+        settings.ai_rules = vec![AppRule { app: "code".into(), off: true, ..Default::default() }];
         let code = AppContext { exe: "code".into(), title: "main.rs".into(), ..Default::default() };
         let (p, asked) = run(&settings, &dir, &llm, &code, "hello");
         assert_eq!(p.fallback.as_deref(), Some("AI is off for this app"));

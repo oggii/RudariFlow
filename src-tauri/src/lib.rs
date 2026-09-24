@@ -23,6 +23,10 @@ pub mod screen_context;
 pub mod uia;
 pub mod voice_edit;
 pub mod power;
+pub mod pc_check;
+pub mod learn;
+pub mod media;
+pub mod file_transcribe;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

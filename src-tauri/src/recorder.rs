@@ -104,6 +104,35 @@ fn emit_edit_target(app: &AppHandle, words: Option<usize>) {
 /// Screen terms of the recording `generation`, filled in the background.
 type ScreenSlot = Arc<Mutex<Option<(u64, Vec<String>)>>>;
 
+/// The last dictation pasted, until the field is read again to see what the
+/// user corrected: at the next hotkey press or after `LEARN_AFTER`.
+struct LastPaste {
+    generation: u64,
+    text: String,
+    exe: String,
+    dictionary: Vec<String>,
+    app_dir: PathBuf,
+}
+
+type LearnSlot = Arc<Mutex<Option<LastPaste>>>;
+
+const LEARN_AFTER: Duration = Duration::from_secs(20);
+
+/// A long dictation is transcribed in pieces while it goes on: once this
+/// much is recorded since the last cut, a piece is cut off...
+const PIECE_AT_SECS: f32 = 29.0;
+/// ...in the quietest spot from here on (a pause between sentences).
+const PIECE_CUT_FROM_SECS: f32 = 22.0;
+
+/// The pieces of the recording `generation` transcribed so far.
+#[derive(Default)]
+struct Pieces {
+    generation: u64,
+    /// Source frame where the audio not transcribed yet begins.
+    cut_frame: usize,
+    texts: Vec<String>,
+}
+
 /// Step times of one dictation from the stop press on, logged as one
 /// "[timing]" line in startup.log.
 struct Laps {
@@ -241,7 +270,12 @@ pub struct Recorder {
     /// Screen context read when the recording started.
     screen: ScreenSlot,
     /// Counts recordings, so a slow read never lands in a later one.
-    generation: AtomicU64,
+    generation: Arc<AtomicU64>,
+    /// Long dictations: pieces transcribed while recording. The lock is
+    /// held while a piece is transcribed, so the release waits for it.
+    pieces: Arc<tokio::sync::Mutex<Pieces>>,
+    /// Learning dictionary: the last dictation, until it is checked.
+    last_paste: LearnSlot,
 }
 
 /// Resets the recorder to Ready when dropped, including when transcription
@@ -267,12 +301,20 @@ impl Recorder {
             audio_recorder: Arc::new(Mutex::new(AudioRecorder::new())),
             starting: AtomicBool::new(false),
             screen: Arc::new(Mutex::new(None)),
-            generation: AtomicU64::new(0),
+            generation: Arc::new(AtomicU64::new(0)),
+            pieces: Arc::new(tokio::sync::Mutex::new(Pieces::default())),
+            last_paste: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn get_state(&self) -> RecordingState {
         lock(&self.state).clone()
+    }
+
+    /// Show a short notice in the pill, e.g. why "rewrite last" did not
+    /// start (`rewrite-failed` with "missing" or "needs-ai").
+    pub fn notice(&self, app: &AppHandle, event: &str, reason: &str) {
+        show_notice_with(app, self.state.clone(), event, reason.to_string(), 3200);
     }
 
     /// Called right after recording starts, in the background: shows the
@@ -281,6 +323,11 @@ impl Recorder {
     pub fn capture_context(&self, app: &AppHandle, settings: &Settings, app_dir: &Path) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         *lock(&self.screen) = None;
+        // The next press: see what the user corrected in the last dictation.
+        if let Some(last) = lock(&self.last_paste).take() {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || learn_from_field(&app, last));
+        }
         let edit = voice_edit::available(settings, app_dir, &foreground_app::current());
         let screen = settings.screen_context;
         if !edit && !screen {
@@ -305,6 +352,96 @@ impl Recorder {
                     started.elapsed().as_millis()
                 ));
                 *lock(&slot) = Some((generation, terms));
+            }
+        });
+    }
+
+    /// Learning dictionary: keep the dictation just pasted and read its
+    /// field again at the next press or after `LEARN_AFTER`, whichever
+    /// comes first.
+    fn remember_paste(&self, app: &AppHandle, settings: &Settings, app_dir: &Path, text: &str, exe: &str) {
+        if !settings.learn_dictionary || exe.is_empty() {
+            return;
+        }
+        let generation = self.generation.load(Ordering::SeqCst);
+        *lock(&self.last_paste) = Some(LastPaste {
+            generation,
+            text: text.to_string(),
+            exe: exe.to_string(),
+            dictionary: dictionary::terms(&settings.custom_prompt),
+            app_dir: app_dir.to_path_buf(),
+        });
+        let (app, slot) = (app.clone(), self.last_paste.clone());
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(LEARN_AFTER).await;
+            let last = {
+                let mut slot = lock(&slot);
+                match slot.as_ref() {
+                    Some(last) if last.generation == generation => slot.take(),
+                    _ => None,
+                }
+            };
+            if let Some(last) = last {
+                let _ = tauri::async_runtime::spawn_blocking(move || learn_from_field(&app, last)).await;
+            }
+        });
+    }
+
+    /// Long dictations: every `PIECE_AT_SECS` of recording, transcribe a
+    /// piece in the background, so the release only waits for the rest
+    /// (31 s took 785 ms after the release in one go). Call after
+    /// `capture_context`, which starts the recording's generation.
+    pub fn start_pieces(&self, settings: &Settings, app_dir: &Path, engine: &Arc<WhisperEngine>) {
+        if settings.engine != "local" {
+            return;
+        }
+        let generation = self.generation.load(Ordering::SeqCst);
+        let (state, audio, pieces, screen) =
+            (self.state.clone(), self.audio_recorder.clone(), self.pieces.clone(), self.screen.clone());
+        let (settings, app_dir, engine) = (settings.clone(), app_dir.to_path_buf(), engine.clone());
+        let generations = self.generation.clone();
+        let ctx = foreground_app::current();
+        tauri::async_runtime::spawn(async move {
+            *pieces.lock().await = Pieces { generation, ..Default::default() };
+            let language = crate::ai_cleanup::whisper_language(&settings.ai_rules, &ctx, &settings.language).to_string();
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if *lock(&state) != RecordingState::Recording || generations.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                let from = pieces.lock().await.cut_frame;
+                let recorded = lock(&audio).peek_16k(from);
+                if (recorded.len() as f32) < PIECE_AT_SECS * 16_000.0 {
+                    continue;
+                }
+                let cut = crate::audio::quiet_cut(&recorded, PIECE_CUT_FROM_SECS, PIECE_AT_SECS);
+                let frames_per_16k = lock(&audio).frames_per_16k();
+                let mut p = pieces.lock().await;
+                if p.generation != generation || *lock(&state) != RecordingState::Recording {
+                    return;
+                }
+                let terms = match lock(&screen).as_ref() {
+                    Some((g, terms)) if *g == generation => terms.clone(),
+                    _ => Vec::new(),
+                };
+                let started = Instant::now();
+                match transcribe_samples(None, &settings, &app_dir, &engine, &recorded[..cut], &terms, &language).await {
+                    Ok((text, _)) => {
+                        startup_log::log(&format!(
+                            "[pieces] piece {} ({:.1} s) transcribed in {} ms while recording",
+                            p.texts.len() + 1,
+                            cut as f32 / 16_000.0,
+                            started.elapsed().as_millis()
+                        ));
+                        p.texts.push(text);
+                        p.cut_frame = from + (cut as f64 * frames_per_16k) as usize;
+                    }
+                    Err(e) => {
+                        // The release transcribes everything after the last cut.
+                        startup_log::log(&format!("[pieces] piece failed, the rest waits for the release: {}", e));
+                        return;
+                    }
+                }
             }
         });
     }
@@ -434,7 +571,19 @@ impl Recorder {
         selection: Option<String>,
         laps: &mut Laps,
     ) -> Result<String, String> {
-        let taken = lock(&self.audio_recorder).stop_and_take_samples();
+        // A piece still being transcribed finishes first.
+        let mut pieces = self.pieces.lock().await;
+        let generation = self.generation.load(Ordering::SeqCst);
+        let in_pieces = pieces.generation == generation && !pieces.texts.is_empty();
+        let (taken, rest) = if in_pieces {
+            let (taken, rest) = lock(&self.audio_recorder).stop_and_take_with_rest(pieces.cut_frame);
+            (taken, Some(rest))
+        } else {
+            (lock(&self.audio_recorder).stop_and_take_samples(), None)
+        };
+        let done_pieces = std::mem::take(&mut pieces.texts);
+        pieces.generation = 0;
+        drop(pieces);
         laps.lap("audio");
         let samples = match taken {
             Err(e) if e == "no_speech" => {
@@ -446,8 +595,25 @@ impl Recorder {
         };
         laps.audio_secs = Some(samples.len() as f32 / 16_000.0);
 
-        let (raw_text, language) =
-            transcribe_samples(Some(app), settings, app_dir, engine, &samples, &ctx.screen_terms).await?;
+        let whisper_language = crate::ai_cleanup::whisper_language(&settings.ai_rules, ctx, &settings.language);
+        let (raw_text, language) = match rest {
+            // A long dictation: only the part after the last piece is left.
+            Some(rest) => {
+                let (tail, language) = if rest.is_empty() {
+                    (String::new(), None)
+                } else {
+                    transcribe_samples(Some(app), settings, app_dir, engine, &rest, &ctx.screen_terms, whisper_language)
+                        .await?
+                };
+                laps.note(format!("pieces {} + rest {:.1} s", done_pieces.len(), rest.len() as f32 / 16_000.0));
+                let text = done_pieces.iter().chain(std::iter::once(&tail)).map(|t| t.trim()).filter(|t| !t.is_empty());
+                (text.collect::<Vec<_>>().join(" "), language)
+            }
+            None => {
+                transcribe_samples(Some(app), settings, app_dir, engine, &samples, &ctx.screen_terms, whisper_language)
+                    .await?
+            }
+        };
         laps.lap("whisper");
         // Only the screen terms the dictation (or the selection it edits)
         // mentions go to the AI; each one costs prompt time.
@@ -495,6 +661,8 @@ impl Recorder {
             let key = settings.send_command.clone();
             blocking(move || press_submit(&key)).await?;
             laps.lap("send");
+        } else if !text.is_empty() {
+            self.remember_paste(app, settings, app_dir, &text, &ctx.exe);
         }
 
         Ok(text)
@@ -562,6 +730,23 @@ impl Recorder {
     }
 }
 
+/// Read the field the last dictation went into and keep the names the user
+/// corrected as dictionary suggestions. Only counts are logged.
+fn learn_from_field(app: &AppHandle, last: LastPaste) {
+    let Some((exe, field)) = selection::read_field() else {
+        return;
+    };
+    if exe != last.exe {
+        return;
+    }
+    let found = crate::learn::corrections(&last.text, &field);
+    let new = crate::learn::record(&last.app_dir, &found, &last.dictionary);
+    startup_log::log(&format!("[learn] {} corrected names, {} suggested", found.len(), new));
+    if new > 0 {
+        let _ = app.emit("dictionary-suggestions", crate::learn::suggestions(&last.app_dir));
+    }
+}
+
 /// Paste `text`: "paste" is the time until Ctrl+V went out, "restore" the
 /// wait for the previous clipboard.
 async fn paste_timed(text: &str, laps: &mut Laps) -> Result<(), String> {
@@ -591,7 +776,8 @@ pub fn model_label(settings: &Settings) -> String {
 
 /// Transcribe 16 kHz mono samples with the engine chosen in `settings`.
 /// With `overlay`, the local engine streams partial text into the pill.
-/// `screen_terms` go into Whisper's prompt ahead of the dictionary.
+/// `screen_terms` go into Whisper's prompt ahead of the dictionary;
+/// `language` is the Whisper language (an app rule's or the Engine setting).
 /// Also returns the spoken language when the engine reports it (local only).
 pub async fn transcribe_samples(
     overlay: Option<&AppHandle>,
@@ -600,6 +786,7 @@ pub async fn transcribe_samples(
     engine: &Arc<WhisperEngine>,
     samples: &[f32],
     screen_terms: &[String],
+    language: &str,
 ) -> Result<(String, Option<String>), String> {
     let prompt = screen_context::whisper_prompt(screen_terms, &settings.custom_prompt);
     match settings.engine.as_str() {
@@ -612,7 +799,7 @@ pub async fn transcribe_samples(
             let engine = engine.clone();
             let overlay = overlay.cloned();
             let samples = samples.to_vec();
-            let (backend, language) = (settings.gpu_backend.clone(), settings.language.clone());
+            let (backend, language) = (settings.gpu_backend.clone(), language.to_string());
             blocking(move || {
                 engine.ensure_loaded(&model_path, &backend)?;
                 engine.transcribe(overlay.as_ref(), &samples, &language, &prompt)
@@ -626,7 +813,7 @@ pub async fn transcribe_samples(
             let text = transcribe_groq::transcribe_groq(
                 &settings.groq_api_key,
                 &temp_path,
-                &settings.language,
+                language,
                 &prompt,
             )
             .await;

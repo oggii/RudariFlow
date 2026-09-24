@@ -7,6 +7,7 @@ import { setLang, getLang, detectDefaultLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
 import { initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
 import { initDictionary, renderDictionary } from "./dictionary";
+import { initFiles, renderFiles } from "./files";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
 
 interface Settings {
@@ -26,6 +27,8 @@ interface Settings {
   sendCommand: string;
   history: string;
   pasteLastHotkey: string;
+  whisperFlashAttn?: string;
+  rewriteLastHotkey: string;
   muteAudio: boolean;
   aiCleanup: boolean;
   aiModel: string;
@@ -36,6 +39,7 @@ interface Settings {
   aiOutputLanguage: string;
   editMode: boolean;
   screenContext: boolean;
+  learnDictionary: boolean;
 }
 
 interface Replacement {
@@ -93,6 +97,13 @@ const hotkeyBtn = document.getElementById("hotkey-btn") as HTMLButtonElement;
 const pasteLastBtn = document.getElementById("paste-last-btn") as HTMLButtonElement;
 const pasteLastText = document.getElementById("paste-last-text")!;
 const pasteLastClear = document.getElementById("paste-last-clear") as HTMLButtonElement;
+const pcCheckBtn = document.getElementById("pc-check-btn") as HTMLButtonElement;
+const pcCheckResult = document.getElementById("pc-check-result")!;
+const pcCheckReport = document.getElementById("pc-check-report")!;
+const pcCheckCopy = document.getElementById("pc-check-copy") as HTMLButtonElement;
+const rewriteLastBtn = document.getElementById("rewrite-last-btn") as HTMLButtonElement;
+const rewriteLastText = document.getElementById("rewrite-last-text")!;
+const rewriteLastClear = document.getElementById("rewrite-last-clear") as HTMLButtonElement;
 const sendCommandSelect = document.getElementById("send-command-select") as HTMLSelectElement;
 const muteAudioToggle = document.getElementById("mute-audio-toggle") as HTMLInputElement;
 const replacementList = document.getElementById("replacement-list")!;
@@ -108,14 +119,14 @@ const historyClear = document.getElementById("history-clear") as HTMLButtonEleme
 const navItems = document.querySelectorAll(".nav-item");
 const sections = document.querySelectorAll(".content-section");
 
+function showSection(target: string) {
+  navItems.forEach((n) => n.classList.toggle("active", n.getAttribute("data-section") === target));
+  sections.forEach((s) => s.classList.remove("active"));
+  document.getElementById(`section-${target}`)?.classList.add("active");
+}
+
 navItems.forEach((item) => {
-  item.addEventListener("click", () => {
-    const target = item.getAttribute("data-section");
-    navItems.forEach((n) => n.classList.remove("active"));
-    sections.forEach((s) => s.classList.remove("active"));
-    item.classList.add("active");
-    document.getElementById(`section-${target}`)?.classList.add("active");
-  });
+  item.addEventListener("click", () => showSection(item.getAttribute("data-section") ?? "general"));
 });
 
 // Window drag — titlebar and sidebar empty space
@@ -198,6 +209,7 @@ async function loadSettings() {
   // Groq key
   groqKey.value = currentSettings.groqApiKey;
   renderDictionary();
+  renderFiles();
 
   // Recording mode
   setRecordingMode(currentSettings.recordingMode);
@@ -360,6 +372,44 @@ languageSelect.addEventListener("change", async () => {
 
 gpuBackendSelect.addEventListener("change", () => saveSettings());
 
+// PC check: measures, applies the fastest Whisper setup, shows a report.
+interface PcCheckResult {
+  report: string;
+  gpuBackend: string;
+  whisperFlashAttn: string;
+  changed: boolean;
+}
+listen<[number, number, string]>("pc-check-progress", (event) => {
+  const [done, total] = event.payload;
+  if (pcCheckBtn.disabled) {
+    pcCheckBtn.textContent = t("pc_check_running").replace("{done}", String(Math.min(done + 1, total))).replace("{total}", String(total));
+  }
+});
+pcCheckBtn.addEventListener("click", async () => {
+  pcCheckBtn.disabled = true;
+  pcCheckBtn.textContent = t("pc_check_running").replace("{done}", "1").replace("{total}", "…");
+  try {
+    const result = await invoke<PcCheckResult>("pc_check");
+    // The check saved new settings; keep the page's copy in step.
+    currentSettings.gpuBackend = result.gpuBackend;
+    currentSettings.whisperFlashAttn = result.whisperFlashAttn;
+    gpuBackendSelect.value = result.gpuBackend;
+    pcCheckReport.textContent = result.report;
+    pcCheckResult.classList.remove("hidden");
+  } catch (err) {
+    pcCheckReport.textContent = `${t("pc_check_failed")}: ${err}`;
+    pcCheckResult.classList.remove("hidden");
+  } finally {
+    pcCheckBtn.disabled = false;
+    pcCheckBtn.textContent = t("pc_check_run");
+  }
+});
+pcCheckCopy.addEventListener("click", async () => {
+  await invoke("copy_text", { text: pcCheckReport.textContent ?? "" });
+  pcCheckCopy.textContent = t("pc_check_copied");
+  setTimeout(() => (pcCheckCopy.textContent = t("pc_check_copy")), 1500);
+});
+
 uiLanguageSelect.addEventListener("change", async () => {
   setLang(uiLanguageSelect.value);
   populateLanguageSelect(languageSelect, getLang(), t("language_auto"));
@@ -369,6 +419,7 @@ uiLanguageSelect.addEventListener("change", async () => {
   await refreshHistory();
   await renderAiSettings();
   renderDictionary();
+  renderFiles();
 });
 
 sendCommandSelect.addEventListener("change", () => saveSettings());
@@ -465,9 +516,10 @@ listen<DownloadProgress>("download-progress", (event) => {
   progressFill.style.width = `${percent}%`;
 });
 
-// Hotkey capture. "dictation" starts/stops recording (keyboard or mouse side
-// button), "pasteLast" pastes the last transcript again (keyboard only).
-type HotkeyTarget = "dictation" | "pasteLast";
+// Hotkey capture. "dictation" starts/stops recording, "pasteLast" pastes the
+// last transcript again, "rewriteLast" selects it and records an edit. Each
+// takes a key combination or a mouse side button (with or without modifiers).
+type HotkeyTarget = "dictation" | "pasteLast" | "rewriteLast";
 let capturing: HotkeyTarget | null = null;
 
 function hotkeyLabel(combo: string): string {
@@ -483,12 +535,14 @@ function renderHotkeys() {
   hotkeyText.textContent = hotkeyLabel(currentSettings.hotkey);
   pasteLastText.textContent = hotkeyLabel(currentSettings.pasteLastHotkey);
   pasteLastClear.classList.toggle("hidden", !currentSettings.pasteLastHotkey);
+  rewriteLastText.textContent = hotkeyLabel(currentSettings.rewriteLastHotkey);
+  rewriteLastClear.classList.toggle("hidden", !currentSettings.rewriteLastHotkey);
 }
 
 function captureElements(target: HotkeyTarget) {
-  return target === "dictation"
-    ? { btn: hotkeyBtn, text: hotkeyText }
-    : { btn: pasteLastBtn, text: pasteLastText };
+  if (target === "dictation") return { btn: hotkeyBtn, text: hotkeyText };
+  if (target === "pasteLast") return { btn: pasteLastBtn, text: pasteLastText };
+  return { btn: rewriteLastBtn, text: rewriteLastText };
 }
 
 function modifierTokens(e: KeyboardEvent | MouseEvent): string[] {
@@ -531,7 +585,7 @@ function startCapture(target: HotkeyTarget) {
   invoke("set_hotkey_paused", { paused: true }).catch(console.error);
   const { btn, text } = captureElements(target);
   btn.classList.add("capturing");
-  text.textContent = t(target === "dictation" ? "hotkey_press_keys" : "hotkey_press_keys_keyboard");
+  text.textContent = t("hotkey_press_keys");
   window.addEventListener("keydown", onCaptureKey, true);
   // Click outside cancels
   setTimeout(() => window.addEventListener("mousedown", onOutsideClick, true), 0);
@@ -567,16 +621,20 @@ async function applyCapturedCombo(combo: string) {
     await setHotkey(target, combo);
     stopCapture();
   } catch (err) {
-    captureElements(target).text.textContent = t("hotkey_invalid");
+    const reason = String(err);
+    captureElements(target).text.textContent = reason.includes("Windows shortcut")
+      ? t("hotkey_reserved").replace("{combo}", hotkeyLabel(combo))
+      : t(reason.includes("already used") ? "hotkey_taken" : "hotkey_invalid");
     console.error("change_hotkey failed:", err);
-    setTimeout(stopCapture, 1500);
+    setTimeout(stopCapture, 2500);
   }
 }
 
 async function setHotkey(target: HotkeyTarget, combo: string) {
   await invoke("change_hotkey", { target, newHotkey: combo });
   if (target === "dictation") currentSettings.hotkey = combo;
-  else currentSettings.pasteLastHotkey = combo;
+  else if (target === "pasteLast") currentSettings.pasteLastHotkey = combo;
+  else currentSettings.rewriteLastHotkey = combo;
 }
 
 function onOutsideClick(e: MouseEvent) {
@@ -585,8 +643,7 @@ function onOutsideClick(e: MouseEvent) {
   if (combo) {
     e.preventDefault();
     e.stopPropagation();
-    if (capturing === "dictation") applyCapturedCombo(combo);
-    else captureElements(capturing).text.textContent = t("hotkey_keyboard_only");
+    applyCapturedCombo(combo);
     return;
   }
   if (!captureElements(capturing).btn.contains(e.target as Node)) stopCapture();
@@ -599,6 +656,15 @@ window.addEventListener("mouseup", (e) => {
 
 hotkeyBtn.addEventListener("click", () => startCapture("dictation"));
 pasteLastBtn.addEventListener("click", () => startCapture("pasteLast"));
+rewriteLastBtn.addEventListener("click", () => startCapture("rewriteLast"));
+rewriteLastClear.addEventListener("click", async () => {
+  try {
+    await setHotkey("rewriteLast", "");
+  } catch (err) {
+    console.error("clearing rewrite hotkey failed:", err);
+  }
+  renderHotkeys();
+});
 pasteLastClear.addEventListener("click", async () => {
   try {
     await setHotkey("pasteLast", "");
@@ -846,6 +912,7 @@ document.getElementById("credit-link")?.addEventListener("click", async (e) => {
 
 initAiSettings({ settings: () => currentSettings, save: saveSettings });
 initDictionary({ settings: () => currentSettings, save: saveSettings });
+initFiles({ settings: () => currentSettings, showSection: () => showSection("files") });
 
 // Initialize
 getVersion()

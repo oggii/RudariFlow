@@ -1,6 +1,6 @@
 [package]
 name = "rudariflow"
-version = "0.9.0"
+version = "0.10.0"
 description = "Sprache-zu-Text Diktier-App, lokal angetrieben von Whisper.cpp mit GPU-Beschleunigung"
 authors = ["oggi <info@0ggi.ch>"]
 edition = "2021"
@@ -38,6 +38,10 @@ arboard = "3"
 regex = "1"
 getrandom = "0.3"
 whatlang = "0.18"
+# WhatsApp voice messages and other Ogg Opus files, which Windows cannot open
+# (src/media.rs).
+ogg = "0.9"
+opus = "0.4"
 futures-util = "0.3"
 tauri-plugin-autostart = "2.5.1"
 # raw-api re-exports whisper-rs-sys for ggml device enumeration.
@@ -51,20 +55,26 @@ whisper-rs-sys = { path = "vendor/whisper-rs-sys" }
 [target.'cfg(windows)'.dependencies]
 # Low-level mouse hook for side-button hotkeys (src/mouse_hotkey.rs); the
 # foreground app for AI cleanup rules (src/foreground_app.rs); battery state
-# (src/power.rs).
+# (src/power.rs); local time and UI language for replacement variables
+# (src/replacements.rs).
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
+  "Win32_Globalization",
   "Win32_Graphics_Dwm",
   "Win32_System_Power",
+  "Win32_System_Registry",
+  "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
 # Core Audio sessions for muting other apps while recording (src/mute.rs);
-# a kill-on-close Job Object for the AI server (src/llm_server.rs).
+# a kill-on-close Job Object for the AI server (src/llm_server.rs); Media
+# Foundation to read audio and video files (src/media.rs).
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Media_Audio",
+  "Win32_Media_MediaFoundation",
   "Win32_Security",
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",
@@ -129,3 +139,19 @@ path = "examples/quant_bench.rs"
 [[example]]
 name = "first_bench"
 path = "examples/first_bench.rs"
+
+[[example]]
+name = "pc_check_probe"
+path = "examples/pc_check_probe.rs"
+
+[[example]]
+name = "pieces_bench"
+path = "examples/pieces_bench.rs"
+
+[[example]]
+name = "media_probe"
+path = "examples/media_probe.rs"
+
+[[example]]
+name = "file_bench"
+path = "examples/file_bench.rs"
