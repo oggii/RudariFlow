@@ -5,7 +5,7 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.8.0] - 2026-09-24 - Words on screen, faster dictation
 
 ### Added
 - **Words on screen** (Dictionary tab, on by default), like Aqua Voice's

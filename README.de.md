@@ -11,7 +11,7 @@
 
 Lokale Sprache-zu-Text Diktier-App für Windows, angetrieben von [whisper.cpp](https://github.com/ggml-org/whisper.cpp) mit GPU-Beschleunigung. Globaler Hotkey, Push-to-Talk oder Toggle-Modus, automatisches Einfügen des transkribierten Texts.
 
-> **v0.7.0, Windows.** Neu: Bearbeiten per Stimme, Text markieren und sagen, was sich ändern soll. Seit 0.6: „Schreiben in“ macht aus jedem Diktat eine Sprache, Wörterbuch-Import und -Export, lokale KI-Korrektur mit Regeln pro App, Wörterbuch, Verlauf, Ersetzungen und der Befehl „Abschicken“ (siehe [Changelog](CHANGELOG.md)). Ein Installer für jede GPU: NVIDIA GeForce RTX läuft über CUDA, AMD Radeon und Intel Arc über Vulkan, alles andere fällt auf die CPU zurück. Das Backend wird zur Laufzeit automatisch gewählt.
+> **v0.8.0, Windows.** Neu: Wörter auf dem Bildschirm helfen bei Namen und Fachbegriffen, und Diktieren ist schneller: das erste Diktat nach dem Start, die automatische Spracherkennung und der KI-Schritt. Seit 0.6: Bearbeiten per Stimme (Text markieren und sagen, was sich ändern soll), „Schreiben in“ macht aus jedem Diktat eine Sprache, Wörterbuch-Import und -Export, lokale KI-Korrektur mit Regeln pro App, Wörterbuch, Verlauf, Ersetzungen und der Befehl „Abschicken“ (siehe [Changelog](CHANGELOG.md)). Ein Installer für jede GPU: NVIDIA GeForce GTX 16 / RTX läuft über CUDA, AMD Radeon, Intel Arc und ältere NVIDIA-Karten über Vulkan, alles andere fällt auf die CPU zurück. Das Backend wird zur Laufzeit automatisch gewählt.
 
 Vollständige Versionshistorie siehe [CHANGELOG.md](CHANGELOG.md).
 
@@ -20,8 +20,8 @@ Made by [oggi](https://0ggi.ch).
 ## Features
 
 - Lokale Transkription via In-Process whisper-rs — keine Cloud nötig, kein Subprozess pro Diktat
-- **Persistentes Modell:** beim ersten Gebrauch einmal geladen und für weitere Diktate wiederverwendet
-- **Warmup beim Hotkey-Druck:** PTT-Druck lädt das Modell parallel vor, sodass es bereit ist, sobald du fertig gesprochen hast
+- **Persistentes Modell:** beim Start der App geladen und für weitere Diktate wiederverwendet (im Akkubetrieb nach 10 Minuten ohne Diktat entladen)
+- **Warmup beim Hotkey-Druck:** ist das Modell nicht geladen, lädt der Hotkey es parallel, sodass es bereit ist, sobald du fertig gesprochen hast
 - **Streaming-Partial-Transkripte:** Text erscheint im Overlay, sobald Whisper jedes Segment ausgibt
 - **Auto-Backend-Erkennung:** NVIDIA CUDA wenn verfügbar, sonst Vulkan (AMD / Intel / NVIDIA), sonst CPU. Die Einstellungen zeigen die erkannten GPUs und erlauben, CUDA, Vulkan oder CPU zu erzwingen. Flash Attention ist bei CUDA an und bei Vulkan aus (auf einer RX 6800 doppelt so langsam); erzwingen mit `RUDARIFLOW_FLASH_ATTN=1` oder `=0`
 - **Wörterbuch:** eigener Tab für Namen, Marken und Fachbegriffe. Wörter einzeln hinzufügen oder eine Liste einfügen (Kommas oder eines pro Zeile). Whisper bekommt sie als Prompt, der Text übernimmt ihre genaue Schreibweise, auch wenn Whisper sie leicht anders hört („github“ wird zu „GitHub“, „Grüß'n shop“ zu „Grüssen-Shop“), und die KI-Korrektur erhält die Liste ebenfalls. Ein Schalter für Schweizer Rechtschreibung schreibt ss statt ß. Importieren und Exportieren bringen die Liste als einfache Textdatei auf einen anderen PC
