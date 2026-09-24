@@ -1,6 +1,12 @@
 //! Speaker separation for the Files tab: who speaks when, with sherpa-onnx
 //! (pyannote segmentation 3.0 and the 3D-Speaker ERes2Net voice embedding).
 
+use std::path::{Path, PathBuf};
+
+use sha2::{Digest, Sha256};
+
+use crate::downloader::{download_file, DownloadProgress};
+
 /// sherpa-onnx's C API, next to rudariflow.exe (delay-loaded, see build.rs).
 const RUNTIME_DLL: &str = "sherpa-onnx-c-api.dll";
 
@@ -49,7 +55,7 @@ pub fn assign(spans: &[(u64, u64)], turns: &[Turn]) -> Vec<Option<u8>> {
     let mut speakers: Vec<u32> = turns.iter().map(|t| t.speaker).collect();
     speakers.sort_unstable();
     speakers.dedup();
-    // Earlier voice first, so `max_by_key` keeps it on a tie when reversed.
+    // Earliest voice first, so the fold below keeps it on a tie.
     speakers.sort_by_key(|&s| first_heard(s));
 
     let raw: Vec<u32> = spans
@@ -103,6 +109,187 @@ pub fn assign(spans: &[(u64, u64)], turns: &[Turn]) -> Vec<Option<u8>> {
             u8::try_from(index).ok()
         })
         .collect()
+}
+
+/// A model file of the speaker separation, pinned by size and SHA-256.
+pub struct ModelFile {
+    pub file: &'static str,
+    pub url: &'static str,
+    pub bytes: u64,
+    pub sha256: &'static str,
+}
+
+/// pyannote segmentation 3.0 (where speech and speaker changes are) and
+/// 3D-Speaker ERes2Net (a voice fingerprint per stretch of speech). ERes2Net
+/// labelled the probe files best of four embedding models (see the spec).
+pub const MODELS: [ModelFile; 2] = [
+    ModelFile {
+        file: "segmentation.onnx",
+        url: "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx",
+        bytes: 5_992_913,
+        sha256: "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
+    },
+    ModelFile {
+        file: "embedding.onnx",
+        url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx",
+        bytes: 39_593_761,
+        sha256: "1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b",
+    },
+];
+
+/// With a number, clustering makes exactly that many speakers; with Auto it
+/// merges voices closer than this. 0.9 was the only value that counted the
+/// three probe files right (4, 2 and 2 speakers).
+const AUTO_THRESHOLD: f32 = 0.9;
+/// sherpa-onnx's defaults, used in the probe: shorter speech is dropped,
+/// shorter gaps of one speaker are closed.
+const MIN_DURATION_ON: f32 = 0.3;
+const MIN_DURATION_OFF: f32 = 0.5;
+
+pub fn model_dir(app_dir: &Path) -> PathBuf {
+    app_dir.join("speakers")
+}
+
+/// Both model files are there with their full size (the SHA-256 is checked
+/// once, after the download).
+pub fn models_ready(app_dir: &Path) -> bool {
+    MODELS.iter().all(|m| {
+        std::fs::metadata(model_dir(app_dir).join(m.file)).is_ok_and(|meta| meta.len() == m.bytes)
+    })
+}
+
+fn sha256_of(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|e| e.to_string())?;
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Download the missing model files, resumable, each checked by SHA-256.
+/// `on_progress` gets the bytes of both files together.
+pub async fn download_models(app_dir: &Path, mut on_progress: impl FnMut(DownloadProgress)) -> Result<(), String> {
+    let dir = model_dir(app_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let total: u64 = MODELS.iter().map(|m| m.bytes).sum();
+    let mut before = 0;
+    for m in &MODELS {
+        let dest = dir.join(m.file);
+        if !std::fs::metadata(&dest).is_ok_and(|meta| meta.len() == m.bytes) {
+            download_file(m.url, &dest, |p| {
+                let downloaded = before + p.downloaded;
+                on_progress(DownloadProgress { downloaded, total, percent: downloaded as f64 * 100.0 / total as f64 });
+            })
+            .await?;
+            if sha256_of(&dest)? != m.sha256 {
+                let _ = std::fs::remove_file(&dest);
+                return Err(format!("{} did not download correctly; please try again", m.file));
+            }
+        }
+        before += m.bytes;
+    }
+    Ok(())
+}
+
+/// Threads for separation: half the logical CPUs, 1 to 8. On a 24-thread
+/// Ryzen 9 7900X 8 threads were fastest (12 were slower).
+pub fn threads() -> i32 {
+    let logical = std::thread::available_parallelism().map_or(2, |n| n.get());
+    (logical / 2).clamp(1, 8) as i32
+}
+
+unsafe extern "C" fn progress_callback(done: i32, total: i32, arg: *mut std::ffi::c_void) -> i32 {
+    let progress = &mut *(arg as *mut &mut dyn FnMut(u32, u32));
+    progress(done.max(0) as u32, total.max(0) as u32);
+    0
+}
+
+/// Who speaks when in `audio` (16 kHz mono), on the CPU. `progress(done,
+/// total)` comes from sherpa-onnx while it runs (chunks of the file).
+pub fn separate(
+    audio: &[f32],
+    count: SpeakerCount,
+    app_dir: &Path,
+    progress: &mut dyn FnMut(u32, u32),
+) -> Result<Vec<Turn>, String> {
+    use sherpa_rs_sys as sys;
+    use std::ffi::CString;
+
+    if !runtime_available() {
+        return Err("the speaker runtime (sherpa-onnx-c-api.dll) is missing".to_string());
+    }
+    let dir = model_dir(app_dir);
+    let path = |file: &str| CString::new(dir.join(file).to_string_lossy().as_bytes()).map_err(|e| e.to_string());
+    let segmentation = path(MODELS[0].file)?;
+    let embedding = path(MODELS[1].file)?;
+    let provider = CString::new("cpu").expect("no NUL");
+    let threads = threads();
+    let num_clusters = match count {
+        SpeakerCount::Auto => -1,
+        SpeakerCount::Exactly(n) => n as i32,
+    };
+    let config = sys::SherpaOnnxOfflineSpeakerDiarizationConfig {
+        segmentation: sys::SherpaOnnxOfflineSpeakerSegmentationModelConfig {
+            pyannote: sys::SherpaOnnxOfflineSpeakerSegmentationPyannoteModelConfig { model: segmentation.as_ptr() },
+            num_threads: threads,
+            debug: 0,
+            provider: provider.as_ptr(),
+        },
+        embedding: sys::SherpaOnnxSpeakerEmbeddingExtractorConfig {
+            model: embedding.as_ptr(),
+            num_threads: threads,
+            debug: 0,
+            provider: provider.as_ptr(),
+        },
+        clustering: sys::SherpaOnnxFastClusteringConfig { num_clusters, threshold: AUTO_THRESHOLD },
+        min_duration_on: MIN_DURATION_ON,
+        min_duration_off: MIN_DURATION_OFF,
+    };
+
+    struct Diarization(*const sys::SherpaOnnxOfflineSpeakerDiarization);
+    impl Drop for Diarization {
+        fn drop(&mut self) {
+            unsafe { sys::SherpaOnnxDestroyOfflineSpeakerDiarization(self.0) }
+        }
+    }
+
+    unsafe {
+        let sd = sys::SherpaOnnxCreateOfflineSpeakerDiarization(&config);
+        if sd.is_null() {
+            return Err("the speaker model could not be loaded".to_string());
+        }
+        let sd = Diarization(sd);
+        let rate = sys::SherpaOnnxOfflineSpeakerDiarizationGetSampleRate(sd.0);
+        if rate != 16_000 {
+            return Err(format!("the speaker model expects {rate} Hz"));
+        }
+        let mut progress: &mut dyn FnMut(u32, u32) = progress;
+        let arg = &mut progress as *mut &mut dyn FnMut(u32, u32) as *mut std::ffi::c_void;
+        let result = sys::SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback(
+            sd.0,
+            audio.as_ptr(),
+            audio.len() as i32,
+            Some(progress_callback),
+            arg,
+        );
+        if result.is_null() {
+            return Err("speaker separation failed".to_string());
+        }
+        let n = sys::SherpaOnnxOfflineSpeakerDiarizationResultGetNumSegments(result);
+        let segments = sys::SherpaOnnxOfflineSpeakerDiarizationResultSortByStartTime(result);
+        let mut turns = Vec::new();
+        if !segments.is_null() && n > 0 {
+            for s in std::slice::from_raw_parts(segments, n as usize) {
+                turns.push(Turn {
+                    start_ms: (s.start.max(0.0) * 1000.0) as u64,
+                    end_ms: (s.end.max(0.0) * 1000.0) as u64,
+                    speaker: s.speaker.max(0) as u32,
+                });
+            }
+            sys::SherpaOnnxOfflineSpeakerDiarizationDestroySegment(segments);
+        }
+        sys::SherpaOnnxOfflineSpeakerDiarizationDestroyResult(result);
+        Ok(turns)
+    }
 }
 
 #[cfg(windows)]
@@ -162,5 +349,18 @@ mod tests {
         for bad in ["1", "9", "", "two"] {
             assert_eq!(parse_setting(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn models_are_pinned_and_threads_are_capped() {
+        assert_eq!(MODELS.len(), 2);
+        for m in &MODELS {
+            assert_eq!(m.sha256.len(), 64, "{}", m.file);
+            assert!(m.url.starts_with("https://"), "{}", m.file);
+        }
+        let dir = std::env::temp_dir().join("rudariflow_speakers_ready");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!models_ready(&dir));
+        assert!((1..=8).contains(&threads()));
     }
 }

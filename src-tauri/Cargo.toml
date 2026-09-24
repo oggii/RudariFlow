@@ -38,6 +38,7 @@ arboard = "3"
 regex = "1"
 getrandom = "0.3"
 whatlang = "0.18"
+sha2 = "0.10"
 # WhatsApp voice messages and other Ogg Opus files, which Windows cannot open
 # (src/media.rs).
 ogg = "0.9"
@@ -165,3 +166,7 @@ path = "examples/file_bench.rs"
 [[example]]
 name = "speakers_probe"
 path = "examples/speakers_probe.rs"
+
+[[example]]
+name = "speakers_bench"
+path = "examples/speakers_bench.rs"
