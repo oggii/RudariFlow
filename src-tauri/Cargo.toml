@@ -125,3 +125,7 @@ path = "examples/download_probe.rs"
 [[example]]
 name = "quant_bench"
 path = "examples/quant_bench.rs"
+
+[[example]]
+name = "first_bench"
+path = "examples/first_bench.rs"
