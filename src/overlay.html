@@ -288,10 +288,12 @@
       const NOTICE_TEXT = {
         en: {
           audio_empty: "No speech detected", mic_error: "Microphone unavailable", polishing: "Polishing",
+          mic_missing: "Microphone not found", no_mic: "No microphone found",
           editing: "Editing", word: "word", words: "words", edit_failed: "Edit failed, text unchanged",
         },
         de: {
           audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar", polishing: "Überarbeitung",
+          mic_missing: "Mikrofon nicht gefunden", no_mic: "Kein Mikrofon gefunden",
           editing: "Bearbeiten", word: "Wort", words: "Wörter", edit_failed: "Bearbeiten ging nicht, Text unverändert",
         },
       };
@@ -324,9 +326,14 @@
         showNotice(NOTICE_TEXT[pickLang()].edit_failed, 2400);
       });
 
-      listen("mic-error", () => {
-        diag("mic-error received");
-        showNotice(NOTICE_TEXT[pickLang()].mic_error, 2400);
+      // { missing, name }: a missing device is named, e.g. "Microphone not
+      // found: Fast Track", so a switched-off USB interface is obvious.
+      listen("mic-error", (event) => {
+        const info = event.payload || {};
+        const t = NOTICE_TEXT[pickLang()];
+        const text = !info.missing ? t.mic_error : info.name ? `${t.mic_missing}: ${info.name}` : t.no_mic;
+        diag(`mic-error received (${info.missing ? "missing" : "open failed"})`);
+        showNotice(text, 3000);
       });
 
       document.getElementById("cancel").addEventListener("click", async (e) => {

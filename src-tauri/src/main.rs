@@ -179,6 +179,7 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     if engine_invalidate {
         state.whisper_engine.invalidate();
         // Load the new model or backend now, not at the next dictation.
+        let app = app.clone();
         tauri::async_runtime::spawn(async move {
             load_whisper(app.state::<AppState>().inner()).await;
         });
@@ -186,6 +187,13 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     if ai_restart {
         state.llm.stop();
         warm_ai(&state);
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let state = app.state::<AppState>();
+            if let Some(model) = active_ai_model(state.inner()) {
+                fetch_ai_draft(state.inner(), model).await;
+            }
+        });
     }
     // After a restart the new server picks the prompt up for its warm-up.
     state.llm.set_warm_prompt(warm_prompt);
@@ -343,8 +351,42 @@ async fn ai_download_model(app: AppHandle, state: State<'_, AppState>, id: Strin
         downloader::download_model(app, &ai_models::download_url(model), &dest, "ai-download-progress").await;
     *state.ai_download.lock().unwrap() = None;
     result?;
+    // The drafter first (about 100 MB), so the server starts with it.
+    fetch_ai_draft(&state, model).await;
     warm_ai(&state);
     Ok(())
+}
+
+/// Download a model's MTP drafter when the model is there and the drafter
+/// is not. llama-server uses it from its next start.
+async fn fetch_ai_draft(state: &AppState, model: &'static ai_models::AiModel) {
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let dest = ai_models::draft_path(&state.app_dir, model);
+    if dest.exists() || !ai_models::model_path(&state.app_dir, model).exists() {
+        return;
+    }
+    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let started = std::time::Instant::now();
+    match downloader::download_file(&ai_models::draft_url(model), &dest, |_| {}).await {
+        Ok(()) => startup_log::log(&format!(
+            "[ai] MTP drafter {} downloaded in {} s",
+            model.draft_file,
+            started.elapsed().as_secs()
+        )),
+        Err(e) => startup_log::log(&format!("[ai] MTP drafter download failed: {}", e)),
+    }
+    RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The selected AI model when AI cleanup is on.
+fn active_ai_model(state: &AppState) -> Option<&'static ai_models::AiModel> {
+    let settings = state.settings.lock().unwrap();
+    if !settings.ai_cleanup {
+        return None;
+    }
+    ai_models::find(&settings.ai_model)
 }
 
 /// Clean up a sample text as if it were dictated into `app` (settings test
@@ -891,6 +933,10 @@ fn main() {
                 let state = handle.state::<AppState>();
                 load_whisper(state.inner()).await;
                 warm_ai(state.inner());
+                // Installs from before 0.9 have the model but not its drafter.
+                if let Some(model) = active_ai_model(state.inner()) {
+                    fetch_ai_draft(state.inner(), model).await;
+                }
             });
             watch_idle_on_battery(app.handle().clone());
             // The CUDA runtime and Vulkan loader DLLs are load-time imports and

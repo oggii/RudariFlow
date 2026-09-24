@@ -201,14 +201,34 @@ pub fn sampling(style: &str, text: &str) -> (f32, u32) {
     (temperature, (estimated_tokens * 2 + 64).min(1024))
 }
 
+/// Time per token llama-server reported, averaged over recent requests.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Speed {
+    pub prompt_ms_per_token: f64,
+    pub gen_ms_per_token: f64,
+}
+
+/// Limit for a request that should take `expected_ms` at the measured
+/// speed: three times that plus 0.5 s, never below `fixed_ms` and never
+/// above `cap_ms`.
+pub(crate) fn scaled_timeout(fixed_ms: u64, expected_ms: Option<f64>, cap_ms: u64) -> Duration {
+    let adaptive = expected_ms.map_or(0, |e| (3.0 * e + 500.0) as u64).min(cap_ms);
+    Duration::from_millis(fixed_ms.max(adaptive))
+}
+
 /// How long a cleanup request may take before the plain text is pasted.
-pub fn request_timeout(words: usize, on_cpu: bool) -> Duration {
-    let ms = if on_cpu {
-        (5_000 + 150 * words as u64).min(20_000)
-    } else {
-        (2_000 + 25 * words as u64).min(8_000)
-    };
-    Duration::from_millis(ms)
+/// Grows with the measured speed, so a slow GPU or CPU still gets its AI
+/// cleanup instead of running into a limit made for a fast card.
+pub fn request_timeout(text: &str, max_tokens: u32, on_cpu: bool, speed: Option<Speed>) -> Duration {
+    let words = text.split_whitespace().count() as u64;
+    let fixed = if on_cpu { (5_000 + 150 * words).min(20_000) } else { (2_000 + 25 * words).min(8_000) };
+    // New per request: the dictation and about 120 tokens around it (the
+    // system prompt is cached); the answer is about as long as the dictation.
+    let tokens = text.chars().count() as f64 / 3.5;
+    let expected = speed.map(|s| {
+        (tokens + 120.0) * s.prompt_ms_per_token + (tokens + 16.0).min(max_tokens as f64) * s.gen_ms_per_token
+    });
+    scaled_timeout(fixed, expected, if on_cpu { 60_000 } else { 30_000 })
 }
 
 /// Remove `<think>…</think>` blocks; an unclosed block is dropped to the end.
@@ -322,6 +342,25 @@ fn changed_language(input: &str, output: &str) -> bool {
 /// Start of the error `complete` returns when the server cannot be reached.
 pub const UNREACHABLE: &str = "the AI model is not reachable";
 
+/// The error `complete` returns when the request ran out of time.
+pub const TIMED_OUT: &str = "timed out";
+
+/// The model's answer and the speed llama-server reported for it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Answer {
+    pub text: String,
+    pub speed: Option<Speed>,
+}
+
+/// The per-token times from the `timings` llama-server adds to an answer.
+fn speed_of(json: &serde_json::Value) -> Option<Speed> {
+    let t = &json["timings"];
+    let prompt = t["prompt_per_token_ms"].as_f64()?;
+    let gen = t["predicted_per_token_ms"].as_f64()?;
+    let valid = |ms: f64| ms.is_finite() && ms > 0.0;
+    (valid(prompt) && valid(gen)).then_some(Speed { prompt_ms_per_token: prompt, gen_ms_per_token: gen })
+}
+
 /// Ask the server for the edited text. Non-streaming; `timeout` covers the
 /// whole request.
 pub async fn complete(
@@ -331,7 +370,7 @@ pub async fn complete(
     temperature: f32,
     max_tokens: u32,
     timeout: Duration,
-) -> Result<String, String> {
+) -> Result<Answer, String> {
     let body = serde_json::json!({
         "messages": [
             { "role": "system", "content": system },
@@ -360,7 +399,7 @@ pub async fn complete(
         .await
         .map_err(|e| {
             if e.is_timeout() && !e.is_connect() {
-                "timed out".to_string()
+                TIMED_OUT.to_string()
             } else {
                 // Refused or reset: the server is gone or going.
                 format!("{}: {}", UNREACHABLE, e)
@@ -372,11 +411,12 @@ pub async fn complete(
     let json: serde_json::Value = response
         .json()
         .await
-        .map_err(|e| if e.is_timeout() { "timed out".to_string() } else { e.to_string() })?;
-    json["choices"][0]["message"]["content"]
+        .map_err(|e| if e.is_timeout() { TIMED_OUT.to_string() } else { e.to_string() })?;
+    let text = json["choices"][0]["message"]["content"]
         .as_str()
         .map(str::to_string)
-        .ok_or_else(|| "no text in the answer".to_string())
+        .ok_or_else(|| "no text in the answer".to_string())?;
+    Ok(Answer { text, speed: speed_of(&json) })
 }
 
 #[cfg(test)]
@@ -487,10 +527,34 @@ mod tests {
     fn sampling_and_timeouts() {
         assert_eq!(sampling("light", "abcdefg"), (0.0, 68));
         assert_eq!(sampling("polished", &"a".repeat(7000)).1, 1024);
-        assert_eq!(request_timeout(40, false), Duration::from_millis(3_000));
-        assert_eq!(request_timeout(1000, false), Duration::from_millis(8_000));
-        assert_eq!(request_timeout(40, true), Duration::from_millis(11_000));
-        assert_eq!(request_timeout(1000, true), Duration::from_millis(20_000));
+        let forty = "word ".repeat(40);
+        let thousand = "word ".repeat(1000);
+        // Before a speed is known: the fixed limits.
+        assert_eq!(request_timeout(&forty, 400, false, None), Duration::from_millis(3_000));
+        assert_eq!(request_timeout(&thousand, 1024, false, None), Duration::from_millis(8_000));
+        assert_eq!(request_timeout(&forty, 400, true, None), Duration::from_millis(11_000));
+        assert_eq!(request_timeout(&thousand, 1024, true, None), Duration::from_millis(20_000));
+        // An RX 6800 (1.6 ms per prompt token, 11.5 ms per output token)
+        // stays close to the fixed limit; a card ten times slower gets room.
+        let fast = Speed { prompt_ms_per_token: 1.6, gen_ms_per_token: 11.5 };
+        let slow = Speed { prompt_ms_per_token: 16.0, gen_ms_per_token: 115.0 };
+        let fast_limit = request_timeout(&forty, 400, false, Some(fast));
+        assert!(fast_limit >= Duration::from_millis(3_000) && fast_limit < Duration::from_millis(5_000), "{fast_limit:?}");
+        let slow_limit = request_timeout(&forty, 400, false, Some(slow));
+        assert!(slow_limit > Duration::from_millis(20_000), "{slow_limit:?}");
+        // Never more than 30 s on a GPU, 60 s on the CPU.
+        let crawl = Speed { prompt_ms_per_token: 500.0, gen_ms_per_token: 5_000.0 };
+        assert_eq!(request_timeout(&forty, 400, false, Some(crawl)), Duration::from_millis(30_000));
+        assert_eq!(request_timeout(&forty, 400, true, Some(crawl)), Duration::from_millis(60_000));
+    }
+
+    #[test]
+    fn speed_comes_from_the_timings_of_an_answer() {
+        let json = serde_json::json!({ "timings": { "prompt_per_token_ms": 1.65, "predicted_per_token_ms": 11.3 } });
+        assert_eq!(speed_of(&json), Some(Speed { prompt_ms_per_token: 1.65, gen_ms_per_token: 11.3 }));
+        assert_eq!(speed_of(&serde_json::json!({})), None);
+        let cached = serde_json::json!({ "timings": { "prompt_per_token_ms": null, "predicted_per_token_ms": 11.3 } });
+        assert_eq!(speed_of(&cached), None);
     }
 
     #[test]

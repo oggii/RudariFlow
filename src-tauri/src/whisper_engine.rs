@@ -289,7 +289,8 @@ impl WhisperEngine {
         let mut last_err = String::new();
         for backend in candidates {
             let loaded = load_context(model_path, &backend).and_then(|ctx| {
-                let wstate = new_state(&ctx)?;
+                let mut wstate = new_state(&ctx)?;
+                warm_up(&mut wstate);
                 Ok((ctx, wstate))
             });
             match loaded {
@@ -456,6 +457,30 @@ fn load_context(model_path: &Path, backend: &ActiveBackend) -> Result<WhisperCon
     Ok(ctx)
 }
 
+/// One short run right after loading, so the GPU sets up its pipelines for
+/// this model now and not in the first dictation (Large v3 Turbo q8 on an
+/// RX 6800: 535 ms for the first dictation, 272 ms after). A second of
+/// silence with a short prompt runs the encoder and both decoder shapes a
+/// dictation uses; its text is dropped.
+pub fn warm_up(state: &mut WhisperState) {
+    let started = std::time::Instant::now();
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    params.set_language(Some("en"));
+    params.set_print_special(false);
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+    params.set_temperature(0.0);
+    params.set_no_context(true);
+    params.set_n_threads(cpu_thread_count());
+    params.set_initial_prompt("GitHub, Tauri, whisper.cpp, Vulkan, RudariFlow, dictation");
+    let silence = vec![0.0f32; 16_000];
+    match state.full(params, &silence) {
+        Ok(()) => crate::startup_log::log(&format!("[engine] warm-up run in {} ms", started.elapsed().as_millis())),
+        Err(e) => crate::startup_log::log(&format!("[engine] warm-up run failed: {e:?}")),
+    }
+}
+
 fn new_state(ctx: &WhisperContext) -> Result<WhisperState, String> {
     ctx.create_state().map_err(|e| format!("create_state: {e:?}"))
 }
@@ -574,6 +599,7 @@ mod tests {
     fn model_filename_format() {
         assert_eq!(model_filename("small"), "ggml-small.bin");
         assert_eq!(model_filename("large-v3-turbo"), "ggml-large-v3-turbo.bin");
+        assert_eq!(model_filename("large-v3-turbo-q8_0"), "ggml-large-v3-turbo-q8_0.bin");
     }
 
     #[test]

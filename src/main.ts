@@ -218,14 +218,19 @@ interface GpuDevice {
   gpu_index: number;
   api: "Cuda" | "Vulkan";
   name: string;
+  integrated: boolean;
+  memory_mib: number;
 }
 
 async function refreshDetectedGpus() {
   const el = document.getElementById("gpu-detected")!;
   try {
     const gpus = await invoke<GpuDevice[]>("detect_gpus");
+    // An iGPU reports shared system memory, so only dedicated cards count.
+    const dedicated = gpus.filter((g) => !g.integrated);
+    const vramGb = Math.max(0, ...dedicated.map((g) => g.memory_mib / 1024));
     if (gpus.length === 0) {
-      el.textContent = t("gpu_detected_none");
+      el.textContent = `${t("gpu_detected_none")}. ${t("gpu_hint_cpu")}`;
       return;
     }
     // An NVIDIA card is listed once per API; group the APIs by card name.
@@ -236,7 +241,13 @@ async function refreshDetectedGpus() {
       byName.set(g.name, apis);
     }
     const list = [...byName].map(([name, apis]) => `${name} (${apis.join(", ")})`);
-    el.textContent = `${t("gpu_detected")}: ${list.join("; ")}`;
+    let hint = "";
+    if (dedicated.length === 0) {
+      hint = t("gpu_hint_cpu");
+    } else if (vramGb <= 8.5) {
+      hint = t("gpu_hint_small").replace("{gb}", String(Math.round(vramGb)));
+    }
+    el.textContent = `${t("gpu_detected")}: ${list.join("; ")}. ${hint}`.trim();
   } catch (e) {
     console.error("detect_gpus failed:", e);
   }

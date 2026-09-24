@@ -160,7 +160,8 @@ async fn edit_selection(settings: &Settings, app_dir: &Path, ctx: &AppContext) -
     if !voice_edit::available(settings, app_dir, ctx) {
         return None;
     }
-    match tauri::async_runtime::spawn_blocking(selection::read).await {
+    // The read at the press (capture_context) already waited for Chromium.
+    match tauri::async_runtime::spawn_blocking(selection::read_now).await {
         Ok(Target::Selected(text)) => Some(text),
         Ok(Target::None(reason)) => {
             if reason != "nothing selected" {
@@ -176,15 +177,46 @@ fn emit_audio_empty(app: &AppHandle, state: Arc<Mutex<RecordingState>>) {
     show_notice(app, state, "audio-empty", 1700);
 }
 
+/// Payload of the `mic-error` notice.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+struct MicNotice {
+    /// The device is not there at all (unplugged, switched off, not back
+    /// after sleep), as opposed to failing to open.
+    missing: bool,
+    /// Short name of the chosen microphone; empty for the Windows default.
+    name: String,
+}
+
+/// "Mikrofon (Fast Track)" -> "Fast Track"; "default" -> "".
+fn mic_label(mic_name: &str) -> String {
+    if mic_name == "default" {
+        return String::new();
+    }
+    match (mic_name.find('('), mic_name.rfind(')')) {
+        (Some(open), Some(close)) if close > open + 1 => mic_name[open + 1..close].trim().to_string(),
+        _ => mic_name.trim().to_string(),
+    }
+}
+
 /// Briefly show the overlay with a notice (`audio-empty`, `mic-error`) so a
 /// failed hotkey press is visible instead of silently doing nothing.
 fn show_notice(app: &AppHandle, state: Arc<Mutex<RecordingState>>, event: &str, hide_after_ms: u64) {
+    show_notice_with(app, state, event, (), hide_after_ms);
+}
+
+fn show_notice_with<P: serde::Serialize + Clone>(
+    app: &AppHandle,
+    state: Arc<Mutex<RecordingState>>,
+    event: &str,
+    payload: P,
+    hide_after_ms: u64,
+) {
     if let Some(overlay) = app.get_webview_window("overlay") {
         let _ = overlay.set_always_on_top(false);
         let _ = overlay.set_always_on_top(true);
         let _ = overlay.show();
     }
-    let _ = app.emit(event, ());
+    let _ = app.emit(event, payload);
     let app_clone = app.clone();
     let state_clone = state.clone();
     tauri::async_runtime::spawn(async move {
@@ -326,7 +358,11 @@ impl Recorder {
             }
             Err(e) => {
                 startup_log::log(&format!("[recorder] start failed: {}", e));
-                show_notice(app, self.state.clone(), "mic-error", 2600);
+                // A missing device is named: in the logs it was a USB
+                // interface that was switched off (for 8 s to 40 min), so
+                // waiting longer would not help, telling which one does.
+                let notice = MicNotice { missing: e.contains("not found"), name: mic_label(mic_name) };
+                show_notice_with(app, self.state.clone(), "mic-error", notice, 3200);
                 Err(e)
             }
         };
@@ -444,7 +480,7 @@ impl Recorder {
         laps.lap("ai");
         let text = polished.text;
 
-        let pasted = if text.is_empty() { Ok(()) } else { paste_timed(&text, laps) };
+        let pasted = if text.is_empty() { Ok(()) } else { paste_timed(&text, laps).await };
         if !text.is_empty() {
             // Recorded even when the paste failed, so the text is not lost.
             let model = model_label(settings);
@@ -456,7 +492,8 @@ impl Recorder {
         }
         pasted?;
         if submit {
-            press_submit(&settings.send_command)?;
+            let key = settings.send_command.clone();
+            blocking(move || press_submit(&key)).await?;
             laps.lap("send");
         }
 
@@ -489,12 +526,12 @@ impl Recorder {
         laps.lap("ai");
         match result.map_err(|e| format!("{}: {}", EDIT_FAILED, e))? {
             Edit::Delete => {
-                press_delete()?;
+                blocking(press_delete).await?;
                 laps.lap("delete");
                 Ok(String::new())
             }
             Edit::Replace(text) => {
-                let pasted = paste_timed(&text, laps);
+                let pasted = paste_timed(&text, laps).await;
                 let model = model_label(settings);
                 if history
                     .record_edit(&text, selection, &spoken, ctx, samples, &model, &settings.history)
@@ -527,13 +564,20 @@ impl Recorder {
 
 /// Paste `text`: "paste" is the time until Ctrl+V went out, "restore" the
 /// wait for the previous clipboard.
-fn paste_timed(text: &str, laps: &mut Laps) -> Result<(), String> {
-    let pasted = paste_text_timed(text);
+async fn paste_timed(text: &str, laps: &mut Laps) -> Result<(), String> {
+    let text = text.to_string();
+    let pasted = blocking(move || paste_text_timed(&text)).await;
     if let Ok(to_keystroke) = &pasted {
         laps.add("paste", *to_keystroke);
     }
     laps.lap("restore");
     pasted.map(|_| ())
+}
+
+/// Run blocking work (Whisper, keystrokes with their pauses) on a blocking
+/// thread instead of holding an async worker for its whole duration.
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work).await.map_err(|e| format!("worker thread failed: {}", e))?
 }
 
 /// Model name stored with a history entry.
@@ -565,8 +609,15 @@ pub async fn transcribe_samples(
             if !model_path.exists() {
                 return Err("Whisper model not found. Please download a model first.".to_string());
             }
-            engine.ensure_loaded(&model_path, &settings.gpu_backend)?;
-            engine.transcribe(overlay, samples, &settings.language, &prompt)
+            let engine = engine.clone();
+            let overlay = overlay.cloned();
+            let samples = samples.to_vec();
+            let (backend, language) = (settings.gpu_backend.clone(), settings.language.clone());
+            blocking(move || {
+                engine.ensure_loaded(&model_path, &backend)?;
+                engine.transcribe(overlay.as_ref(), &samples, &language, &prompt)
+            })
+            .await
         }
         "cloud" => {
             // Groq takes a WAV upload.
@@ -589,6 +640,14 @@ pub async fn transcribe_samples(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn microphone_labels_are_short() {
+        assert_eq!(mic_label("Mikrofon (Fast Track)"), "Fast Track");
+        assert_eq!(mic_label("Headset Microphone (2- Jabra Evolve2 65)"), "2- Jabra Evolve2 65");
+        assert_eq!(mic_label("USB Mic"), "USB Mic");
+        assert_eq!(mic_label("default"), "");
+    }
 
     #[test]
     fn test_initial_state_is_ready() {

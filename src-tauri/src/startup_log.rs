@@ -1,13 +1,21 @@
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-static LOG_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// Open for the app's lifetime (each line used to open and close the file).
+static LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
+
+/// At start, a log larger than this moves to startup.prev.log.
+const ROTATE_AT_BYTES: u64 = 2 * 1024 * 1024;
 
 pub fn init(app_dir: &PathBuf) {
     let _ = std::fs::create_dir_all(app_dir);
-    *LOG_PATH.lock().unwrap() = Some(app_dir.join("startup.log"));
+    let path = app_dir.join("startup.log");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > ROTATE_AT_BYTES) {
+        let _ = std::fs::rename(&path, app_dir.join("startup.prev.log"));
+    }
+    *LOG_FILE.lock().unwrap_or_else(|p| p.into_inner()) = OpenOptions::new().create(true).append(true).open(&path).ok();
     log("=== RudariFlow startup ===");
     log(&format!("version: {}", env!("CARGO_PKG_VERSION")));
     log(&format!(
@@ -25,11 +33,8 @@ pub fn log(msg: &str) {
     let now = chrono_like_now();
     let line = format!("[{}] {}\n", now, msg);
     eprintln!("{}", line.trim_end());
-    let path_guard = LOG_PATH.lock().unwrap();
-    if let Some(ref path) = *path_guard {
-        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
-            let _ = f.write_all(line.as_bytes());
-        }
+    if let Some(file) = LOG_FILE.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
+        let _ = file.write_all(line.as_bytes());
     }
 }
 
@@ -67,4 +72,23 @@ fn secs_to_ymdhms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     let y = if m <= 2 { y + 1 } else { y };
     (y as i32, m, d, h, mi, se)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_large_log_moves_aside_at_start() {
+        let dir = std::env::temp_dir().join("rudariflow_log_rotate");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("startup.log"), vec![b'x'; ROTATE_AT_BYTES as usize + 1]).unwrap();
+        init(&dir);
+        log("after rotation");
+        let prev = std::fs::metadata(dir.join("startup.prev.log")).unwrap().len();
+        assert_eq!(prev, ROTATE_AT_BYTES + 1);
+        let current = std::fs::read_to_string(dir.join("startup.log")).unwrap();
+        assert!(current.contains("=== RudariFlow startup ===") && current.contains("after rotation"));
+    }
 }
