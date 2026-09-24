@@ -157,36 +157,65 @@ pub fn clock(ms: u64) -> String {
     }
 }
 
-/// The transcript as text: a new paragraph after a pause, or at a sentence
-/// end once a paragraph is long; with `times`, each paragraph starts with
-/// its time ("[4:05] ...").
-pub fn format(segments: &[Segment], times: bool) -> String {
-    let mut paragraphs: Vec<(u64, String)> = Vec::new();
+/// A paragraph of a transcript: where it starts, who speaks, the text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Paragraph {
+    pub start_ms: u64,
+    pub speaker: Option<u8>,
+    pub text: String,
+}
+
+/// The transcript in paragraphs: a new one after a pause, at a change of
+/// speaker, or at a sentence end once a paragraph is long.
+pub fn paragraphs(segments: &[Segment]) -> Vec<Paragraph> {
+    let mut out: Vec<Paragraph> = Vec::new();
     let mut last_end = 0;
     for segment in segments {
         let text = segment.text.trim();
         if text.is_empty() {
             continue;
         }
-        let new_paragraph = match paragraphs.last() {
+        let new_paragraph = match out.last() {
             None => true,
-            Some((_, p)) => {
-                segment.start_ms.saturating_sub(last_end) >= PARAGRAPH_PAUSE_MS
-                    || (p.chars().count() >= PARAGRAPH_CHARS && p.ends_with(['.', '!', '?']))
+            Some(p) => {
+                p.speaker != segment.speaker
+                    || segment.start_ms.saturating_sub(last_end) >= PARAGRAPH_PAUSE_MS
+                    || (p.text.chars().count() >= PARAGRAPH_CHARS && p.text.ends_with(['.', '!', '?']))
             }
         };
-        match paragraphs.last_mut() {
-            Some((_, p)) if !new_paragraph => {
-                p.push(' ');
-                p.push_str(text);
+        match out.last_mut() {
+            Some(p) if !new_paragraph => {
+                p.text.push(' ');
+                p.text.push_str(text);
             }
-            _ => paragraphs.push((segment.start_ms, capitalize_first(text))),
+            _ => out.push(Paragraph { start_ms: segment.start_ms, speaker: segment.speaker, text: capitalize_first(text) }),
         }
         last_end = segment.end_ms;
     }
-    paragraphs
+    out
+}
+
+/// The name of speaker `speaker` (0 = first voice): the one the user gave,
+/// else "Speaker 1", "Speaker 2", ….
+pub fn speaker_name(names: &[String], speaker: u8) -> String {
+    names
+        .get(speaker as usize)
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty())
+        .map_or_else(|| format!("Speaker {}", speaker as u32 + 1), str::to_string)
+}
+
+/// The transcript as text: paragraphs separated by a blank line; with
+/// `times` each starts with its time ("[4:05] …"), with speakers with the
+/// name ("[4:05] Saad: …").
+pub fn format(segments: &[Segment], names: &[String], times: bool) -> String {
+    paragraphs(segments)
         .into_iter()
-        .map(|(start, text)| if times { format!("[{}] {}", clock(start), text) } else { text })
+        .map(|p| {
+            let time = if times { format!("[{}] ", clock(p.start_ms)) } else { String::new() };
+            let who = p.speaker.map_or(String::new(), |s| format!("{}: ", speaker_name(names, s)));
+            format!("{time}{who}{}", p.text)
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -262,7 +291,11 @@ mod tests {
     use super::*;
 
     fn seg(start_s: f32, end_s: f32, text: &str) -> Segment {
-        Segment { start_ms: (start_s * 1000.0) as u64, end_ms: (end_s * 1000.0) as u64, text: text.to_string() }
+        Segment { start_ms: (start_s * 1000.0) as u64, end_ms: (end_s * 1000.0) as u64, text: text.to_string(), speaker: None }
+    }
+
+    fn said(start_s: f32, end_s: f32, speaker: u8, text: &str) -> Segment {
+        Segment { speaker: Some(speaker), ..seg(start_s, end_s, text) }
     }
 
     #[test]
@@ -294,14 +327,14 @@ mod tests {
             seg(3700.0, 3702.0, "Thanks, bye."),
         ];
         assert_eq!(
-            format(&segments, false),
+            format(&segments, &[], false),
             "Hello everyone. Let's start.\n\nFirst point: the budget.\n\nThanks, bye."
         );
         assert_eq!(
-            format(&segments, true),
+            format(&segments, &[], true),
             "[0:00] Hello everyone. Let's start.\n\n[0:09] First point: the budget.\n\n[1:01:40] Thanks, bye."
         );
-        assert_eq!(format(&[], true), "");
+        assert_eq!(format(&[], &[], true), "");
     }
 
     #[test]
@@ -309,7 +342,7 @@ mod tests {
         let sentence = "This sentence is here to make the paragraph long enough. ";
         let segments: Vec<Segment> =
             (0..30).map(|i| seg(i as f32 * 2.0, i as f32 * 2.0 + 1.9, sentence.trim())).collect();
-        let text = format(&segments, false);
+        let text = format(&segments, &[], false);
         assert!(text.split("\n\n").count() >= 2);
         assert!(text.split("\n\n").all(|p| p.ends_with('.') && p.chars().count() < PARAGRAPH_CHARS + sentence.len()));
     }
@@ -346,7 +379,7 @@ mod tests {
     fn segments_keep_whispers_capitals_and_paragraphs_start_with_one() {
         assert_eq!(tidy_segment("  go to  the park "), "go to the park");
         let segments = vec![seg(0.0, 2.0, "maybe we could"), seg(2.1, 4.0, "go to the park."), seg(9.0, 10.0, "then home.")];
-        assert_eq!(format(&segments, false), "Maybe we could go to the park.\n\nThen home.");
+        assert_eq!(format(&segments, &[], false), "Maybe we could go to the park.\n\nThen home.");
     }
 
     #[test]
@@ -362,5 +395,26 @@ mod tests {
         assert_eq!(clock(0), "0:00");
         assert_eq!(clock(245_900), "4:05");
         assert_eq!(clock(3_723_000), "1:02:03");
+    }
+
+    #[test]
+    fn a_new_speaker_starts_a_paragraph_with_the_name() {
+        let segments = vec![
+            said(0.0, 2.0, 0, "Welcome."),
+            said(2.1, 4.0, 0, "First topic."),
+            said(4.2, 6.0, 1, "Version ten is out."),
+            said(6.1, 8.0, 0, "Great."),
+        ];
+        let names = vec!["Saad".to_string()];
+        assert_eq!(
+            format(&segments, &names, true),
+            "[0:00] Saad: Welcome. First topic.\n\n[0:04] Speaker 2: Version ten is out.\n\n[0:06] Saad: Great."
+        );
+        assert_eq!(
+            format(&segments, &[], false),
+            "Speaker 1: Welcome. First topic.\n\nSpeaker 2: Version ten is out.\n\nSpeaker 1: Great."
+        );
+        assert_eq!(paragraphs(&segments).len(), 3);
+        assert_eq!(speaker_name(&["  ".to_string()], 0), "Speaker 1");
     }
 }

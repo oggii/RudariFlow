@@ -418,13 +418,16 @@ impl WhisperEngine {
 }
 
 /// A piece of a file transcript; times in ms from the start of the file.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+/// `speaker` is set when the Files tab separated speakers (0 = first voice).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Segment {
     #[serde(rename = "startMs")]
     pub start_ms: u64,
     #[serde(rename = "endMs")]
     pub end_ms: u64,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<u8>,
 }
 
 /// A file being transcribed, with a Whisper state of its own.
@@ -481,7 +484,7 @@ impl WhisperEngine {
             if !text.is_empty() {
                 // Whisper counts in centiseconds.
                 let at = |cs: i64| offset_ms + cs.max(0) as u64 * 10;
-                out.push(Segment { start_ms: at(segment.start_timestamp()), end_ms: at(segment.end_timestamp()), text });
+                out.push(Segment { start_ms: at(segment.start_timestamp()), end_ms: at(segment.end_timestamp()), text, speaker: None });
             }
         }
         Ok(out)

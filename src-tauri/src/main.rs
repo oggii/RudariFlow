@@ -358,8 +358,8 @@ async fn transcribe_file(
                 emit("transcribing", p.done_ms, p.total_ms, text);
             })?;
         Ok(FileTranscript {
-            text: file_transcribe::format(&segments, false),
-            text_with_times: file_transcribe::format(&segments, true),
+            text: file_transcribe::format(&segments, &[], false),
+            text_with_times: file_transcribe::format(&segments, &[], true),
             language,
             duration_ms: audio.len() as u64 / 16,
             elapsed_ms: 0,
