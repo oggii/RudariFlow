@@ -8,6 +8,7 @@ use std::path::Path;
 
 use crate::whisper_engine::{
     backend_candidates, flash_attn_default, list_gpu_devices, load_for_check, timed_run, ActiveBackend, GpuApi,
+    GpuDevice,
 };
 
 /// Timed runs per variant; the median counts.
@@ -27,17 +28,23 @@ pub struct Measurement {
     pub error: Option<String>,
 }
 
-/// Every setup to measure: each GPU with flash attention off and on; the
-/// CPU only when there is no GPU (a large model takes seconds there).
+/// Every setup to measure, see `variants_for`.
 pub fn variants() -> Vec<(ActiveBackend, bool)> {
-    let devices = list_gpu_devices();
-    if devices.is_empty() {
+    variants_for(&list_gpu_devices())
+}
+
+/// The GPUs the settings can pick ("cuda" and "vulkan" each resolve to one),
+/// with flash attention off and on; the CPU only when there is no GPU (a
+/// large model takes seconds there). Other GPUs are left out, since no
+/// setting would use them: the integrated Radeon next to an RTX 5080 took
+/// 36 s per run, four of the check's five minutes.
+fn variants_for(devices: &[GpuDevice]) -> Vec<(ActiveBackend, bool)> {
+    let gpus: Vec<ActiveBackend> =
+        ["cuda", "vulkan"].into_iter().flat_map(|api| backend_candidates(api, devices)).collect();
+    if gpus.is_empty() {
         return vec![(ActiveBackend::Cpu, false)];
     }
-    devices
-        .into_iter()
-        .flat_map(|d| [(ActiveBackend::Gpu(d.clone()), false), (ActiveBackend::Gpu(d), true)])
-        .collect()
+    gpus.into_iter().flat_map(|gpu| [(gpu.clone(), false), (gpu, true)]).collect()
 }
 
 /// The setup RudariFlow uses without the check: `auto` with the default
@@ -228,10 +235,35 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::whisper_engine::GpuDevice;
 
     fn gpu(api: GpuApi) -> ActiveBackend {
         ActiveBackend::Gpu(GpuDevice { gpu_index: 0, api, name: "GPU".into(), integrated: false, memory_mib: 16384 })
+    }
+
+    fn device(gpu_index: i32, api: GpuApi, name: &str, integrated: bool) -> GpuDevice {
+        GpuDevice { gpu_index, api, name: name.into(), integrated, memory_mib: 16_000 }
+    }
+
+    #[test]
+    fn only_gpus_a_setting_can_pick_are_measured() {
+        // RTX 5080 with a Ryzen iGPU: CUDA and Vulkan on the card, not the iGPU.
+        let rtx_and_igpu = [
+            device(0, GpuApi::Cuda, "RTX 5080", false),
+            device(1, GpuApi::Vulkan, "RTX 5080", false),
+            device(2, GpuApi::Vulkan, "AMD Radeon(TM) Graphics", true),
+        ];
+        let names: Vec<String> = variants_for(&rtx_and_igpu)
+            .iter()
+            .map(|(b, fa)| match b {
+                ActiveBackend::Gpu(d) => format!("{:?} {} {}", d.api, d.name, fa),
+                ActiveBackend::Cpu => "CPU".into(),
+            })
+            .collect();
+        assert_eq!(names, ["Cuda RTX 5080 false", "Cuda RTX 5080 true", "Vulkan RTX 5080 false", "Vulkan RTX 5080 true"]);
+        // A laptop with only an iGPU still measures it; no GPU means the CPU.
+        let igpu_only = [device(0, GpuApi::Vulkan, "Intel Iris Xe", true)];
+        assert_eq!(variants_for(&igpu_only).len(), 2);
+        assert_eq!(variants_for(&[]), vec![(ActiveBackend::Cpu, false)]);
     }
 
     fn m(backend: ActiveBackend, flash_attn: bool, median_ms: Option<u64>) -> Measurement {

@@ -349,7 +349,7 @@ async fn transcribe_file(
         let terms = dictionary::terms(&settings.custom_prompt);
         let prompt = screen_context::whisper_prompt(&[], &settings.custom_prompt);
         let spelling = |text: &str| {
-            let text = dictionary::apply_spelling(&cleanup_text(text), &terms);
+            let text = dictionary::apply_spelling(&file_transcribe::tidy_segment(text), &terms);
             if settings.swiss_spelling { dictionary::swiss_spelling(&text) } else { text }
         };
         let (segments, language) =
@@ -416,27 +416,43 @@ async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String
         .await?;
     let started = std::time::Instant::now();
     let mut material = text.trim().to_string();
+    let chunk_chars = file_transcribe::summary_chunk_chars(&material);
     let mut requests = 0;
     // Each round turns parts into notes; three rounds cover hours of text.
     for _ in 0..3 {
-        let parts = file_transcribe::chunks(&material, file_transcribe::SUMMARY_CHUNK_CHARS);
+        let parts = file_transcribe::chunks(&material, chunk_chars);
         if parts.len() <= 1 {
             break;
         }
         let mut notes = Vec::new();
         for part in &parts {
             let _ = app.emit("summary-progress", (requests, requests + parts.len() - notes.len() + 1));
-            let answer =
-                ai_cleanup::complete(&endpoint, &file_transcribe::notes_prompt(language), part, 0.2, 700, TIMEOUT)
-                    .await?;
+            let answer = ai_cleanup::complete_in(
+                &endpoint,
+                ai_cleanup::LONG_SLOT,
+                &file_transcribe::notes_prompt(language),
+                part,
+                0.2,
+                700,
+                TIMEOUT,
+            )
+            .await?;
             notes.push(answer.text.trim().to_string());
             requests += 1;
         }
         material = notes.join("\n");
     }
     let _ = app.emit("summary-progress", (requests, requests + 1));
-    let answer =
-        ai_cleanup::complete(&endpoint, &file_transcribe::summary_prompt(language), &material, 0.2, 900, TIMEOUT).await?;
+    let answer = ai_cleanup::complete_in(
+        &endpoint,
+        ai_cleanup::LONG_SLOT,
+        &file_transcribe::summary_prompt(language),
+        &material,
+        0.2,
+        900,
+        TIMEOUT,
+    )
+    .await?;
     startup_log::log(&format!(
         "[file] summary of {} characters in {} requests, {:.1} s",
         text.chars().count(),
@@ -865,6 +881,23 @@ async fn screen_context_test(state: State<'_, AppState>) -> Result<ScreenTestRes
     .map_err(|e| e.to_string())
 }
 
+/// Test hook: the text before the caret in the focused field and what a
+/// dictation of `text` after the last one would paste there. Only with
+/// RUDARIFLOW_TEST_COMMANDS=1.
+#[tauri::command]
+async fn caret_test(state: State<'_, AppState>, text: String) -> Result<(Option<String>, String), String> {
+    if std::env::var("RUDARIFLOW_TEST_COMMANDS").as_deref() != Ok("1") {
+        return Err("test commands are off".to_string());
+    }
+    let last = state.history.last_text();
+    let look_back = last.as_ref().map_or(40, |t| t.trim().chars().count());
+    let before = tauri::async_runtime::spawn_blocking(move || rudariflow_lib::selection::text_before_caret(look_back))
+        .await
+        .map_err(|e| e.to_string())?;
+    let pasted = rudariflow_lib::selection::space_after_dictation(&text, before.as_deref(), last.as_deref());
+    Ok((before, pasted))
+}
+
 /// Restart the AI server, e.g. after it failed twice.
 #[tauri::command]
 fn ai_restart(state: State<AppState>) {
@@ -1055,6 +1088,15 @@ fn on_rewrite_hotkey(handle: &AppHandle, pressed: bool) {
                 let push_to_talk = settings.recording_mode == "push-to-talk";
                 if !push_to_talk || REWRITE_HELD.load(Ordering::SeqCst) {
                     on_hotkey(&handle, true);
+                } else {
+                    // Released before the selection was made (a tap): no
+                    // recording, and the dictation must not stay selected.
+                    let collapsed =
+                        tauri::async_runtime::spawn_blocking(rudariflow_lib::selection::collapse_selection).await;
+                    startup_log::log(&format!(
+                        "[rewrite] released before recording; selection {}",
+                        if collapsed.unwrap_or(false) { "cleared" } else { "left" }
+                    ));
                 }
             }
             Ok(Target::None(reason)) => {
@@ -1326,6 +1368,7 @@ fn main() {
             pc_check,
             edit_live_test,
             screen_context_test,
+            caret_test,
             ai_restart,
             list_open_apps,
             dictionary_export,

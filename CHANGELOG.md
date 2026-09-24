@@ -5,6 +5,84 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] - 2026-09-24 - AI on CUDA, sturdier dictation and files
+
+Tested on an NVIDIA GeForce RTX 5080 with an AMD Radeon iGPU next to it.
+
+### Changed
+- **AI cleanup runs on CUDA on NVIDIA:** the llama.cpp server carries its
+  CUDA backend next to the Vulkan one and takes it for the card Whisper
+  uses. On an RTX 5080 long dictations are cleaned in 174 to 186 ms
+  instead of 238 to 279 ms, and the slowest of 36 test requests took 217
+  to 231 ms instead of 279 to 324 ms; short ones are about as fast as
+  before (85 to 93 ms). AMD, Intel and older NVIDIA cards keep Vulkan, and
+  so does a PC where CUDA does not load.
+- **CUDA 13.4 for Whisper and the AI:** both use one CUDA runtime, which
+  is smaller than the CUDA 12 one (523 MB instead of 752 MB), so the CUDA
+  backend of the AI adds 49 MB to the installer. CUDA now needs NVIDIA
+  driver 580 or newer (2025); with an older driver Whisper and the AI run
+  on Vulkan. Builds need the CUDA Toolkit 13.x.
+
+### Fixed
+- **Whisper compiled without optimisation:** with the Visual Studio
+  generator the cmake crate replaced the Release flags of CMake, so builds
+  where that reached the projects (this PC, CMake 4.4) ran Whisper with
+  unoptimised C/C++ code: 438 to 454 ms instead of 292 to 320 ms for 42 s
+  of speech on an RTX 5080 (CUDA), 501 to 699 ms instead of 277 to 297 ms
+  on Vulkan. A new whisper-rs-sys patch sets the flags.
+- **The AI on the integrated GPU:** the Radeon of a Ryzen 7900X reports
+  more memory than the RTX 5080 next to it, so with Whisper on the CPU (or
+  the card missing from an early device list) the AI ran on the Radeon.
+  An integrated GPU is now used only when there is no other.
+- **Mouse side buttons bounce:** a worn button reported release and press
+  again 3 to 22 ms apart, which stopped a toggle recording right after it
+  started, or cut a push-to-talk dictation in two ("…sicher, dass" +
+  "Und wir…"). A release followed within 40 ms by a press of the same
+  hotkey is now ignored.
+- **Files: timestamps after pauses** were up to 45 s early (speech at 1:15
+  showed as 0:30), and Whisper invented "Thank you." in silences. Pauses
+  of 2 s and more are now left out of what Whisper hears.
+- **Files: names from the dictionary** were spelled right in the first
+  minute only ("Prodiga", "Aji" later on); every part now gets the
+  dictionary and the text before it.
+- **Files: capitals in the middle of sentences** where Whisper split a
+  sentence into two segments ("we could Go to the park").
+- **Files: Ogg Vorbis** (`.ogg`, `.oga`) was refused; it now goes to
+  Windows' decoder when it is not Opus.
+- **Files: summaries of Chinese, Japanese and Korean** transcripts failed
+  on long texts (parts too big for the model); the parts are smaller.
+- **Files: a summary of an earlier file** could show up for the next one,
+  and saving during a summary wrote "Summarising…" into the file.
+- **Dictating while a summary runs:** the AI server had one slot, so a
+  dictation waited behind a summary part and was pasted without AI
+  cleanup (4.6 s timeout on the RTX 5080). It now has a second slot for
+  summaries (about 100 MB of video memory): 121 to 174 ms per dictation
+  during a summary.
+- **PC check** also timed the integrated GPU, which no setting can pick:
+  4.7 minutes instead of 19 s next to an RTX 5080.
+- **The microphone stayed open after the release** while a piece of a
+  long dictation was still being transcribed.
+- **Long dictations with auto-detect** detected the language again for
+  every piece and the rest; the first piece's language now holds, and
+  the rest follows the app rule from the press, like the pieces.
+- **Rewrite last:** a quick tap in push-to-talk left the last dictation
+  selected, so the next keystroke replaced it.
+- **Words on screen** went to Groq with the cloud engine; they stay on
+  the PC as described.
+- **Learning dictionary:** capitals for emphasis ("SOFORT") were
+  suggested as names, and accent fixes ("Umit" to "Ümit") were not.
+- **AI speed estimate:** the one-token cache refresh counted as a
+  measurement of 0.001 ms per token and lowered the time limits.
+- **The MTP drafter was switched off for good** when the AI was stopped
+  while loading (AI cleanup turned off, model changed); now only a crash
+  counts.
+
+### Added
+- **A space between two dictations in a row:** when the previous
+  dictation stands right before the cursor, the next one starts with a
+  space. Only then, since empty fields of web apps can report their
+  placeholder as text.
+
 ## [0.10.0] - 2026-09-24 - Files, rewrite last, a dictionary that learns
 
 ### Added

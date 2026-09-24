@@ -9,18 +9,24 @@ pub const MAX_SECS: u64 = 3 * 3600;
 /// Decode the first audio track of `path` to 16 kHz mono.
 /// `progress(done, total)` is called while reading (units vary: compare
 /// the two).
-pub fn decode_16k_mono(path: &std::path::Path, progress: impl FnMut(u64, u64)) -> Result<Vec<f32>, String> {
+pub fn decode_16k_mono(path: &std::path::Path, mut progress: impl FnMut(u64, u64)) -> Result<Vec<f32>, String> {
     let mut magic = [0u8; 4];
     let is_ogg = std::fs::File::open(path)
         .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
         .is_ok()
         && &magic == b"OggS";
     if is_ogg {
-        decode_ogg_opus(path, progress)
-    } else {
-        imp::decode(path, progress)
+        // Ogg Vorbis and FLAC in Ogg go to Media Foundation, which opens them
+        // where Windows has the codec (Web Media Extensions).
+        match decode_ogg_opus(path, &mut progress) {
+            Err(e) if e == NOT_OPUS => {}
+            decoded => return decoded,
+        }
     }
+    imp::decode(path, progress)
 }
+
+const NOT_OPUS: &str = "only Opus audio is supported in Ogg files";
 
 /// Ogg Opus, decoded by libopus straight to 16 kHz mono (it resamples and
 /// downmixes itself).
@@ -32,7 +38,7 @@ fn decode_ogg_opus(path: &std::path::Path, mut progress: impl FnMut(u64, u64)) -
     let bad = |e: ogg::OggReadError| format!("cannot read the file: {}", e);
     let head = reader.read_packet().map_err(bad)?.ok_or("the file is empty")?;
     if !head.data.starts_with(b"OpusHead") || head.data.len() < 19 {
-        return Err("only Opus audio is supported in Ogg files".to_string());
+        return Err(NOT_OPUS.to_string());
     }
     // Samples at 48 kHz to drop at the start (encoder delay).
     let pre_skip = u16::from_le_bytes([head.data[10], head.data[11]]) as usize / 3;

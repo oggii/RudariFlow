@@ -196,6 +196,50 @@ pub fn select_last(text: &str) -> Target {
     }
 }
 
+/// Up to `max` characters just before the caret (or the selection) in the
+/// focused field; `None` at the start of the field, in password fields and
+/// where the app does not expose its text.
+pub fn text_before_caret(max: usize) -> Option<String> {
+    imp::text_before_caret(max)
+}
+
+/// `text` with a space in front when the field has the previous dictation
+/// `last` right before the caret: two dictations in a row gave "…sicher,
+/// dass" + "Und wir…" = "dassUnd wir…". Only then, since an empty field of
+/// a web app can report its placeholder ("Queue another message…") as its
+/// text.
+pub fn space_after_dictation(text: &str, before: Option<&str>, last: Option<&str>) -> String {
+    let (Some(before), Some(last)) = (before, last) else {
+        return text.to_string();
+    };
+    let (before, last) = (normalize_newlines(before), normalize_newlines(last.trim()));
+    if last.is_empty() || !before.ends_with(&last) {
+        return text.to_string();
+    }
+    with_leading_space(text, before.chars().last())
+}
+
+/// Characters after which a dictation starts without a space: an opening
+/// bracket or quote, a slash, a hyphen, an @ or #.
+const NO_SPACE_AFTER: &[char] = &['(', '[', '{', '"', '\'', '„', '“', '‚', '‘', '«', '‹', '/', '\\', '-', '@', '#'];
+
+/// `text` with a space in front when it would otherwise stick to the
+/// character `before` it.
+fn with_leading_space(text: &str, before: Option<char>) -> String {
+    let starts_word = text.chars().next().is_some_and(|c| c.is_alphanumeric() || "(\"„“«'‘".contains(c));
+    match before {
+        Some(b) if starts_word && !b.is_whitespace() && !NO_SPACE_AFTER.contains(&b) => format!(" {}", text),
+        _ => text.to_string(),
+    }
+}
+
+/// Put the caret at the end of the focused field's selection, e.g. after
+/// "rewrite last" selected the dictation but the hotkey was already
+/// released: a selected dictation would be replaced by the next keystroke.
+pub fn collapse_selection() -> bool {
+    imp::collapse_selection()
+}
+
 /// The text as it may sit in a field: `\n` as pasted, `\r` in RichEdit
 /// (Notepad), `\r\n` elsewhere.
 fn line_break_variants(text: &str) -> Vec<String> {
@@ -213,8 +257,44 @@ mod imp {
     use super::FocusInfo;
     use windows::core::BSTR;
     use windows::Win32::UI::Accessibility::{
-        IUIAutomationTextPattern, IUIAutomationValuePattern, UIA_TextPatternId, UIA_ValuePatternId,
+        IUIAutomationTextPattern, IUIAutomationValuePattern, TextPatternRangeEndpoint_End,
+        TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPatternId, UIA_ValuePatternId,
     };
+
+    pub fn text_before_caret(max: usize) -> Option<String> {
+        let uia = crate::uia::automation()?;
+        unsafe {
+            let el = uia.GetFocusedElement().ok()?;
+            if el.CurrentIsPassword().map(|b| b.as_bool()).unwrap_or(true) {
+                return None;
+            }
+            let pattern = el.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId).ok()?;
+            let range = pattern.GetSelection().ok()?.GetElement(0).ok()?;
+            let before = range.Clone().ok()?;
+            before.MoveEndpointByRange(TextPatternRangeEndpoint_End, &range, TextPatternRangeEndpoint_Start).ok()?;
+            let max = i32::try_from(max).unwrap_or(i32::MAX);
+            if before.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -max).ok()? == 0 {
+                return None;
+            }
+            // Line breaks can count as two characters in the text.
+            Some(before.GetText(max.saturating_mul(2)).ok()?.to_string())
+        }
+    }
+
+    pub fn collapse_selection() -> bool {
+        let Some(uia) = crate::uia::automation() else { return false };
+        unsafe {
+            let Ok(el) = uia.GetFocusedElement() else { return false };
+            let Ok(pattern) = el.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) else {
+                return false;
+            };
+            let Ok(range) = pattern.GetSelection().and_then(|ranges| ranges.GetElement(0)) else { return false };
+            range
+                .MoveEndpointByRange(TextPatternRangeEndpoint_Start, &range, TextPatternRangeEndpoint_End)
+                .and_then(|_| range.Select())
+                .is_ok()
+        }
+    }
 
     /// Select the last occurrence of the first variant found in the
     /// focused element's text.
@@ -297,6 +377,14 @@ mod imp {
         false
     }
 
+    pub fn collapse_selection() -> bool {
+        false
+    }
+
+    pub fn text_before_caret(_max: usize) -> Option<String> {
+        None
+    }
+
     pub fn field_text(_max: usize) -> Option<String> {
         None
     }
@@ -377,6 +465,35 @@ mod tests {
                 "Hi Anna,\r\nsee you.".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn a_dictation_right_after_the_last_one_gets_a_space() {
+        let last = Some("Lesen wir diesen Chat durch und stellen sicher, dass");
+        let before = Some("Hallo,\nLesen wir diesen Chat durch und stellen sicher, dass");
+        assert_eq!(space_after_dictation("Und wir testen.", before, last), " Und wir testen.");
+        // Notepad reports line breaks as \r.
+        let two_lines = Some("Erste Zeile.\nZweite Zeile.");
+        assert_eq!(space_after_dictation("Weiter.", Some("x\rErste Zeile.\rZweite Zeile."), two_lines), " Weiter.");
+        // A space typed after it, other text, an empty field's placeholder:
+        // left alone.
+        assert_eq!(space_after_dictation("Und wir.", Some("sicher, dass "), last), "Und wir.");
+        assert_eq!(space_after_dictation("Hello.", Some("Queue another message…"), last), "Hello.");
+        assert_eq!(space_after_dictation("Hello.", None, last), "Hello.");
+        assert_eq!(space_after_dictation("Hello.", before, None), "Hello.");
+    }
+
+    #[test]
+    fn a_dictation_after_a_word_gets_a_space() {
+        assert_eq!(with_leading_space("Und wir testen.", Some('s')), " Und wir testen.");
+        assert_eq!(with_leading_space("Next point.", Some('.')), " Next point.");
+        assert_eq!(with_leading_space("\"Hello\"", Some(',')), " \"Hello\"");
+        for before in [None, Some(' '), Some('\n'), Some('('), Some('"'), Some('/'), Some('@')] {
+            assert_eq!(with_leading_space("Hello.", before), "Hello.", "{:?}", before);
+        }
+        // Punctuation dictated on its own sticks to the word before it.
+        assert_eq!(with_leading_space(", and then", Some('s')), ", and then");
+        assert_eq!(with_leading_space("", Some('s')), "");
     }
 
     #[test]

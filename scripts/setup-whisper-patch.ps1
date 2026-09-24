@@ -11,6 +11,8 @@
 #
 # 0001: with language "auto", the encoder ran twice on the first window
 #       (once for the language detection); now once.
+# 0002: whisper.cpp and ggml are compiled with optimisation on MSVC; the
+#       cmake crate's flags for the Visual Studio generator had none.
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"

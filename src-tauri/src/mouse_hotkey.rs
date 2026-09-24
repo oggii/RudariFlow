@@ -161,6 +161,41 @@ fn dispatch(slot: usize, pressed: bool) {
     }
 }
 
+/// A release followed this soon by a press of the same binding is contact
+/// bounce: a worn side button logged release-to-press gaps of 3 to 7 ms,
+/// and the bounce press stopped a toggle recording right after it started.
+/// People take 60 ms or more between two clicks.
+#[cfg_attr(not(windows), allow(dead_code))]
+const BOUNCE: std::time::Duration = std::time::Duration::from_millis(40);
+
+/// Pass the hook's events on to `dispatch`, holding each release back for
+/// `BOUNCE`: when the same binding is pressed again within it, neither the
+/// release nor that press is passed on. Returns when the sender is gone.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn run_debounced(events: std::sync::mpsc::Receiver<(usize, bool)>, mut dispatch: impl FnMut(usize, bool)) {
+    use std::sync::mpsc::RecvTimeoutError;
+    let mut next = events.recv().ok();
+    while let Some((slot, pressed)) = next.take() {
+        if pressed {
+            dispatch(slot, true);
+            next = events.recv().ok();
+            continue;
+        }
+        match events.recv_timeout(BOUNCE) {
+            Ok((s, true)) if s == slot => next = events.recv().ok(),
+            Ok(other) => {
+                dispatch(slot, false);
+                next = Some(other);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                dispatch(slot, false);
+                next = events.recv().ok();
+            }
+            Err(RecvTimeoutError::Disconnected) => dispatch(slot, false),
+        }
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use super::{find_slot, mods_to_bits, Modifiers, SLOTS};
@@ -253,11 +288,7 @@ mod imp {
         // the sender is dropped by `stop`.
         std::thread::Builder::new()
             .name("rf-mouse-hotkey-handler".into())
-            .spawn(move || {
-                for (slot, pressed) in rx {
-                    super::dispatch(slot, pressed);
-                }
-            })
+            .spawn(move || super::run_debounced(rx, super::dispatch))
             .map_err(|e| e.to_string())?;
 
         // Hook thread: owns the hook and pumps messages, which low-level hooks
@@ -337,6 +368,36 @@ mod tests {
         assert_eq!(parse("CmdOrCtrl+Shift+Space"), None);
         assert_eq!(parse("CmdOrCtrl+Shift"), None);
         assert_eq!(parse(""), None);
+    }
+
+    #[test]
+    fn contact_bounce_is_dropped() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut got = Vec::new();
+            run_debounced(rx, |slot, pressed| got.push((slot, pressed)));
+            got
+        });
+        // Click, bounce 5 ms after the release, bounce release.
+        tx.send((0, true)).unwrap();
+        tx.send((0, false)).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        tx.send((0, true)).unwrap();
+        tx.send((0, false)).unwrap();
+        std::thread::sleep(BOUNCE * 3);
+        // Two real clicks 150 ms apart, then a press of another binding
+        // right after a release.
+        tx.send((0, true)).unwrap();
+        tx.send((0, false)).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        tx.send((0, true)).unwrap();
+        tx.send((0, false)).unwrap();
+        tx.send((1, true)).unwrap();
+        drop(tx);
+        let got = worker.join().unwrap();
+        assert_eq!(got, [(0, true), (0, false), (0, true), (0, false), (0, true), (0, false), (1, true)]);
     }
 
     #[test]

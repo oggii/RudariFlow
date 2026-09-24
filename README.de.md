@@ -11,7 +11,7 @@
 
 Lokale Sprache-zu-Text Diktier-App für Windows, angetrieben von [whisper.cpp](https://github.com/ggml-org/whisper.cpp) mit GPU-Beschleunigung. Globaler Hotkey, Push-to-Talk oder Toggle-Modus, automatisches Einfügen des transkribierten Texts.
 
-> **v0.10.0, Windows.** Neu: Audio- und Videodateien transkribieren, mit KI-Zusammenfassung (Tab Dateien), das letzte Diktat per Stimme umschreiben, ein Wörterbuch, das aus deinen Korrekturen lernt, eine Sprache pro App, Textbausteine mit Datum und Uhrzeit, lange Diktate, die schon während des Sprechens transkribiert werden, ein PC-Check, der die schnellste Einstellung wählt, und Maus-Seitentasten für jeden Hotkey. Seit 0.9: KI-Korrektur etwa 30 % schneller, Large v3 Turbo q8. Seit 0.8: Wörter auf dem Bildschirm helfen bei Namen und Fachbegriffen. Seit 0.6: Bearbeiten per Stimme, „Schreiben in“, lokale KI-Korrektur mit Regeln pro App, Wörterbuch, Verlauf, Ersetzungen und der Befehl „Abschicken“ (siehe [Changelog](CHANGELOG.md)). Ein Installer für jede GPU: NVIDIA GeForce GTX 16 / RTX läuft über CUDA, AMD Radeon, Intel Arc und ältere NVIDIA-Karten über Vulkan, alles andere fällt auf die CPU zurück. Das Backend wird zur Laufzeit automatisch gewählt.
+> **v0.11.0, Windows.** Neu: KI-Korrektur über CUDA auf NVIDIA (lange Diktate auf einer RTX 5080 etwa 30 % schneller), Zeitmarken in Dateien, die auch nach Pausen stimmen, Namen aus dem Wörterbuch auch in langen Dateien richtig geschrieben, keine abgeschnittenen Diktate mehr durch eine prellende Maustaste, ein Leerzeichen zwischen zwei Diktaten nacheinander, und Diktate behalten ihre KI-Korrektur, während eine Datei zusammengefasst wird. Seit 0.10: Audio- und Videodateien transkribieren, mit KI-Zusammenfassung (Tab Dateien), das letzte Diktat per Stimme umschreiben, ein Wörterbuch, das aus deinen Korrekturen lernt, eine Sprache pro App, Textbausteine mit Datum und Uhrzeit, lange Diktate, die schon während des Sprechens transkribiert werden, ein PC-Check, der die schnellste Einstellung wählt, und Maus-Seitentasten für jeden Hotkey. Seit 0.9: KI-Korrektur etwa 30 % schneller, Large v3 Turbo q8. Seit 0.8: Wörter auf dem Bildschirm helfen bei Namen und Fachbegriffen. Seit 0.6: Bearbeiten per Stimme, „Schreiben in“, lokale KI-Korrektur mit Regeln pro App, Wörterbuch, Verlauf, Ersetzungen und der Befehl „Abschicken“ (siehe [Changelog](CHANGELOG.md)). Ein Installer für jede GPU: NVIDIA GeForce GTX 16 / RTX läuft über CUDA (Treiber 580 oder neuer), AMD Radeon, Intel Arc und ältere NVIDIA-Karten über Vulkan, alles andere fällt auf die CPU zurück. Das Backend wird zur Laufzeit automatisch gewählt.
 
 Vollständige Versionshistorie siehe [CHANGELOG.md](CHANGELOG.md).
 
@@ -53,13 +53,13 @@ Made by [oggi](https://0ggi.ch).
 
 - **OS:** Windows 10/11 x64
 - **GPU (empfohlen), nur aktueller Treiber, keine zusätzliche Runtime:**
-  - NVIDIA GeForce GTX 16 / RTX 20 oder neuer: CUDA (Treiber 528.33 oder neuer); ältere NVIDIA-Karten nutzen Vulkan
+  - NVIDIA GeForce GTX 16 / RTX 20 oder neuer: CUDA (Treiber 580 oder neuer; mit älterem Treiber und auf älteren NVIDIA-Karten Vulkan)
   - AMD Radeon RX 6000 oder neuer (AMD Software: Adrenalin Edition): Vulkan
   - Intel Arc und andere Vulkan-1.2-GPUs: Vulkan
   - Mit integrierter und dedizierter GPU wird die dedizierte genutzt.
 - **CPU-Fallback:** Funktioniert auch ohne nutzbare GPU, dann deutlich langsamer (~10-30×). Für CPU-Nutzer: small oder medium Modell empfohlen
 - **RAM:** Das gewählte Whisper-Modell lädt beim Start und bleibt resident. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB. Im Akkubetrieb werden die Modelle nach 10 Minuten ohne Diktat entladen und beim nächsten Hotkey wieder geladen.
-- **KI-Korrektur (optional):** Das Standardmodell belegt etwa 3,6 GB Grafikspeicher zusätzlich zu Whisper und etwa 3,3 GB RAM.
+- **KI-Korrektur (optional):** läuft auf derselben Karte wie Whisper, mit dem normalen Treiber: über CUDA auf NVIDIA GeForce GTX 16 / RTX 20 und neuer (Treiber 580 oder neuer), über Vulkan auf AMD, Intel und älteren NVIDIA-Karten. Das Standardmodell belegt etwa 3,6 GB Grafikspeicher zusätzlich zu Whisper und etwa 3,3 GB RAM. Gemessen: etwa 0,3 s pro Diktat auf einer AMD Radeon RX 6800 (Vulkan), etwa 0,09 s auf einer NVIDIA GeForce RTX 5080 (CUDA).
 
 ## Installation (für Endbenutzer)
 
@@ -74,7 +74,7 @@ Lade die neueste `RudariFlow_x.y.z_x64-setup.exe` aus den [Releases](https://git
 - Visual Studio Build Tools mit C++ workload (für `cargo build`)
 - [CMake](https://cmake.org/) und [LLVM](https://llvm.org/) (libclang, für das bindgen von `whisper-rs-sys`)
 - [Vulkan SDK](https://vulkan.lunarg.com/) (liefert `glslc` für die Vulkan-Shader von whisper.cpp; `VULKAN_SDK` muss gesetzt sein)
-- [CUDA Toolkit 12.x](https://developer.nvidia.com/cuda-downloads) (12.8 empfohlen; Compiler und cuBLAS reichen, zum Bauen ist keine NVIDIA-GPU nötig)
+- [CUDA Toolkit 13.x](https://developer.nvidia.com/cuda-downloads) (13.4, die Version des mitgelieferten llama.cpp-CUDA-Backends; Compiler und cuBLAS reichen, zum Bauen ist keine NVIDIA-GPU nötig)
 
 ### Setup
 
@@ -90,15 +90,17 @@ npm install
 #    (CUDA-Runtime aus CUDA_PATH, Vulkan-Loader aus System32)
 powershell -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1
 
-# 3b. llama.cpp-Server für die KI-Korrektur holen (festgelegter Build, SHA-256 geprüft)
+# 3b. llama.cpp-Server für die KI-Korrektur holen: Vulkan-Build und sein
+#     CUDA-Backend (festgelegte Builds, SHA-256 geprüft)
 powershell -ExecutionPolicy Bypass -File scripts/setup-llama.ps1
 
 # 3c. whisper-rs-sys entpacken und die whisper.cpp-Patches aus patches\ anwenden
 powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-patch.ps1
 
 # 4. Build-Pfad kurz halten: der verschachtelte Vulkan-Shader-Build von
-#    whisper.cpp sprengt unter src-tauri\target das 260-Zeichen-Limit
-$env:CARGO_TARGET_DIR = "C:\t\rf"
+#    whisper.cpp sprengt unter src-tauri\target das 260-Zeichen-Limit (und
+#    auch unter C:\t\rf, ausser lange Pfade sind in Windows aktiviert)
+$env:CARGO_TARGET_DIR = "C:\r"
 $env:CUDAARCHS = "75;80;86;89;120"   # RTX 20, 30, A-Serie, 40, 50
 
 # 5. Dev-Modus starten
@@ -138,7 +140,7 @@ Misst Modell-Ladezeit und Transkription auf der ersten GPU mit und ohne Flash At
 
 ## Architektur
 
-- **KI-Korrektur:** [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` (Release b11100, Vulkan-Build) als eigener Prozess auf 127.0.0.1 mit zufälligem Port und API-Schlüssel, in einem Job-Objekt, das ihn mit RudariFlow beendet; Gemma-4-Modelle (Apache-2.0) von Hugging Face. Ein eigener Prozess ist nötig, weil whisper-rs seine eigene ggml-Kopie in `rudariflow.exe` einbindet
+- **KI-Korrektur:** [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` (Release b11100: der Vulkan-Build plus das CUDA-13.4-Backend `ggml-cuda.dll`, das die für Whisper mitgelieferte CUDA-Laufzeit nutzt) als eigener Prozess auf 127.0.0.1 mit zufälligem Port und API-Schlüssel, in einem Job-Objekt, das ihn mit RudariFlow beendet; Gemma-4-Modelle (Apache-2.0) von Hugging Face. Ein eigener Prozess ist nötig, weil whisper-rs seine eigene ggml-Kopie in `rudariflow.exe` einbindet
 - **Tauri 2** (Rust backend + Webview frontend)
 - **Frontend:** Vanilla TypeScript + Vite
 - **Audio capture:** [cpal](https://github.com/RustAudio/cpal) (Cross-platform low-level audio I/O)

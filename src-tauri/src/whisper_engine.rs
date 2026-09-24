@@ -427,14 +427,17 @@ pub struct Segment {
     pub text: String,
 }
 
-/// A file being transcribed: a Whisper state of its own, so the text of
-/// earlier blocks carries over as context while dictations keep theirs.
+/// A file being transcribed, with a Whisper state of its own.
 pub struct FileRun {
     state: WhisperState,
-    /// The Whisper language; "auto" until the first block detected it,
-    /// then fixed, so a long file does not switch language midway.
+    /// The Whisper language; "auto" until a stretch of at least
+    /// `LANGUAGE_FROM_SECS` detected it, then fixed, so a long file does not
+    /// switch language midway (and a cough does not pick it).
     pub language: String,
 }
+
+/// Shortest stretch whose detected language is kept for the rest of a file.
+const LANGUAGE_FROM_SECS: usize = 5;
 
 impl WhisperEngine {
     /// Start transcribing a file with the loaded model.
@@ -444,7 +447,8 @@ impl WhisperEngine {
         Ok(FileRun { state: new_state(&loaded.ctx)?, language: language.to_string() })
     }
 
-    /// Transcribe one block of a file that starts `offset_ms` into it. The
+    /// Transcribe one block of a file that starts `offset_ms` into it.
+    /// `prompt` carries the dictionary and the text before the block. The
     /// engine stays locked for this block only (one GPU user at a time), so
     /// a dictation in between waits for one block at most.
     pub fn file_block(&self, run: &mut FileRun, samples: &[f32], offset_ms: u64, prompt: &str) -> Result<Vec<Segment>, String> {
@@ -456,15 +460,17 @@ impl WhisperEngine {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
         params.set_temperature(0.0);
-        // The file's own state: the text so far is the context.
-        params.set_no_context(false);
+        // The prompt holds the context: whisper.cpp would otherwise put the
+        // previous block's text in front of the dictionary and drop the
+        // dictionary first, so names were spelled right only in minute one.
+        params.set_no_context(true);
         params.set_n_threads(cpu_thread_count());
         let prompt = prompt.trim();
         if !prompt.is_empty() {
             params.set_initial_prompt(prompt);
         }
         run.state.full(params, samples).map_err(|e| format!("whisper full() failed: {e:?}"))?;
-        if run.language == "auto" {
+        if run.language == "auto" && samples.len() >= LANGUAGE_FROM_SECS * 16_000 {
             if let Some(code) = whisper_rs::get_lang_str(run.state.full_lang_id_from_state()) {
                 run.language = code.to_string();
             }
@@ -480,6 +486,16 @@ impl WhisperEngine {
         }
         Ok(out)
     }
+}
+
+/// Whisper language code of an English name as `transcribe` returns it
+/// ("German" -> "de").
+pub fn language_code(name: &str) -> Option<String> {
+    let name = name.trim().to_lowercase();
+    if name.is_empty() || name.contains('\0') {
+        return None;
+    }
+    whisper_rs::get_lang_id(&name).and_then(whisper_rs::get_lang_str).map(str::to_string)
 }
 
 /// English name of a Whisper language code ("de" -> "German"); `None` for
@@ -616,6 +632,15 @@ fn collect_segments(state: &WhisperState) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn language_names_and_codes_round_trip() {
+        assert_eq!(language_name("de").as_deref(), Some("German"));
+        assert_eq!(language_code("German").as_deref(), Some("de"));
+        assert_eq!(language_code("english").as_deref(), Some("en"));
+        assert_eq!(language_code(""), None);
+        assert_eq!(language_code("Klingon"), None);
+    }
 
     fn dev(gpu_index: i32, api: GpuApi) -> GpuDevice {
         GpuDevice { gpu_index, api, name: format!("{api:?}{gpu_index}"), integrated: false, memory_mib: 8192 }

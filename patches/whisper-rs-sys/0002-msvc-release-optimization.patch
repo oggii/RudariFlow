@@ -1,0 +1,44 @@
+Compile whisper.cpp and ggml with optimisation on MSVC
+
+With the Visual Studio generator the cmake crate replaces CMake's flags
+for the build type (/O2 /Ob2 /DNDEBUG for Release) with the compiler
+flags it passes on (/MD and so on), which carry no optimisation level:
+the generated projects had an empty <Optimization>, so cl.exe compiled
+whisper.cpp and ggml with its default, no optimisation. Their CPU side
+(decoder loop, graph building, sampling) then slowed CUDA and Vulkan
+alike. Measured on an RTX 5080 with large-v3-turbo on 42 s of speech
+(PC check, flash attention on): CUDA 438 to 454 ms before, 292 ms after;
+Vulkan 501 to 699 ms before, 281 ms after.
+
+diff --git a/build.rs b/build.rs
+index 6449916..061105f 100644
+--- a/build.rs
++++ b/build.rs
+@@ -269,10 +269,12 @@ fn main() {
+         // so we build with optimizations even in debug mode
+         config.define("CMAKE_BUILD_TYPE", "RelWithDebInfo");
+         config.cxxflag("-DWHISPER_DEBUG");
++        msvc_optimize(&mut config, "-O2 -Ob1");
+     } else {
+         // we're in release mode, explicitly set to release mode
+         // see also https://codeberg.org/tazz4843/whisper-rs/issues/226
+         config.define("CMAKE_BUILD_TYPE", "Release");
++        msvc_optimize(&mut config, "-O2 -Ob2 -DNDEBUG");
+     }
+ 
+     // Allow passing any WHISPER or CMAKE compile flags
+@@ -393,3 +395,14 @@ fn get_whisper_cpp_version(whisper_root: &std::path::Path) -> std::io::Result<Op
+ 
+     Ok(None)
+ }
++
++/// With the Visual Studio generator the cmake crate replaces CMake's flags
++/// for the build type (/O2 /Ob2 /DNDEBUG for Release) with the compiler
++/// flags it passes on (/MD and so on), which have no optimisation level, so
++/// whisper.cpp and ggml were compiled without optimisation. These flags go
++/// into CMAKE_<LANG>_FLAGS and CMAKE_<LANG>_FLAGS_<BUILD_TYPE> both.
++fn msvc_optimize(config: &mut Config, flags: &str) {
++    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
++        config.cflag(flags).cxxflag(flags);
++    }
++}

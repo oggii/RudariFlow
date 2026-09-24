@@ -47,17 +47,39 @@ pub fn parse_devices(output: &str) -> Vec<LlamaDevice> {
         .collect()
 }
 
-/// The GPU Whisper uses (matched by name, which is the same for an NVIDIA
-/// card under CUDA and Vulkan), else the one with the most memory. `None`
-/// means CPU.
-pub fn pick_device<'a>(devices: &'a [LlamaDevice], whisper_gpu: Option<&str>) -> Option<&'a LlamaDevice> {
-    if let Some(name) = whisper_gpu {
-        let wanted = name.trim().to_lowercase();
-        if let Some(d) = devices.iter().find(|d| d.name.trim().to_lowercase() == wanted) {
-            return Some(d);
-        }
+impl LlamaDevice {
+    fn is_cuda(&self) -> bool {
+        self.id.starts_with("CUDA")
     }
-    devices.iter().max_by_key(|d| d.total_mib)
+
+    fn named(&self, name: &str) -> bool {
+        self.name.trim().eq_ignore_ascii_case(name.trim())
+    }
+
+    /// "NVIDIA GeForce RTX 5080 (CUDA)".
+    pub fn label(&self) -> String {
+        let api = self.id.trim_end_matches(|c: char| c.is_ascii_digit());
+        if api.is_empty() { self.name.clone() } else { format!("{} ({})", self.name, api) }
+    }
+}
+
+/// The device for the AI: the GPU Whisper uses (matched by name, which is
+/// the same for an NVIDIA card under CUDA and Vulkan), else the dedicated
+/// GPU with the most memory; an integrated GPU (`integrated`, names from
+/// Whisper's device list) only when there is no other, since the Radeon of a
+/// Ryzen 7900X reports more memory than the RTX 5080 next to it. On NVIDIA
+/// CUDA goes before Vulkan (Gemma 4 E4B on an RTX 5080: 90 ms per dictation
+/// instead of 99 to 107). `None` means CPU.
+pub fn pick_device<'a>(
+    devices: &'a [LlamaDevice],
+    whisper_gpu: Option<&str>,
+    integrated: &[String],
+) -> Option<&'a LlamaDevice> {
+    let card = whisper_gpu.and_then(|name| devices.iter().find(|d| d.named(name))).or_else(|| {
+        let dedicated = || devices.iter().filter(|d| !integrated.iter().any(|i| d.named(i)));
+        dedicated().max_by_key(|d| d.total_mib).or_else(|| devices.iter().max_by_key(|d| d.total_mib))
+    })?;
+    devices.iter().find(|d| d.is_cuda() && d.named(&card.name)).or(Some(card))
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -385,7 +407,8 @@ impl LlmServer {
         let generation = self.generation.load(Ordering::SeqCst);
         self.draft_crashed.store(false, Ordering::SeqCst);
         let mut result = self.start(model, gpu_backend).await;
-        if result.is_err() && self.draft_crashed.swap(false, Ordering::SeqCst) {
+        let stopped = self.generation.load(Ordering::SeqCst) != generation;
+        if result.is_err() && self.draft_crashed.swap(false, Ordering::SeqCst) && !stopped {
             self.kill();
             startup_log::log("[ai] starting again without the MTP drafter");
             result = self.start(model, gpu_backend).await;
@@ -472,18 +495,21 @@ impl LlmServer {
         // Another model runs at another speed; the warm-up measures it anew.
         *lock(&self.speed) = None;
 
-        let devices = self.devices().await;
-        let whisper_gpu = match gpu_backend {
-            Some(backend) => {
-                let backend = backend.to_string();
-                tokio::task::spawn_blocking(move || crate::whisper_engine::preferred_gpu_name(&backend))
-                    .await
-                    .ok()
-                    .flatten()
-            }
-            None => None,
-        };
-        let device = pick_device(&devices, whisper_gpu.as_deref()).cloned();
+        // Whisper's GPU, and which GPUs are integrated: llama-server's list
+        // does not say.
+        let backend = gpu_backend.map(str::to_string);
+        let (whisper_gpu, integrated) = tokio::task::spawn_blocking(move || {
+            let integrated: Vec<String> = crate::whisper_engine::list_gpu_devices()
+                .into_iter()
+                .filter(|d| d.integrated)
+                .map(|d| d.name)
+                .collect();
+            (backend.and_then(|b| crate::whisper_engine::preferred_gpu_name(&b)), integrated)
+        })
+        .await
+        .unwrap_or_default();
+        let devices = self.devices(whisper_gpu.as_deref()).await;
+        let device = pick_device(&devices, whisper_gpu.as_deref(), &integrated).cloned();
         let port = free_port()?;
         let api_key = random_key();
         // The log of the previous run stays as llm-server.prev.log.
@@ -492,13 +518,14 @@ impl LlmServer {
         let log_err = log.try_clone().map_err(|e| e.to_string())?;
         let port_arg = port.to_string();
 
-        let mut cmd = Command::new(self.server_exe());
-        cmd.current_dir(&self.llama_dir)
-            .arg("-m")
+        let mut cmd = self.server_command();
+        cmd.arg("-m")
             .arg(model)
             .args(["--host", "127.0.0.1", "--port", &port_arg, "--api-key", &api_key])
             .args(["-dev", device.as_ref().map_or("none", |d| d.id.as_str())])
-            .args(["--fit", "on", "-c", "8192", "-np", "1", "--reasoning-budget", "0", "--no-webui"])
+            // Two slots of 8192 tokens (ai_cleanup::DICTATION_SLOT and
+            // LONG_SLOT); the second costs about 100 MB of video memory.
+            .args(["--fit", "on", "-c", "16384", "-np", "2", "--reasoning-budget", "0", "--no-webui"])
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err));
@@ -508,7 +535,6 @@ impl LlmServer {
             startup_log::log(&format!("[ai] extra llama-server arguments: {}", extra));
             cmd.args(extra.split_whitespace());
         }
-        no_window(&mut cmd);
 
         // Gemma 4's drafter, when it is downloaded next to the model.
         let draft = crate::ai_models::draft_for_model_file(model)
@@ -517,7 +543,7 @@ impl LlmServer {
             cmd.args(["--spec-type", "draft-mtp", "-md"]).arg(draft);
         }
 
-        let label = device.as_ref().map_or_else(|| "CPU".to_string(), |d| d.name.clone());
+        let label = device.as_ref().map_or_else(|| "CPU".to_string(), LlamaDevice::label);
         startup_log::log(&format!(
             "[ai] starting llama-server on {} with {}{}",
             label,
@@ -543,7 +569,9 @@ impl LlmServer {
         });
 
         if let Err(e) = self.wait_healthy(&endpoint).await {
-            if let Some(draft) = &draft {
+            // Only a crash counts against the drafter: not a stop (AI turned
+            // off, model switched) and not a slow disk.
+            if let Some(draft) = draft.as_ref().filter(|_| self.exited_on_its_own()) {
                 self.disable_draft(draft);
             }
             return Err(e);
@@ -555,8 +583,7 @@ impl LlmServer {
         if let Err(e) = self.prime(&endpoint, 8, LOAD_TIMEOUT).await {
             startup_log::log(&format!("[ai] warm-up request failed: {}", e));
             // The drafter can crash the server at the first generation.
-            let exited = lock(&self.running).as_mut().is_some_and(|r| r.child.try_wait().ok().flatten().is_some());
-            if exited {
+            if self.exited_on_its_own() {
                 if let Some(draft) = &draft {
                     self.disable_draft(draft);
                 }
@@ -570,6 +597,12 @@ impl LlmServer {
         ));
         self.set_status(ServerStatus::Ready { device: label });
         Ok(endpoint)
+    }
+
+    /// The server process of this start has exited (a stop takes it out of
+    /// `running` first, so that does not count).
+    fn exited_on_its_own(&self) -> bool {
+        lock(&self.running).as_mut().is_some_and(|r| r.child.try_wait().ok().flatten().is_some())
     }
 
     async fn wait_healthy(&self, endpoint: &Endpoint) -> Result<(), String> {
@@ -600,34 +633,57 @@ impl LlmServer {
         }
     }
 
-    /// Devices from `llama-server --list-devices`, asked once per app run.
-    /// Right after another process let go of the GPU (or early at login)
-    /// the list can come back empty, and the model would then run on the
-    /// CPU all day; so an empty answer is asked again first. A PC without a
-    /// usable GPU pays those 3 s once per run.
-    async fn devices(&self) -> Vec<LlamaDevice> {
+    /// Devices from `llama-server --list-devices`, kept once complete: not
+    /// empty, and with the GPU Whisper uses (`whisper_gpu`). Right after
+    /// another process let go of the GPU (or early at login) a card can be
+    /// missing, and the model would then run on the CPU or the integrated
+    /// GPU all day; so such a list is asked for again, and an incomplete one
+    /// is not kept, the next start asks anew. A PC without a usable GPU pays
+    /// those 3 s once per start.
+    async fn devices(&self, whisper_gpu: Option<&str>) -> Vec<LlamaDevice> {
+        let complete = |devices: &[LlamaDevice]| {
+            !devices.is_empty() && whisper_gpu.is_none_or(|name| devices.iter().any(|d| d.named(name)))
+        };
         if let Some(devices) = lock(&self.devices).clone() {
-            return devices;
+            if complete(&devices) {
+                return devices;
+            }
         }
         let mut devices = Vec::new();
         for attempt in 1..=LIST_DEVICES_TRIES {
             devices = self.list_devices().await;
             startup_log::log(&format!("[ai] devices (try {}): {:?}", attempt, devices));
-            if !devices.is_empty() {
-                break;
+            if complete(&devices) {
+                *lock(&self.devices) = Some(devices.clone());
+                return devices;
             }
             if attempt < LIST_DEVICES_TRIES {
                 tokio::time::sleep(LIST_DEVICES_RETRY).await;
             }
         }
-        *lock(&self.devices) = Some(devices.clone());
         devices
     }
 
-    async fn list_devices(&self) -> Vec<LlamaDevice> {
+    /// llama-server in its folder. The CUDA backend (ggml-cuda.dll) loads
+    /// the CUDA runtime that ships next to rudariflow.exe for Whisper, so
+    /// that folder goes on its PATH.
+    fn server_command(&self) -> Command {
         let mut cmd = Command::new(self.server_exe());
-        cmd.current_dir(&self.llama_dir).arg("--list-devices").stdin(Stdio::null());
+        cmd.current_dir(&self.llama_dir);
+        if let Some(app_dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let dirs = std::iter::once(app_dir).chain(std::env::split_paths(&path));
+            if let Ok(joined) = std::env::join_paths(dirs) {
+                cmd.env("PATH", joined);
+            }
+        }
         no_window(&mut cmd);
+        cmd
+    }
+
+    async fn list_devices(&self) -> Vec<LlamaDevice> {
+        let mut cmd = self.server_command();
+        cmd.arg("--list-devices").stdin(Stdio::null());
         let output = tokio::time::timeout(
             LIST_DEVICES_TIMEOUT,
             tokio::task::spawn_blocking(move || cmd.output()),
@@ -763,10 +819,36 @@ Available devices:
     #[test]
     fn picks_whisper_gpu_then_most_memory_then_cpu() {
         let devices = parse_devices(LIST);
-        assert_eq!(pick_device(&devices, Some("Intel(R) UHD Graphics 770")).unwrap().id, "Vulkan1");
-        assert_eq!(pick_device(&devices, Some("NVIDIA GeForce RTX 4070")).unwrap().id, "Vulkan0");
-        assert_eq!(pick_device(&devices, None).unwrap().id, "Vulkan0");
-        assert!(pick_device(&[], None).is_none());
+        assert_eq!(pick_device(&devices, Some("Intel(R) UHD Graphics 770"), &[]).unwrap().id, "Vulkan1");
+        assert_eq!(pick_device(&devices, Some("NVIDIA GeForce RTX 4070"), &[]).unwrap().id, "Vulkan0");
+        assert_eq!(pick_device(&devices, None, &[]).unwrap().id, "Vulkan0");
+        assert!(pick_device(&[], None, &[]).is_none());
+    }
+
+    /// This PC: an RTX 5080 through CUDA and Vulkan, and the Radeon of the
+    /// Ryzen 7900X, which reports the most memory.
+    const RTX_AND_IGPU: &str = "Available devices:
+  CUDA0: NVIDIA GeForce RTX 5080 (16275 MiB, 14985 MiB free)
+  Vulkan0: NVIDIA GeForce RTX 5080 (15977 MiB, 14985 MiB free)
+  Vulkan1: AMD Radeon(TM) Graphics (16210 MiB, 15400 MiB free)
+";
+
+    #[test]
+    fn nvidia_gets_cuda_and_an_integrated_gpu_only_when_alone() {
+        let devices = parse_devices(RTX_AND_IGPU);
+        let igpu = ["AMD Radeon(TM) Graphics".to_string()];
+        assert_eq!(pick_device(&devices, Some("NVIDIA GeForce RTX 5080"), &igpu).unwrap().id, "CUDA0");
+        // Whisper on the CPU: still the card, not the Radeon with more memory.
+        assert_eq!(pick_device(&devices, None, &igpu).unwrap().id, "CUDA0");
+        // Without ggml-cuda.dll (or where CUDA does not load): Vulkan on the card.
+        let vulkan_only: Vec<LlamaDevice> = devices.iter().filter(|d| !d.is_cuda()).cloned().collect();
+        assert_eq!(pick_device(&vulkan_only, None, &igpu).unwrap().id, "Vulkan0");
+        assert_eq!(pick_device(&vulkan_only, Some("NVIDIA GeForce RTX 5080"), &igpu).unwrap().id, "Vulkan0");
+        // A laptop with only its integrated GPU uses it.
+        let igpu_only: Vec<LlamaDevice> = devices.iter().filter(|d| d.id == "Vulkan1").cloned().collect();
+        assert_eq!(pick_device(&igpu_only, None, &igpu).unwrap().id, "Vulkan1");
+        assert_eq!(devices[0].label(), "NVIDIA GeForce RTX 5080 (CUDA)");
+        assert_eq!(devices[2].label(), "AMD Radeon(TM) Graphics (Vulkan)");
     }
 
     #[test]
