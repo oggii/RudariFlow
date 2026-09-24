@@ -1,0 +1,2 @@
+# Patches apply to LF sources; keep them LF on Windows checkouts too.
+*.patch eol=lf

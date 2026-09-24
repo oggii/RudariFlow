@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::ai_cleanup::AppContext;
@@ -11,7 +12,7 @@ use crate::foreground_app;
 use crate::history::History;
 use crate::llm_server::LlmServer;
 use crate::mute;
-use crate::paste::{paste_text, press_delete, press_submit};
+use crate::paste::{paste_text_timed, press_delete, press_submit};
 use crate::polish::polish;
 use crate::screen_context;
 use crate::selection::{self, Target};
@@ -102,6 +103,52 @@ fn emit_edit_target(app: &AppHandle, words: Option<usize>) {
 
 /// Screen terms of the recording `generation`, filled in the background.
 type ScreenSlot = Arc<Mutex<Option<(u64, Vec<String>)>>>;
+
+/// Step times of one dictation from the stop press on, logged as one
+/// "[timing]" line in startup.log.
+struct Laps {
+    kind: &'static str,
+    started: Instant,
+    last: Instant,
+    steps: Vec<String>,
+    audio_secs: Option<f32>,
+}
+
+impl Laps {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self { kind: "dictation", started: now, last: now, steps: Vec::new(), audio_secs: None }
+    }
+
+    /// The time since the previous step goes to `name`.
+    fn lap(&mut self, name: &str) {
+        let now = Instant::now();
+        self.steps.push(format!("{} {}", name, (now - self.last).as_millis()));
+        self.last = now;
+    }
+
+    /// Extra information for the line, without a time.
+    fn note(&mut self, text: String) {
+        self.steps.push(text);
+    }
+
+    /// A step measured by the callee; the next lap starts after it.
+    fn add(&mut self, name: &str, took: Duration) {
+        self.steps.push(format!("{} {}", name, took.as_millis()));
+        self.last += took;
+    }
+
+    fn log(&self) {
+        let audio = self.audio_secs.map(|s| format!(" ({:.1} s audio)", s)).unwrap_or_default();
+        startup_log::log(&format!(
+            "[timing] {} {} ms: {}{}",
+            self.kind,
+            self.started.elapsed().as_millis(),
+            self.steps.join(", "),
+            audio
+        ));
+    }
+}
 
 /// How long the release waits for the screen terms of a very short
 /// recording before it goes on without them.
@@ -296,6 +343,7 @@ impl Recorder {
         history: &History,
         llm: &Arc<LlmServer>,
     ) -> Result<String, String> {
+        let mut laps = Laps::new();
         // The app the text will go into, read before anything else can take focus.
         let mut ctx = foreground_app::current();
         let selection = if *lock(&self.state) == RecordingState::Recording {
@@ -319,15 +367,19 @@ impl Recorder {
 
         // Always reset state to Ready, regardless of success, failure or panic.
         let ready = ReadyOnDrop { app, state: &self.state };
+        laps.lap("start");
 
         ctx.screen_terms = self.take_screen_terms(settings).await;
+        laps.lap("screen wait");
         let result = self
-            .run_transcription_pipeline(app, settings, app_dir, engine, history, llm, &ctx, selection)
+            .run_transcription_pipeline(app, settings, app_dir, engine, history, llm, &ctx, selection, &mut laps)
             .await;
         if let Err(e) = &result {
             startup_log::log(&format!("[recorder] transcription failed: {}", e));
         }
         drop(ready);
+        laps.lap("ready");
+        laps.log();
         if result.as_ref().is_err_and(|e| e.starts_with(EDIT_FAILED)) {
             show_notice(app, self.state.clone(), "edit-failed", 2600);
         }
@@ -344,20 +396,41 @@ impl Recorder {
         llm: &Arc<LlmServer>,
         ctx: &AppContext,
         selection: Option<String>,
+        laps: &mut Laps,
     ) -> Result<String, String> {
         let taken = lock(&self.audio_recorder).stop_and_take_samples();
+        laps.lap("audio");
         let samples = match taken {
             Err(e) if e == "no_speech" => {
+                laps.kind = "no speech";
                 emit_audio_empty(app, self.state.clone());
                 return Ok(String::new());
             }
             other => other?,
         };
+        laps.audio_secs = Some(samples.len() as f32 / 16_000.0);
 
         let (raw_text, language) =
             transcribe_samples(Some(app), settings, app_dir, engine, &samples, &ctx.screen_terms).await?;
+        laps.lap("whisper");
+        // Only the screen terms the dictation (or the selection it edits)
+        // mentions go to the AI; each one costs prompt time.
+        let mut ctx = ctx.clone();
+        if !ctx.screen_terms.is_empty() {
+            let heard = match &selection {
+                Some(selected) => format!("{} {}", raw_text, selected),
+                None => raw_text.clone(),
+            };
+            let total = ctx.screen_terms.len();
+            ctx.screen_terms = screen_context::relevant_terms(&ctx.screen_terms, &heard);
+            laps.note(format!("screen terms {}/{}", ctx.screen_terms.len(), total));
+        }
+        let ctx = &ctx;
         if let Some(selection) = selection {
-            return self.run_edit(app, settings, app_dir, history, llm, ctx, &selection, &raw_text, &samples).await;
+            laps.kind = "edit";
+            return self
+                .run_edit(app, settings, app_dir, history, llm, ctx, &selection, &raw_text, &samples, laps)
+                .await;
         }
         let cleaned = dictionary::apply_spelling(&cleanup_text(&raw_text), &dictionary::terms(&settings.custom_prompt));
 
@@ -365,11 +438,13 @@ impl Recorder {
             Some(rest) if settings.send_command != "off" => (rest, true),
             _ => (cleaned, false),
         };
+        laps.lap("text");
         let polished =
             polish(settings, app_dir, llm, ctx, &text, language.as_deref(), || show_polishing(app)).await;
+        laps.lap("ai");
         let text = polished.text;
 
-        let pasted = if text.is_empty() { Ok(()) } else { paste_text(&text) };
+        let pasted = if text.is_empty() { Ok(()) } else { paste_timed(&text, laps) };
         if !text.is_empty() {
             // Recorded even when the paste failed, so the text is not lost.
             let model = model_label(settings);
@@ -377,10 +452,12 @@ impl Recorder {
             if history.record(&text, raw, ctx, &samples, &model, &settings.history).is_some() {
                 let _ = app.emit("history-updated", ());
             }
+            laps.lap("history");
         }
         pasted?;
         if submit {
             press_submit(&settings.send_command)?;
+            laps.lap("send");
         }
 
         Ok(text)
@@ -400,6 +477,7 @@ impl Recorder {
         selection: &str,
         raw_text: &str,
         samples: &[f32],
+        laps: &mut Laps,
     ) -> Result<String, String> {
         let spoken = cleanup_text(raw_text);
         if spoken.trim().is_empty() {
@@ -408,13 +486,15 @@ impl Recorder {
         }
         let (result, _) =
             voice_edit::edit(settings, app_dir, llm, ctx, selection, &spoken, || show_polishing(app)).await;
+        laps.lap("ai");
         match result.map_err(|e| format!("{}: {}", EDIT_FAILED, e))? {
             Edit::Delete => {
                 press_delete()?;
+                laps.lap("delete");
                 Ok(String::new())
             }
             Edit::Replace(text) => {
-                let pasted = paste_text(&text);
+                let pasted = paste_timed(&text, laps);
                 let model = model_label(settings);
                 if history
                     .record_edit(&text, selection, &spoken, ctx, samples, &model, &settings.history)
@@ -422,6 +502,7 @@ impl Recorder {
                 {
                     let _ = app.emit("history-updated", ());
                 }
+                laps.lap("history");
                 pasted?;
                 Ok(text)
             }
@@ -442,6 +523,17 @@ impl Recorder {
         update_overlay(app, &RecordingState::Ready);
         Ok(())
     }
+}
+
+/// Paste `text`: "paste" is the time until Ctrl+V went out, "restore" the
+/// wait for the previous clipboard.
+fn paste_timed(text: &str, laps: &mut Laps) -> Result<(), String> {
+    let pasted = paste_text_timed(text);
+    if let Ok(to_keystroke) = &pasted {
+        laps.add("paste", *to_keystroke);
+    }
+    laps.lap("restore");
+    pasted.map(|_| ())
 }
 
 /// Model name stored with a history entry.

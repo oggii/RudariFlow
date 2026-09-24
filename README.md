@@ -49,12 +49,13 @@ Made by [oggi](https://0ggi.ch).
 
 - **OS:** Windows 10/11 x64
 - **GPU (recommended), current driver only, no extra runtime to install:**
-  - NVIDIA GeForce RTX 20 series or newer: CUDA (driver 525 or newer)
+  - NVIDIA GeForce GTX 16 / RTX 20 series or newer: CUDA (driver 528.33 or newer); older NVIDIA cards use Vulkan
   - AMD Radeon RX 6000 or newer (AMD Software: Adrenalin Edition): Vulkan
   - Intel Arc and other Vulkan 1.2 GPUs: Vulkan
+  - With an integrated and a dedicated GPU, the dedicated one is used.
 - **CPU fallback:** Works without a usable GPU, but significantly slower (~10-30×). For CPU-only users we recommend the `small` or `medium` model.
-- **RAM:** the selected whisper model stays resident from first dictation onward. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB.
-- **AI cleanup (optional):** runs on Vulkan on AMD, NVIDIA and Intel GPUs with the normal driver, on the same card as Whisper. The default model needs about 5 GB of video memory on top of Whisper, so 8 GB cards and up are fine; smaller cards move part of the model to the CPU. Measured on an AMD Radeon RX 6800: about 0.3 s per dictation. NVIDIA and Intel Arc use the same Vulkan path but have not been tested yet. Without a usable GPU expect 5 to 10 s per dictation.
+- **RAM:** the selected whisper model is loaded at start and stays resident. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB. On battery, the models are unloaded after 10 minutes without dictation and load again at the next hotkey press.
+- **AI cleanup (optional):** runs on Vulkan on AMD, NVIDIA and Intel GPUs with the normal driver, on the same card as Whisper. The default model takes about 3.6 GB of video memory on top of Whisper plus about 3.3 GB of RAM (its per-layer embeddings stay in RAM), so 8 GB cards and up are fine; smaller cards move part of the model to the CPU. Measured on an AMD Radeon RX 6800: about 0.3 s per dictation. NVIDIA and Intel Arc use the same Vulkan path but have not been tested yet. Without a usable GPU expect 5 to 10 s per dictation.
 
 ## Installation (for end users)
 
@@ -89,6 +90,9 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1
 
 # 3b. Fetch the llama.cpp server used for AI cleanup (pinned build, SHA-256 checked)
 powershell -ExecutionPolicy Bypass -File scripts/setup-llama.ps1
+
+# 3c. Unpack whisper-rs-sys and apply the whisper.cpp patches in patches\
+powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-patch.ps1
 
 # 4. Keep the build path short: whisper.cpp's nested Vulkan shader build
 #    exceeds the 260-character path limit under src-tauri\target

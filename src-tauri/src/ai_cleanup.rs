@@ -345,6 +345,9 @@ pub async fn complete(
     });
     let client = reqwest::Client::builder()
         .timeout(timeout)
+        // The server is on 127.0.0.1; a Windows system proxy (company PCs)
+        // must not route the request.
+        .no_proxy()
         // A closed local port takes Windows about 2 s to refuse by default.
         .connect_timeout(Duration::from_millis(800))
         .build()

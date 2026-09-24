@@ -20,7 +20,7 @@ pub fn terms(custom_prompt: &str) -> Vec<String> {
 
 /// Fold text for comparison: lower case, ß as ss, accents and umlauts on
 /// their base letter, only letters and digits.
-fn fold(s: &str) -> String {
+pub(crate) fn fold(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars().flat_map(char::to_lowercase) {
         match c {
@@ -39,7 +39,7 @@ fn fold(s: &str) -> String {
     out
 }
 
-fn levenshtein(a: &str, b: &str) -> usize {
+pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect();
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.chars().enumerate() {

@@ -46,3 +46,6 @@ src-tauri/gen/
 # Personal / stray files accidentally dropped into the repo dir
 Dany Phone.*
 WhatsApp Audio*
+
+# whisper-rs-sys unpacked and patched by scripts/setup-whisper-patch.ps1
+src-tauri/vendor/

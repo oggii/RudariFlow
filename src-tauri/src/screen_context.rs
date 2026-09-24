@@ -125,6 +125,37 @@ pub fn terms(text: &str, exclude: &[String], max: usize) -> Vec<String> {
     found.into_iter().take(max).map(|s| s.word).collect()
 }
 
+/// The screen terms that resemble one to three words of `transcript`
+/// (folded like the dictionary; from six letters on, a letter off per
+/// four). Only those can help the AI, and each term costs prompt time
+/// (about 1.3 ms per token on an RX 6800).
+pub fn relevant_terms(terms: &[String], transcript: &str) -> Vec<String> {
+    use crate::dictionary::{fold, levenshtein};
+    let words: Vec<String> = transcript.split_whitespace().map(fold).filter(|w| !w.is_empty()).collect();
+    let mut spans = Vec::new();
+    for len in 1..=3 {
+        for window in words.windows(len) {
+            spans.push(window.concat());
+        }
+    }
+    terms
+        .iter()
+        .filter(|term| {
+            let folded = fold(term);
+            let len = folded.chars().count();
+            let typos = if len >= 6 { len / 4 } else { 0 };
+            !folded.is_empty()
+                && spans.iter().any(|span| {
+                    span == &folded
+                        || (typos > 0
+                            && span.chars().count().abs_diff(folded.chars().count()) <= typos
+                            && levenshtein(span, &folded) <= typos)
+                })
+        })
+        .cloned()
+        .collect()
+}
+
 /// Whisper's prompt: screen terms first, the dictionary last, since Whisper
 /// keeps the end of a prompt that is too long. Only name-like terms go to
 /// Whisper; code terms (`whisper.cpp`, `llama_server`) only to the AI, as
@@ -317,6 +348,23 @@ You MUST NOT use EOF here. The Claude-CLI-backed service runs on GitLab, see Cmd
         for kept in ["Claude-CLI-backed", "GitLab", "0ggi"] {
             assert!(found.iter().any(|t| t == kept), "{kept} missing from {found:?}");
         }
+    }
+
+    #[test]
+    fn only_terms_the_dictation_mentions_go_to_the_ai() {
+        let screen = terms(MAIL, &[], MAX_TERMS);
+        let heard = "Hi Umit Yilmaz, I'll send the PDF from paperless NGX and the salon agenda tomorrow.";
+        let kept = relevant_terms(&screen, heard);
+        for expected in ["Yılmaz", "Paperless-ngx", "Salon-Agenda"] {
+            assert!(kept.iter().any(|t| t == expected), "{expected} missing from {kept:?}");
+        }
+        for dropped in ["Vercel", "TWINT", "Pratteln", "Kübra", "Grüssen-Shop"] {
+            assert!(!kept.iter().any(|t| t == dropped), "{dropped} should be dropped: {kept:?}");
+        }
+        // A letter off in a longer name still counts; short terms must match exactly.
+        let list: Vec<String> = ["Kubernetes", "Anna", "RX6800"].map(String::from).to_vec();
+        assert_eq!(relevant_terms(&list, "deploy it on kubernetis, ask Ana about the rx 6800"), ["Kubernetes", "RX6800"]);
+        assert!(relevant_terms(&list, "").is_empty());
     }
 
     #[test]

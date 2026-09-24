@@ -19,7 +19,8 @@ use rudariflow_lib::history::{self, History, HistoryEntry};
 use rudariflow_lib::llm_server::{LlmServer, ServerStatus};
 use rudariflow_lib::mouse_hotkey;
 use rudariflow_lib::paste::paste_text;
-use rudariflow_lib::polish::{polish, Polished};
+use rudariflow_lib::polish::{self, polish, Polished};
+use rudariflow_lib::power;
 use rudariflow_lib::recorder::{model_label, transcribe_samples, Recorder, RecordingState};
 use rudariflow_lib::send_command::strip_send_command;
 use rudariflow_lib::settings::Settings;
@@ -37,6 +38,37 @@ struct AppState {
     llm: Arc<LlmServer>,
     /// Id of the AI model being downloaded, if any.
     ai_download: Mutex<Option<String>>,
+    /// Last hotkey press or recording start, for unloading on battery.
+    last_activity: Mutex<std::time::Instant>,
+}
+
+/// On battery, free the GPU after `power::IDLE_UNLOAD` without dictation
+/// (about 5 GB of video memory and 3 GB of RAM with the default models), so
+/// a laptop's graphics card can sleep. The next hotkey press loads both
+/// again while the user speaks.
+fn watch_idle_on_battery(handle: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            let state = handle.state::<AppState>();
+            let on_battery = power::on_battery();
+            let idle = state.last_activity.lock().unwrap().elapsed();
+            let busy = state.recorder.get_state() != RecordingState::Ready;
+            // Only looked at when it matters: the engine lock waits for a
+            // running transcription.
+            let loaded = on_battery
+                && !busy
+                && (state.llm.status() != ServerStatus::Stopped || state.whisper_engine.is_loaded());
+            if power::should_unload(on_battery, idle, loaded, busy) {
+                state.whisper_engine.invalidate();
+                state.llm.stop();
+                startup_log::log(&format!(
+                    "[power] on battery and idle for {} min: models unloaded",
+                    idle.as_secs() / 60
+                ));
+            }
+        }
+    });
 }
 
 /// Set in `setup`; lets the AI server report status changes to the UI.
@@ -61,6 +93,32 @@ fn ai_model_to_run(settings: &Settings, app_dir: &std::path::Path) -> Option<Pat
     }
     let path = ai_models::model_path(app_dir, ai_models::find(&settings.ai_model)?);
     path.exists().then_some(path)
+}
+
+/// The Whisper model to load for these settings: local engine and model
+/// downloaded.
+fn whisper_model_to_load(settings: &Settings, app_dir: &std::path::Path) -> Option<PathBuf> {
+    if settings.engine != "local" {
+        return None;
+    }
+    let path = app_dir.join(rudariflow_lib::whisper_engine::model_filename(&settings.whisper_model));
+    path.exists().then_some(path)
+}
+
+/// Load the Whisper model now instead of at the first dictation.
+async fn load_whisper(state: &AppState) {
+    let settings = state.settings.lock().unwrap().clone();
+    let Some(model) = whisper_model_to_load(&settings, &state.app_dir) else {
+        return;
+    };
+    let engine = state.whisper_engine.clone();
+    let started = std::time::Instant::now();
+    let loaded = tauri::async_runtime::spawn_blocking(move || engine.ensure_loaded(&model, &settings.gpu_backend)).await;
+    match loaded {
+        Ok(Ok(_)) => startup_log::log(&format!("[engine] ready after {} ms", started.elapsed().as_millis())),
+        Ok(Err(e)) => startup_log::log(&format!("[engine] load failed: {}", e)),
+        Err(e) => startup_log::log(&format!("[engine] load task failed: {}", e)),
+    }
 }
 
 /// Start the AI server in the background when it should run.
@@ -107,7 +165,7 @@ fn get_settings(state: State<AppState>) -> Settings {
 }
 
 #[tauri::command]
-fn save_settings(state: State<AppState>, settings: Settings) -> Result<(), String> {
+fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<(), String> {
     settings.save(&state.app_dir)?;
     let (engine_invalidate, ai_restart) = {
         let prev = state.settings.lock().unwrap();
@@ -116,14 +174,21 @@ fn save_settings(state: State<AppState>, settings: Settings) -> Result<(), Strin
             prev.ai_cleanup != settings.ai_cleanup || prev.ai_model != settings.ai_model,
         )
     };
+    let warm_prompt = polish::system_prompt(&settings);
     *state.settings.lock().unwrap() = settings;
     if engine_invalidate {
         state.whisper_engine.invalidate();
+        // Load the new model or backend now, not at the next dictation.
+        tauri::async_runtime::spawn(async move {
+            load_whisper(app.state::<AppState>().inner()).await;
+        });
     }
     if ai_restart {
         state.llm.stop();
         warm_ai(&state);
     }
+    // After a restart the new server picks the prompt up for its warm-up.
+    state.llm.set_warm_prompt(warm_prompt);
     Ok(())
 }
 
@@ -627,6 +692,7 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
     let state = handle.state::<AppState>();
     let mode = state.settings.lock().unwrap().recording_mode.clone();
     println!("[RudariFlow] Recording mode: {}", mode);
+    *state.last_activity.lock().unwrap() = std::time::Instant::now();
 
     if pressed {
         tauri::async_runtime::spawn(async move {
@@ -639,21 +705,14 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
             if let Some(model) = ai_model_to_run(&s, &state.app_dir) {
                 state.llm.warm(model, Some(s.gpu_backend.clone()));
             }
-            if s.engine == "local" {
-                let model_path = state
-                    .app_dir
-                    .join(rudariflow_lib::whisper_engine::model_filename(
-                        &s.whisper_model,
-                    ));
-                if model_path.exists() {
-                    let engine = state.whisper_engine.clone();
-                    let backend = s.gpu_backend.clone();
-                    tauri::async_runtime::spawn_blocking(move || {
-                        if let Err(e) = engine.ensure_loaded(&model_path, &backend) {
-                            eprintln!("[RudariFlow] warmup failed: {}", e);
-                        }
-                    });
-                }
+            if let Some(model_path) = whisper_model_to_load(&s, &state.app_dir) {
+                let engine = state.whisper_engine.clone();
+                let backend = s.gpu_backend.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(e) = engine.ensure_loaded(&model_path, &backend) {
+                        eprintln!("[RudariFlow] warmup failed: {}", e);
+                    }
+                });
             }
             match mode.as_str() {
                 "toggle" => match do_toggle_recording(&handle, state.inner()).await {
@@ -709,6 +768,7 @@ async fn do_toggle_recording(
     state: &AppState,
 ) -> Result<String, String> {
     let current_state = state.recorder.get_state();
+    *state.last_activity.lock().unwrap() = std::time::Instant::now();
     match current_state {
         RecordingState::Ready => {
             let (mic, mute) = {
@@ -756,6 +816,7 @@ fn main() {
             }
         }),
     ));
+    llm.set_warm_prompt(polish::system_prompt(&settings));
     let initial_hotkey = settings.hotkey.clone();
     let initial_paste_last_hotkey = settings.paste_last_hotkey.clone();
     let initial_autostart = settings.autostart;
@@ -776,6 +837,7 @@ fn main() {
             history,
             llm,
             ai_download: Mutex::new(None),
+            last_activity: Mutex::new(std::time::Instant::now()),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -820,7 +882,17 @@ fn main() {
         .setup(move |app| {
             startup_log::log("setup() entered");
             let _ = APP_HANDLE.set(app.handle().clone());
-            warm_ai(&app.state::<AppState>());
+            // Whisper first, then the AI server: llama-server's --fit measures
+            // free video memory once, when it loads, so Whisper's share has to
+            // be taken by then. The first dictation also skips the Whisper
+            // load (1.2 s from a warm disk, 5.7 s cold).
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state = handle.state::<AppState>();
+                load_whisper(state.inner()).await;
+                warm_ai(state.inner());
+            });
+            watch_idle_on_battery(app.handle().clone());
             // The CUDA runtime and Vulkan loader DLLs are load-time imports and
             // are installed next to rudariflow.exe (see tauri.conf.json).
             if let Ok(rd) = app.path().resource_dir() {

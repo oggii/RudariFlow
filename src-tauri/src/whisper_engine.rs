@@ -26,6 +26,44 @@ pub struct GpuDevice {
     pub gpu_index: i32,
     pub api: GpuApi,
     pub name: String,
+    /// Integrated GPU sharing system memory; a dedicated card goes first.
+    pub integrated: bool,
+    pub memory_mib: u64,
+}
+
+/// Oldest NVIDIA generation the release build has CUDA kernels for
+/// (CUDAARCHS 75;80;86;89;120: GTX 16 / RTX 20 and newer). On an older card
+/// the first kernel aborts the process, so such a card goes through Vulkan.
+const MIN_CUDA_CC: (i32, i32) = (7, 5);
+
+/// Whether CUDA can run on a card with this compute capability; unknown
+/// counts as yes.
+pub(crate) fn cuda_cc_supported(cc: Option<(i32, i32)>) -> bool {
+    cc.is_none_or(|cc| cc >= MIN_CUDA_CC)
+}
+
+/// Compute capability of CUDA device `ordinal` from the CUDA runtime that
+/// ggml already loads.
+#[cfg(feature = "cuda")]
+fn cuda_compute_capability(ordinal: i32) -> Option<(i32, i32)> {
+    extern "C" {
+        fn cudaDeviceGetAttribute(value: *mut i32, attr: i32, device: i32) -> i32;
+    }
+    // cudaDevAttrComputeCapabilityMajor / Minor
+    const MAJOR: i32 = 75;
+    const MINOR: i32 = 76;
+    let (mut major, mut minor) = (0, 0);
+    // SAFETY: plain out-parameters; a failing call only returns an error code.
+    let ok = unsafe {
+        cudaDeviceGetAttribute(&mut major, MAJOR, ordinal) == 0
+            && cudaDeviceGetAttribute(&mut minor, MINOR, ordinal) == 0
+    };
+    ok.then_some((major, minor))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn cuda_compute_capability(_ordinal: i32) -> Option<(i32, i32)> {
+    None
 }
 
 /// Backend a model is actually loaded on.
@@ -54,10 +92,13 @@ pub fn preferred_gpu_name(gpu_backend: &str) -> Option<String> {
 }
 
 /// Enumerate GPU devices the same way whisper.cpp does when it resolves
-/// `gpu_device`, tagging each with its backend.
+/// `gpu_device`, tagging each with its backend. NVIDIA cards too old for the
+/// bundled CUDA kernels are left out of the CUDA list (they keep Vulkan).
 pub fn list_gpu_devices() -> Vec<GpuDevice> {
     use whisper_rs::whisper_rs_sys as sys;
+    static LOGGED_OLD_CUDA: std::sync::Once = std::sync::Once::new();
     let mut out = Vec::new();
+    let mut too_old = Vec::new();
     // SAFETY: the ggml backend registry is process-global and initialised on
     // first access; these calls only read device metadata.
     unsafe {
@@ -65,9 +106,8 @@ pub fn list_gpu_devices() -> Vec<GpuDevice> {
         for i in 0..sys::ggml_backend_dev_count() {
             let dev = sys::ggml_backend_dev_get(i);
             let ty = sys::ggml_backend_dev_type(dev);
-            if ty != sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_GPU
-                && ty != sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_IGPU
-            {
+            let integrated = ty == sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_IGPU;
+            if ty != sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_GPU && !integrated {
                 continue;
             }
             let reg_name = CStr::from_ptr(sys::ggml_backend_reg_name(sys::ggml_backend_dev_backend_reg(dev)))
@@ -83,24 +123,46 @@ pub fn list_gpu_devices() -> Vec<GpuDevice> {
                     .to_string_lossy()
                     .trim()
                     .to_string();
-                out.push(GpuDevice { gpu_index, api, name });
+                let usable = api != GpuApi::Cuda || {
+                    // ggml names CUDA devices "CUDA<ordinal>".
+                    let dev_name = CStr::from_ptr(sys::ggml_backend_dev_name(dev)).to_string_lossy();
+                    let ordinal = dev_name.trim_start_matches("CUDA").parse().unwrap_or(0);
+                    let cc = cuda_compute_capability(ordinal);
+                    if !cuda_cc_supported(cc) {
+                        too_old.push(format!("{} (compute capability {:?})", name, cc));
+                    }
+                    cuda_cc_supported(cc)
+                };
+                if usable {
+                    let (mut free, mut total) = (0usize, 0usize);
+                    sys::ggml_backend_dev_memory(dev, &mut free, &mut total);
+                    let memory_mib = (total / (1024 * 1024)) as u64;
+                    out.push(GpuDevice { gpu_index, api, name, integrated, memory_mib });
+                }
             }
             gpu_index += 1;
         }
+    }
+    if !too_old.is_empty() {
+        LOGGED_OLD_CUDA.call_once(|| {
+            crate::startup_log::log(&format!("[engine] too old for CUDA, using Vulkan: {}", too_old.join(", ")));
+        });
     }
     out
 }
 
 /// Order of backends to try for the user's `gpuBackend` setting.
 /// `auto` prefers CUDA (fastest on NVIDIA), then Vulkan (AMD, Intel, or NVIDIA
-/// without a working CUDA runtime), then CPU. An explicit choice does not
-/// fall back, so a broken setup surfaces as an error instead of silently
-/// running slowly.
+/// without a working CUDA runtime), then CPU. Within an API a dedicated card
+/// goes before an integrated GPU, then the one with more memory: Vulkan can
+/// list a laptop's iGPU first. An explicit choice does not fall back, so a
+/// broken setup surfaces as an error instead of silently running slowly.
 pub(crate) fn backend_candidates(requested: &str, devices: &[GpuDevice]) -> Vec<ActiveBackend> {
     let first = |api: GpuApi| {
         devices
             .iter()
-            .find(|d| d.api == api)
+            .filter(|d| d.api == api)
+            .min_by_key(|d| (d.integrated, std::cmp::Reverse(d.memory_mib), d.gpu_index))
             .cloned()
             .map(ActiveBackend::Gpu)
     };
@@ -177,6 +239,9 @@ struct Loaded {
     model_path: PathBuf,
     backend: ActiveBackend,
     ctx: WhisperContext,
+    /// Kept between dictations: creating a state sets up the GPU backend,
+    /// the KV caches and the compute buffers each time.
+    state: WhisperState,
 }
 
 impl WhisperEngine {
@@ -186,9 +251,14 @@ impl WhisperEngine {
         }
     }
 
-    /// Drop the cached model. Next call reloads. Used when settings change.
+    /// Drop the cached model. Next call reloads. Used when settings change
+    /// and to free the GPU on battery.
     pub fn invalidate(&self) {
         self.lock().loaded = None;
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        self.lock().loaded.is_some()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, EngineState> {
@@ -218,12 +288,17 @@ impl WhisperEngine {
 
         let mut last_err = String::new();
         for backend in candidates {
-            match load_context(model_path, &backend) {
-                Ok(ctx) => {
+            let loaded = load_context(model_path, &backend).and_then(|ctx| {
+                let wstate = new_state(&ctx)?;
+                Ok((ctx, wstate))
+            });
+            match loaded {
+                Ok((ctx, wstate)) => {
                     state.loaded = Some(Loaded {
                         model_path: model_path.to_path_buf(),
                         backend: backend.clone(),
                         ctx,
+                        state: wstate,
                     });
                     return Ok(backend);
                 }
@@ -253,16 +328,11 @@ impl WhisperEngine {
         language: &str,
         custom_prompt: &str,
     ) -> Result<(String, Option<String>), String> {
-        let state = self.lock();
+        let mut state = self.lock();
         let loaded = state
             .loaded
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| "WhisperEngine: no model loaded".to_string())?;
-
-        let mut wstate = loaded
-            .ctx
-            .create_state()
-            .map_err(|e| format!("create_state: {e:?}"))?;
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some(language));
@@ -272,6 +342,8 @@ impl WhisperEngine {
         params.set_print_timestamps(false);
         params.set_temperature(0.0);
         params.set_single_segment(false);
+        // The state is reused: never carry text over from the last dictation.
+        params.set_no_context(true);
 
         params.set_n_threads(cpu_thread_count());
 
@@ -295,12 +367,24 @@ impl WhisperEngine {
             });
         }
 
-        wstate
-            .full(params, samples)
-            .map_err(|e| format!("whisper full() failed: {e:?}"))?;
+        let started = std::time::Instant::now();
+        if let Err(e) = loaded.state.full(params, samples) {
+            // Start the next dictation from a fresh state.
+            if let Ok(fresh) = new_state(&loaded.ctx) {
+                loaded.state = fresh;
+            }
+            return Err(format!("whisper full() failed: {e:?}"));
+        }
+        crate::startup_log::log(&format!(
+            "[whisper] {:.1} s audio on {}, language {}: {} ms",
+            samples.len() as f32 / 16_000.0,
+            loaded.backend.label(),
+            language,
+            started.elapsed().as_millis()
+        ));
 
-        let text = collect_segments(&wstate)?;
-        let language = whisper_rs::get_lang_str_full(wstate.full_lang_id_from_state()).map(capitalize);
+        let text = collect_segments(&loaded.state)?;
+        let language = whisper_rs::get_lang_str_full(loaded.state.full_lang_id_from_state()).map(capitalize);
 
         // Final event so the overlay knows to stop accumulating.
         if let Some(overlay) = overlay.and_then(|app| app.get_webview_window("overlay")) {
@@ -372,6 +456,10 @@ fn load_context(model_path: &Path, backend: &ActiveBackend) -> Result<WhisperCon
     Ok(ctx)
 }
 
+fn new_state(ctx: &WhisperContext) -> Result<WhisperState, String> {
+    ctx.create_state().map_err(|e| format!("create_state: {e:?}"))
+}
+
 fn collect_segments(state: &WhisperState) -> Result<String, String> {
     let mut out = String::new();
     for segment in state.as_iter() {
@@ -388,7 +476,39 @@ mod tests {
     use super::*;
 
     fn dev(gpu_index: i32, api: GpuApi) -> GpuDevice {
-        GpuDevice { gpu_index, api, name: format!("{api:?}{gpu_index}") }
+        GpuDevice { gpu_index, api, name: format!("{api:?}{gpu_index}"), integrated: false, memory_mib: 8192 }
+    }
+
+    fn igpu(gpu_index: i32) -> GpuDevice {
+        GpuDevice { integrated: true, memory_mib: 16384, ..dev(gpu_index, GpuApi::Vulkan) }
+    }
+
+    #[test]
+    fn dedicated_card_goes_before_integrated_gpu() {
+        // Vulkan lists the laptop's iGPU first and reports shared memory for it.
+        let laptop = vec![igpu(0), dev(1, GpuApi::Vulkan)];
+        assert_eq!(
+            backend_candidates("auto", &laptop),
+            vec![ActiveBackend::Gpu(dev(1, GpuApi::Vulkan)), ActiveBackend::Cpu]
+        );
+        assert_eq!(backend_candidates("vulkan", &laptop), vec![ActiveBackend::Gpu(dev(1, GpuApi::Vulkan))]);
+        // Only an iGPU: it is still used.
+        assert_eq!(backend_candidates("vulkan", &[igpu(0)]), vec![ActiveBackend::Gpu(igpu(0))]);
+        // Two dedicated cards: the one with more memory.
+        let big = GpuDevice { memory_mib: 16384, ..dev(1, GpuApi::Vulkan) };
+        assert_eq!(
+            backend_candidates("vulkan", &[dev(0, GpuApi::Vulkan), big.clone()]),
+            vec![ActiveBackend::Gpu(big)]
+        );
+    }
+
+    #[test]
+    fn cuda_needs_turing_or_newer() {
+        assert!(!cuda_cc_supported(Some((6, 1))), "GTX 10 series");
+        assert!(!cuda_cc_supported(Some((7, 0))), "Titan V");
+        assert!(cuda_cc_supported(Some((7, 5))), "GTX 16 / RTX 20");
+        assert!(cuda_cc_supported(Some((12, 0))), "RTX 50");
+        assert!(cuda_cc_supported(None), "unknown stays allowed");
     }
 
     fn nvidia() -> Vec<GpuDevice> {

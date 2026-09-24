@@ -49,11 +49,13 @@ Made by [oggi](https://0ggi.ch).
 
 - **OS:** Windows 10/11 x64
 - **GPU (empfohlen), nur aktueller Treiber, keine zusätzliche Runtime:**
-  - NVIDIA GeForce RTX 20 oder neuer: CUDA (Treiber 525 oder neuer)
+  - NVIDIA GeForce GTX 16 / RTX 20 oder neuer: CUDA (Treiber 528.33 oder neuer); ältere NVIDIA-Karten nutzen Vulkan
   - AMD Radeon RX 6000 oder neuer (AMD Software: Adrenalin Edition): Vulkan
   - Intel Arc und andere Vulkan-1.2-GPUs: Vulkan
+  - Mit integrierter und dedizierter GPU wird die dedizierte genutzt.
 - **CPU-Fallback:** Funktioniert auch ohne nutzbare GPU, dann deutlich langsamer (~10-30×). Für CPU-Nutzer: small oder medium Modell empfohlen
-- **RAM:** Das gewählte Whisper-Modell bleibt ab dem ersten Diktat resident. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB.
+- **RAM:** Das gewählte Whisper-Modell lädt beim Start und bleibt resident. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB. Im Akkubetrieb werden die Modelle nach 10 Minuten ohne Diktat entladen und beim nächsten Hotkey wieder geladen.
+- **KI-Korrektur (optional):** Das Standardmodell belegt etwa 3,6 GB Grafikspeicher zusätzlich zu Whisper und etwa 3,3 GB RAM.
 
 ## Installation (für Endbenutzer)
 
@@ -86,6 +88,9 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1
 
 # 3b. llama.cpp-Server für die KI-Korrektur holen (festgelegter Build, SHA-256 geprüft)
 powershell -ExecutionPolicy Bypass -File scripts/setup-llama.ps1
+
+# 3c. whisper-rs-sys entpacken und die whisper.cpp-Patches aus patches\ anwenden
+powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-patch.ps1
 
 # 4. Build-Pfad kurz halten: der verschachtelte Vulkan-Shader-Build von
 #    whisper.cpp sprengt unter src-tauri\target das 260-Zeichen-Limit

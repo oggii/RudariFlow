@@ -22,6 +22,7 @@ pub mod selection;
 pub mod screen_context;
 pub mod uia;
 pub mod voice_edit;
+pub mod power;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

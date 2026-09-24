@@ -14,13 +14,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   20 ms for a web page, 200 ms for VS Code, while you speak) and picks out
   names, brands and technical terms: "Yılmaz", "Paperless-ngx", "GitLab",
   "Salon-Agenda". Up to 20 name-like terms go into Whisper's prompt ahead
-  of the dictionary, up to 40 into the AI cleanup and Edit mode request
-  with the instruction to use their spelling but never add them. Measured:
+  of the dictionary. Of up to 40 terms, those that resemble something
+  Whisper heard go into the AI cleanup and Edit mode request, with the
+  instruction to use their spelling but never add them. Measured:
   "Umit Yilmaz" becomes "Ümit Yılmaz", "Paperless NGX" becomes
   "Paperless-ngx", an unrelated sentence stays unchanged. Only the word
   list is used, nothing is stored; the log records counts only. Ordinary
   words, words at the start of a line, links, emails, code fragments,
   measurements ("13h", "0.32s") and dictionary entries are left out.
+
+### Improved
+Measured on an AMD Radeon RX 6800 with large-v3-turbo and Gemma 4 E4B.
+- **First dictation after start as fast as the rest.** The AI server warms
+  its prompt cache with the dictation prompt of your settings (dictionary,
+  instructions, Write in), and again when they change, instead of a
+  generic prompt: AI time of the first dictation 958 ms -> 477 ms.
+- **Auto-detect costs no extra time.** The language detection's encoder
+  pass is reused instead of running the encoder twice (whisper.cpp patch
+  in patches/, applied by scripts/setup-whisper-patch.ps1): Whisper with
+  Auto-detect 631 ms -> 330 ms, like a set language (331 ms), same text
+  in 30 of 30 recordings; German is still detected as German.
+- **Whisper loads at start**, before the AI server: the first dictation no
+  longer waits for it (1.2 s from a warm disk, 5.7 s cold), and the AI
+  server's memory fit sees Whisper's share of the video memory.
+- **Whisper keeps its state** between dictations: 50 ms less each time,
+  same text in 20 of 20 recordings.
+- **Fewer screen terms for the AI** (see Words on screen): AI time
+  559 ms -> 389 ms in the median.
+- After 10 minutes without a request, a hotkey press refreshes the AI's
+  prompt cache while you speak; after a night of idling the first
+  dictation had run into its time limit and was pasted without AI.
+- On battery, Whisper and the AI model are unloaded after 10 minutes
+  without dictation (about 5 GB of video memory and 3 GB of RAM), so a
+  laptop's graphics card can sleep. The next press loads them while you
+  speak.
+
+### Fixed
+- NVIDIA cards older than GTX 16 / RTX 20 (compute capability below 7.5)
+  use Vulkan. The bundled CUDA kernels do not run on them, and the first
+  transcription crashed the app.
+- PCs with an integrated and a dedicated GPU: Whisper and the AI use the
+  dedicated card (then the one with more memory), not whichever Vulkan
+  lists first.
+- Requests to the local AI server ignore a Windows system proxy.
+
+### Diagnostics
+- startup.log gets one "[timing]" line per dictation (start, audio,
+  Whisper, text, AI, paste, clipboard restore, history) and a "[whisper]"
+  line; the previous llm-server.log stays as llm-server.prev.log.
+- New benchmarks in src-tauri/examples: warm_bench (first dictation after
+  start), state_bench (Whisper state), terms_bench (screen terms),
+  lang_bench (Auto-detect) and ctx_bench (a shorter encoder window: faster,
+  but it changed or repeated words in 9 to 19 of 49 recordings, so it is
+  not used).
 
 ## [0.7.0] - 2026-09-23 - Edit mode
 
