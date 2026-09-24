@@ -117,3 +117,7 @@ path = "examples/lang_bench.rs"
 [[example]]
 name = "edit_bench"
 path = "examples/edit_bench.rs"
+
+[[example]]
+name = "download_probe"
+path = "examples/download_probe.rs"
