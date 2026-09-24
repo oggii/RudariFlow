@@ -160,7 +160,8 @@ async fn edit_selection(settings: &Settings, app_dir: &Path, ctx: &AppContext) -
     if !voice_edit::available(settings, app_dir, ctx) {
         return None;
     }
-    match tauri::async_runtime::spawn_blocking(selection::read).await {
+    // The read at the press (capture_context) already waited for Chromium.
+    match tauri::async_runtime::spawn_blocking(selection::read_now).await {
         Ok(Target::Selected(text)) => Some(text),
         Ok(Target::None(reason)) => {
             if reason != "nothing selected" {

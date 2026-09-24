@@ -119,12 +119,25 @@ const WAKE_UP_TRIES: usize = 4;
 const WAKE_UP_PAUSE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// `decide(read_focus())`, with the selection's line breaks normalised.
+/// Waits up to 450 ms for Chromium's accessibility to wake up, so use it
+/// where the time is hidden: when the hotkey is pressed.
 pub fn read() -> Target {
-    for attempt in 1..=WAKE_UP_TRIES {
+    read_tries(WAKE_UP_TRIES)
+}
+
+/// One read without waiting for Chromium, for the hotkey release: the read
+/// at the press has woken it up already, and waiting cost every dictation
+/// into a web page without a focused text field 450 ms.
+pub fn read_now() -> Target {
+    read_tries(1)
+}
+
+fn read_tries(tries: usize) -> Target {
+    for attempt in 1..=tries {
         let Some(info) = read_focus() else {
             return Target::None("no focused element");
         };
-        if attempt < WAKE_UP_TRIES && chromium_waking_up(&info) {
+        if attempt < tries && chromium_waking_up(&info) {
             std::thread::sleep(WAKE_UP_PAUSE);
             continue;
         }
