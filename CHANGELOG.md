@@ -5,6 +5,37 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Improved
+Measured on an AMD Radeon RX 6800.
+- **AI cleanup about 30 % faster** with Gemma 4's MTP drafter, a small
+  companion model (about 100 MB, 465 MB for 12B) that guesses the next
+  words for the AI to check in one pass: dictation 343 -> 240 ms median,
+  edits up to 150 ms faster. It downloads with the AI model; existing
+  installs fetch it once in the background. If the AI server ever fails
+  with it, RudariFlow restarts it without the drafter and keeps it off
+  until the next update.
+- **Large v3 Turbo q8** (Engine tab): the same text as Large v3 Turbo in
+  49 of 49 test recordings, 18 % faster (274 vs 336 ms) and half the
+  memory (870 MB).
+- **Hints for your hardware** next to the detected GPUs: without a
+  dedicated GPU, Whisper Small and Gemma 4 E2B with the Light style; with
+  8 GB of video memory or less, Large v3 Turbo q8 and Gemma 4 E2B.
+- **AI time limits follow the measured speed**, so a slower GPU or the
+  CPU gets its AI cleanup instead of the plain text: simulated slow GPU,
+  6 of 6 dictations cleaned (before: 6 of 6 fell back after 2.5 s).
+- No 450 ms wait when you dictate into a Chromium page whose focus is not
+  a text field (the Edit mode check waited for Chromium's accessibility).
+- The pill names a missing microphone ("Microphone not found: Fast
+  Track"), e.g. a USB interface that is switched off.
+
+### Fixed
+- An interrupted model download continues where it stopped instead of
+  starting over (checked: resumed at 5.2 of 77.7 MB, same SHA-256).
+- Whisper and the paste keystrokes no longer hold an async worker thread.
+- startup.log moves to startup.prev.log at start when it is over 2 MB.
+
 ## [0.8.0] - 2026-09-24 - Words on screen, faster dictation
 
 ### Added
