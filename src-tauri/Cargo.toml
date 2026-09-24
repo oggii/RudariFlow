@@ -113,3 +113,7 @@ path = "examples/ctx_bench.rs"
 [[example]]
 name = "lang_bench"
 path = "examples/lang_bench.rs"
+
+[[example]]
+name = "edit_bench"
+path = "examples/edit_bench.rs"

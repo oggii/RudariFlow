@@ -182,7 +182,7 @@ fn main() {
                     Duration::from_secs(60),
                 ));
                 times.push(t.elapsed().as_millis());
-                last = answer.unwrap_or_else(|e| format!("ERROR: {}", e));
+                last = answer.map(|a| a.text).unwrap_or_else(|e| format!("ERROR: {}", e));
             }
             times.sort();
             let median = times[times.len() / 2];

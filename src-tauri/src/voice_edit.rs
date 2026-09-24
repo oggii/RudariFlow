@@ -103,11 +103,17 @@ pub fn max_tokens(selection: &str, spoken: &str) -> u32 {
 }
 
 /// How long an edit may take. The model writes the whole selection again,
-/// so the limit grows with it.
-pub fn request_timeout(selection: &str, on_cpu: bool) -> Duration {
+/// so the limit grows with it, and with the measured speed.
+pub fn request_timeout(selection: &str, spoken: &str, on_cpu: bool, speed: Option<ai_cleanup::Speed>) -> Duration {
     let expected = (tokens(selection) as f32 * 1.3) as u64 + 150;
-    let ms = if on_cpu { (10_000 + 200 * expected).min(300_000) } else { (4_000 + 30 * expected).min(90_000) };
-    Duration::from_millis(ms)
+    let fixed = if on_cpu { (10_000 + 200 * expected).min(300_000) } else { (4_000 + 30 * expected).min(90_000) };
+    // New per edit: selection, spoken words and about 120 tokens around
+    // them; the answer is about as long as the selection.
+    let new_tokens = (tokens(selection) + tokens(spoken)) as f64 + 120.0;
+    let measured = speed.map(|s| {
+        new_tokens * s.prompt_ms_per_token + expected.min(max_tokens(selection, spoken) as u64) as f64 * s.gen_ms_per_token
+    });
+    ai_cleanup::scaled_timeout(fixed, measured, if on_cpu { 300_000 } else { 120_000 })
 }
 
 const WRAPPERS: &[(&str, &str)] = &[
@@ -206,15 +212,18 @@ pub async fn edit(
         let dictionary = crate::dictionary::terms(&settings.custom_prompt);
         let (system, user) =
             build_messages(&settings.ai_instructions, &dictionary, &rules, ctx, selection, &spoken);
-        let timeout = request_timeout(selection, endpoint.on_cpu);
+        let timeout = request_timeout(selection, &spoken, endpoint.on_cpu, llm.speed());
         let answer = ai_cleanup::complete(&endpoint, &system, &user, 0.2, max_tokens(selection, &spoken), timeout)
             .await
             .inspect_err(|e| {
                 if e.starts_with(ai_cleanup::UNREACHABLE) {
                     llm.request_failed(model_path.clone(), Some(settings.gpu_backend.clone()));
+                } else if e == ai_cleanup::TIMED_OUT {
+                    llm.note_timeout();
                 }
             })?;
-        match guard(selection, &spoken, &answer)? {
+        llm.note_speed(answer.speed);
+        match guard(selection, &spoken, &answer.text)? {
             Edit::Replace(text) => {
                 let text = if settings.swiss_spelling { crate::dictionary::swiss_spelling(&text) } else { text };
                 Ok(Edit::Replace(keep_surrounding_space(selection, &text)))
@@ -278,9 +287,13 @@ mod tests {
         // ceil(3/3) * 2.5 -> 2, ceil(2/3) * 2 -> 2
         assert_eq!(max_tokens("abc", "go"), 204);
         assert_eq!(max_tokens(&"a".repeat(6000), "shorter"), 4096);
-        assert_eq!(request_timeout("", false), Duration::from_millis(4_000 + 30 * 150));
-        assert_eq!(request_timeout(&"a".repeat(6000), false), Duration::from_millis(86_500));
-        assert_eq!(request_timeout(&"a".repeat(6000), true), Duration::from_millis(300_000));
+        assert_eq!(request_timeout("", "", false, None), Duration::from_millis(4_000 + 30 * 150));
+        assert_eq!(request_timeout(&"a".repeat(6000), "", false, None), Duration::from_millis(86_500));
+        assert_eq!(request_timeout(&"a".repeat(6000), "", true, None), Duration::from_millis(300_000));
+        // A slow card gets more time than the fixed limit, up to 120 s.
+        let slow = ai_cleanup::Speed { prompt_ms_per_token: 20.0, gen_ms_per_token: 150.0 };
+        let limit = request_timeout(&"a".repeat(900), "make it shorter", false, Some(slow));
+        assert!(limit > Duration::from_millis(4_000 + 30 * 540) && limit <= Duration::from_secs(120), "{limit:?}");
     }
 
     #[test]

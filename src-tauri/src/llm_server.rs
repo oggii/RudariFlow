@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::ai_cleanup::Speed;
 use crate::audio::lock;
 use crate::startup_log;
 
@@ -116,6 +117,8 @@ pub struct LlmServer {
     warm_system: Mutex<String>,
     /// When a request last went to the server.
     last_used: Mutex<Option<Instant>>,
+    /// Per-token times of recent answers, for the request time limits.
+    speed: Mutex<Option<Speed>>,
     on_status: StatusCallback,
     #[cfg(windows)]
     job: Option<job::Job>,
@@ -134,6 +137,7 @@ impl LlmServer {
             generation: AtomicU64::new(0),
             warm_system: Mutex::new(String::new()),
             last_used: Mutex::new(None),
+            speed: Mutex::new(None),
             on_status,
             #[cfg(windows)]
             job: job::Job::new(),
@@ -219,12 +223,41 @@ impl LlmServer {
         *lock(&self.last_used) = Some(Instant::now());
     }
 
+    /// The measured per-token times; `None` before the first answer.
+    pub fn speed(&self) -> Option<Speed> {
+        *lock(&self.speed)
+    }
+
+    /// Fold the speed of a finished request into the average.
+    pub fn note_speed(&self, measured: Option<Speed>) {
+        let Some(m) = measured else { return };
+        let mut speed = lock(&self.speed);
+        *speed = Some(match *speed {
+            None => m,
+            Some(s) => Speed {
+                prompt_ms_per_token: (s.prompt_ms_per_token + m.prompt_ms_per_token) / 2.0,
+                gen_ms_per_token: (s.gen_ms_per_token + m.gen_ms_per_token) / 2.0,
+            },
+        });
+    }
+
+    /// A request ran out of time: the machine is slower than measured, so
+    /// the next limit gets more room.
+    pub fn note_timeout(&self) {
+        if let Some(s) = lock(&self.speed).as_mut() {
+            s.prompt_ms_per_token *= 1.5;
+            s.gen_ms_per_token *= 1.5;
+        }
+    }
+
     /// One request with the warm system prompt, which puts it into the
     /// prompt cache again (and on the first run compiles the GPU pipelines).
     async fn prime(&self, endpoint: &Endpoint, max_tokens: u32, timeout: Duration) -> Result<(), String> {
         let (system, user) = self.warm_messages();
         self.mark_used();
-        crate::ai_cleanup::complete(endpoint, &system, &user, 0.0, max_tokens, timeout).await.map(|_| ())
+        let answer = crate::ai_cleanup::complete(endpoint, &system, &user, 0.0, max_tokens, timeout).await?;
+        self.note_speed(answer.speed);
+        Ok(())
     }
 
     fn spawn_prime(self: &Arc<Self>, endpoint: Endpoint, reason: &'static str) {
@@ -389,6 +422,8 @@ impl LlmServer {
             return Err("The AI model is not downloaded".to_string());
         }
         self.set_status(ServerStatus::Loading);
+        // Another model runs at another speed; the warm-up measures it anew.
+        *lock(&self.speed) = None;
 
         let devices = self.devices().await;
         let whisper_gpu = match gpu_backend {
@@ -420,6 +455,12 @@ impl LlmServer {
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err));
+        // Extra arguments for measurements, e.g. RUDARIFLOW_LLAMA_ARGS="-fa off";
+        // a repeated option overrides the one above.
+        if let Ok(extra) = std::env::var("RUDARIFLOW_LLAMA_ARGS") {
+            startup_log::log(&format!("[ai] extra llama-server arguments: {}", extra));
+            cmd.args(extra.split_whitespace());
+        }
         no_window(&mut cmd);
 
         let label = device.as_ref().map_or_else(|| "CPU".to_string(), |d| d.name.clone());
@@ -665,6 +706,20 @@ Available devices:
         // No server runs, so this only stores the prompt.
         llm.set_warm_prompt("The system prompt of these settings.".into());
         assert_eq!(llm.warm_messages().0, "The system prompt of these settings.");
+    }
+
+    #[test]
+    fn speed_is_averaged_and_grows_after_a_timeout() {
+        let dir = std::env::temp_dir().join("rudariflow_speed");
+        let llm = LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {}));
+        llm.note_timeout();
+        assert_eq!(llm.speed(), None, "nothing measured yet");
+        llm.note_speed(Some(Speed { prompt_ms_per_token: 2.0, gen_ms_per_token: 10.0 }));
+        llm.note_speed(None);
+        llm.note_speed(Some(Speed { prompt_ms_per_token: 4.0, gen_ms_per_token: 20.0 }));
+        assert_eq!(llm.speed(), Some(Speed { prompt_ms_per_token: 3.0, gen_ms_per_token: 15.0 }));
+        llm.note_timeout();
+        assert_eq!(llm.speed(), Some(Speed { prompt_ms_per_token: 4.5, gen_ms_per_token: 22.5 }));
     }
 
     #[test]
