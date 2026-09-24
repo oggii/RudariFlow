@@ -97,8 +97,9 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-llama.ps1
 powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-patch.ps1
 
 # 4. Build-Pfad kurz halten: der verschachtelte Vulkan-Shader-Build von
-#    whisper.cpp sprengt unter src-tauri\target das 260-Zeichen-Limit
-$env:CARGO_TARGET_DIR = "C:\t\rf"
+#    whisper.cpp sprengt unter src-tauri\target das 260-Zeichen-Limit (und
+#    auch unter C:\t\rf, ausser lange Pfade sind in Windows aktiviert)
+$env:CARGO_TARGET_DIR = "C:\r"
 $env:CUDAARCHS = "75;80;86;89;120"   # RTX 20, 30, A-Serie, 40, 50
 
 # 5. Dev-Modus starten

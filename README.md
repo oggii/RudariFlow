@@ -59,7 +59,7 @@ Made by [oggi](https://0ggi.ch).
   - With an integrated and a dedicated GPU, the dedicated one is used.
 - **CPU fallback:** Works without a usable GPU, but significantly slower (~10-30×). For CPU-only users we recommend the `small` or `medium` model.
 - **RAM:** the selected whisper model is loaded at start and stays resident. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB. On battery, the models are unloaded after 10 minutes without dictation and load again at the next hotkey press.
-- **AI cleanup (optional):** runs on Vulkan on AMD, NVIDIA and Intel GPUs with the normal driver, on the same card as Whisper. The default model takes about 3.6 GB of video memory on top of Whisper plus about 3.3 GB of RAM (its per-layer embeddings stay in RAM), so 8 GB cards and up are fine; smaller cards move part of the model to the CPU. Measured on an AMD Radeon RX 6800: about 0.3 s per dictation. NVIDIA and Intel Arc use the same Vulkan path but have not been tested yet. Without a usable GPU expect 5 to 10 s per dictation.
+- **AI cleanup (optional):** runs on Vulkan on AMD, NVIDIA and Intel GPUs with the normal driver, on the same card as Whisper. The default model takes about 3.6 GB of video memory on top of Whisper plus about 3.3 GB of RAM (its per-layer embeddings stay in RAM), so 8 GB cards and up are fine; smaller cards move part of the model to the CPU. Measured: about 0.3 s per dictation on an AMD Radeon RX 6800, about 0.15 s on an NVIDIA GeForce RTX 5080. Intel Arc uses the same Vulkan path but has not been tested yet. Without a usable GPU expect 5 to 10 s per dictation.
 
 ## Installation (for end users)
 
@@ -99,8 +99,9 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-llama.ps1
 powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-patch.ps1
 
 # 4. Keep the build path short: whisper.cpp's nested Vulkan shader build
-#    exceeds the 260-character path limit under src-tauri\target
-$env:CARGO_TARGET_DIR = "C:\t\rf"
+#    exceeds the 260-character path limit under src-tauri\target (and still
+#    under C:\t\rf unless Windows long paths are enabled)
+$env:CARGO_TARGET_DIR = "C:\r"
 $env:CUDAARCHS = "75;80;86;89;120"   # RTX 20, 30, A-series, 40, 50
 
 # 5. Run in dev mode
