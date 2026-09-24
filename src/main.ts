@@ -26,6 +26,7 @@ interface Settings {
   sendCommand: string;
   history: string;
   pasteLastHotkey: string;
+  rewriteLastHotkey: string;
   muteAudio: boolean;
   aiCleanup: boolean;
   aiModel: string;
@@ -93,6 +94,9 @@ const hotkeyBtn = document.getElementById("hotkey-btn") as HTMLButtonElement;
 const pasteLastBtn = document.getElementById("paste-last-btn") as HTMLButtonElement;
 const pasteLastText = document.getElementById("paste-last-text")!;
 const pasteLastClear = document.getElementById("paste-last-clear") as HTMLButtonElement;
+const rewriteLastBtn = document.getElementById("rewrite-last-btn") as HTMLButtonElement;
+const rewriteLastText = document.getElementById("rewrite-last-text")!;
+const rewriteLastClear = document.getElementById("rewrite-last-clear") as HTMLButtonElement;
 const sendCommandSelect = document.getElementById("send-command-select") as HTMLSelectElement;
 const muteAudioToggle = document.getElementById("mute-audio-toggle") as HTMLInputElement;
 const replacementList = document.getElementById("replacement-list")!;
@@ -466,8 +470,9 @@ listen<DownloadProgress>("download-progress", (event) => {
 });
 
 // Hotkey capture. "dictation" starts/stops recording (keyboard or mouse side
-// button), "pasteLast" pastes the last transcript again (keyboard only).
-type HotkeyTarget = "dictation" | "pasteLast";
+// button), "pasteLast" pastes the last transcript again, "rewriteLast"
+// selects it and records an edit (both keyboard only).
+type HotkeyTarget = "dictation" | "pasteLast" | "rewriteLast";
 let capturing: HotkeyTarget | null = null;
 
 function hotkeyLabel(combo: string): string {
@@ -483,12 +488,14 @@ function renderHotkeys() {
   hotkeyText.textContent = hotkeyLabel(currentSettings.hotkey);
   pasteLastText.textContent = hotkeyLabel(currentSettings.pasteLastHotkey);
   pasteLastClear.classList.toggle("hidden", !currentSettings.pasteLastHotkey);
+  rewriteLastText.textContent = hotkeyLabel(currentSettings.rewriteLastHotkey);
+  rewriteLastClear.classList.toggle("hidden", !currentSettings.rewriteLastHotkey);
 }
 
 function captureElements(target: HotkeyTarget) {
-  return target === "dictation"
-    ? { btn: hotkeyBtn, text: hotkeyText }
-    : { btn: pasteLastBtn, text: pasteLastText };
+  if (target === "dictation") return { btn: hotkeyBtn, text: hotkeyText };
+  if (target === "pasteLast") return { btn: pasteLastBtn, text: pasteLastText };
+  return { btn: rewriteLastBtn, text: rewriteLastText };
 }
 
 function modifierTokens(e: KeyboardEvent | MouseEvent): string[] {
@@ -576,7 +583,8 @@ async function applyCapturedCombo(combo: string) {
 async function setHotkey(target: HotkeyTarget, combo: string) {
   await invoke("change_hotkey", { target, newHotkey: combo });
   if (target === "dictation") currentSettings.hotkey = combo;
-  else currentSettings.pasteLastHotkey = combo;
+  else if (target === "pasteLast") currentSettings.pasteLastHotkey = combo;
+  else currentSettings.rewriteLastHotkey = combo;
 }
 
 function onOutsideClick(e: MouseEvent) {
@@ -599,6 +607,15 @@ window.addEventListener("mouseup", (e) => {
 
 hotkeyBtn.addEventListener("click", () => startCapture("dictation"));
 pasteLastBtn.addEventListener("click", () => startCapture("pasteLast"));
+rewriteLastBtn.addEventListener("click", () => startCapture("rewriteLast"));
+rewriteLastClear.addEventListener("click", async () => {
+  try {
+    await setHotkey("rewriteLast", "");
+  } catch (err) {
+    console.error("clearing rewrite hotkey failed:", err);
+  }
+  renderHotkeys();
+});
 pasteLastClear.addEventListener("click", async () => {
   try {
     await setHotkey("pasteLast", "");

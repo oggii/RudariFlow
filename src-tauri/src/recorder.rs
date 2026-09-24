@@ -275,6 +275,12 @@ impl Recorder {
         lock(&self.state).clone()
     }
 
+    /// Show a short notice in the pill, e.g. why "rewrite last" did not
+    /// start (`rewrite-failed` with "missing" or "needs-ai").
+    pub fn notice(&self, app: &AppHandle, event: &str, reason: &str) {
+        show_notice_with(app, self.state.clone(), event, reason.to_string(), 3200);
+    }
+
     /// Called right after recording starts, in the background: shows the
     /// Edit mode chip when text is selected (decided again on release) and
     /// reads the screen context for this recording.

@@ -41,6 +41,10 @@ pub struct Settings {
     /// Keyboard chord that pastes the last transcript again; empty = none.
     #[serde(rename = "pasteLastHotkey", default = "default_paste_last_hotkey")]
     pub paste_last_hotkey: String,
+    /// Selects the last dictation in the focused field, then records what to
+    /// change about it (Edit mode). Empty = off.
+    #[serde(rename = "rewriteLastHotkey", default)]
+    pub rewrite_last_hotkey: String,
     /// Mute other apps while recording.
     #[serde(rename = "muteAudio", default)]
     pub mute_audio: bool,
@@ -130,6 +134,7 @@ impl Default for Settings {
             send_command: default_send_command(),
             history: default_history(),
             paste_last_hotkey: default_paste_last_hotkey(),
+            rewrite_last_hotkey: String::new(),
             mute_audio: false,
             ai_cleanup: false,
             ai_model: default_ai_model(),

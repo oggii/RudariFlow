@@ -289,11 +289,13 @@
         en: {
           audio_empty: "No speech detected", mic_error: "Microphone unavailable", polishing: "Polishing",
           mic_missing: "Microphone not found", no_mic: "No microphone found",
+          rewrite_missing: "Last dictation not found here", rewrite_needs_ai: "Rewriting needs AI cleanup and Edit mode",
           editing: "Editing", word: "word", words: "words", edit_failed: "Edit failed, text unchanged",
         },
         de: {
           audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar", polishing: "Überarbeitung",
           mic_missing: "Mikrofon nicht gefunden", no_mic: "Kein Mikrofon gefunden",
+          rewrite_missing: "Letztes Diktat hier nicht gefunden", rewrite_needs_ai: "Umschreiben braucht KI-Korrektur und Bearbeiten",
           editing: "Bearbeiten", word: "Wort", words: "Wörter", edit_failed: "Bearbeiten ging nicht, Text unverändert",
         },
       };
@@ -334,6 +336,14 @@
         const text = !info.missing ? t.mic_error : info.name ? `${t.mic_missing}: ${info.name}` : t.no_mic;
         diag(`mic-error received (${info.missing ? "missing" : "open failed"})`);
         showNotice(text, 3000);
+      });
+
+      // "Rewrite last" could not start: "missing" (not in this field) or
+      // "needs-ai" (AI cleanup or Edit mode off, or No AI for the app).
+      listen("rewrite-failed", (event) => {
+        const t = NOTICE_TEXT[pickLang()];
+        diag(`rewrite-failed received (${event.payload})`);
+        showNotice(event.payload === "needs-ai" ? t.rewrite_needs_ai : t.rewrite_missing, 3000);
       });
 
       document.getElementById("cancel").addEventListener("click", async (e) => {

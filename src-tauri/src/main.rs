@@ -136,6 +136,9 @@ enum HotkeyAction {
     Dictation,
     /// Paste the last transcript again (keyboard chords only).
     PasteLast,
+    /// Select the last dictation and record what to change about it
+    /// (keyboard chords only).
+    RewriteLast,
 }
 
 impl HotkeyAction {
@@ -143,9 +146,19 @@ impl HotkeyAction {
         match target {
             "dictation" => Ok(Self::Dictation),
             "pasteLast" => Ok(Self::PasteLast),
+            "rewriteLast" => Ok(Self::RewriteLast),
             _ => Err(format!("Unknown hotkey target: {}", target)),
         }
     }
+}
+
+/// Every hotkey setting with its action.
+fn hotkeys(s: &Settings) -> [(HotkeyAction, String); 3] {
+    [
+        (HotkeyAction::Dictation, s.hotkey.clone()),
+        (HotkeyAction::PasteLast, s.paste_last_hotkey.clone()),
+        (HotkeyAction::RewriteLast, s.rewrite_last_hotkey.clone()),
+    ]
 }
 
 /// Settings, models and history. `RUDARIFLOW_DATA_DIR` points a test build at
@@ -586,20 +599,16 @@ fn change_hotkey(
     new_hotkey: String,
 ) -> Result<(), String> {
     let action = HotkeyAction::from_target(&target)?;
-    let (current, other) = {
-        let s = state.settings.lock().unwrap();
-        match action {
-            HotkeyAction::Dictation => (s.hotkey.clone(), s.paste_last_hotkey.clone()),
-            HotkeyAction::PasteLast => (s.paste_last_hotkey.clone(), s.hotkey.clone()),
-        }
-    };
+    let all = hotkeys(&state.settings.lock().unwrap());
+    let current = all.iter().find(|(a, _)| *a == action).map(|(_, h)| h.clone()).unwrap_or_default();
     if new_hotkey.is_empty() && action == HotkeyAction::Dictation {
         return Err("The dictation hotkey cannot be empty".to_string());
     }
-    if !new_hotkey.is_empty() && new_hotkey.eq_ignore_ascii_case(&other) {
-        return Err(format!("'{}' is already used by the other hotkey", new_hotkey));
+    let taken = all.iter().any(|(a, h)| *a != action && !h.is_empty() && new_hotkey.eq_ignore_ascii_case(h));
+    if !new_hotkey.is_empty() && taken {
+        return Err(format!("'{}' is already used by another hotkey", new_hotkey));
     }
-    if action == HotkeyAction::PasteLast && mouse_hotkey::parse(&new_hotkey).is_some() {
+    if action != HotkeyAction::Dictation && mouse_hotkey::parse(&new_hotkey).is_some() {
         return Err("Mouse buttons can only start dictation".to_string());
     }
     if new_hotkey != current {
@@ -619,6 +628,7 @@ fn change_hotkey(
     match action {
         HotkeyAction::Dictation => settings.hotkey = new_hotkey,
         HotkeyAction::PasteLast => settings.paste_last_hotkey = new_hotkey,
+        HotkeyAction::RewriteLast => settings.rewrite_last_hotkey = new_hotkey,
     }
     settings.save(&state.app_dir)?;
     Ok(())
@@ -632,15 +642,9 @@ fn set_hotkey_paused(
     state: State<AppState>,
     paused: bool,
 ) -> Result<(), String> {
-    let (dictation, paste_last) = {
-        let s = state.settings.lock().unwrap();
-        (s.hotkey.clone(), s.paste_last_hotkey.clone())
-    };
+    let all = hotkeys(&state.settings.lock().unwrap());
     let mut result = Ok(());
-    for (hotkey, action) in [
-        (dictation, HotkeyAction::Dictation),
-        (paste_last, HotkeyAction::PasteLast),
-    ] {
+    for (action, hotkey) in all {
         if hotkey.is_empty() {
             continue;
         }
@@ -648,8 +652,8 @@ fn set_hotkey_paused(
             unregister_hotkey(&app, &hotkey);
         } else if !hotkey_is_registered(&app, &hotkey) {
             if let Err(e) = register_hotkey(&app, &hotkey, action) {
-                // A paste-last chord taken by another app must not block the
-                // dictation hotkey; it is logged by register_hotkey.
+                // A paste-last or rewrite chord taken by another app must not
+                // block the dictation hotkey; it is logged by register_hotkey.
                 if action == HotkeyAction::Dictation {
                     result = Err(e);
                 }
@@ -664,7 +668,62 @@ fn on_hotkey_event(handle: &AppHandle, action: HotkeyAction, pressed: bool) {
         HotkeyAction::Dictation => on_hotkey(handle, pressed),
         HotkeyAction::PasteLast if pressed => paste_last_transcript(handle),
         HotkeyAction::PasteLast => {}
+        HotkeyAction::RewriteLast => on_rewrite_hotkey(handle, pressed),
     }
+}
+
+/// Whether the rewrite hotkey is held (push-to-talk): a release that comes
+/// before the selection is made must not leave a recording running.
+static REWRITE_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// "Rewrite last": select the last dictation in the focused field, then
+/// record like the dictation hotkey; the release edits the selection with
+/// what was said (Edit mode). Pressed while recording (toggle mode) it
+/// stops like the dictation hotkey.
+fn on_rewrite_hotkey(handle: &AppHandle, pressed: bool) {
+    use rudariflow_lib::selection::{select_last, Target};
+    use std::sync::atomic::Ordering;
+    REWRITE_HELD.store(pressed, Ordering::SeqCst);
+    let state = handle.state::<AppState>();
+    if !pressed || state.recorder.get_state() != RecordingState::Ready {
+        on_hotkey(handle, pressed);
+        return;
+    }
+    let handle = handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = handle.state::<AppState>();
+        let settings = state.settings.lock().unwrap().clone();
+        let ctx = foreground_app::current();
+        if !voice_edit::available(&settings, &state.app_dir, &ctx) {
+            startup_log::log(&format!("[rewrite] needs AI cleanup and Edit mode ('{}')", ctx.exe));
+            state.recorder.notice(&handle, "rewrite-failed", "needs-ai");
+            return;
+        }
+        let Some(last) = state.history.last_text() else {
+            state.recorder.notice(&handle, "rewrite-failed", "missing");
+            return;
+        };
+        let started = std::time::Instant::now();
+        match tauri::async_runtime::spawn_blocking(move || select_last(&last)).await {
+            Ok(Target::Selected(text)) => {
+                startup_log::log(&format!(
+                    "[rewrite] selected the last dictation ({} words) in '{}' in {} ms",
+                    text.split_whitespace().count(),
+                    ctx.exe,
+                    started.elapsed().as_millis()
+                ));
+                let push_to_talk = settings.recording_mode == "push-to-talk";
+                if !push_to_talk || REWRITE_HELD.load(Ordering::SeqCst) {
+                    on_hotkey(&handle, true);
+                }
+            }
+            Ok(Target::None(reason)) => {
+                startup_log::log(&format!("[rewrite] not rewriting in '{}': {}", ctx.exe, reason));
+                state.recorder.notice(&handle, "rewrite-failed", "missing");
+            }
+            Err(_) => {}
+        }
+    });
 }
 
 /// Paste the last transcript into the focused app again.
@@ -871,6 +930,7 @@ fn main() {
     llm.set_warm_prompt(polish::system_prompt(&settings));
     let initial_hotkey = settings.hotkey.clone();
     let initial_paste_last_hotkey = settings.paste_last_hotkey.clone();
+    let initial_rewrite_last_hotkey = settings.rewrite_last_hotkey.clone();
     let initial_autostart = settings.autostart;
 
     tauri::Builder::default()
@@ -1038,14 +1098,17 @@ fn main() {
                 }
             }
 
-            // Paste-last is optional: if another app owns the chord, the
-            // setting stays and the failure is in startup.log.
+            // Paste-last and rewrite are optional: if another app owns the
+            // chord, the setting stays and the failure is in startup.log.
             if !initial_paste_last_hotkey.is_empty() {
                 let _ = register_hotkey(
                     app.handle(),
                     &initial_paste_last_hotkey,
                     HotkeyAction::PasteLast,
                 );
+            }
+            if !initial_rewrite_last_hotkey.is_empty() {
+                let _ = register_hotkey(app.handle(), &initial_rewrite_last_hotkey, HotkeyAction::RewriteLast);
             }
 
             // Sync persisted autostart preference with the OS — but never
