@@ -58,11 +58,22 @@ Decisions from the design discussion:
 
 sherpa-onnx's offline speaker diarization: pyannote's segmentation model 3.0 (about 6 MB, finds where speech and speaker changes are) and a speaker embedding model (about 25 to 40 MB, turns a stretch of speech into a voice fingerprint), then clustering. With a number, clustering makes exactly that many speakers; with Auto it uses a distance threshold.
 
-The embedding model is chosen in the first implementation task among WeSpeaker ResNet34 (VoxCeleb), 3D-Speaker ERes2Net and NeMo TitaNet-small, by: correct labels on the two-voice test file and on one German/English recording with two people, then size, then speed. The Auto threshold is set in the same task on the same files.
+**Model choice (probe, 2026-09-24, sherpa-onnx v1.12.9 CLI, Ryzen 9 7900X).** Four embedding models on three files with known answers: sherpa's 4-speaker demo (real voices), the meeting test file (two TTS voices, turns 40 to 60 s apart) and a fast dialog (the same two voices, 8 turns 0.4 s apart):
 
-The crate is `sherpa-rs` (pinned in the plan). Static linking of sherpa-onnx and onnxruntime is preferred; if the crate only offers DLLs, they ship next to `rudariflow.exe`, never relying on a system `onnxruntime.dll` (Windows 11 has one in System32 for Windows ML).
+| Embedding model | 4 speakers | meeting A/B/A | fast dialog | 7 min, 8 threads |
+|---|---|---|---|---|
+| 3D-Speaker ERes2Net base (37.7 MB) | 4, same order as TitaNet | right | 3 turns of 8 | 35 s |
+| NeMo TitaNet-small (38.3 MB) | 4, same order as ERes2Net | right | one speaker | 24 s |
+| WeSpeaker ResNet34-LM (25.3 MB) | 4, other order | right | one speaker | 32 s |
+| 3D-Speaker CAM++ (28.2 MB) | 3 | wrong | 5 turns, wrong | 23 s |
 
-Files: `<app dir>\speakers\segmentation.onnx` and `<app dir>\speakers\embedding.onnx`, downloaded from the sherpa-onnx GitHub releases with the existing resumable downloader, SHA-256 checked. The download starts when Auto or a number is picked for the first time, with progress next to the selector; a file started before it finishes waits for it ("Downloading the speaker model…").
+**3D-Speaker ERes2Net** is used. No model separates two similar synthetic female voices that alternate within half a second; real voices differ more. **Auto** uses a clustering threshold of **0.9**, the only one that counted 4, 2 and 2 on the three files. `min_duration_on` 0.3 s and `min_duration_off` 0.5 s (sherpa-onnx's defaults, used in the probe). The int8 segmentation model is not faster.
+
+**Speed:** separation takes about 8 % of the audio length with 8 threads (1 thread: 24 %; 12 threads are not faster than 8): about 50 s for a 10-minute meeting, 5 minutes for an hour. That is far longer than Whisper on a GPU, so separation gets its own progress ("Separating speakers… 40 %"). Threads: half the logical CPUs, at most 8. sherpa-onnx's GPU build needs NVIDIA's cuDNN and there is no DirectML build, so it stays on the CPU.
+
+**Integration.** The `sherpa-rs` wrapper hard-codes one thread, so RudariFlow uses its raw bindings `sherpa-rs-sys` 0.6.8 (sherpa-onnx v1.12.9) with its own small wrapper. The static Windows build of sherpa-onnx uses the static C runtime, which clashes with the rest of the app, so the shared build (`win-x64-shared-no-tts`, SHA-256 pinned) is used: `sherpa-onnx-c-api.dll` and `onnxruntime.dll` ship next to `rudariflow.exe`, never relying on a system `onnxruntime.dll` (Windows 11 has one in System32 for Windows ML). `rudariflow.exe` delay-loads `sherpa-onnx-c-api.dll`, like `nvcuda.dll`: a missing DLL only turns speaker separation off, it never stops the app.
+
+Files: `<app dir>\speakers\segmentation.onnx` (pyannote segmentation 3.0, 5.99 MB, from Hugging Face `csukuangfj/sherpa-onnx-pyannote-segmentation-3-0`, SHA-256 `220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079`) and `<app dir>\speakers\embedding.onnx` (`3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx` from the sherpa-onnx `speaker-recongition-models` release, SHA-256 `1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b`), downloaded with the existing resumable downloader and checked. The download starts when Auto or a number is picked for the first time, with progress next to the selector; a file started before it finishes waits for it ("Downloading the speaker model…").
 
 ### Speakers: pipeline
 
@@ -70,7 +81,7 @@ In `transcribe_file`, after decoding (16 kHz mono in memory):
 
 1. `file_speakers` is Off: as today.
 2. Otherwise a thread runs `speakers::separate` on the whole audio (CPU) while the Whisper blocks run (GPU). The text keeps streaming into the box minute by minute, without labels.
-3. After the last Whisper block the worker waits for the thread; the status says "Separating speakers…" while it waits.
+3. After the last Whisper block the worker waits for the thread; the status says "Separating speakers… n %" (from sherpa-onnx's progress callback) while it waits. Cancel stops the file after the current step; the separation's result is then dropped.
 4. `speakers::assign` gives every Whisper segment the speaker with the most overlap in time. A segment that overlaps no turn gets the nearest turn's speaker; a tie goes to the speaker who spoke first.
 5. Speakers are numbered by their first segment: the first voice is Speaker 1.
 6. If separation fails (model missing, error), the transcript comes without labels and the status says so. The transcript is never dropped for it.
@@ -129,7 +140,7 @@ Header (PDF, Word): file name as title; a line with audio length, language, numb
 
 ## Risks
 
-- **Size and DLLs:** sherpa-onnx and onnxruntime add to the installer (estimate 15 to 30 MB). Load-order conflicts with a system `onnxruntime.dll` are avoided by static linking or shipping the DLLs next to the exe.
+- **Size and DLLs:** `sherpa-onnx-c-api.dll` and `onnxruntime.dll` add about 20 MB to the installer. Load-order conflicts with a system `onnxruntime.dll` are avoided by shipping the DLLs next to the exe (the application folder is searched first).
+- **Speed:** separation takes about 8 % of the audio length on a 12-core desktop, more on a laptop; the progress shows it.
 - **Accuracy:** similar voices, short interjections and overlapping speech get wrong labels. A given number helps; the chips make renaming cheap, but a wrong label can only be fixed by editing (round 2).
-- **Speed on slow CPUs:** separation of an hour of audio may take minutes on an older laptop; it runs while Whisper runs and the status says what is going on.
 - **PrintToPdf:** needs WebView2 runtime 1.0.1185 or newer (Windows 10/11 have current ones); `@page` margin boxes need a recent Chromium (WebView2 153 here). Without them the PDF has no page numbers, nothing else changes.
