@@ -108,6 +108,7 @@ fn whisper_model_to_load(settings: &Settings, app_dir: &std::path::Path) -> Opti
 /// Load the Whisper model now instead of at the first dictation.
 async fn load_whisper(state: &AppState) {
     let settings = state.settings.lock().unwrap().clone();
+    state.whisper_engine.set_flash_attn(settings.flash_attn_pref());
     let Some(model) = whisper_model_to_load(&settings, &state.app_dir) else {
         return;
     };
@@ -183,7 +184,9 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     let (engine_invalidate, ai_restart) = {
         let prev = state.settings.lock().unwrap();
         (
-            prev.gpu_backend != settings.gpu_backend || prev.whisper_model != settings.whisper_model,
+            prev.gpu_backend != settings.gpu_backend
+                || prev.whisper_model != settings.whisper_model
+                || prev.whisper_flash_attn != settings.whisper_flash_attn,
             prev.ai_cleanup != settings.ai_cleanup || prev.ai_model != settings.ai_model,
         )
     };
@@ -321,6 +324,147 @@ async fn history_rerun(state: State<'_, AppState>, id: u64) -> Result<HistoryEnt
         .history
         .update_text(id, &polished.text, polished.raw.as_deref(), &model_label(&settings))
         .ok_or_else(|| "History entry not found".to_string())
+}
+
+#[derive(serde::Serialize)]
+struct PcCheckResult {
+    report: String,
+    #[serde(rename = "gpuBackend")]
+    gpu_backend: String,
+    #[serde(rename = "whisperFlashAttn")]
+    whisper_flash_attn: String,
+    changed: bool,
+}
+
+/// PC check (Engine tab): Whisper on every GPU with flash attention on and
+/// off on the user's latest recording, the fastest setup applied, the AI
+/// server's speed measured, and a report to copy.
+#[tauri::command]
+async fn pc_check(app: AppHandle, state: State<'_, AppState>) -> Result<PcCheckResult, String> {
+    use rudariflow_lib::pc_check as check;
+    let settings = state.settings.lock().unwrap().clone();
+    let model = whisper_model_to_load(&settings, &state.app_dir).ok_or("Download a Whisper model first")?;
+    // The newest recording in the history, else five seconds of silence.
+    let clip = state
+        .history
+        .list()
+        .iter()
+        .find(|e| e.has_audio)
+        .and_then(|e| history::read_wav(&state.history.audio_path(e.id)).ok())
+        .unwrap_or_else(|| vec![0.0; 16_000 * 5]);
+    let clip_secs = clip.len() as f32 / 16_000.0;
+    let language = settings.language.clone();
+    let model_for_check = model.clone();
+    startup_log::log("[pc-check] started");
+    // The engine's model gives up its video memory while the variants run.
+    state.whisper_engine.invalidate();
+    let progress_app = app.clone();
+    let (results, default) = tauri::async_runtime::spawn_blocking(move || {
+        let variants = check::variants();
+        let default = check::default_variant();
+        let results = check::measure(&model_for_check, &clip, &language, &variants, |done, total, label| {
+            let _ = progress_app.emit("pc-check-progress", (done, total, label.to_string()));
+        });
+        (results, default)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let chosen = check::choose(&results, &default);
+    let (gpu_backend, whisper_flash_attn) = match chosen {
+        Some(i) => check::settings_for(&results[i], &default),
+        None => (settings.gpu_backend.clone(), settings.whisper_flash_attn.clone()),
+    };
+    let changed = gpu_backend != settings.gpu_backend || whisper_flash_attn != settings.whisper_flash_attn;
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.gpu_backend = gpu_backend.clone();
+        s.whisper_flash_attn = whisper_flash_attn.clone();
+        s.save(&state.app_dir)?;
+    }
+    load_whisper(state.inner()).await;
+    let ai = ai_check_line(state.inner()).await;
+
+    let mut report = vec![
+        format!(
+            "RudariFlow {} PC check, {}",
+            env!("CARGO_PKG_VERSION"),
+            rudariflow_lib::replacements::fill_variables(
+                "{date} {time}",
+                &rudariflow_lib::replacements::Moment::now(),
+                true
+            )
+        ),
+        check::system_summary(),
+    ];
+    let gpus: Vec<String> = rudariflow_lib::whisper_engine::list_gpu_devices()
+        .iter()
+        .map(|d| format!("{} ({}, {:.0} GB{})", d.name, d.api.label(), d.memory_mib as f64 / 1024.0, if d.integrated { ", integrated" } else { "" }))
+        .collect();
+    report.push(format!("GPUs: {}", if gpus.is_empty() { "none".to_string() } else { gpus.join("; ") }));
+    report.push(format!("Whisper {} on a {:.1} s recording:", settings.whisper_model, clip_secs));
+    for (i, m) in results.iter().enumerate() {
+        let result = match (m.median_ms, &m.error) {
+            (Some(ms), _) => format!("{} ms (load {:.1} s)", ms, m.load_ms as f64 / 1000.0),
+            (None, Some(e)) => format!("failed: {}", e),
+            (None, None) => "failed".to_string(),
+        };
+        let mark = if Some(i) == chosen { "  <- in use" } else { "" };
+        report.push(format!("  {}: {}{}", m.label, result, mark));
+    }
+    report.push(format!(
+        "Setting: GPU backend {}, flash attention {}{}",
+        gpu_backend,
+        whisper_flash_attn,
+        if changed { " (changed)" } else { " (unchanged)" }
+    ));
+    report.push(ai);
+    let report = report.join("\n");
+    startup_log::log(&format!("[pc-check] done: backend {}, flash attention {}", gpu_backend, whisper_flash_attn));
+    Ok(PcCheckResult { report, gpu_backend, whisper_flash_attn, changed })
+}
+
+/// The AI part of the PC check: three sample cleanups with the user's
+/// settings, their times, the per-token speed and the drafter.
+async fn ai_check_line(state: &AppState) -> String {
+    let settings = state.settings.lock().unwrap().clone();
+    let Some(model_path) = ai_model_to_run(&settings, &state.app_dir) else {
+        return "AI cleanup: off or model not downloaded".to_string();
+    };
+    let label = ai_models::find(&settings.ai_model).map_or("AI model", |m| m.label);
+    let ctx = AppContext { exe: "notepad".into(), title: "Untitled - Notepad".into(), ..Default::default() };
+    const SAMPLES: [&str; 3] = [
+        "Um so I think we should, uh, meet on Tuesday, no wait, Wednesday at 3 and bring the slides.",
+        "For the trip we need sunscreen, a new phone charger, two beach towels and, uh, snacks for the kids.",
+        "Can you send me the invoice by the end of the week so I can pay it this month?",
+    ];
+    let mut times = Vec::new();
+    for text in SAMPLES {
+        let p = polish(&settings, &state.app_dir, &state.llm, &ctx, text, Some("English"), || {}).await;
+        match p.fallback {
+            Some(reason) => return format!("AI cleanup: {} did not answer ({})", label, reason),
+            None => times.push(p.ai_ms),
+        }
+    }
+    let device = match state.llm.status() {
+        ServerStatus::Ready { device } => device,
+        _ => "?".to_string(),
+    };
+    let _ = model_path;
+    let mut sorted = times.clone();
+    sorted.sort();
+    let speed = state.llm.speed().map_or(String::new(), |s| {
+        format!("; {:.1} ms per prompt token, {:.1} ms per output token", s.prompt_ms_per_token, s.gen_ms_per_token)
+    });
+    format!(
+        "AI cleanup: {} on {}{}: {} ms (median {} ms){}",
+        label,
+        device,
+        if state.llm.drafter_active() { " with MTP drafter" } else { "" },
+        times.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" / "),
+        sorted[sorted.len() / 2],
+        speed
+    )
 }
 
 #[derive(serde::Serialize)]
@@ -973,6 +1117,7 @@ fn main() {
             ai_download_model,
             ai_test,
             ai_edit_test,
+            pc_check,
             edit_live_test,
             screen_context_test,
             ai_restart,

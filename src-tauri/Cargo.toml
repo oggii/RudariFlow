@@ -58,6 +58,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_Globalization",
   "Win32_Graphics_Dwm",
   "Win32_System_Power",
+  "Win32_System_Registry",
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",
@@ -132,3 +133,7 @@ path = "examples/quant_bench.rs"
 [[example]]
 name = "first_bench"
 path = "examples/first_bench.rs"
+
+[[example]]
+name = "pc_check_probe"
+path = "examples/pc_check_probe.rs"

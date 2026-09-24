@@ -45,6 +45,10 @@ pub struct Settings {
     /// change about it (Edit mode). Empty = off.
     #[serde(rename = "rewriteLastHotkey", default)]
     pub rewrite_last_hotkey: String,
+    /// Whisper flash attention: "auto" (on for CUDA, off for Vulkan), "on"
+    /// or "off", as the PC check found fastest on this PC.
+    #[serde(rename = "whisperFlashAttn", default = "default_auto")]
+    pub whisper_flash_attn: String,
     /// Mute other apps while recording.
     #[serde(rename = "muteAudio", default)]
     pub mute_audio: bool,
@@ -77,6 +81,10 @@ pub struct Settings {
     /// and the AI spell them.
     #[serde(rename = "screenContext", default = "default_true")]
     pub screen_context: bool,
+}
+
+fn default_auto() -> String {
+    "auto".to_string()
 }
 
 fn default_true() -> bool {
@@ -115,6 +123,17 @@ fn default_ai_style() -> String {
     "polished".to_string()
 }
 
+impl Settings {
+    /// `whisper_flash_attn` for the engine: `None` = per API.
+    pub fn flash_attn_pref(&self) -> Option<bool> {
+        match self.whisper_flash_attn.as_str() {
+            "on" => Some(true),
+            "off" => Some(false),
+            _ => None,
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -135,6 +154,7 @@ impl Default for Settings {
             history: default_history(),
             paste_last_hotkey: default_paste_last_hotkey(),
             rewrite_last_hotkey: String::new(),
+            whisper_flash_attn: default_auto(),
             mute_audio: false,
             ai_cleanup: false,
             ai_model: default_ai_model(),

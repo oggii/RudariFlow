@@ -26,6 +26,7 @@ interface Settings {
   sendCommand: string;
   history: string;
   pasteLastHotkey: string;
+  whisperFlashAttn?: string;
   rewriteLastHotkey: string;
   muteAudio: boolean;
   aiCleanup: boolean;
@@ -94,6 +95,10 @@ const hotkeyBtn = document.getElementById("hotkey-btn") as HTMLButtonElement;
 const pasteLastBtn = document.getElementById("paste-last-btn") as HTMLButtonElement;
 const pasteLastText = document.getElementById("paste-last-text")!;
 const pasteLastClear = document.getElementById("paste-last-clear") as HTMLButtonElement;
+const pcCheckBtn = document.getElementById("pc-check-btn") as HTMLButtonElement;
+const pcCheckResult = document.getElementById("pc-check-result")!;
+const pcCheckReport = document.getElementById("pc-check-report")!;
+const pcCheckCopy = document.getElementById("pc-check-copy") as HTMLButtonElement;
 const rewriteLastBtn = document.getElementById("rewrite-last-btn") as HTMLButtonElement;
 const rewriteLastText = document.getElementById("rewrite-last-text")!;
 const rewriteLastClear = document.getElementById("rewrite-last-clear") as HTMLButtonElement;
@@ -363,6 +368,44 @@ languageSelect.addEventListener("change", async () => {
 });
 
 gpuBackendSelect.addEventListener("change", () => saveSettings());
+
+// PC check: measures, applies the fastest Whisper setup, shows a report.
+interface PcCheckResult {
+  report: string;
+  gpuBackend: string;
+  whisperFlashAttn: string;
+  changed: boolean;
+}
+listen<[number, number, string]>("pc-check-progress", (event) => {
+  const [done, total] = event.payload;
+  if (pcCheckBtn.disabled) {
+    pcCheckBtn.textContent = t("pc_check_running").replace("{done}", String(Math.min(done + 1, total))).replace("{total}", String(total));
+  }
+});
+pcCheckBtn.addEventListener("click", async () => {
+  pcCheckBtn.disabled = true;
+  pcCheckBtn.textContent = t("pc_check_running").replace("{done}", "1").replace("{total}", "…");
+  try {
+    const result = await invoke<PcCheckResult>("pc_check");
+    // The check saved new settings; keep the page's copy in step.
+    currentSettings.gpuBackend = result.gpuBackend;
+    currentSettings.whisperFlashAttn = result.whisperFlashAttn;
+    gpuBackendSelect.value = result.gpuBackend;
+    pcCheckReport.textContent = result.report;
+    pcCheckResult.classList.remove("hidden");
+  } catch (err) {
+    pcCheckReport.textContent = `${t("pc_check_failed")}: ${err}`;
+    pcCheckResult.classList.remove("hidden");
+  } finally {
+    pcCheckBtn.disabled = false;
+    pcCheckBtn.textContent = t("pc_check_run");
+  }
+});
+pcCheckCopy.addEventListener("click", async () => {
+  await invoke("copy_text", { text: pcCheckReport.textContent ?? "" });
+  pcCheckCopy.textContent = t("pc_check_copied");
+  setTimeout(() => (pcCheckCopy.textContent = t("pc_check_copy")), 1500);
+});
 
 uiLanguageSelect.addEventListener("change", async () => {
   setLang(uiLanguageSelect.value);

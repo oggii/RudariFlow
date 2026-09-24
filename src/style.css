@@ -899,6 +899,27 @@ kbd {
   opacity: 0.4;
 }
 
+.pc-check-result {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 0 0 12px;
+}
+.pc-check-result pre {
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  color: var(--text-secondary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
 .rule-language {
   width: 132px;
   height: 33px;

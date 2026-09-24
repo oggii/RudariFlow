@@ -254,6 +254,11 @@ impl LlmServer {
         *lock(&self.last_used) = Some(Instant::now());
     }
 
+    /// Whether the running server was started with the MTP drafter.
+    pub fn drafter_active(&self) -> bool {
+        lock(&self.running).as_ref().is_some_and(|r| r.draft.is_some())
+    }
+
     /// The measured per-token times; `None` before the first answer.
     pub fn speed(&self) -> Option<Speed> {
         *lock(&self.speed)
