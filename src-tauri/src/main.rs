@@ -628,6 +628,10 @@ async fn ai_check_line(state: &AppState) -> String {
         "For the trip we need sunscreen, a new phone charger, two beach towels and, uh, snacks for the kids.",
         "Can you send me the invoice by the end of the week so I can pay it this month?",
     ];
+    // One run that is not counted: after some idle minutes the GPU and the
+    // prompt cache are cold (1552 ms instead of 263 ms). A dictation gets
+    // this warm-up from the hotkey press.
+    let _ = polish(&settings, &state.app_dir, &state.llm, &ctx, SAMPLES[2], Some("English"), || {}).await;
     let mut times = Vec::new();
     for text in SAMPLES {
         let p = polish(&settings, &state.app_dir, &state.llm, &ctx, text, Some("English"), || {}).await;
