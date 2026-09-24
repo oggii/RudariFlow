@@ -90,6 +90,9 @@ const MAX_START_FAILURES: u32 = 2;
 /// Loading a large model from a slow disk can take a while.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(180);
 const LIST_DEVICES_TIMEOUT: Duration = Duration::from_secs(20);
+/// An empty device list is asked again this often, this far apart.
+const LIST_DEVICES_TRIES: u32 = 3;
+const LIST_DEVICES_RETRY: Duration = Duration::from_millis(1500);
 
 pub struct LlmServer {
     llama_dir: PathBuf,
@@ -388,10 +391,30 @@ impl LlmServer {
     }
 
     /// Devices from `llama-server --list-devices`, asked once per app run.
+    /// Right after another process let go of the GPU (or early at login)
+    /// the list can come back empty, and the model would then run on the
+    /// CPU all day; so an empty answer is asked again first. A PC without a
+    /// usable GPU pays those 3 s once per run.
     async fn devices(&self) -> Vec<LlamaDevice> {
         if let Some(devices) = lock(&self.devices).clone() {
             return devices;
         }
+        let mut devices = Vec::new();
+        for attempt in 1..=LIST_DEVICES_TRIES {
+            devices = self.list_devices().await;
+            startup_log::log(&format!("[ai] devices (try {}): {:?}", attempt, devices));
+            if !devices.is_empty() {
+                break;
+            }
+            if attempt < LIST_DEVICES_TRIES {
+                tokio::time::sleep(LIST_DEVICES_RETRY).await;
+            }
+        }
+        *lock(&self.devices) = Some(devices.clone());
+        devices
+    }
+
+    async fn list_devices(&self) -> Vec<LlamaDevice> {
         let mut cmd = Command::new(self.server_exe());
         cmd.current_dir(&self.llama_dir).arg("--list-devices").stdin(Stdio::null());
         no_window(&mut cmd);
@@ -400,17 +423,14 @@ impl LlmServer {
             tokio::task::spawn_blocking(move || cmd.output()),
         )
         .await;
-        let devices = match output {
+        match output {
             Ok(Ok(Ok(out))) => parse_devices(&format!(
                 "{}\n{}",
                 String::from_utf8_lossy(&out.stdout),
                 String::from_utf8_lossy(&out.stderr)
             )),
             _ => Vec::new(),
-        };
-        startup_log::log(&format!("[ai] devices: {:?}", devices));
-        *lock(&self.devices) = Some(devices.clone());
-        devices
+        }
     }
 
     fn kill(&self) {
