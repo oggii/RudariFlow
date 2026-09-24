@@ -137,3 +137,7 @@ path = "examples/first_bench.rs"
 [[example]]
 name = "pc_check_probe"
 path = "examples/pc_check_probe.rs"
+
+[[example]]
+name = "pieces_bench"
+path = "examples/pieces_bench.rs"

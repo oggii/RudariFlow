@@ -983,7 +983,10 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
                             (s.microphone.clone(), s.mute_audio)
                         };
                         match state.recorder.start_recording(&handle, &mic, mute) {
-                            Ok(_) => state.recorder.capture_context(&handle, &s, &state.app_dir),
+                            Ok(_) => {
+                                state.recorder.capture_context(&handle, &s, &state.app_dir);
+                                state.recorder.start_pieces(&s, &state.app_dir, &state.whisper_engine);
+                            }
                             Err(e) => startup_log::log(&format!("[hotkey] start error: {}", e)),
                         }
                     }
@@ -1033,6 +1036,7 @@ async fn do_toggle_recording(
             state.recorder.start_recording(app, &mic, mute)?;
             let settings = state.settings.lock().unwrap().clone();
             state.recorder.capture_context(app, &settings, &state.app_dir);
+            state.recorder.start_pieces(&settings, &state.app_dir, &state.whisper_engine);
             Ok("recording".to_string())
         }
         RecordingState::Recording => {

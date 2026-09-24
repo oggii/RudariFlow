@@ -104,6 +104,21 @@ fn emit_edit_target(app: &AppHandle, words: Option<usize>) {
 /// Screen terms of the recording `generation`, filled in the background.
 type ScreenSlot = Arc<Mutex<Option<(u64, Vec<String>)>>>;
 
+/// A long dictation is transcribed in pieces while it goes on: once this
+/// much is recorded since the last cut, a piece is cut off...
+const PIECE_AT_SECS: f32 = 29.0;
+/// ...in the quietest spot from here on (a pause between sentences).
+const PIECE_CUT_FROM_SECS: f32 = 22.0;
+
+/// The pieces of the recording `generation` transcribed so far.
+#[derive(Default)]
+struct Pieces {
+    generation: u64,
+    /// Source frame where the audio not transcribed yet begins.
+    cut_frame: usize,
+    texts: Vec<String>,
+}
+
 /// Step times of one dictation from the stop press on, logged as one
 /// "[timing]" line in startup.log.
 struct Laps {
@@ -241,7 +256,10 @@ pub struct Recorder {
     /// Screen context read when the recording started.
     screen: ScreenSlot,
     /// Counts recordings, so a slow read never lands in a later one.
-    generation: AtomicU64,
+    generation: Arc<AtomicU64>,
+    /// Long dictations: pieces transcribed while recording. The lock is
+    /// held while a piece is transcribed, so the release waits for it.
+    pieces: Arc<tokio::sync::Mutex<Pieces>>,
 }
 
 /// Resets the recorder to Ready when dropped, including when transcription
@@ -267,7 +285,8 @@ impl Recorder {
             audio_recorder: Arc::new(Mutex::new(AudioRecorder::new())),
             starting: AtomicBool::new(false),
             screen: Arc::new(Mutex::new(None)),
-            generation: AtomicU64::new(0),
+            generation: Arc::new(AtomicU64::new(0)),
+            pieces: Arc::new(tokio::sync::Mutex::new(Pieces::default())),
         }
     }
 
@@ -311,6 +330,65 @@ impl Recorder {
                     started.elapsed().as_millis()
                 ));
                 *lock(&slot) = Some((generation, terms));
+            }
+        });
+    }
+
+    /// Long dictations: every `PIECE_AT_SECS` of recording, transcribe a
+    /// piece in the background, so the release only waits for the rest
+    /// (31 s took 785 ms after the release in one go). Call after
+    /// `capture_context`, which starts the recording's generation.
+    pub fn start_pieces(&self, settings: &Settings, app_dir: &Path, engine: &Arc<WhisperEngine>) {
+        if settings.engine != "local" {
+            return;
+        }
+        let generation = self.generation.load(Ordering::SeqCst);
+        let (state, audio, pieces, screen) =
+            (self.state.clone(), self.audio_recorder.clone(), self.pieces.clone(), self.screen.clone());
+        let (settings, app_dir, engine) = (settings.clone(), app_dir.to_path_buf(), engine.clone());
+        let generations = self.generation.clone();
+        let ctx = foreground_app::current();
+        tauri::async_runtime::spawn(async move {
+            *pieces.lock().await = Pieces { generation, ..Default::default() };
+            let language = crate::ai_cleanup::whisper_language(&settings.ai_rules, &ctx, &settings.language).to_string();
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if *lock(&state) != RecordingState::Recording || generations.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                let from = pieces.lock().await.cut_frame;
+                let recorded = lock(&audio).peek_16k(from);
+                if (recorded.len() as f32) < PIECE_AT_SECS * 16_000.0 {
+                    continue;
+                }
+                let cut = crate::audio::quiet_cut(&recorded, PIECE_CUT_FROM_SECS, PIECE_AT_SECS);
+                let frames_per_16k = lock(&audio).frames_per_16k();
+                let mut p = pieces.lock().await;
+                if p.generation != generation || *lock(&state) != RecordingState::Recording {
+                    return;
+                }
+                let terms = match lock(&screen).as_ref() {
+                    Some((g, terms)) if *g == generation => terms.clone(),
+                    _ => Vec::new(),
+                };
+                let started = Instant::now();
+                match transcribe_samples(None, &settings, &app_dir, &engine, &recorded[..cut], &terms, &language).await {
+                    Ok((text, _)) => {
+                        startup_log::log(&format!(
+                            "[pieces] piece {} ({:.1} s) transcribed in {} ms while recording",
+                            p.texts.len() + 1,
+                            cut as f32 / 16_000.0,
+                            started.elapsed().as_millis()
+                        ));
+                        p.texts.push(text);
+                        p.cut_frame = from + (cut as f64 * frames_per_16k) as usize;
+                    }
+                    Err(e) => {
+                        // The release transcribes everything after the last cut.
+                        startup_log::log(&format!("[pieces] piece failed, the rest waits for the release: {}", e));
+                        return;
+                    }
+                }
             }
         });
     }
@@ -440,7 +518,19 @@ impl Recorder {
         selection: Option<String>,
         laps: &mut Laps,
     ) -> Result<String, String> {
-        let taken = lock(&self.audio_recorder).stop_and_take_samples();
+        // A piece still being transcribed finishes first.
+        let mut pieces = self.pieces.lock().await;
+        let generation = self.generation.load(Ordering::SeqCst);
+        let in_pieces = pieces.generation == generation && !pieces.texts.is_empty();
+        let (taken, rest) = if in_pieces {
+            let (taken, rest) = lock(&self.audio_recorder).stop_and_take_with_rest(pieces.cut_frame);
+            (taken, Some(rest))
+        } else {
+            (lock(&self.audio_recorder).stop_and_take_samples(), None)
+        };
+        let done_pieces = std::mem::take(&mut pieces.texts);
+        pieces.generation = 0;
+        drop(pieces);
         laps.lap("audio");
         let samples = match taken {
             Err(e) if e == "no_speech" => {
@@ -453,8 +543,24 @@ impl Recorder {
         laps.audio_secs = Some(samples.len() as f32 / 16_000.0);
 
         let whisper_language = crate::ai_cleanup::whisper_language(&settings.ai_rules, ctx, &settings.language);
-        let (raw_text, language) =
-            transcribe_samples(Some(app), settings, app_dir, engine, &samples, &ctx.screen_terms, &whisper_language).await?;
+        let (raw_text, language) = match rest {
+            // A long dictation: only the part after the last piece is left.
+            Some(rest) => {
+                let (tail, language) = if rest.is_empty() {
+                    (String::new(), None)
+                } else {
+                    transcribe_samples(Some(app), settings, app_dir, engine, &rest, &ctx.screen_terms, whisper_language)
+                        .await?
+                };
+                laps.note(format!("pieces {} + rest {:.1} s", done_pieces.len(), rest.len() as f32 / 16_000.0));
+                let text = done_pieces.iter().chain(std::iter::once(&tail)).map(|t| t.trim()).filter(|t| !t.is_empty());
+                (text.collect::<Vec<_>>().join(" "), language)
+            }
+            None => {
+                transcribe_samples(Some(app), settings, app_dir, engine, &samples, &ctx.screen_terms, whisper_language)
+                    .await?
+            }
+        };
         laps.lap("whisper");
         // Only the screen terms the dictation (or the selection it edits)
         // mentions go to the AI; each one costs prompt time.

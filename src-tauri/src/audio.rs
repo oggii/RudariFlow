@@ -142,11 +142,43 @@ impl AudioRecorder {
         println!("[RudariFlow] Audio recording discarded");
     }
 
+    /// Mono 16 kHz audio recorded from source frame `from` on, while the
+    /// recording goes on (a long dictation is transcribed in pieces).
+    pub fn peek_16k(&self, from: usize) -> Vec<f32> {
+        let channels = self.source_channels.max(1) as usize;
+        let samples = lock(&self.samples);
+        let start = (from * channels).min(samples.len());
+        let end = samples.len() - (samples.len() - start) % channels;
+        mono_16k(&samples[start..end], channels, self.source_sample_rate)
+    }
+
+    /// Source frames per 16 kHz sample (3.0 at 48 kHz).
+    pub fn frames_per_16k(&self) -> f64 {
+        self.source_sample_rate as f64 / 16_000.0
+    }
+
+    /// `stop_and_take_samples`, plus the audio from source frame `from` on
+    /// (mono, 16 kHz, silence at both ends trimmed, empty when silent): the
+    /// part of a long dictation not transcribed yet.
+    pub fn stop_and_take_with_rest(&mut self, from: usize) -> (Result<Vec<f32>, String>, Vec<f32>) {
+        self.release_stream();
+        let rest = self.peek_16k(from);
+        let rest = match trim_silence(&rest, 16_000) {
+            Some((start, end)) => rest[start..end].to_vec(),
+            None => Vec::new(),
+        };
+        (self.process_samples(), rest)
+    }
+
     /// Stop the stream, dedup channels to mono, trim leading/trailing silence,
     /// and resample to 16 kHz. Returns the prepared sample buffer or
     /// `Err("no_speech")` if the entire recording was silence.
     pub fn stop_and_take_samples(&mut self) -> Result<Vec<f32>, String> {
         self.release_stream();
+        self.process_samples()
+    }
+
+    fn process_samples(&mut self) -> Result<Vec<f32>, String> {
         println!("[RudariFlow] Audio recording stopped");
 
         let samples = lock(&self.samples);
@@ -260,6 +292,38 @@ fn open_stream(
         sample_rate,
         channels,
     })
+}
+
+/// Interleaved frames at `rate` as mono 16 kHz.
+fn mono_16k(samples: &[f32], channels: usize, rate: u32) -> Vec<f32> {
+    let mono: Vec<f32> = if channels > 1 {
+        samples.chunks(channels).map(|f| f.iter().sum::<f32>() / f.len() as f32).collect()
+    } else {
+        samples.to_vec()
+    };
+    resample(&mono, rate, 16_000)
+}
+
+/// Where to cut a long recording (16 kHz mono): the middle of the quietest
+/// 300 ms between `from_s` and `to_s` seconds, so no word is split.
+pub fn quiet_cut(audio: &[f32], from_s: f32, to_s: f32) -> usize {
+    const WINDOW: usize = 4_800; // 300 ms
+    const STEP: usize = 800; // 50 ms
+    let from = (from_s * 16_000.0) as usize;
+    let to = ((to_s * 16_000.0) as usize).min(audio.len());
+    if to < from + WINDOW {
+        return to;
+    }
+    let mut best = (f32::MAX, to);
+    let mut i = from;
+    while i + WINDOW <= to {
+        let energy: f32 = audio[i..i + WINDOW].iter().map(|s| s * s).sum();
+        if energy < best.0 {
+            best = (energy, i + WINDOW / 2);
+        }
+        i += STEP;
+    }
+    best.1
 }
 
 /// Write a `Vec<f32>` of 16 kHz mono samples as a 16-bit PCM WAV.
@@ -391,6 +455,28 @@ mod tests {
             bounds.1,
             expected_end
         );
+    }
+
+    #[test]
+    fn long_recordings_are_cut_in_the_quietest_spot() {
+        let sr = 16_000;
+        // Speech everywhere except a pause at 25.0-25.5 s.
+        let mut audio = vec![0.3_f32; 30 * sr];
+        for s in &mut audio[25 * sr..25 * sr + sr / 2] {
+            *s = 0.0;
+        }
+        let cut = quiet_cut(&audio, 22.0, 29.0);
+        assert!(cut > 25 * sr && cut < 25 * sr + sr / 2, "cut at {}", cut);
+        // Too short for the window: cut at the end.
+        assert_eq!(quiet_cut(&audio[..sr], 22.0, 29.0), sr);
+    }
+
+    #[test]
+    fn stereo_48k_becomes_mono_16k() {
+        let stereo: Vec<f32> = (0..48_000).flat_map(|_| [0.2_f32, 0.4]).collect();
+        let mono = mono_16k(&stereo, 2, 48_000);
+        assert_eq!(mono.len(), 16_000);
+        assert!((mono[100] - 0.3).abs() < 1e-6);
     }
 
     #[test]
