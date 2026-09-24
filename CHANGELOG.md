@@ -7,10 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Tested on an NVIDIA GeForce RTX 5080 (CUDA for Whisper, Vulkan for the
-AI) with an AMD Radeon iGPU next to it.
+Tested on an NVIDIA GeForce RTX 5080 with an AMD Radeon iGPU next to it.
+
+### Changed
+- **AI cleanup runs on CUDA on NVIDIA:** the llama.cpp server carries its
+  CUDA backend next to the Vulkan one and takes it for the card Whisper
+  uses. On an RTX 5080 long dictations are cleaned in 174 to 186 ms
+  instead of 238 to 279 ms, and the slowest of 36 test requests took 217
+  to 231 ms instead of 279 to 324 ms; short ones are about as fast as
+  before (85 to 93 ms). AMD, Intel and older NVIDIA cards keep Vulkan, and
+  so does a PC where CUDA does not load.
+- **CUDA 13.4 for Whisper and the AI:** both use one CUDA runtime, which
+  is smaller than the CUDA 12 one (523 MB instead of 752 MB), so the CUDA
+  backend of the AI adds 49 MB to the installer. CUDA now needs NVIDIA
+  driver 580 or newer (2025); with an older driver Whisper and the AI run
+  on Vulkan. Builds need the CUDA Toolkit 13.x.
 
 ### Fixed
+- **Whisper compiled without optimisation:** with the Visual Studio
+  generator the cmake crate replaced the Release flags of CMake, so builds
+  where that reached the projects (this PC, CMake 4.4) ran Whisper with
+  unoptimised C/C++ code: 438 to 454 ms instead of 292 to 320 ms for 42 s
+  of speech on an RTX 5080 (CUDA), 501 to 699 ms instead of 277 to 297 ms
+  on Vulkan. A new whisper-rs-sys patch sets the flags.
+- **The AI on the integrated GPU:** the Radeon of a Ryzen 7900X reports
+  more memory than the RTX 5080 next to it, so with Whisper on the CPU (or
+  the card missing from an early device list) the AI ran on the Radeon.
+  An integrated GPU is now used only when there is no other.
 - **Mouse side buttons bounce:** a worn button reported release and press
   again 3 to 22 ms apart, which stopped a toggle recording right after it
   started, or cut a push-to-talk dictation in two ("…sicher, dass" +

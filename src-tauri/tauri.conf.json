@@ -37,9 +37,9 @@
     "shortDescription": "Sprache-zu-Text Diktier-App, lokal angetrieben von Whisper.cpp",
     "longDescription": "RudariFlow ist eine lokale Diktier-App für Windows mit GPU-Beschleunigung (NVIDIA CUDA, AMD/Intel Vulkan). Drücke einen globalen Hotkey, sprich, und der transkribierte Text wird automatisch eingefügt. Unterstützt mehrere Sprachen via Whisper.cpp.",
     "resources": {
-      "binaries/gpu-runtime/cudart64_12.dll": "cudart64_12.dll",
-      "binaries/gpu-runtime/cublas64_12.dll": "cublas64_12.dll",
-      "binaries/gpu-runtime/cublasLt64_12.dll": "cublasLt64_12.dll",
+      "binaries/gpu-runtime/cudart64_13.dll": "cudart64_13.dll",
+      "binaries/gpu-runtime/cublas64_13.dll": "cublas64_13.dll",
+      "binaries/gpu-runtime/cublasLt64_13.dll": "cublasLt64_13.dll",
       "binaries/gpu-runtime/vulkan-1.dll": "vulkan-1.dll",
       "binaries/llama/*": "llama/"
     },
