@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::ai_cleanup::{self, AppContext, AppRule};
 use crate::ai_models;
 use crate::llm_server::LlmServer;
-use crate::replacements::apply_replacements;
+use crate::replacements::{apply_replacements, with_variables};
 use crate::settings::Settings;
 use crate::startup_log;
 
@@ -207,7 +207,7 @@ pub async fn edit(
             return Err("The AI model is not downloaded".to_string());
         }
         let endpoint = llm.wait_ready(&model_path, Some(settings.gpu_backend.clone()), WAIT_FOR_MODEL).await?;
-        let spoken = apply_replacements(spoken, &settings.replacements);
+        let spoken = apply_replacements(spoken, &with_variables(&settings.replacements, &settings.ui_language));
         let rules = ai_cleanup::matching_rules(&settings.ai_rules, ctx);
         let dictionary = crate::dictionary::terms(&settings.custom_prompt);
         let (system, user) =

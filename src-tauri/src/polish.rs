@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::ai_cleanup::{self, AppContext};
 use crate::ai_models;
 use crate::llm_server::LlmServer;
-use crate::replacements::{apply_replacements, protect, restore, Protected};
+use crate::replacements::{apply_replacements, protect, restore, with_variables, Protected};
 use crate::settings::Settings;
 use crate::startup_log;
 
@@ -89,7 +89,9 @@ async fn polish_inner(
     language: Option<&str>,
     on_ai_start: impl FnOnce(),
 ) -> Polished {
-    let plain = apply_replacements(text, &settings.replacements);
+    // {date}, {time} and the other variables are filled for this moment.
+    let replacements = with_variables(&settings.replacements, &settings.ui_language);
+    let plain = apply_replacements(text, &replacements);
     if !settings.ai_cleanup || text.trim().is_empty() {
         return Polished::plain(plain, None);
     }
@@ -103,7 +105,7 @@ async fn polish_inner(
     if !model_path.exists() {
         return Polished::plain(plain, Some("The AI model is not downloaded"));
     }
-    let (protected, values) = match protect(text, &settings.replacements) {
+    let (protected, values) = match protect(text, &replacements) {
         Protected::Whole(replacement) => return Polished::plain(replacement, None),
         Protected::Text { text, values } => (text, values),
     };
