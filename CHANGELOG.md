@@ -5,7 +5,7 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.10.0] - 2026-09-24 - Files, rewrite last, a dictionary that learns
 
 ### Added
 - **Language per app:** an app rule can set the language Whisper listens

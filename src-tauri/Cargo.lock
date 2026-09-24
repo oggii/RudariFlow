@@ -3567,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "rudariflow"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "arboard",
  "cpal",
