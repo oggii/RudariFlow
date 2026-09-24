@@ -5,7 +5,7 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.11.0] - 2026-09-24 - AI on CUDA, sturdier dictation and files
 
 Tested on an NVIDIA GeForce RTX 5080 with an AMD Radeon iGPU next to it.
 
