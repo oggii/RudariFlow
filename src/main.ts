@@ -7,6 +7,7 @@ import { setLang, getLang, detectDefaultLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
 import { initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
 import { initDictionary, renderDictionary } from "./dictionary";
+import { initFiles, renderFiles } from "./files";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
 
 interface Settings {
@@ -118,14 +119,14 @@ const historyClear = document.getElementById("history-clear") as HTMLButtonEleme
 const navItems = document.querySelectorAll(".nav-item");
 const sections = document.querySelectorAll(".content-section");
 
+function showSection(target: string) {
+  navItems.forEach((n) => n.classList.toggle("active", n.getAttribute("data-section") === target));
+  sections.forEach((s) => s.classList.remove("active"));
+  document.getElementById(`section-${target}`)?.classList.add("active");
+}
+
 navItems.forEach((item) => {
-  item.addEventListener("click", () => {
-    const target = item.getAttribute("data-section");
-    navItems.forEach((n) => n.classList.remove("active"));
-    sections.forEach((s) => s.classList.remove("active"));
-    item.classList.add("active");
-    document.getElementById(`section-${target}`)?.classList.add("active");
-  });
+  item.addEventListener("click", () => showSection(item.getAttribute("data-section") ?? "general"));
 });
 
 // Window drag — titlebar and sidebar empty space
@@ -208,6 +209,7 @@ async function loadSettings() {
   // Groq key
   groqKey.value = currentSettings.groqApiKey;
   renderDictionary();
+  renderFiles();
 
   // Recording mode
   setRecordingMode(currentSettings.recordingMode);
@@ -417,6 +419,7 @@ uiLanguageSelect.addEventListener("change", async () => {
   await refreshHistory();
   await renderAiSettings();
   renderDictionary();
+  renderFiles();
 });
 
 sendCommandSelect.addEventListener("change", () => saveSettings());
@@ -907,6 +910,7 @@ document.getElementById("credit-link")?.addEventListener("click", async (e) => {
 
 initAiSettings({ settings: () => currentSettings, save: saveSettings });
 initDictionary({ settings: () => currentSettings, save: saveSettings });
+initFiles({ settings: () => currentSettings, showSection: () => showSection("files") });
 
 // Initialize
 getVersion()

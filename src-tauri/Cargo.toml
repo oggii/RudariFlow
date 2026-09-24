@@ -38,6 +38,10 @@ arboard = "3"
 regex = "1"
 getrandom = "0.3"
 whatlang = "0.18"
+# WhatsApp voice messages and other Ogg Opus files, which Windows cannot open
+# (src/media.rs).
+ogg = "0.9"
+opus = "0.4"
 futures-util = "0.3"
 tauri-plugin-autostart = "2.5.1"
 # raw-api re-exports whisper-rs-sys for ggml device enumeration.
@@ -65,10 +69,12 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 # Core Audio sessions for muting other apps while recording (src/mute.rs);
-# a kill-on-close Job Object for the AI server (src/llm_server.rs).
+# a kill-on-close Job Object for the AI server (src/llm_server.rs); Media
+# Foundation to read audio and video files (src/media.rs).
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Media_Audio",
+  "Win32_Media_MediaFoundation",
   "Win32_Security",
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",
@@ -141,3 +147,11 @@ path = "examples/pc_check_probe.rs"
 [[example]]
 name = "pieces_bench"
 path = "examples/pieces_bench.rs"
+
+[[example]]
+name = "media_probe"
+path = "examples/media_probe.rs"
+
+[[example]]
+name = "file_bench"
+path = "examples/file_bench.rs"

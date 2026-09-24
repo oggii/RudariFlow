@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Dictionary tab to add or dismiss. The field is read once more at the
   next hotkey press or after 20 s, in the same app only; only the
   corrected word is kept, never your text. Can be switched off.
+- **Transcribe files** (new Files tab): drop an audio or video file on the
+  window (MP3, M4A, WAV, FLAC, WhatsApp voice messages, MP4, MOV, MKV,
+  WebM) and the text appears minute by minute, with optional timestamps,
+  copy and save as text. 4 minutes of MP3 took 6.6 s on an RX 6800. The AI
+  model can summarise the transcript: key points and next steps, long
+  recordings in parts. Dictating while a file runs works; the dictation
+  waits for the current minute at most.
 
 ## [0.9.0] - 2026-09-24 - Faster AI, Large v3 Turbo q8
 

@@ -27,6 +27,12 @@ use rudariflow_lib::settings::Settings;
 use rudariflow_lib::startup_log;
 use rudariflow_lib::voice_edit::{self, Edit};
 use rudariflow_lib::whisper_engine::WhisperEngine;
+use rudariflow_lib::{ai_cleanup, file_transcribe, media, screen_context};
+
+/// One file is transcribed at a time; setting the flag stops it after the
+/// block that is running.
+static FILE_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static FILE_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 struct AppState {
     recorder: Recorder,
@@ -267,6 +273,178 @@ async fn detect_gpus() -> Vec<rudariflow_lib::whisper_engine::GpuDevice> {
     tauri::async_runtime::spawn_blocking(rudariflow_lib::whisper_engine::list_gpu_devices)
         .await
         .unwrap_or_default()
+}
+
+#[derive(serde::Serialize)]
+struct FileTranscript {
+    text: String,
+    #[serde(rename = "textWithTimes")]
+    text_with_times: String,
+    language: String,
+    #[serde(rename = "durationMs")]
+    duration_ms: u64,
+    #[serde(rename = "elapsedMs")]
+    elapsed_ms: u64,
+}
+
+/// A "file-progress" event: `phase` "reading", "loading" or "transcribing";
+/// `text` is the text of the block just done.
+#[derive(Clone, serde::Serialize)]
+struct FileProgress {
+    phase: &'static str,
+    done: u64,
+    total: u64,
+    text: String,
+}
+
+/// Transcribe an audio or video file with the local Whisper model. Progress
+/// and the text so far arrive as "file-progress" events. `language` empty =
+/// the Engine setting. Errors "busy", "no_model", "no_speech", "cancelled"
+/// are shown by the UI in words.
+#[tauri::command]
+async fn transcribe_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    language: String,
+) -> Result<FileTranscript, String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    if FILE_RUNNING.swap(true, SeqCst) {
+        return Err("busy".to_string());
+    }
+    struct Running;
+    impl Drop for Running {
+        fn drop(&mut self) {
+            FILE_RUNNING.store(false, SeqCst);
+        }
+    }
+    let _running = Running;
+    FILE_CANCEL.store(false, SeqCst);
+    let settings = state.settings.lock().unwrap().clone();
+    let model = state.app_dir.join(rudariflow_lib::whisper_engine::model_filename(&settings.whisper_model));
+    if !model.exists() {
+        return Err("no_model".to_string());
+    }
+    let language = if language.trim().is_empty() { settings.language.clone() } else { language };
+    let engine = state.whisper_engine.clone();
+    let started = std::time::Instant::now();
+    let handle = app.clone();
+    let worker_settings = settings.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let settings = worker_settings;
+        let emit = |phase, done, total, text: String| {
+            let _ = handle.emit("file-progress", FileProgress { phase, done, total, text });
+        };
+        let mut last_emit = std::time::Instant::now();
+        let audio = media::decode_16k_mono(std::path::Path::new(&path), |done, total| {
+            if last_emit.elapsed() >= std::time::Duration::from_millis(100) {
+                emit("reading", done, total, String::new());
+                last_emit = std::time::Instant::now();
+            }
+        })?;
+        if audio::trim_silence(&audio, 16_000).is_none() {
+            return Err("no_speech".to_string());
+        }
+        emit("loading", 0, 1, String::new());
+        engine.ensure_loaded(&model, &settings.gpu_backend)?;
+        let terms = dictionary::terms(&settings.custom_prompt);
+        let prompt = screen_context::whisper_prompt(&[], &settings.custom_prompt);
+        let spelling = |text: &str| {
+            let text = dictionary::apply_spelling(&cleanup_text(text), &terms);
+            if settings.swiss_spelling { dictionary::swiss_spelling(&text) } else { text }
+        };
+        let (segments, language) =
+            file_transcribe::transcribe(&engine, &audio, &language, &prompt, spelling, &FILE_CANCEL, |p| {
+                let text = p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+                emit("transcribing", p.done_ms, p.total_ms, text);
+            })?;
+        Ok(FileTranscript {
+            text: file_transcribe::format(&segments, false),
+            text_with_times: file_transcribe::format(&segments, true),
+            language,
+            duration_ms: audio.len() as u64 / 16,
+            elapsed_ms: 0,
+        })
+    })
+    .await
+    .map_err(|e| format!("worker thread failed: {}", e))?;
+    // With the cloud engine the local model is not kept loaded.
+    if settings.engine != "local" {
+        state.whisper_engine.invalidate();
+    }
+    *state.last_activity.lock().unwrap() = std::time::Instant::now();
+    let mut transcript = result.inspect_err(|e| startup_log::log(&format!("[file] failed: {}", e)))?;
+    transcript.elapsed_ms = started.elapsed().as_millis() as u64;
+    startup_log::log(&format!(
+        "[file] {:.0} s of audio in {:.1} s, language {}, {} characters",
+        transcript.duration_ms as f64 / 1000.0,
+        transcript.elapsed_ms as f64 / 1000.0,
+        transcript.language,
+        transcript.text.chars().count()
+    ));
+    Ok(transcript)
+}
+
+/// Write a transcript (and its summary) to a text file.
+#[tauri::command]
+fn save_text(path: String, text: String) -> Result<(), String> {
+    std::fs::write(&path, text).map_err(|e| e.to_string())
+}
+
+/// Stop the file transcription after the block that is running.
+#[tauri::command]
+fn cancel_file() {
+    FILE_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Summarise a transcript with the AI model, even with AI cleanup off. A
+/// long one is summarised in parts first ("summary-progress" events with
+/// done and total requests).
+#[tauri::command]
+async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<String, String> {
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+    let settings = state.settings.lock().unwrap().clone();
+    let model = ai_models::find(&settings.ai_model).ok_or("no_ai_model")?;
+    let model_path = ai_models::model_path(&state.app_dir, model);
+    if !model_path.exists() {
+        return Err("no_ai_model".to_string());
+    }
+    let language = ai_cleanup::detect_language(&text);
+    let language = language.as_deref();
+    let endpoint = state
+        .llm
+        .wait_ready(&model_path, Some(settings.gpu_backend.clone()), std::time::Duration::from_secs(120))
+        .await?;
+    let started = std::time::Instant::now();
+    let mut material = text.trim().to_string();
+    let mut requests = 0;
+    // Each round turns parts into notes; three rounds cover hours of text.
+    for _ in 0..3 {
+        let parts = file_transcribe::chunks(&material, file_transcribe::SUMMARY_CHUNK_CHARS);
+        if parts.len() <= 1 {
+            break;
+        }
+        let mut notes = Vec::new();
+        for part in &parts {
+            let _ = app.emit("summary-progress", (requests, requests + parts.len() - notes.len() + 1));
+            let answer =
+                ai_cleanup::complete(&endpoint, &file_transcribe::notes_prompt(language), part, 0.2, 700, TIMEOUT)
+                    .await?;
+            notes.push(answer.text.trim().to_string());
+            requests += 1;
+        }
+        material = notes.join("\n");
+    }
+    let _ = app.emit("summary-progress", (requests, requests + 1));
+    let answer =
+        ai_cleanup::complete(&endpoint, &file_transcribe::summary_prompt(language), &material, 0.2, 900, TIMEOUT).await?;
+    startup_log::log(&format!(
+        "[file] summary of {} characters in {} requests, {:.1} s",
+        text.chars().count(),
+        requests + 1,
+        started.elapsed().as_secs_f64()
+    ));
+    Ok(answer.text.trim().to_string())
 }
 
 /// Dictionary entries suggested from the user's corrections.
@@ -1143,6 +1321,10 @@ fn main() {
             dictionary_read_file,
             learn_suggestions,
             learn_resolve,
+            transcribe_file,
+            cancel_file,
+            summarize_text,
+            save_text,
             copy_text,
             diag_log,
         ])
