@@ -9,7 +9,7 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -83,6 +83,18 @@ struct Running {
     child: Child,
     endpoint: Endpoint,
     model: PathBuf,
+    /// The MTP drafter it was started with.
+    draft: Option<PathBuf>,
+}
+
+/// Marker next to a drafter that crashed the server: it holds the app
+/// version, so the drafter is tried again after an update.
+fn draft_marker(draft: &Path) -> PathBuf {
+    draft.with_extension("off")
+}
+
+fn draft_blocked(draft: &Path) -> bool {
+    std::fs::read_to_string(draft_marker(draft)).is_ok_and(|v| v.trim() == env!("CARGO_PKG_VERSION"))
 }
 
 /// Starts after a crash or failed start are retried this often, then the
@@ -119,6 +131,13 @@ pub struct LlmServer {
     last_used: Mutex<Option<Instant>>,
     /// Per-token times of recent answers, for the request time limits.
     speed: Mutex<Option<Speed>>,
+    /// Set after llama-server died while running with the MTP drafter;
+    /// later starts go without it. (Its model card warns that the drafter
+    /// aborts with CUDA flash attention; on Vulkan it has not been seen.)
+    draft_off: AtomicBool,
+    /// A start just failed with the drafter: `ensure_running` tries again
+    /// without it right away.
+    draft_crashed: AtomicBool,
     on_status: StatusCallback,
     #[cfg(windows)]
     job: Option<job::Job>,
@@ -138,6 +157,8 @@ impl LlmServer {
             warm_system: Mutex::new(String::new()),
             last_used: Mutex::new(None),
             speed: Mutex::new(None),
+            draft_off: AtomicBool::new(false),
+            draft_crashed: AtomicBool::new(false),
             on_status,
             #[cfg(windows)]
             job: job::Job::new(),
@@ -219,6 +240,16 @@ impl LlmServer {
         (if system.is_empty() { default_system } else { system }, user)
     }
 
+    /// Run without the MTP drafter from now on (after a crash with it), in
+    /// later app runs too until the next update.
+    fn disable_draft(&self, draft: &Path) {
+        if !self.draft_off.swap(true, Ordering::SeqCst) {
+            startup_log::log("[ai] the AI server failed with the MTP drafter; running without it from now on");
+            self.draft_crashed.store(true, Ordering::SeqCst);
+            let _ = std::fs::write(draft_marker(draft), env!("CARGO_PKG_VERSION"));
+        }
+    }
+
     fn mark_used(&self) {
         *lock(&self.last_used) = Some(Instant::now());
     }
@@ -294,9 +325,13 @@ impl LlmServer {
         let mut running = lock(&self.running);
         let Some(r) = running.as_mut() else { return false };
         let Ok(Some(code)) = r.child.try_wait() else { return false };
+        let draft = r.draft.take();
         *running = None;
         drop(running);
         startup_log::log(&format!("[ai] llama-server stopped unexpectedly ({})", code));
+        if let Some(draft) = draft {
+            self.disable_draft(&draft);
+        }
         self.failures.fetch_add(1, Ordering::SeqCst);
         self.set_status(ServerStatus::Failed {
             error: format!("The AI model stopped unexpectedly ({})", code),
@@ -343,7 +378,14 @@ impl LlmServer {
             return Err(error);
         }
         let generation = self.generation.load(Ordering::SeqCst);
-        match self.start(model, gpu_backend).await {
+        self.draft_crashed.store(false, Ordering::SeqCst);
+        let mut result = self.start(model, gpu_backend).await;
+        if result.is_err() && self.draft_crashed.swap(false, Ordering::SeqCst) {
+            self.kill();
+            startup_log::log("[ai] starting again without the MTP drafter");
+            result = self.start(model, gpu_backend).await;
+        }
+        match result {
             Ok(endpoint) => {
                 self.failures.store(0, Ordering::SeqCst);
                 Ok(endpoint)
@@ -463,8 +505,20 @@ impl LlmServer {
         }
         no_window(&mut cmd);
 
+        // Gemma 4's drafter, when it is downloaded next to the model.
+        let draft = crate::ai_models::draft_for_model_file(model)
+            .filter(|d| d.exists() && !draft_blocked(d) && !self.draft_off.load(Ordering::SeqCst));
+        if let Some(draft) = &draft {
+            cmd.args(["--spec-type", "draft-mtp", "-md"]).arg(draft);
+        }
+
         let label = device.as_ref().map_or_else(|| "CPU".to_string(), |d| d.name.clone());
-        startup_log::log(&format!("[ai] starting llama-server on {} with {}", label, model.display()));
+        startup_log::log(&format!(
+            "[ai] starting llama-server on {} with {}{}",
+            label,
+            model.display(),
+            if draft.is_some() { " and its MTP drafter" } else { "" }
+        ));
         let started = Instant::now();
         let child = cmd.spawn().map_err(|e| format!("Could not start llama-server: {}", e))?;
         #[cfg(windows)]
@@ -480,15 +534,29 @@ impl LlmServer {
             child,
             endpoint: endpoint.clone(),
             model: model.to_path_buf(),
+            draft: draft.clone(),
         });
 
-        self.wait_healthy(&endpoint).await?;
+        if let Err(e) = self.wait_healthy(&endpoint).await {
+            if let Some(draft) = &draft {
+                self.disable_draft(draft);
+            }
+            return Err(e);
+        }
         // The first inference compiles GPU pipelines and fills the prompt
         // cache with the dictation system prompt of the current settings. Do
         // it before reporting Ready, so the first dictation is as fast as the
         // ones after it.
         if let Err(e) = self.prime(&endpoint, 8, LOAD_TIMEOUT).await {
             startup_log::log(&format!("[ai] warm-up request failed: {}", e));
+            // The drafter can crash the server at the first generation.
+            let exited = lock(&self.running).as_mut().is_some_and(|r| r.child.try_wait().ok().flatten().is_some());
+            if exited {
+                if let Some(draft) = &draft {
+                    self.disable_draft(draft);
+                }
+                return Err("The AI model stopped during its warm-up; see llm-server.log".to_string());
+            }
         }
         startup_log::log(&format!(
             "[ai] llama-server ready on {} after {} ms",
@@ -720,6 +788,20 @@ Available devices:
         assert_eq!(llm.speed(), Some(Speed { prompt_ms_per_token: 3.0, gen_ms_per_token: 15.0 }));
         llm.note_timeout();
         assert_eq!(llm.speed(), Some(Speed { prompt_ms_per_token: 4.5, gen_ms_per_token: 22.5 }));
+    }
+
+    #[test]
+    fn a_crashed_drafter_stays_off_until_the_next_version() {
+        let dir = std::env::temp_dir().join("rudariflow_draft_marker");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let draft = dir.join("mtp-gemma-4-E4B-it.gguf");
+        assert!(!draft_blocked(&draft));
+        let llm = LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {}));
+        llm.disable_draft(&draft);
+        assert!(draft_blocked(&draft));
+        std::fs::write(draft_marker(&draft), "0.0.1").unwrap();
+        assert!(!draft_blocked(&draft), "an older version's marker does not count");
     }
 
     #[test]

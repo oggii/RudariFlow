@@ -11,6 +11,13 @@ pub struct AiModel {
     pub repo: &'static str,
     pub file: &'static str,
     pub bytes: u64,
+    /// Gemma 4's multi-token prediction drafter from the same repo: it
+    /// guesses the next tokens and the model checks them in one pass.
+    /// Measured on an RX 6800 (E4B): dictation AI 343 -> 240 ms median.
+    #[serde(skip)]
+    pub draft_file: &'static str,
+    #[serde(skip)]
+    pub draft_bytes: u64,
 }
 
 /// Picked by `examples/ai_bench.rs` on an RX 6800 (see the AI cleanup spec):
@@ -22,6 +29,8 @@ pub const MODELS: &[AiModel] = &[
         repo: "unsloth/gemma-4-E4B-it-GGUF",
         file: "gemma-4-E4B-it-Q4_K_M.gguf",
         bytes: 4_977_171_584,
+        draft_file: "mtp-gemma-4-E4B-it.gguf",
+        draft_bytes: 98_653_248,
     },
     AiModel {
         id: "gemma-4-12b",
@@ -29,6 +38,8 @@ pub const MODELS: &[AiModel] = &[
         repo: "unsloth/gemma-4-12b-it-GGUF",
         file: "gemma-4-12b-it-Q4_K_M.gguf",
         bytes: 7_121_861_440,
+        draft_file: "mtp-gemma-4-12b-it.gguf",
+        draft_bytes: 465_109_248,
     },
     AiModel {
         id: "gemma-4-e2b",
@@ -36,6 +47,8 @@ pub const MODELS: &[AiModel] = &[
         repo: "unsloth/gemma-4-E2B-it-GGUF",
         file: "gemma-4-E2B-it-Q4_K_M.gguf",
         bytes: 3_106_738_272,
+        draft_file: "mtp-gemma-4-E2B-it.gguf",
+        draft_bytes: 97_817_664,
     },
 ];
 
@@ -52,6 +65,22 @@ pub fn model_path(app_dir: &Path, model: &AiModel) -> PathBuf {
 
 pub fn download_url(model: &AiModel) -> String {
     format!("https://huggingface.co/{}/resolve/main/{}", model.repo, model.file)
+}
+
+/// Where a model's drafter lives: next to the model.
+pub fn draft_path(app_dir: &Path, model: &AiModel) -> PathBuf {
+    app_dir.join("llm").join(model.draft_file)
+}
+
+pub fn draft_url(model: &AiModel) -> String {
+    format!("https://huggingface.co/{}/resolve/main/{}", model.repo, model.draft_file)
+}
+
+/// The drafter that belongs to a model file, found by its file name.
+pub fn draft_for_model_file(model_file: &Path) -> Option<PathBuf> {
+    let name = model_file.file_name()?.to_str()?;
+    let model = MODELS.iter().find(|m| m.file == name)?;
+    Some(model_file.with_file_name(model.draft_file))
 }
 
 #[cfg(test)]
@@ -75,5 +104,14 @@ mod tests {
             "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf"
         );
         assert!(model_path(Path::new(r"C:\data"), m).ends_with(r"llm\gemma-4-E4B-it-Q4_K_M.gguf"));
+        assert_eq!(
+            draft_url(m),
+            "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/mtp-gemma-4-E4B-it.gguf"
+        );
+        assert_eq!(
+            draft_for_model_file(&model_path(Path::new(r"C:\data"), m)),
+            Some(draft_path(Path::new(r"C:\data"), m))
+        );
+        assert_eq!(draft_for_model_file(Path::new(r"C:\data\llm\other.gguf")), None);
     }
 }
