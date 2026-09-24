@@ -574,6 +574,7 @@ mod tests {
     fn model_filename_format() {
         assert_eq!(model_filename("small"), "ggml-small.bin");
         assert_eq!(model_filename("large-v3-turbo"), "ggml-large-v3-turbo.bin");
+        assert_eq!(model_filename("large-v3-turbo-q8_0"), "ggml-large-v3-turbo-q8_0.bin");
     }
 
     #[test]
