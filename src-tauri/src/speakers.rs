@@ -150,12 +150,15 @@ pub fn model_dir(app_dir: &Path) -> PathBuf {
     app_dir.join("speakers")
 }
 
-/// Both model files are there with their full size (the SHA-256 is checked
-/// once, after the download).
+/// `path` exists at `m`'s pinned size (the SHA-256 is checked once, after
+/// the download).
+fn model_present(path: &Path, m: &ModelFile) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.len() == m.bytes)
+}
+
+/// Both model files are there with their full size.
 pub fn models_ready(app_dir: &Path) -> bool {
-    MODELS.iter().all(|m| {
-        std::fs::metadata(model_dir(app_dir).join(m.file)).is_ok_and(|meta| meta.len() == m.bytes)
-    })
+    MODELS.iter().all(|m| model_present(&model_dir(app_dir).join(m.file), m))
 }
 
 fn sha256_of(path: &Path) -> Result<String, String> {
@@ -174,7 +177,7 @@ pub async fn download_models(app_dir: &Path, mut on_progress: impl FnMut(Downloa
     let mut before = 0;
     for m in &MODELS {
         let dest = dir.join(m.file);
-        if !std::fs::metadata(&dest).is_ok_and(|meta| meta.len() == m.bytes) {
+        if !model_present(&dest, m) {
             download_file(m.url, &dest, |p| {
                 let downloaded = before + p.downloaded;
                 on_progress(DownloadProgress { downloaded, total, percent: downloaded as f64 * 100.0 / total as f64 });
@@ -217,6 +220,8 @@ pub fn separate(
     if !runtime_available() {
         return Err("the speaker runtime (sherpa-onnx-c-api.dll) is missing".to_string());
     }
+    let n_samples =
+        i32::try_from(audio.len()).map_err(|_| "the file is too long to separate speakers".to_string())?;
     let dir = model_dir(app_dir);
     let path = |file: &str| CString::new(dir.join(file).to_string_lossy().as_bytes()).map_err(|e| e.to_string());
     let segmentation = path(MODELS[0].file)?;
@@ -267,7 +272,7 @@ pub fn separate(
         let result = sys::SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback(
             sd.0,
             audio.as_ptr(),
-            audio.len() as i32,
+            n_samples,
             Some(progress_callback),
             arg,
         );

@@ -91,6 +91,12 @@ windows = { version = "0.61", features = [
 # models on one thread, three times slower.
 sherpa-rs-sys = { version = "=0.6.8", default-features = false }
 
+# sherpa-rs-sys's build script links the debug C runtime (msvcrtd) when it is
+# built with debug assertions; we link sherpa-onnx's release DLLs, so build
+# it like release and keep debug builds on one C runtime.
+[profile.dev.package.sherpa-rs-sys]
+debug-assertions = false
+
 [[example]]
 name = "spike"
 path = "examples/spike.rs"

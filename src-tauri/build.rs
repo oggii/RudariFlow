@@ -17,13 +17,6 @@ fn main() {
             println!("cargo:rustc-link-arg=/DELAYLOAD:{dll}");
         }
         println!("cargo:rustc-link-arg=delayimp.lib");
-        // sherpa-rs-sys's build script always requests the debug CRT
-        // (msvcrtd) in a debug build, for building sherpa-onnx itself from
-        // source in Debug; we only link the prebuilt release DLLs
-        // (SHERPA_LIB_PATH), so once src/speakers.rs calls into sherpa-onnx
-        // this needlessly conflicts with Rust's own release CRT (msvcrt) —
-        // harmless (nothing actually needs msvcrtd), so just silence it.
-        println!("cargo:rustc-link-arg=/IGNORE:4098");
     }
     tauri_build::build()
 }
