@@ -1387,23 +1387,25 @@ fn gpu_notice(handle: &AppHandle, kind: &str) {
 
 /// One press of the Free GPU hotkey, number `press` of `GpuFree::press`:
 /// free the GPU, or load the models again when the last press freed it and
-/// nothing has loaded them since (`power::gpu_toggle`). Presses run in order.
+/// nothing has loaded them since (`power::gpu_toggle`). Presses run in order,
+/// and one during a dictation waits until it is pasted.
 async fn free_gpu_press(handle: &AppHandle, press: u64) -> FreeGpuResult {
     let state = handle.state::<AppState>();
     let ops = state.gpu.ops.lock().await;
+    // A dictation keeps its models until it is pasted. One after a free
+    // loads them again, so the toggle is decided once it is done.
+    if state.recorder.get_state() != RecordingState::Ready {
+        startup_log::log("[gpu] waiting for the dictation to finish");
+        while state.recorder.get_state() != RecordingState::Ready {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
     let toggle = power::gpu_toggle(
         state.gpu.freed.load(Ordering::SeqCst),
         state.whisper_engine.released(),
         state.llm.released(),
     );
     if toggle == GpuToggle::Free {
-        // A dictation keeps its models until it is pasted.
-        if state.recorder.get_state() != RecordingState::Ready {
-            startup_log::log("[gpu] freeing once the dictation is done");
-            while state.recorder.get_state() != RecordingState::Ready {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        }
         state.gpu.freed.store(true, Ordering::SeqCst);
         let (llm, engine) = (state.llm.clone(), state.whisper_engine.clone());
         // Stopping llama-server waits for it to exit; Whisper waits for a
