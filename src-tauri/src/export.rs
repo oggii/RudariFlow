@@ -2,7 +2,7 @@
 //! the PDF is printed from. They take what the tab shows: the times switch,
 //! the speaker names, the summary if there is one.
 
-use crate::file_transcribe::{format, speaker_name};
+use crate::file_transcribe::{clock, format, paragraphs, speaker_name};
 use crate::whisper_engine::Segment;
 
 /// What an export contains, sent by the Files tab. `meta` is the line under
@@ -130,13 +130,13 @@ fn two_lines(text: &str) -> String {
     }
     let char_middle = char_count / 2;
     // Find the space nearest the character middle
-    if let Some((byte_idx, _)) = text
+    if let Some((char_pos, _)) = text
         .char_indices()
         .enumerate()
         .filter(|&(_, (_, c))| c == ' ')
         .min_by_key(|&(char_idx, _)| char_idx.abs_diff(char_middle))
     {
-        let space_byte_idx = text.char_indices().nth(byte_idx).map(|(i, _)| i).unwrap_or(0);
+        let space_byte_idx = text.char_indices().nth(char_pos).map(|(i, _)| i).unwrap_or(0);
         return format!("{}\n{}", &text[..space_byte_idx], &text[space_byte_idx + 1..]);
     }
     // No space found: break at the character middle
@@ -195,6 +195,102 @@ pub fn vtt(segments: &[Segment], names: &[String]) -> String {
         ));
     }
     out
+}
+
+/// Paper for PDF and Word: Letter in the US and Canada (Windows region), A4
+/// elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Paper {
+    A4,
+    Letter,
+}
+
+impl Paper {
+    pub fn for_region() -> Paper {
+        // GEOIDs: 244 United States, 39 Canada.
+        match region::geo_id() {
+            Some(244) | Some(39) => Paper::Letter,
+            _ => Paper::A4,
+        }
+    }
+
+    /// Width and height in twentieths of a point (Word).
+    pub fn twips(self) -> (u32, u32) {
+        match self {
+            Paper::A4 => (11906, 16838),
+            Paper::Letter => (12240, 15840),
+        }
+    }
+
+    /// Width and height in inches (WebView2 print settings).
+    pub fn inches(self) -> (f64, f64) {
+        match self {
+            Paper::A4 => (8.27, 11.69),
+            Paper::Letter => (8.5, 11.0),
+        }
+    }
+
+    /// The CSS `@page` size.
+    pub fn css(self) -> &'static str {
+        match self {
+            Paper::A4 => "A4",
+            Paper::Letter => "letter",
+        }
+    }
+}
+
+#[cfg(windows)]
+mod region {
+    pub fn geo_id() -> Option<i32> {
+        use windows_sys::Win32::Globalization::{GetUserGeoID, GEOCLASS_NATION};
+        let id = unsafe { GetUserGeoID(GEOCLASS_NATION) };
+        (id > 0).then_some(id)
+    }
+}
+
+#[cfg(not(windows))]
+mod region {
+    pub fn geo_id() -> Option<i32> {
+        None
+    }
+}
+
+/// 20 mm in twips.
+const MARGIN_TWIPS: i32 = 1134;
+
+/// The transcript as a Word document: title, the line under it, the summary,
+/// the transcript paragraphs (time grey, name bold).
+pub fn docx(doc: &ExportDoc, paper: Paper) -> Result<Vec<u8>, String> {
+    use docx_rs::{Docx, PageMargin, Paragraph as P, Run, Style, StyleType};
+
+    let (width, height) = paper.twips();
+    let mut d = Docx::new()
+        .page_size(width, height)
+        .page_margin(PageMargin::new().top(MARGIN_TWIPS).bottom(MARGIN_TWIPS).left(MARGIN_TWIPS).right(MARGIN_TWIPS))
+        .add_style(Style::new("Title", StyleType::Paragraph).name("Title").size(36).bold())
+        .add_style(Style::new("Heading1", StyleType::Paragraph).name("Heading 1").size(28).bold())
+        .add_paragraph(P::new().style("Title").add_run(Run::new().add_text(&doc.title)))
+        .add_paragraph(P::new().add_run(Run::new().add_text(&doc.meta).color("666666")));
+    if let Some(summary) = doc.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        d = d.add_paragraph(P::new().style("Heading1").add_run(Run::new().add_text(&doc.summary_title)));
+        for line in summary.lines().filter(|l| !l.trim().is_empty()) {
+            d = d.add_paragraph(P::new().add_run(Run::new().add_text(line)));
+        }
+    }
+    d = d.add_paragraph(P::new().style("Heading1").add_run(Run::new().add_text(&doc.transcript_title)));
+    for p in paragraphs(&doc.segments) {
+        let mut para = P::new();
+        if doc.times {
+            para = para.add_run(Run::new().add_text(format!("[{}] ", clock(p.start_ms))).color("808080"));
+        }
+        if let Some(s) = p.speaker {
+            para = para.add_run(Run::new().add_text(format!("{}: ", speaker_name(&doc.names, s))).bold());
+        }
+        d = d.add_paragraph(para.add_run(Run::new().add_text(&p.text)));
+    }
+    let mut out = std::io::Cursor::new(Vec::new());
+    d.build().pack(&mut out).map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
 }
 
 #[cfg(test)]
@@ -305,5 +401,25 @@ mod tests {
             assert!(cue.end_ms > cue.start_ms, "Cue has zero or negative duration: {:?}", cue);
             assert!(cue.end_ms >= cue.start_ms + 1000, "Cue duration is less than MIN_CUE_MS: {:?}", cue);
         }
+    }
+
+    #[test]
+    fn word_has_the_title_summary_names_and_times() {
+        use std::io::Read;
+        let bytes = docx(&doc(Some("- One point")), Paper::A4).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml").unwrap().read_to_string(&mut xml).unwrap();
+        for expected in ["meeting.mp3", "Summary", "- One point", "Transcript", "[0:00] ", "Saad: ", "Welcome to the meeting.", "Speaker 2: "] {
+            assert!(xml.contains(expected), "{expected} missing");
+        }
+        assert!(xml.contains("11906"), "A4 width in twips");
+    }
+
+    #[test]
+    fn paper_sizes() {
+        assert_eq!(Paper::A4.twips(), (11906, 16838));
+        assert_eq!(Paper::Letter.twips(), (12240, 15840));
+        assert_eq!(Paper::Letter.css(), "letter");
     }
 }

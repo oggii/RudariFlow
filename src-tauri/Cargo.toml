@@ -47,6 +47,13 @@ futures-util = "0.3"
 tauri-plugin-autostart = "2.5.1"
 # raw-api re-exports whisper-rs-sys for ggml device enumeration.
 whisper-rs = { version = "0.16", features = ["raw-api"] }
+# Word export of file transcripts (src/export.rs); default features add
+# image support (embedding pictures), which this code does not use.
+docx-rs = { version = "0.4", default-features = false }
+
+[dev-dependencies]
+# Reads back the Word doc's XML in export.rs's docx() test.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # whisper.cpp with RudariFlow's patches (patches/whisper-rs-sys); created by
 # scripts/setup-whisper-patch.ps1.
