@@ -395,7 +395,13 @@ impl LlmServer {
             for _ in 0..25 {
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 if this.reap_if_exited() {
-                    this.warm(model, gpu_backend);
+                    // The Free GPU hotkey released the AI in the meantime:
+                    // do not undo it with a background restart. An explicit
+                    // retry (the AI tab, ai_restart) still goes through
+                    // `warm`/`start_ai` directly, unguarded.
+                    if !this.released() {
+                        this.warm(model, gpu_backend);
+                    }
                     return;
                 }
             }
@@ -435,7 +441,14 @@ impl LlmServer {
         match result {
             Ok(endpoint) => {
                 self.failures.store(0, Ordering::SeqCst);
-                self.released.store(false, Ordering::SeqCst);
+                // Re-read now, not the `stopped` local above (stale after the
+                // draft-crash retry's second start): a release() that has
+                // finished since this start began already put `released`
+                // back to true (its second store, after `stop()` bumps the
+                // generation), and that must win over this start.
+                if self.generation.load(Ordering::SeqCst) == generation {
+                    self.released.store(false, Ordering::SeqCst);
+                }
                 Ok(endpoint)
             }
             Err(_) if self.generation.load(Ordering::SeqCst) != generation => {
@@ -976,5 +989,52 @@ Available devices:
         assert!(result.unwrap_err().contains("llama-server not found"));
         assert!(started.elapsed() < Duration::from_secs(3), "a failed start ends the longer wait early");
         assert!(llm.released(), "only a start that succeeds ends it");
+    }
+
+    #[test]
+    fn request_failed_does_not_warm_a_released_server() {
+        let dir = std::env::temp_dir().join("rudariflow_release_no_warm");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        std::fs::write(&model, b"not a model").unwrap();
+        // No llama-server in this folder: a background restart, if one were
+        // attempted, would fail fast and is easy to tell apart from the reap.
+        let llm = Arc::new(LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {})));
+
+        // Stand-in for a crashed llama-server: a process that exits on its
+        // own almost immediately, put into `running` directly so this does
+        // not need a real llama-server.exe to go through `start()`.
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "exit", "0"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        no_window(&mut cmd);
+        let child = cmd.spawn().expect("spawn cmd.exe");
+        *lock(&llm.running) = Some(Running {
+            child,
+            endpoint: Endpoint { base_url: String::new(), api_key: String::new(), on_cpu: true },
+            model: model.clone(),
+            draft: None,
+        });
+        // As if the Free GPU hotkey had already released the AI. Set
+        // directly rather than via `release()`, so `release()`'s own `stop()`
+        // does not reap our fake process itself before the watchdog does.
+        llm.released.store(true, Ordering::SeqCst);
+
+        llm.request_failed(model, None);
+        // Well over one 200 ms watchdog poll: enough time for it to reap the
+        // exited process and, if the guard were missing, also attempt and
+        // fail a background restart before we check.
+        std::thread::sleep(Duration::from_millis(1000));
+
+        assert!(lock(&llm.running).is_none(), "no start was attempted");
+        assert!(llm.released(), "still released: warm() must not have run");
+        // The reap itself always runs (it is not what is under test) and
+        // records exactly one failure; a second would mean warm()'s
+        // background start was attempted despite the release.
+        assert_eq!(llm.failures.load(Ordering::SeqCst), 1, "only the reap's failure, no start attempt");
+        match llm.status() {
+            ServerStatus::Failed { error } => assert!(error.contains("stopped unexpectedly"), "got: {error}"),
+            other => panic!("expected Failed from the reap, got {other:?}"),
+        }
     }
 }
