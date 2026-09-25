@@ -1414,11 +1414,18 @@ async fn free_gpu_press(handle: &AppHandle, press: u64) -> FreeGpuResult {
     // Whisper first, as at start: llama-server's --fit measures the free
     // video memory once, when it loads.
     let whisper_ok = load_whisper(state.inner()).await;
-    // A press from here on frees the GPU at once; its release stops this start.
+    // A press from here on frees the GPU at once, and its release stops this
+    // start. The generation is read while `ops` is held: that release can
+    // land before the start has even begun.
+    let generation = state.llm.generation();
     drop(ops);
     let settings = state.settings.lock().unwrap().clone();
     let ai_ok = match ai_model_to_run(&settings, &state.app_dir) {
-        Some(model) => state.llm.ensure_running(&model, Some(settings.gpu_backend.as_str())).await.is_ok(),
+        Some(model) => state
+            .llm
+            .ensure_running_since(generation, &model, Some(settings.gpu_backend.as_str()))
+            .await
+            .is_ok(),
         None => true,
     };
     if state.gpu.press.load(Ordering::SeqCst) != press {
