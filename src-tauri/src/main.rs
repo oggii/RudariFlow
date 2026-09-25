@@ -374,8 +374,8 @@ async fn transcribe_file(
                     .name("rf-speakers".into())
                     .spawn(move || {
                         let turns = speakers::separate(&audio, count, &app_dir, &mut |done, total| {
-                            if total > 0 {
-                                percent.store(done * 100 / total, SeqCst);
+                            if let Some(p) = (done * 100).checked_div(total) {
+                                percent.store(p, SeqCst);
                             }
                         });
                         (turns, started.elapsed())

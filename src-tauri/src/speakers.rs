@@ -75,10 +75,8 @@ pub fn assign(spans: &[(u64, u64)], turns: &[Turn]) -> Vec<Option<u8>> {
                     .map(|t| {
                         if t.end_ms <= start {
                             start - t.end_ms
-                        } else if t.start_ms >= end {
-                            t.start_ms - end
                         } else {
-                            0
+                            t.start_ms.saturating_sub(end)
                         }
                     })
                     .min()

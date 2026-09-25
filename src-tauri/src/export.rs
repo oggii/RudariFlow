@@ -109,7 +109,7 @@ fn best_cut(window: &str) -> Option<usize> {
             .char_indices()
             .filter(|&(i, c)| marks.contains(&c) && i >= min)
             .map(|(i, c)| i + c.len_utf8())
-            .last()
+            .next_back()
     };
     after(&['.', '!', '?', '。', '！', '？'])
         .or_else(|| after(&[',', ';', ':', '，', '、', '；', '：']))
@@ -118,7 +118,7 @@ fn best_cut(window: &str) -> Option<usize> {
                 .char_indices()
                 .filter(|&(i, c)| c == ' ' && i >= min)
                 .map(|(i, _)| i + 1)
-                .last()
+                .next_back()
         })
 }
 
