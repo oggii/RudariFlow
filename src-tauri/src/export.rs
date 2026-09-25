@@ -314,6 +314,16 @@ mod tests {
         }
     }
 
+    /// `word/document.xml` out of the .docx `docx()` builds for `doc` and `paper`.
+    fn document_xml(doc: &ExportDoc, paper: Paper) -> String {
+        use std::io::Read;
+        let bytes = docx(doc, paper).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml").unwrap().read_to_string(&mut xml).unwrap();
+        xml
+    }
+
     #[test]
     fn text_is_the_shown_transcript_with_the_summary_on_top() {
         assert_eq!(text(&doc(None)), "[0:00] Saad: Welcome to the meeting.\n\n[0:14] Speaker 2: Version ten is out.");
@@ -405,15 +415,21 @@ mod tests {
 
     #[test]
     fn word_has_the_title_summary_names_and_times() {
-        use std::io::Read;
-        let bytes = docx(&doc(Some("- One point")), Paper::A4).unwrap();
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-        let mut xml = String::new();
-        zip.by_name("word/document.xml").unwrap().read_to_string(&mut xml).unwrap();
+        let xml = document_xml(&doc(Some("- One point")), Paper::A4);
         for expected in ["meeting.mp3", "Summary", "- One point", "Transcript", "[0:00] ", "Saad: ", "Welcome to the meeting.", "Speaker 2: "] {
             assert!(xml.contains(expected), "{expected} missing");
         }
-        assert!(xml.contains("11906"), "A4 width in twips");
+        assert!(xml.contains(r#"w:w="11906" w:h="16838""#), "A4 width and height in twips");
+        assert!(xml.contains(r#"w:pStyle w:val="Title""#), "title style missing");
+        assert!(xml.contains(r#"w:pStyle w:val="Heading1""#), "Heading1 style missing");
+    }
+
+    #[test]
+    fn word_page_size_follows_the_paper() {
+        let letter = document_xml(&doc(None), Paper::Letter);
+        assert!(letter.contains(r#"w:w="12240" w:h="15840""#), "Letter size missing: {letter}");
+        let a4 = document_xml(&doc(None), Paper::A4);
+        assert!(a4.contains(r#"w:w="11906" w:h="16838""#), "A4 size missing: {a4}");
     }
 
     #[test]
