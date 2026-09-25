@@ -280,7 +280,8 @@ struct FileTranscript {
     /// Speakers found; 0 when not separated.
     speakers: u8,
     /// Why speakers are missing although asked for: "no_model",
-    /// "no_runtime", "none_found" (no voices) or an error text.
+    /// "no_runtime", "none_found" (no voices), "cancelled" (Cancel while
+    /// they were separated after Whisper) or an error text.
     #[serde(rename = "speakersError", skip_serializing_if = "Option::is_none")]
     speakers_error: Option<String>,
     language: String,
@@ -306,7 +307,8 @@ struct FileProgress {
 /// the Engine setting. `speakers` is the Files tab's setting, "off", "auto"
 /// or "2" … "8": unless off, the speakers are separated next to Whisper and
 /// each segment gets its speaker (or `speakersError` says why not). Errors
-/// "busy", "no_model", "no_speech", "cancelled" are shown by the UI in words.
+/// "busy", "no_model", "no_speech", "cancelled" (Cancel before Whisper is
+/// done) are shown by the UI in words.
 #[tauri::command]
 async fn transcribe_file(
     app: AppHandle,
@@ -376,18 +378,23 @@ async fn transcribe_file(
             Some(count) => {
                 let (audio, app_dir, percent) = (audio.clone(), app_dir.clone(), percent.clone());
                 let started = std::time::Instant::now();
-                let handle = std::thread::Builder::new()
-                    .name("rf-speakers".into())
-                    .spawn(move || {
-                        let turns = speakers::separate(&audio, count, &app_dir, &mut |done, total| {
-                            if let Some(p) = (done * 100).checked_div(total) {
-                                percent.store(p, SeqCst);
-                            }
-                        });
-                        (turns, started.elapsed())
-                    })
-                    .map_err(|e| e.to_string())?;
-                Some(handle)
+                let spawned = std::thread::Builder::new().name("rf-speakers".into()).spawn(move || {
+                    let turns = speakers::separate(&audio, count, &app_dir, &mut |done, total| {
+                        if let Some(p) = (done * 100).checked_div(total) {
+                            percent.store(p, SeqCst);
+                        }
+                    });
+                    (turns, started.elapsed())
+                });
+                match spawned {
+                    Ok(handle) => Some(handle),
+                    // The transcript comes without speakers.
+                    Err(e) => {
+                        startup_log::log(&format!("[speakers] could not start: {}", e));
+                        speakers_error = Some(format!("the separation could not start ({})", e));
+                        None
+                    }
+                }
             }
         };
 
@@ -405,34 +412,42 @@ async fn transcribe_file(
 
         let mut found = 0u8;
         if let Some(handle) = separation {
+            let mut cancelled = false;
             while !handle.is_finished() {
                 if FILE_CANCEL.load(SeqCst) {
-                    // The thread finishes on its own; its result is dropped.
-                    return Err(file_transcribe::CANCELLED.to_string());
+                    cancelled = true;
+                    break;
                 }
                 emit("speakers", percent.load(SeqCst) as u64, 100, String::new());
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
-            match handle.join() {
-                Ok((Ok(turns), took)) => {
-                    match file_transcribe::label_speakers(&mut segments, &turns) {
-                        Ok(n) => found = n,
-                        Err(e) => speakers_error = Some(e),
+            if cancelled {
+                // Whisper is done: the transcript stays, without speakers.
+                // The separation finishes on its own; its result is dropped.
+                startup_log::log("[speakers] cancelled; the transcript comes without speakers");
+                speakers_error = Some(file_transcribe::CANCELLED.to_string());
+            } else {
+                match handle.join() {
+                    Ok((Ok(turns), took)) => {
+                        match file_transcribe::label_speakers(&mut segments, &turns) {
+                            Ok(n) => found = n,
+                            Err(e) => speakers_error = Some(e),
+                        }
+                        startup_log::log(&format!(
+                            "[speakers] {} speakers, {} turns in {:.1} s ({:.0} s of audio, {} threads)",
+                            found,
+                            turns.len(),
+                            took.as_secs_f64(),
+                            audio.len() as f64 / 16_000.0,
+                            speakers::threads()
+                        ));
                     }
-                    startup_log::log(&format!(
-                        "[speakers] {} speakers, {} turns in {:.1} s ({:.0} s of audio, {} threads)",
-                        found,
-                        turns.len(),
-                        took.as_secs_f64(),
-                        audio.len() as f64 / 16_000.0,
-                        speakers::threads()
-                    ));
+                    Ok((Err(e), _)) => {
+                        startup_log::log(&format!("[speakers] failed: {}", e));
+                        speakers_error = Some(e);
+                    }
+                    Err(_) => speakers_error = Some("speaker separation stopped unexpectedly".to_string()),
                 }
-                Ok((Err(e), _)) => {
-                    startup_log::log(&format!("[speakers] failed: {}", e));
-                    speakers_error = Some(e);
-                }
-                Err(_) => speakers_error = Some("speaker separation stopped unexpectedly".to_string()),
             }
         }
         Ok(FileTranscript {

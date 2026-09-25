@@ -126,9 +126,10 @@ function errorText(e: unknown): string {
 }
 
 /** Why the speakers are missing (the backend's `speakersError`), for the
- *  status line, and whether that is an error: a file without voices is not. */
+ *  status line, and whether that is an error: a cancel or a file without
+ *  voices is not. */
 function speakersNote(code: string): { text: string; error: boolean } {
-  const neutral = ["none_found"];
+  const neutral = ["cancelled", "none_found"];
   const known = ["no_model", "no_runtime", ...neutral];
   return {
     text: known.includes(code) ? t(`files_speakers_missing_${code}`) : t("files_speakers_missing_error").replace("{error}", code),
