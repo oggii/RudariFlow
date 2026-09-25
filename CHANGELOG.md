@@ -5,7 +5,15 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.12.0] - 2026-09-25 - Speakers, exports and a resizable window
+
+Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
+
+### Fixed
+- **0.11.0 could crash on processors without AVX-512.** whisper.cpp was
+  compiled for the build PC's CPU (a Ryzen 9 7900X), so the 0.11.0
+  installers carried AVX-512 code. 0.12.0 targets AVX2: Intel Haswell
+  (2013), AMD Ryzen and newer.
 
 ### Added
 - **Speakers in file transcripts:** choose Auto or 2 to 8 speakers next to
