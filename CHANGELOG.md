@@ -5,6 +5,25 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Speakers in file transcripts:** choose Auto or 2 to 8 speakers next to
+  the language, and each change of speaker starts a paragraph with the
+  name. Rename a speaker once and the name is used everywhere, the summary
+  included. The speaker model (45 MB) downloads on first use and runs on
+  the CPU: about 21 s for a 10-minute meeting on a Ryzen 9 7900X (8
+  threads).
+- **Export** file transcripts as PDF, Word (.docx), subtitles (.srt, .vtt)
+  or text, with or without timestamps and with the summary on top.
+- **A resizable window:** the main window can be resized and maximised,
+  and remembers its size and position. Long transcripts use the height.
+
+### Changed
+- **The Export menu replaces "Save as text…":** PDF, Word, subtitles and
+  text all come from one menu, and carry the timestamps switch, the
+  speaker names and the summary shown on screen.
+
 ## [0.11.0] - 2026-09-24 - AI on CUDA, sturdier dictation and files
 
 Tested on an NVIDIA GeForce RTX 5080 with an AMD Radeon iGPU next to it.

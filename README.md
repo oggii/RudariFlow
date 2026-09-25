@@ -40,7 +40,8 @@ Made by [oggi](https://0ggi.ch).
 - Multiple Whisper models selectable: tiny → large-v3-turbo, auto-downloaded on selection. Large v3 Turbo q8 gave the same text as Turbo on 49 test recordings, 18 % faster and with half the memory
 - Languages: auto-detect or any of the ~100 languages Whisper supports
 - **Long dictations in pieces:** every 29 s a piece is cut in a pause and transcribed while you keep speaking, so after the release only the rest is left
-- **Transcribe files** (Files tab): drop an audio or video file on the window (MP3, M4A, WAV, FLAC, WhatsApp voice messages, MP4, MOV, MKV, WebM) and the text appears minute by minute, with timestamps, copy and save as text; the local AI model can summarise it (key points, next steps). About 40× real time on an RX 6800. You can keep dictating while a file runs
+- **Transcribe files** (Files tab): drop an audio or video file on the window (MP3, M4A, WAV, FLAC, WhatsApp voice messages, MP4, MOV, MKV, WebM) and the text appears minute by minute, with timestamps and copy; export as PDF, Word (.docx), subtitles (.srt, .vtt) or text, with or without timestamps; separate the speakers (Auto or 2 to 8, names you set once; a 45 MB speaker model downloads on first use and runs on the CPU, about 3.5 % of the audio length on a Ryzen 9 7900X, 8 threads); the local AI model can summarise it (key points, next steps). About 40× real time on an RX 6800. You can keep dictating while a file runs
+- **Resizable window:** can be resized and maximised, never smaller than 900×600, and remembers its size and position
 - **Push-to-talk** and **toggle** modes
 - Configurable global hotkeys (capture any chord from the settings UI), including mouse side buttons (Mouse 4 / Mouse 5, alone or with Ctrl/Shift/Alt/Win) for all three hotkeys, so one button can serve two (Mouse 5 dictates, Shift+Mouse 5 rewrites). A bound side button is consumed, so it no longer triggers "Back" / "Forward" in other apps. Ctrl+A, C, V, X, Z, Y and S are refused, since they would stop working in every app
 - Floating recording pill with live waveform and cancel button
@@ -99,6 +100,9 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-llama.ps1
 # 3c. Unpack whisper-rs-sys and apply the whisper.cpp patches in patches\
 powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-patch.ps1
 
+# 3d. Fetch the sherpa-onnx runtime for speaker separation (pinned, SHA-256 checked)
+powershell -ExecutionPolicy Bypass -File scripts/setup-speakers.ps1
+
 # 4. Keep the build path short: whisper.cpp's nested Vulkan shader build
 #    exceeds the 260-character path limit under src-tauri\target (and still
 #    under C:\t\rf unless Windows long paths are enabled)
@@ -111,6 +115,9 @@ npm run tauri dev
 
 Without a CUDA Toolkit you can still build and run a Vulkan-only binary:
 `npm run tauri dev -- --no-default-features --features vulkan`.
+
+`cargo run`, examples and dev builds need `src-tauri\binaries\sherpa-onnx\lib` on PATH for
+speaker separation (the installer puts the DLLs next to the exe).
 
 ### Production build
 
@@ -157,6 +164,8 @@ Times model load and transcription on the first GPU with and without flash atten
 - **Transcription:** in-process [`whisper-rs`](https://github.com/tazz4843/whisper-rs) (whisper.cpp Rust bindings) built with both the `cuda` and `vulkan` features; the backend is chosen at runtime from ggml's device list, with fallback to CPU
 - **AI cleanup:** [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` (release b11100: the Vulkan build plus the CUDA 13.4 backend `ggml-cuda.dll`, which uses the CUDA runtime shipped for Whisper) as a child process on 127.0.0.1 with a random port and API key, in a kill-on-close Job Object; Gemma 4 GGUF models (Apache-2.0) from Hugging Face. It runs as its own process because whisper-rs links its own copy of ggml into `rudariflow.exe`
 - **Files:** Windows Media Foundation decodes audio and video files; Ogg Opus (WhatsApp voice messages), which Windows cannot open, goes through [libopus](https://opus-codec.org) via the `opus` and `ogg` crates
+- **Speakers:** [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) v1.12.9 (pyannote segmentation 3.0, 3D-Speaker ERes2Net), shared DLLs delay-loaded by `rudariflow.exe`
+- **Export:** Word via docx-rs, PDF through WebView2's PrintToPdf
 - **Auto-paste:** [enigo](https://github.com/enigo-rs/enigo) (keyboard simulation)
 - **Hotkey:** [tauri-plugin-global-shortcut](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/global-shortcut)
 - **Autostart:** [tauri-plugin-autostart](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/autostart)
