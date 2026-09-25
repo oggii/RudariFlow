@@ -32,7 +32,8 @@ fn main() {
 
     let started = Instant::now();
     let mut blocks = 0;
-    let (segments, language) = transcribe(&engine, &audio, language, "", |t| t.to_string(), &AtomicBool::new(false), |p| {
+    let run = engine.start_file(language).expect("start");
+    let (segments, language) = transcribe(&engine, &audio, run, "", |t| t.to_string(), &AtomicBool::new(false), |p| {
         blocks += 1;
         println!("  block {}: {:.0} of {:.0} s, {} segments", blocks, p.done_ms as f64 / 1000.0, p.total_ms as f64 / 1000.0, p.segments.len());
     })

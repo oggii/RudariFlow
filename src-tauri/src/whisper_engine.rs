@@ -223,6 +223,9 @@ use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
 
+/// The error of a transcription that finds no model loaded.
+pub const NO_MODEL: &str = "WhisperEngine: no model loaded";
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PartialTranscript {
     pub text: String,
@@ -365,10 +368,7 @@ impl WhisperEngine {
         custom_prompt: &str,
     ) -> Result<(String, Option<String>), String> {
         let mut state = self.lock();
-        let loaded = state
-            .loaded
-            .as_mut()
-            .ok_or_else(|| "WhisperEngine: no model loaded".to_string())?;
+        let loaded = state.loaded.as_mut().ok_or_else(|| NO_MODEL.to_string())?;
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some(language));
@@ -466,8 +466,23 @@ impl WhisperEngine {
     /// Start transcribing a file with the loaded model.
     pub fn start_file(&self, language: &str) -> Result<FileRun, String> {
         let engine = self.lock();
-        let loaded = engine.loaded.as_ref().ok_or_else(|| "WhisperEngine: no model loaded".to_string())?;
+        let loaded = engine.loaded.as_ref().ok_or_else(|| NO_MODEL.to_string())?;
         Ok(FileRun { state: new_state(&loaded.ctx)?, language: language.to_string() })
+    }
+
+    /// `start_file` for a file the user started, after `ensure_loaded` of
+    /// `model_path`. A release (Free GPU hotkey) that waited for that load
+    /// takes the model before the file holds its own reference, so it is
+    /// loaded once more.
+    pub fn start_file_or_reload(&self, model_path: &Path, gpu_backend: &str, language: &str) -> Result<FileRun, String> {
+        match self.start_file(language) {
+            Err(e) if e == NO_MODEL => {
+                crate::startup_log::log("[file] Whisper was unloaded before the file started (Free GPU); loading it again");
+                self.ensure_loaded(model_path, gpu_backend)?;
+                self.start_file(language)
+            }
+            run => run,
+        }
     }
 
     /// Transcribe one block of a file that starts `offset_ms` into it.
@@ -668,6 +683,19 @@ mod tests {
         // A load that fails does not end the release.
         assert!(engine.ensure_loaded(Path::new("no-such-model.bin"), "cpu").is_err());
         assert!(engine.released());
+    }
+
+    /// A Free GPU press during a file's own model load takes the model
+    /// before the file holds it: the file loads it once more instead of
+    /// failing with "no model loaded".
+    #[test]
+    fn a_file_loads_its_model_again_after_a_release() {
+        let engine = WhisperEngine::new();
+        engine.release();
+        let Err(error) = engine.start_file_or_reload(Path::new("no-such-model.bin"), "cpu", "auto") else {
+            panic!("no model file, so no run");
+        };
+        assert_ne!(error, NO_MODEL, "the model was loaded once more (and that load failed)");
     }
 
     #[test]

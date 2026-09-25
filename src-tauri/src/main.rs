@@ -410,6 +410,7 @@ async fn transcribe_file(
 
         emit("loading", 0, 1, String::new());
         engine.ensure_loaded(&model, &settings.gpu_backend)?;
+        let run = engine.start_file_or_reload(&model, &settings.gpu_backend, &language)?;
 
         // Speakers: on the CPU while Whisper runs on the GPU. Started once
         // Whisper has loaded, so a failed load leaves nothing running.
@@ -456,7 +457,7 @@ async fn transcribe_file(
             if settings.swiss_spelling { dictionary::swiss_spelling(&text) } else { text }
         };
         let (mut segments, language) =
-            file_transcribe::transcribe(&engine, &audio, &language, &prompt, spelling, &FILE_CANCEL, |p| {
+            file_transcribe::transcribe(&engine, &audio, run, &prompt, spelling, &FILE_CANCEL, |p| {
                 let text = p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
                 emit("transcribing", p.done_ms, p.total_ms, text);
             })?;
