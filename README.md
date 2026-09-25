@@ -20,7 +20,7 @@ Made by [oggi](https://0ggi.ch).
 ## Features
 
 - Local transcription via in-process whisper-rs — no cloud required, no subprocess per dictation
-- **Persistent model:** loaded when the app starts and reused across dictations (on battery it is unloaded after 10 minutes without dictation)
+- **Persistent model:** loaded when the app starts and reused across dictations (on battery it is unloaded after 10 minutes without dictation; the Free GPU hotkey unloads it whenever you want)
 - **Hotkey-press warmup:** if the model is not loaded, pressing the hotkey loads it in parallel so it's hot by the time you finish speaking
 - **Streaming partial transcripts:** text appears in the overlay as Whisper emits each segment
 - **Auto backend detection:** NVIDIA CUDA when available, otherwise Vulkan (AMD / Intel / NVIDIA), otherwise CPU. Settings show the detected GPUs and let you force CUDA, Vulkan or CPU. Flash attention is on for CUDA and off for Vulkan (2× slower on an RX 6800); force it with `RUDARIFLOW_FLASH_ATTN=1` or `=0`
@@ -33,6 +33,7 @@ Made by [oggi](https://0ggi.ch).
 - **History:** the last 200 dictations stay on your computer, the last 50 with their recording. Copy, play, delete, or re-run a recording with the current model. Can be set to text only or turned off
 - **Paste last transcript:** a second hotkey (default Alt+Shift+V) pastes your last dictation again
 - **Rewrite last dictation:** a third hotkey selects your last dictation in the field, and what you say next changes it like Edit mode ("shorter", "more formal")
+- **Free GPU:** a fourth hotkey (off by default; set it under Recording) unloads Whisper and the AI model so a game gets the graphics card's memory, about 5.6 GB with Large v3 Turbo q8 and Gemma 4 E4B. Press it again to load them; a dictation, a file or a summary also loads what it needs, the first dictation a few seconds later than usual
 - **Mute other apps while recording:** music and videos go quiet while you dictate and come back afterwards (off by default)
 - **Words on screen:** names and terms visible in the window you dictate into (a colleague's name in an email, a brand on a web page, identifiers in your editor) help Whisper and the AI spell them. Read locally when you press the hotkey, never stored
 - **Edit mode:** select text in any app, hold the hotkey and say what to change ("shorter", "more formal", "in Turkish", "delete that") or say the new wording; the local model rewrites the selection in place, Ctrl+Z undoes it. Terminals, address bars and password fields are left alone
@@ -40,10 +41,10 @@ Made by [oggi](https://0ggi.ch).
 - Multiple Whisper models selectable: tiny → large-v3-turbo, auto-downloaded on selection. Large v3 Turbo q8 gave the same text as Turbo on 49 test recordings, 18 % faster and with half the memory
 - Languages: auto-detect or any of the ~100 languages Whisper supports
 - **Long dictations in pieces:** every 29 s a piece is cut in a pause and transcribed while you keep speaking, so after the release only the rest is left
-- **Transcribe files** (Files tab): drop an audio or video file on the window (MP3, M4A, WAV, FLAC, WhatsApp voice messages, MP4, MOV, MKV, WebM) and the text appears minute by minute, with timestamps and copy; export as PDF, Word (.docx) or text, with or without timestamps and the summary on top when one is shown, or as subtitles (.srt, .vtt), always timed; separate the speakers (Auto or 2 to 8, names you set once; a 45 MB speaker model downloads on first use and runs on the CPU, about 3.5 % of the audio length on a Ryzen 9 7900X, 8 threads); the local AI model can summarise it (key points, next steps), and the summary can be hidden to give the transcript more room. About 40× real time on an RX 6800. You can keep dictating while a file runs
+- **Transcribe files** (Files tab): drop an audio or video file on the window (MP3, M4A, WAV, FLAC, WhatsApp voice messages, MP4, MOV, MKV, WebM) and the text appears minute by minute, with timestamps and copy; export as PDF, Word (.docx) or text, with or without timestamps and the summary on top when one is shown, or as subtitles (.srt, .vtt), always timed; separate the speakers (Auto or 2 to 8, names you set once; a 45 MB speaker model downloads on first use and runs on the CPU, about 3.5 % of the audio length on a Ryzen 9 7900X, 8 threads); the local AI model can summarise it (key points, next steps), and the summary can be hidden to give the transcript more room; Clear empties the tab for the next file. About 40× real time on an RX 6800. You can keep dictating while a file runs
 - **Resizable window:** can be resized and maximised, never smaller than 900×600, and remembers its size and position
 - **Push-to-talk** and **toggle** modes
-- Configurable global hotkeys (capture any chord from the settings UI), including mouse side buttons (Mouse 4 / Mouse 5, alone or with Ctrl/Shift/Alt/Win) for all three hotkeys, so one button can serve two (Mouse 5 dictates, Shift+Mouse 5 rewrites). A bound side button is consumed, so it no longer triggers "Back" / "Forward" in other apps. Ctrl+A, C, V, X, Z, Y and S are refused, since they would stop working in every app
+- Configurable global hotkeys (capture any chord from the settings UI), including mouse side buttons (Mouse 4 / Mouse 5, alone or with Ctrl/Shift/Alt/Win) for all four hotkeys, so one button can serve two (Mouse 5 dictates, Shift+Mouse 5 rewrites). A bound side button is consumed, so it no longer triggers "Back" / "Forward" in other apps. Ctrl+A, C, V, X, Z, Y and S are refused, since they would stop working in every app
 - Floating recording pill with live waveform and cancel button
 - Auto-paste via simulated typing (works with any application)
 - System tray icon — closing the window minimises to tray instead of quitting
@@ -59,7 +60,7 @@ Made by [oggi](https://0ggi.ch).
   - Intel Arc and other Vulkan 1.2 GPUs: Vulkan
   - With an integrated and a dedicated GPU, the dedicated one is used.
 - **CPU fallback:** Works without a usable GPU, but significantly slower (~10-30×). For CPU-only users we recommend the `small` or `medium` model.
-- **RAM:** the selected whisper model is loaded at start and stays resident. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB. On battery, the models are unloaded after 10 minutes without dictation and load again at the next hotkey press.
+- **RAM:** the selected whisper model is loaded at start and stays resident. `large-v3-turbo` ≈ 1.6 GB, `small` ≈ 500 MB, `tiny` ≈ 80 MB. On battery, the models are unloaded after 10 minutes without dictation and load again at the next hotkey press. The Free GPU hotkey unloads them on demand, e.g. before a game.
 - **AI cleanup (optional):** runs on the same card as Whisper, with the normal driver: through CUDA on NVIDIA GeForce GTX 16 / RTX 20 and newer (driver 580 or newer), through Vulkan on AMD, Intel and older NVIDIA cards. The default model takes about 3.6 GB of video memory on top of Whisper plus about 3.3 GB of RAM (its per-layer embeddings stay in RAM), so 8 GB cards and up are fine; smaller cards move part of the model to the CPU. Measured: about 0.3 s per dictation on an AMD Radeon RX 6800 (Vulkan), about 0.09 s on an NVIDIA GeForce RTX 5080 (CUDA; long dictations about 30 % faster than through Vulkan). Intel Arc uses the Vulkan path but has not been tested yet. Without a usable GPU expect 5 to 10 s per dictation.
 
 ## Installation (for end users)

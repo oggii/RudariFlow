@@ -5,6 +5,23 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Free GPU hotkey:** a fourth hotkey (Settings → Recording, off by
+  default, a key combination or a mouse side button) unloads Whisper and
+  stops the AI model, so a game gets the graphics card's memory: about
+  5.6 GB with Large v3 Turbo q8 and Gemma 4 E4B on an RTX 5080. The pill
+  says "GPU freed". Press it again to load both ("Loading models…", then
+  "Models loaded"). A dictation, a file or a summary also loads what it
+  needs; the first dictation after a free waits for the AI model (a few
+  seconds) instead of being pasted without AI cleanup. A press during a
+  dictation frees the GPU once the text is pasted.
+- **Clear in the Files tab:** empties the tab for the next file: the
+  transcript, the speaker names, the summary and the file line go, and
+  the audio file stays where it is. Not while a file, a summary or an
+  export is running.
+
 ## [0.12.0] - 2026-09-25 - Speakers, exports and a resizable window
 
 Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
