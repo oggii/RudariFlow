@@ -28,6 +28,7 @@ pub mod learn;
 pub mod media;
 pub mod file_transcribe;
 pub mod speakers;
+pub mod export;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
