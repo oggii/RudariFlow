@@ -40,6 +40,7 @@ interface Settings {
   editMode: boolean;
   screenContext: boolean;
   learnDictionary: boolean;
+  fileSpeakers: string;
 }
 
 interface Replacement {
@@ -912,7 +913,14 @@ document.getElementById("credit-link")?.addEventListener("click", async (e) => {
 
 initAiSettings({ settings: () => currentSettings, save: saveSettings });
 initDictionary({ settings: () => currentSettings, save: saveSettings });
-initFiles({ settings: () => currentSettings, showSection: () => showSection("files") });
+initFiles({
+  settings: () => currentSettings,
+  saveSettings: async (patch) => {
+    Object.assign(currentSettings, patch);
+    await invoke("save_settings", { settings: currentSettings });
+  },
+  showSection: () => showSection("files"),
+});
 
 // Initialize
 getVersion()

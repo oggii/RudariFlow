@@ -418,13 +418,16 @@ impl WhisperEngine {
 }
 
 /// A piece of a file transcript; times in ms from the start of the file.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+/// `speaker` is set when the Files tab separated speakers (0 = first voice).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Segment {
     #[serde(rename = "startMs")]
     pub start_ms: u64,
     #[serde(rename = "endMs")]
     pub end_ms: u64,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<u8>,
 }
 
 /// A file being transcribed, with a Whisper state of its own.
@@ -481,7 +484,7 @@ impl WhisperEngine {
             if !text.is_empty() {
                 // Whisper counts in centiseconds.
                 let at = |cs: i64| offset_ms + cs.max(0) as u64 * 10;
-                out.push(Segment { start_ms: at(segment.start_timestamp()), end_ms: at(segment.end_timestamp()), text });
+                out.push(Segment { start_ms: at(segment.start_timestamp()), end_ms: at(segment.end_timestamp()), text, speaker: None });
             }
         }
         Ok(out)
@@ -762,5 +765,39 @@ mod tests {
         // Streaming transcribe takes &AppHandle which is impractical to
         // construct in a unit test. End-to-end coverage moved to manual
         // smoke testing of the running app.
+    }
+
+    #[test]
+    fn segments_serialize_camel_case_and_omit_a_missing_speaker() {
+        use serde_json;
+
+        // speaker: None is omitted from JSON
+        let seg_no_speaker = Segment {
+            start_ms: 1000,
+            end_ms: 2000,
+            text: "Hi".to_string(),
+            speaker: None,
+        };
+        let json = serde_json::to_string(&seg_no_speaker).expect("serialize");
+        assert_eq!(json, r#"{"startMs":1000,"endMs":2000,"text":"Hi"}"#);
+        assert!(!json.contains("speaker"));
+
+        // speaker: Some(1) is included in JSON
+        let seg_with_speaker = Segment {
+            start_ms: 1000,
+            end_ms: 2000,
+            text: "Hi".to_string(),
+            speaker: Some(1),
+        };
+        let json = serde_json::to_string(&seg_with_speaker).expect("serialize");
+        assert!(json.contains("\"speaker\":1"));
+
+        // Deserializing without speaker field gives speaker: None
+        let seg_from_json: Segment =
+            serde_json::from_str(r#"{"startMs":1000,"endMs":2000,"text":"Hi"}"#).expect("deserialize");
+        assert_eq!(seg_from_json.speaker, None);
+        assert_eq!(seg_from_json.start_ms, 1000);
+        assert_eq!(seg_from_json.end_ms, 2000);
+        assert_eq!(seg_from_json.text, "Hi");
     }
 }

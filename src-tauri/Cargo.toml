@@ -1,6 +1,6 @@
 [package]
 name = "rudariflow"
-version = "0.11.0"
+version = "0.12.0"
 description = "Sprache-zu-Text Diktier-App, lokal angetrieben von Whisper.cpp mit GPU-Beschleunigung"
 authors = ["oggi <info@0ggi.ch>"]
 edition = "2021"
@@ -26,6 +26,7 @@ tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "~2.6"
+tauri-plugin-window-state = "2.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cpal = "0.15"
@@ -38,6 +39,7 @@ arboard = "3"
 regex = "1"
 getrandom = "0.3"
 whatlang = "0.18"
+sha2 = "0.10"
 # WhatsApp voice messages and other Ogg Opus files, which Windows cannot open
 # (src/media.rs).
 ogg = "0.9"
@@ -46,6 +48,13 @@ futures-util = "0.3"
 tauri-plugin-autostart = "2.5.1"
 # raw-api re-exports whisper-rs-sys for ggml device enumeration.
 whisper-rs = { version = "0.16", features = ["raw-api"] }
+# Word export of file transcripts (src/export.rs); default features add
+# image support (embedding pictures), which this code does not use.
+docx-rs = { version = "0.4", default-features = false }
+
+[dev-dependencies]
+# Reads back the Word doc's XML in export.rs's docx() test.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # whisper.cpp with RudariFlow's patches (patches/whisper-rs-sys); created by
 # scripts/setup-whisper-patch.ps1.
@@ -56,11 +65,14 @@ whisper-rs-sys = { path = "vendor/whisper-rs-sys" }
 # Low-level mouse hook for side-button hotkeys (src/mouse_hotkey.rs); the
 # foreground app for AI cleanup rules (src/foreground_app.rs); battery state
 # (src/power.rs); local time and UI language for replacement variables
-# (src/replacements.rs).
+# (src/replacements.rs); speaker model paths in the ANSI code page or as
+# short names (src/speakers.rs).
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Globalization",
   "Win32_Graphics_Dwm",
+  "Win32_Storage_FileSystem",
+  "Win32_System_LibraryLoader",
   "Win32_System_Power",
   "Win32_System_Registry",
   "Win32_System_SystemInformation",
@@ -83,6 +95,20 @@ windows = { version = "0.61", features = [
   "Win32_System_Variant",
   "Win32_UI_Accessibility",
 ] }
+# Speaker separation in the Files tab (src/speakers.rs): the C API of
+# sherpa-onnx v1.12.9 from the shared build in binaries/sherpa-onnx
+# (scripts/setup-speakers.ps1). Not the sherpa-rs wrapper: it runs the
+# models on one thread, three times slower.
+sherpa-rs-sys = { version = "=0.6.8", default-features = false }
+# PDF export (src/pdf.rs): WebView2's PrintToPdf on a hidden window; the
+# version wry 0.54 uses, so the COM types match Tauri's webview.
+webview2-com = "0.38"
+
+# sherpa-rs-sys's build script links the debug C runtime (msvcrtd) when it is
+# built with debug assertions; we link sherpa-onnx's release DLLs, so build
+# it like release and keep debug builds on one C runtime.
+[profile.dev.package.sherpa-rs-sys]
+debug-assertions = false
 
 [[example]]
 name = "spike"
@@ -155,3 +181,11 @@ path = "examples/media_probe.rs"
 [[example]]
 name = "file_bench"
 path = "examples/file_bench.rs"
+
+[[example]]
+name = "speakers_probe"
+path = "examples/speakers_probe.rs"
+
+[[example]]
+name = "speakers_bench"
+path = "examples/speakers_bench.rs"

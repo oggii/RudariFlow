@@ -5,6 +5,38 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-09-25 - Speakers, exports and a resizable window
+
+Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
+
+### Fixed
+- **0.11.0 could crash on processors without AVX-512.** whisper.cpp was
+  compiled for the build PC's CPU (a Ryzen 9 7900X), so the 0.11.0
+  installers carried AVX-512 code. 0.12.0 targets AVX2: Intel Haswell
+  (2013), AMD Ryzen and newer.
+
+### Added
+- **Speakers in file transcripts:** choose Auto or 2 to 8 speakers next to
+  the language, and each change of speaker starts a paragraph with the
+  name. Rename a speaker once and the transcript and its exports use the
+  name; rename before summarising and the summary uses the names too. The
+  speaker model (45 MB) downloads on first use and runs on the CPU: about
+  21 s for a 10-minute meeting on a Ryzen 9 7900X (8 threads).
+- **Export** file transcripts as PDF, Word (.docx) or text, with or
+  without timestamps and the summary on top when one is shown, or as
+  subtitles (.srt, .vtt), always timed.
+- **A resizable window:** the main window can be resized and maximised,
+  and remembers its size and position. Long transcripts use the height,
+  and the summary can be hidden to give the transcript more room.
+
+### Changed
+- **The Export menu replaces "Save as text…":** PDF, Word, subtitles and
+  text all come from one menu, and carry the timestamps switch, the
+  speaker names and the summary shown on screen.
+- **The transcript box is read-only** once a file is done, so exports and
+  Copy always use the transcript as shown; to correct words, edit the
+  exported file.
+
 ## [0.11.0] - 2026-09-24 - AI on CUDA, sturdier dictation and files
 
 Tested on an NVIDIA GeForce RTX 5080 with an AMD Radeon iGPU next to it.

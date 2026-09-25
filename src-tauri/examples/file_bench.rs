@@ -39,7 +39,7 @@ fn main() {
     .expect("transcribe");
     let secs = audio.len() as f64 / 16_000.0;
     let run_s = started.elapsed().as_secs_f64();
-    let text = format(&segments, false);
+    let text = format(&segments, &[], false);
     println!(
         "{:.0} s audio: decode {} ms, load {} ms, transcribe {:.1} s ({:.0}x realtime), language {}, {} segments, {} words, {} paragraphs",
         secs,
@@ -53,6 +53,6 @@ fn main() {
         text.split("\n\n").count()
     );
     if show_text {
-        println!("{}", format(&segments, true));
+        println!("{}", format(&segments, &[], true));
     }
 }

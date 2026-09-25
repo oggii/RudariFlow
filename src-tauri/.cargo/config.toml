@@ -1,0 +1,10 @@
+[env]
+# sherpa-onnx (speaker separation in the Files tab), unpacked by
+# scripts/setup-speakers.ps1; sherpa-rs-sys links its import library
+# instead of downloading or building sherpa-onnx.
+SHERPA_LIB_PATH = { value = "binaries/sherpa-onnx", relative = true }
+# whisper.cpp's CPU code for every x86-64 PC with AVX2 (Intel Haswell, AMD
+# Ryzen and newer), not for the build PC's CPU: with GGML_NATIVE=ON a build
+# on a Ryzen 9 7900X used AVX-512 and crashed on processors without it.
+# whisper-rs-sys passes GGML_* variables on to CMake.
+GGML_NATIVE = "OFF"

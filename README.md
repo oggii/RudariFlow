@@ -11,7 +11,7 @@
 
 Local speech-to-text dictation app for Windows, powered by [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Global hotkey, push-to-talk or toggle mode, automatic paste of the transcribed text.
 
-> **v0.11.0, Windows.** New: AI cleanup on CUDA on NVIDIA (long dictations about 30 % faster on an RTX 5080), file timestamps that stay right after pauses, names from the dictionary spelled right in long files, no more cut-off dictations from a bouncing mouse button, a space between two dictations in a row, and dictations keep their AI cleanup while a file is summarised. Since 0.10: transcribe audio and video files with an AI summary (Files tab), rewrite your last dictation by voice, a dictionary that learns from your corrections, a language per app, snippets with date and time, long dictations transcribed while you speak, a PC check that picks the fastest setup, and mouse side buttons for every hotkey. Since 0.9: AI cleanup about 30 % faster, Large v3 Turbo q8. Since 0.8: words on screen help spell names and terms. Since 0.6: Edit mode, "Write in", local AI cleanup with per-app rules, a dictionary, history, replacements and a "send it" command (see the [changelog](CHANGELOG.md)). One installer for every GPU: NVIDIA GeForce GTX 16 / RTX runs on CUDA (driver 580 or newer), AMD Radeon, Intel Arc and older NVIDIA cards run on Vulkan, and everything else falls back to the CPU. The backend is picked automatically at runtime.
+> **v0.12.0, Windows.** New in the Files tab: speakers (who said what, with names you set once), export as PDF, Word, subtitles (.srt, .vtt) or text, and a window that can be resized and remembers its size. Since 0.11: AI cleanup on CUDA on NVIDIA (long dictations about 30 % faster on an RTX 5080), file timestamps that stay right after pauses, names from the dictionary spelled right in long files, no more cut-off dictations from a bouncing mouse button, a space between two dictations in a row, and dictations keep their AI cleanup while a file is summarised. Since 0.10: transcribe audio and video files with an AI summary (Files tab), rewrite your last dictation by voice, a dictionary that learns from your corrections, a language per app, snippets with date and time, long dictations transcribed while you speak, a PC check that picks the fastest setup, and mouse side buttons for every hotkey. Since 0.9: AI cleanup about 30 % faster, Large v3 Turbo q8. Since 0.8: words on screen help spell names and terms. Since 0.6: Edit mode, "Write in", local AI cleanup with per-app rules, a dictionary, history, replacements and a "send it" command (see the [changelog](CHANGELOG.md)). One installer for every GPU: NVIDIA GeForce GTX 16 / RTX runs on CUDA (driver 580 or newer), AMD Radeon, Intel Arc and older NVIDIA cards run on Vulkan, and everything else falls back to the CPU. The backend is picked automatically at runtime.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
@@ -40,7 +40,8 @@ Made by [oggi](https://0ggi.ch).
 - Multiple Whisper models selectable: tiny → large-v3-turbo, auto-downloaded on selection. Large v3 Turbo q8 gave the same text as Turbo on 49 test recordings, 18 % faster and with half the memory
 - Languages: auto-detect or any of the ~100 languages Whisper supports
 - **Long dictations in pieces:** every 29 s a piece is cut in a pause and transcribed while you keep speaking, so after the release only the rest is left
-- **Transcribe files** (Files tab): drop an audio or video file on the window (MP3, M4A, WAV, FLAC, WhatsApp voice messages, MP4, MOV, MKV, WebM) and the text appears minute by minute, with timestamps, copy and save as text; the local AI model can summarise it (key points, next steps). About 40× real time on an RX 6800. You can keep dictating while a file runs
+- **Transcribe files** (Files tab): drop an audio or video file on the window (MP3, M4A, WAV, FLAC, WhatsApp voice messages, MP4, MOV, MKV, WebM) and the text appears minute by minute, with timestamps and copy; export as PDF, Word (.docx) or text, with or without timestamps and the summary on top when one is shown, or as subtitles (.srt, .vtt), always timed; separate the speakers (Auto or 2 to 8, names you set once; a 45 MB speaker model downloads on first use and runs on the CPU, about 3.5 % of the audio length on a Ryzen 9 7900X, 8 threads); the local AI model can summarise it (key points, next steps), and the summary can be hidden to give the transcript more room. About 40× real time on an RX 6800. You can keep dictating while a file runs
+- **Resizable window:** can be resized and maximised, never smaller than 900×600, and remembers its size and position
 - **Push-to-talk** and **toggle** modes
 - Configurable global hotkeys (capture any chord from the settings UI), including mouse side buttons (Mouse 4 / Mouse 5, alone or with Ctrl/Shift/Alt/Win) for all three hotkeys, so one button can serve two (Mouse 5 dictates, Shift+Mouse 5 rewrites). A bound side button is consumed, so it no longer triggers "Back" / "Forward" in other apps. Ctrl+A, C, V, X, Z, Y and S are refused, since they would stop working in every app
 - Floating recording pill with live waveform and cancel button
@@ -99,6 +100,9 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-llama.ps1
 # 3c. Unpack whisper-rs-sys and apply the whisper.cpp patches in patches\
 powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-patch.ps1
 
+# 3d. Fetch the sherpa-onnx runtime for speaker separation (pinned, SHA-256 checked)
+powershell -ExecutionPolicy Bypass -File scripts/setup-speakers.ps1
+
 # 4. Keep the build path short: whisper.cpp's nested Vulkan shader build
 #    exceeds the 260-character path limit under src-tauri\target (and still
 #    under C:\t\rf unless Windows long paths are enabled)
@@ -112,11 +116,16 @@ npm run tauri dev
 Without a CUDA Toolkit you can still build and run a Vulkan-only binary:
 `npm run tauri dev -- --no-default-features --features vulkan`.
 
+`cargo run`, examples and dev builds need `src-tauri\binaries\sherpa-onnx\lib` on PATH for
+speaker separation (the installer puts the DLLs next to the exe).
+
 ### Production build
 
 ```powershell
 npm run tauri build
 ```
+
+For a release, build in a fresh `CARGO_TARGET_DIR` of at most 4 characters (e.g. `C:\q`) with `$env:CUDAARCHS = "75;80;86;89;120"`: whisper-rs-sys does not rebuild whisper.cpp when `CUDAARCHS` or a `GGML_*` setting changes, so a reused folder keeps its old GPU and CPU targets. `src-tauri/.cargo/config.toml` sets `GGML_NATIVE=OFF`, so whisper.cpp runs on every CPU with AVX2 rather than only on CPUs like the build PC's.
 
 Produces (under `CARGO_TARGET_DIR`):
 - `release/rudariflow.exe` (portable, needs the DLLs from step 3 next to it)
@@ -157,6 +166,8 @@ Times model load and transcription on the first GPU with and without flash atten
 - **Transcription:** in-process [`whisper-rs`](https://github.com/tazz4843/whisper-rs) (whisper.cpp Rust bindings) built with both the `cuda` and `vulkan` features; the backend is chosen at runtime from ggml's device list, with fallback to CPU
 - **AI cleanup:** [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` (release b11100: the Vulkan build plus the CUDA 13.4 backend `ggml-cuda.dll`, which uses the CUDA runtime shipped for Whisper) as a child process on 127.0.0.1 with a random port and API key, in a kill-on-close Job Object; Gemma 4 GGUF models (Apache-2.0) from Hugging Face. It runs as its own process because whisper-rs links its own copy of ggml into `rudariflow.exe`
 - **Files:** Windows Media Foundation decodes audio and video files; Ogg Opus (WhatsApp voice messages), which Windows cannot open, goes through [libopus](https://opus-codec.org) via the `opus` and `ogg` crates
+- **Speakers:** [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) v1.12.9 (pyannote segmentation 3.0, 3D-Speaker ERes2Net), shared DLLs delay-loaded by `rudariflow.exe`
+- **Export:** Word via docx-rs, PDF through WebView2's PrintToPdf
 - **Auto-paste:** [enigo](https://github.com/enigo-rs/enigo) (keyboard simulation)
 - **Hotkey:** [tauri-plugin-global-shortcut](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/global-shortcut)
 - **Autostart:** [tauri-plugin-autostart](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/autostart)

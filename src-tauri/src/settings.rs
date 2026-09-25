@@ -85,6 +85,9 @@ pub struct Settings {
     /// after a dictation.
     #[serde(rename = "learnDictionary", default = "default_true")]
     pub learn_dictionary: bool,
+    /// Files tab: "off", "auto" or "2" … "8" speakers to separate.
+    #[serde(rename = "fileSpeakers", default = "default_file_speakers")]
+    pub file_speakers: String,
 }
 
 fn default_auto() -> String {
@@ -125,6 +128,10 @@ fn default_ai_model() -> String {
 
 fn default_ai_style() -> String {
     "polished".to_string()
+}
+
+fn default_file_speakers() -> String {
+    "off".to_string()
 }
 
 /// Ctrl+A, C, V, X, Z, Y and S: as a global hotkey one of these would stop
@@ -187,6 +194,7 @@ impl Default for Settings {
             edit_mode: true,
             screen_context: true,
             learn_dictionary: true,
+            file_speakers: default_file_speakers(),
         }
     }
 }
@@ -451,6 +459,25 @@ mod tests {
         assert_eq!(Settings::load(&dir).microphone, "default");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_speakers_default_to_off() {
+        let pre_v3 = r#"{
+            "microphone": "default",
+            "engine": "local",
+            "whisperModel": "small",
+            "groqApiKey": "",
+            "recordingMode": "toggle",
+            "hotkey": "CmdOrCtrl+Shift+Space",
+            "gpuBackend": "auto",
+            "language": "auto",
+            "uiLanguage": "",
+            "volume": 0.4,
+            "autostart": false
+        }"#;
+        let s: Settings = serde_json::from_str(pre_v3).unwrap();
+        assert_eq!(s.file_speakers, "off");
     }
 
     #[test]

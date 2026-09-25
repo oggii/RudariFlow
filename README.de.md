@@ -11,7 +11,7 @@
 
 Lokale Sprache-zu-Text Diktier-App für Windows, angetrieben von [whisper.cpp](https://github.com/ggml-org/whisper.cpp) mit GPU-Beschleunigung. Globaler Hotkey, Push-to-Talk oder Toggle-Modus, automatisches Einfügen des transkribierten Texts.
 
-> **v0.11.0, Windows.** Neu: KI-Korrektur über CUDA auf NVIDIA (lange Diktate auf einer RTX 5080 etwa 30 % schneller), Zeitmarken in Dateien, die auch nach Pausen stimmen, Namen aus dem Wörterbuch auch in langen Dateien richtig geschrieben, keine abgeschnittenen Diktate mehr durch eine prellende Maustaste, ein Leerzeichen zwischen zwei Diktaten nacheinander, und Diktate behalten ihre KI-Korrektur, während eine Datei zusammengefasst wird. Seit 0.10: Audio- und Videodateien transkribieren, mit KI-Zusammenfassung (Tab Dateien), das letzte Diktat per Stimme umschreiben, ein Wörterbuch, das aus deinen Korrekturen lernt, eine Sprache pro App, Textbausteine mit Datum und Uhrzeit, lange Diktate, die schon während des Sprechens transkribiert werden, ein PC-Check, der die schnellste Einstellung wählt, und Maus-Seitentasten für jeden Hotkey. Seit 0.9: KI-Korrektur etwa 30 % schneller, Large v3 Turbo q8. Seit 0.8: Wörter auf dem Bildschirm helfen bei Namen und Fachbegriffen. Seit 0.6: Bearbeiten per Stimme, „Schreiben in“, lokale KI-Korrektur mit Regeln pro App, Wörterbuch, Verlauf, Ersetzungen und der Befehl „Abschicken“ (siehe [Changelog](CHANGELOG.md)). Ein Installer für jede GPU: NVIDIA GeForce GTX 16 / RTX läuft über CUDA (Treiber 580 oder neuer), AMD Radeon, Intel Arc und ältere NVIDIA-Karten über Vulkan, alles andere fällt auf die CPU zurück. Das Backend wird zur Laufzeit automatisch gewählt.
+> **v0.12.0, Windows.** Neu im Tab Dateien: Sprecher (wer was gesagt hat, mit Namen, die du einmal festlegst), Export als PDF, Word, Untertitel (.srt, .vtt) oder Text, und ein Fenster, das sich vergrößern lässt und seine Größe behält. Seit 0.11: KI-Korrektur über CUDA auf NVIDIA (lange Diktate auf einer RTX 5080 etwa 30 % schneller), Zeitmarken in Dateien, die auch nach Pausen stimmen, Namen aus dem Wörterbuch auch in langen Dateien richtig geschrieben, keine abgeschnittenen Diktate mehr durch eine prellende Maustaste, ein Leerzeichen zwischen zwei Diktaten nacheinander, und Diktate behalten ihre KI-Korrektur, während eine Datei zusammengefasst wird. Seit 0.10: Audio- und Videodateien transkribieren, mit KI-Zusammenfassung (Tab Dateien), das letzte Diktat per Stimme umschreiben, ein Wörterbuch, das aus deinen Korrekturen lernt, eine Sprache pro App, Textbausteine mit Datum und Uhrzeit, lange Diktate, die schon während des Sprechens transkribiert werden, ein PC-Check, der die schnellste Einstellung wählt, und Maus-Seitentasten für jeden Hotkey. Seit 0.9: KI-Korrektur etwa 30 % schneller, Large v3 Turbo q8. Seit 0.8: Wörter auf dem Bildschirm helfen bei Namen und Fachbegriffen. Seit 0.6: Bearbeiten per Stimme, „Schreiben in“, lokale KI-Korrektur mit Regeln pro App, Wörterbuch, Verlauf, Ersetzungen und der Befehl „Abschicken“ (siehe [Changelog](CHANGELOG.md)). Ein Installer für jede GPU: NVIDIA GeForce GTX 16 / RTX läuft über CUDA (Treiber 580 oder neuer), AMD Radeon, Intel Arc und ältere NVIDIA-Karten über Vulkan, alles andere fällt auf die CPU zurück. Das Backend wird zur Laufzeit automatisch gewählt.
 
 Vollständige Versionshistorie siehe [CHANGELOG.md](CHANGELOG.md).
 
@@ -40,7 +40,8 @@ Made by [oggi](https://0ggi.ch).
 - Mehrere Whisper-Modelle wählbar: tiny → large-v3-turbo, mit Auto-Download bei Auswahl. Large v3 Turbo q8 lieferte auf 49 Testaufnahmen denselben Text wie Turbo, 18 % schneller und mit halbem Speicher
 - Sprachen: Auto-Erkennung oder eine der rund 100 Sprachen, die Whisper kann
 - **Lange Diktate in Teilen:** alle 29 s wird in einer Pause ein Teil abgeschnitten und transkribiert, während du weitersprichst, nach dem Loslassen bleibt nur der Rest
-- **Dateien transkribieren** (Tab Dateien): eine Audio- oder Videodatei aufs Fenster ziehen (MP3, M4A, WAV, FLAC, WhatsApp-Sprachnachrichten, MP4, MOV, MKV, WebM), der Text erscheint Minute für Minute, mit Zeitmarken, Kopieren und Speichern als Text; das lokale KI-Modell fasst ihn zusammen (Kernpunkte, nächste Schritte). Etwa 40-fache Echtzeit auf einer RX 6800. Diktieren geht weiter, während eine Datei läuft
+- **Dateien transkribieren** (Tab Dateien): eine Audio- oder Videodatei aufs Fenster ziehen (MP3, M4A, WAV, FLAC, WhatsApp-Sprachnachrichten, MP4, MOV, MKV, WebM), der Text erscheint Minute für Minute, mit Zeitmarken und Kopieren; Export als PDF, Word (.docx) oder Text, mit oder ohne Zeitmarken und der Zusammenfassung oben, wenn eine angezeigt wird, oder als Untertitel (.srt, .vtt), immer mit Zeitmarken; Sprecher trennen (Automatisch oder 2 bis 8, Namen, die du einmal festlegst; ein Sprechermodell mit 45 MB wird beim ersten Gebrauch heruntergeladen und läuft auf der CPU, etwa 3,5 % der Audiolänge auf einem Ryzen 9 7900X, 8 Threads); das lokale KI-Modell fasst ihn zusammen (Kernpunkte, nächste Schritte), die Zusammenfassung lässt sich ausblenden, damit der Text mehr Platz hat. Etwa 40-fache Echtzeit auf einer RX 6800. Diktieren geht weiter, während eine Datei läuft
+- **Fenster anpassbar:** lässt sich in der Größe ändern und maximieren, nie kleiner als 900×600, und merkt sich Größe und Position
 - Push-to-Talk **und** Toggle-Modi
 - Konfigurierbare globale Hotkeys, auch Maus-Seitentasten (Maus 4 / Maus 5, allein oder mit Strg/Umschalt/Alt/Win) für alle drei Hotkeys, sodass eine Taste zwei Aufgaben haben kann (Maus 5 diktiert, Umschalt+Maus 5 schreibt um). Eine belegte Seitentaste wird abgefangen und löst in anderen Programmen kein „Zurück“/„Vorwärts“ mehr aus. Strg+A, C, V, X, Z, Y und S werden abgelehnt, weil sie sonst in keinem Programm mehr funktionieren
 - Schwebende Aufnahme-Pille mit Live-Wellenform und Cancel-Button
@@ -97,6 +98,9 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-llama.ps1
 # 3c. whisper-rs-sys entpacken und die whisper.cpp-Patches aus patches\ anwenden
 powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-patch.ps1
 
+# 3d. sherpa-onnx-Runtime für die Sprechertrennung holen (festgelegte Version, SHA-256 geprüft)
+powershell -ExecutionPolicy Bypass -File scripts/setup-speakers.ps1
+
 # 4. Build-Pfad kurz halten: der verschachtelte Vulkan-Shader-Build von
 #    whisper.cpp sprengt unter src-tauri\target das 260-Zeichen-Limit (und
 #    auch unter C:\t\rf, ausser lange Pfade sind in Windows aktiviert)
@@ -110,11 +114,16 @@ npm run tauri dev
 Ohne CUDA Toolkit lässt sich ein reiner Vulkan-Build bauen:
 `npm run tauri dev -- --no-default-features --features vulkan`.
 
+`cargo run`, Beispiele und Dev-Builds brauchen `src-tauri\binaries\sherpa-onnx\lib` im PATH
+für die Sprechertrennung (der Installer legt die DLLs neben die exe).
+
 ### Production Build
 
 ```powershell
 npm run tauri build
 ```
+
+Für ein Release in einem frischen `CARGO_TARGET_DIR` mit höchstens 4 Zeichen bauen (z. B. `C:\q`), mit `$env:CUDAARCHS = "75;80;86;89;120"`: whisper-rs-sys baut whisper.cpp nicht neu, wenn sich `CUDAARCHS` oder eine `GGML_*`-Einstellung ändert, ein wiederverwendeter Ordner behält also seine alten GPU- und CPU-Ziele. `src-tauri/.cargo/config.toml` setzt `GGML_NATIVE=OFF`, damit whisper.cpp auf jeder CPU mit AVX2 läuft und nicht nur auf CPUs wie der des Build-PCs.
 
 Erzeugt (unter `CARGO_TARGET_DIR`):
 - `release/rudariflow.exe` (portable, braucht die DLLs aus Schritt 3 daneben)
@@ -146,6 +155,8 @@ Misst Modell-Ladezeit und Transkription auf der ersten GPU mit und ohne Flash At
 - **Audio capture:** [cpal](https://github.com/RustAudio/cpal) (Cross-platform low-level audio I/O)
 - **Transkription:** In-Process [`whisper-rs`](https://github.com/tazz4843/whisper-rs) (whisper.cpp Rust-Bindings) gebaut mit `cuda`- und `vulkan`-Feature; das Backend wird zur Laufzeit aus der ggml-Geräteliste gewählt, mit Fallback auf CPU
 - **Dateien:** Windows Media Foundation liest Audio- und Videodateien; Ogg Opus (WhatsApp-Sprachnachrichten), das Windows nicht öffnen kann, läuft über [libopus](https://opus-codec.org) mit den Crates `opus` und `ogg`
+- **Sprecher:** [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) v1.12.9 (Pyannote-Segmentierung 3.0, 3D-Speaker ERes2Net), dynamisch gelinkte DLLs, die `rudariflow.exe` delay-lädt
+- **Export:** Word über docx-rs, PDF über WebView2s PrintToPdf
 - **Auto-Paste:** [enigo](https://github.com/enigo-rs/enigo) (Tastatur-Simulation)
 - **Hotkey:** [tauri-plugin-global-shortcut](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/global-shortcut)
 - **Autostart:** [tauri-plugin-autostart](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/autostart)

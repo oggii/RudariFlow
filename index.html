@@ -546,6 +546,25 @@
                 <select id="file-language"></select>
               </div>
             </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="files_speakers_label">Speakers</span>
+                <span class="label-hint" id="file-speakers-hint" data-i18n="files_speakers_hint">Who speaks when, for meetings and interviews. Off keeps voice messages fast.</span>
+              </div>
+              <div class="setting-control">
+                <select id="file-speakers">
+                  <option value="off" data-i18n="files_speakers_off">Off</option>
+                  <option value="auto" data-i18n="files_speakers_auto">Auto</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                  <option value="6">6</option>
+                  <option value="7">7</option>
+                  <option value="8">8</option>
+                </select>
+              </div>
+            </div>
           </div>
           <div id="file-job" class="file-job hidden">
             <div class="file-job-head">
@@ -563,13 +582,27 @@
               </label>
               <div class="file-actions">
                 <button id="file-copy" class="btn-secondary" data-i18n="files_copy">Copy</button>
-                <button id="file-save" class="btn-secondary" data-i18n="files_save">Save as text…</button>
+                <div class="export-menu">
+                  <button id="file-export" class="btn-secondary" aria-expanded="false" aria-controls="file-export-list"><span data-i18n="files_export">Export</span> ▾</button>
+                  <div id="file-export-list" class="export-list hidden">
+                    <button data-kind="pdf" data-i18n="files_export_pdf">PDF…</button>
+                    <button data-kind="docx" data-i18n="files_export_docx">Word (.docx)…</button>
+                    <button data-kind="srt" data-i18n="files_export_srt">Subtitles (.srt)…</button>
+                    <button data-kind="vtt" data-i18n="files_export_vtt">Subtitles (.vtt)…</button>
+                    <button data-kind="txt" data-i18n="files_export_txt">Text (.txt)…</button>
+                  </div>
+                </div>
                 <button id="file-summarize" class="btn-secondary" data-i18n="files_summarize">Summarise with AI</button>
               </div>
+            </div>
+            <div id="file-speakers-row" class="file-speakers hidden">
+              <span class="label-hint" data-i18n="files_speakers_names">Speakers:</span>
+              <div id="file-speaker-chips" class="file-speaker-chips"></div>
             </div>
             <div id="file-summary-box" class="file-summary hidden">
               <div class="file-summary-head">
                 <span class="file-summary-title" data-i18n="files_summary">Summary</span>
+                <button id="file-summary-toggle" class="btn-ghost" aria-expanded="true" aria-controls="file-summary" data-i18n="files_summary_hide">Hide</button>
                 <button id="file-summary-copy" class="btn-ghost" data-i18n="files_copy">Copy</button>
               </div>
               <div id="file-summary" class="file-summary-text"></div>

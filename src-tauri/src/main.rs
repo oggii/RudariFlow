@@ -276,9 +276,14 @@ async fn detect_gpus() -> Vec<rudariflow_lib::whisper_engine::GpuDevice> {
 
 #[derive(serde::Serialize)]
 struct FileTranscript {
-    text: String,
-    #[serde(rename = "textWithTimes")]
-    text_with_times: String,
+    segments: Vec<rudariflow_lib::whisper_engine::Segment>,
+    /// Speakers found; 0 when not separated.
+    speakers: u8,
+    /// Why speakers are missing although asked for: "no_model",
+    /// "no_runtime", "none_found" (no voices), "cancelled" (Cancel while
+    /// they were separated after Whisper) or an error text.
+    #[serde(rename = "speakersError", skip_serializing_if = "Option::is_none")]
+    speakers_error: Option<String>,
     language: String,
     #[serde(rename = "durationMs")]
     duration_ms: u64,
@@ -286,8 +291,9 @@ struct FileTranscript {
     elapsed_ms: u64,
 }
 
-/// A "file-progress" event: `phase` "reading", "loading" or "transcribing";
-/// `text` is the text of the block just done.
+/// A "file-progress" event: `phase` "reading", "loading", "transcribing" or
+/// "speakers" (for "speakers" `done` is the percent, `total` = 100); `text`
+/// is the text of the block just done.
 #[derive(Clone, serde::Serialize)]
 struct FileProgress {
     phase: &'static str,
@@ -298,14 +304,18 @@ struct FileProgress {
 
 /// Transcribe an audio or video file with the local Whisper model. Progress
 /// and the text so far arrive as "file-progress" events. `language` empty =
-/// the Engine setting. Errors "busy", "no_model", "no_speech", "cancelled"
-/// are shown by the UI in words.
+/// the Engine setting. `speakers` is the Files tab's setting, "off", "auto"
+/// or "2" … "8": unless off, the speakers are separated next to Whisper and
+/// each segment gets its speaker (or `speakersError` says why not). Errors
+/// "busy", "no_model", "no_speech", "cancelled" (Cancel before Whisper is
+/// done) are shown by the UI in words.
 #[tauri::command]
 async fn transcribe_file(
     app: AppHandle,
     state: State<'_, AppState>,
     path: String,
     language: String,
+    speakers: String,
 ) -> Result<FileTranscript, String> {
     use std::sync::atomic::Ordering::SeqCst;
     if FILE_RUNNING.swap(true, SeqCst) {
@@ -329,6 +339,7 @@ async fn transcribe_file(
     let started = std::time::Instant::now();
     let handle = app.clone();
     let worker_settings = settings.clone();
+    let (speaker_setting, app_dir) = (speakers, state.app_dir.clone());
     let result = tauri::async_runtime::spawn_blocking(move || {
         let settings = worker_settings;
         let emit = |phase, done, total, text: String| {
@@ -344,22 +355,105 @@ async fn transcribe_file(
         if audio::trim_silence(&audio, 16_000).is_none() {
             return Err("no_speech".to_string());
         }
+        let audio = std::sync::Arc::new(audio);
+
         emit("loading", 0, 1, String::new());
         engine.ensure_loaded(&model, &settings.gpu_backend)?;
+
+        // Speakers: on the CPU while Whisper runs on the GPU. Started once
+        // Whisper has loaded, so a failed load leaves nothing running.
+        use rudariflow_lib::speakers;
+        let mut speakers_error = None;
+        let percent = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let separation = match speakers::parse_setting(&speaker_setting) {
+            None => None,
+            Some(_) if !speakers::models_ready(&app_dir) => {
+                speakers_error = Some("no_model".to_string());
+                None
+            }
+            Some(_) if !speakers::runtime_available() => {
+                speakers_error = Some("no_runtime".to_string());
+                None
+            }
+            Some(count) => {
+                let (audio, app_dir, percent) = (audio.clone(), app_dir.clone(), percent.clone());
+                let started = std::time::Instant::now();
+                let spawned = std::thread::Builder::new().name("rf-speakers".into()).spawn(move || {
+                    let turns = speakers::separate(&audio, count, &app_dir, &mut |done, total| {
+                        if let Some(p) = (done * 100).checked_div(total) {
+                            percent.store(p, SeqCst);
+                        }
+                    });
+                    (turns, started.elapsed())
+                });
+                match spawned {
+                    Ok(handle) => Some(handle),
+                    // The transcript comes without speakers.
+                    Err(e) => {
+                        startup_log::log(&format!("[speakers] could not start: {}", e));
+                        speakers_error = Some(format!("the separation could not start ({})", e));
+                        None
+                    }
+                }
+            }
+        };
+
         let terms = dictionary::terms(&settings.custom_prompt);
         let prompt = screen_context::whisper_prompt(&[], &settings.custom_prompt);
         let spelling = |text: &str| {
             let text = dictionary::apply_spelling(&file_transcribe::tidy_segment(text), &terms);
             if settings.swiss_spelling { dictionary::swiss_spelling(&text) } else { text }
         };
-        let (segments, language) =
+        let (mut segments, language) =
             file_transcribe::transcribe(&engine, &audio, &language, &prompt, spelling, &FILE_CANCEL, |p| {
                 let text = p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
                 emit("transcribing", p.done_ms, p.total_ms, text);
             })?;
+
+        let mut found = 0u8;
+        if let Some(handle) = separation {
+            let mut cancelled = false;
+            while !handle.is_finished() {
+                if FILE_CANCEL.load(SeqCst) {
+                    cancelled = true;
+                    break;
+                }
+                emit("speakers", percent.load(SeqCst) as u64, 100, String::new());
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            if cancelled {
+                // Whisper is done: the transcript stays, without speakers.
+                // The separation finishes on its own; its result is dropped.
+                startup_log::log("[speakers] cancelled; the transcript comes without speakers");
+                speakers_error = Some(file_transcribe::CANCELLED.to_string());
+            } else {
+                match handle.join() {
+                    Ok((Ok(turns), took)) => {
+                        match file_transcribe::label_speakers(&mut segments, &turns) {
+                            Ok(n) => found = n,
+                            Err(e) => speakers_error = Some(e),
+                        }
+                        startup_log::log(&format!(
+                            "[speakers] {} speakers, {} turns in {:.1} s ({:.0} s of audio, {} threads)",
+                            found,
+                            turns.len(),
+                            took.as_secs_f64(),
+                            audio.len() as f64 / 16_000.0,
+                            speakers::threads()
+                        ));
+                    }
+                    Ok((Err(e), _)) => {
+                        startup_log::log(&format!("[speakers] failed: {}", e));
+                        speakers_error = Some(e);
+                    }
+                    Err(_) => speakers_error = Some("speaker separation stopped unexpectedly".to_string()),
+                }
+            }
+        }
         Ok(FileTranscript {
-            text: file_transcribe::format(&segments, false),
-            text_with_times: file_transcribe::format(&segments, true),
+            segments,
+            speakers: found,
+            speakers_error,
             language,
             duration_ms: audio.len() as u64 / 16,
             elapsed_ms: 0,
@@ -375,19 +469,37 @@ async fn transcribe_file(
     let mut transcript = result.inspect_err(|e| startup_log::log(&format!("[file] failed: {}", e)))?;
     transcript.elapsed_ms = started.elapsed().as_millis() as u64;
     startup_log::log(&format!(
-        "[file] {:.0} s of audio in {:.1} s, language {}, {} characters",
+        "[file] {:.0} s of audio in {:.1} s, language {}, {} segments, {} speakers",
         transcript.duration_ms as f64 / 1000.0,
         transcript.elapsed_ms as f64 / 1000.0,
         transcript.language,
-        transcript.text.chars().count()
+        transcript.segments.len(),
+        transcript.speakers
     ));
     Ok(transcript)
 }
 
-/// Write a transcript (and its summary) to a text file.
+/// Write the Files tab's transcript as `kind`: "pdf", "docx", "srt", "vtt"
+/// or "txt".
 #[tauri::command]
-fn save_text(path: String, text: String) -> Result<(), String> {
-    std::fs::write(&path, text).map_err(|e| e.to_string())
+async fn export_file(app: AppHandle, kind: String, path: String, doc: rudariflow_lib::export::ExportDoc) -> Result<(), String> {
+    use rudariflow_lib::export;
+    let paper = export::Paper::for_region();
+    let path = std::path::PathBuf::from(path);
+    let write = |bytes: &[u8]| std::fs::write(&path, bytes).map_err(|e| e.to_string());
+    let result = match kind.as_str() {
+        "txt" => write(export::text(&doc).as_bytes()),
+        "srt" => write(export::srt(&doc.segments, &doc.names).as_bytes()),
+        "vtt" => write(export::vtt(&doc.segments, &doc.names).as_bytes()),
+        "docx" => export::docx(&doc, paper).and_then(|bytes| write(&bytes)),
+        "pdf" => rudariflow_lib::pdf::print(&app, export::pdf_html(&doc, paper), paper, path.clone()).await,
+        other => Err(format!("unknown export '{}'", other)),
+    };
+    startup_log::log(&match &result {
+        Ok(()) => format!("[export] {} with {} segments", kind, doc.segments.len()),
+        Err(e) => format!("[export] {} failed: {}", kind, e),
+    });
+    result
 }
 
 /// Stop the file transcription after the block that is running.
@@ -460,6 +572,58 @@ async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String
         started.elapsed().as_secs_f64()
     ));
     Ok(answer.text.trim().to_string())
+}
+
+/// The Files tab's transcript text: paragraphs, optional times, speaker
+/// names (`names[n]` for speaker n; empty = "Speaker n+1").
+#[tauri::command]
+fn format_file_text(segments: Vec<rudariflow_lib::whisper_engine::Segment>, names: Vec<String>, times: bool) -> String {
+    file_transcribe::format(&segments, &names, times)
+}
+
+#[derive(serde::Serialize)]
+struct SpeakerModelStatus {
+    downloaded: bool,
+    runtime: bool,
+    downloading: bool,
+}
+
+static SPEAKER_DOWNLOAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command]
+fn speaker_model_status(state: State<AppState>) -> SpeakerModelStatus {
+    use std::sync::atomic::Ordering::SeqCst;
+    SpeakerModelStatus {
+        downloaded: rudariflow_lib::speakers::models_ready(&state.app_dir),
+        runtime: rudariflow_lib::speakers::runtime_available(),
+        downloading: SPEAKER_DOWNLOAD.load(SeqCst),
+    }
+}
+
+/// Download the speaker models (about 45 MB), with "speaker-model-progress"
+/// events. "busy" while a download runs.
+#[tauri::command]
+async fn speaker_model_download(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    if SPEAKER_DOWNLOAD.swap(true, SeqCst) {
+        return Err("busy".to_string());
+    }
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            SPEAKER_DOWNLOAD.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _done = Done;
+    let result = rudariflow_lib::speakers::download_models(&state.app_dir, |p| {
+        let _ = app.emit("speaker-model-progress", p);
+    })
+    .await;
+    startup_log::log(&match &result {
+        Ok(()) => "[speakers] models downloaded".to_string(),
+        Err(e) => format!("[speakers] model download failed: {}", e),
+    });
+    result
 }
 
 /// Dictionary entries suggested from the user's corrections.
@@ -1329,6 +1493,23 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        // Size, position and maximised state of the main window, restored at
+        // start (not the overlay pill or the hidden PDF export windows). A
+        // saved position on no current monitor is not restored; the window
+        // then opens centred ("center" in tauri.conf.json).
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .with_filter(|label| label == "main")
+                // The state file lives in the app's own data folder, so a
+                // RUDARIFLOW_DATA_DIR build stays separate from the real one.
+                .with_filename(get_app_dir().join(".window-state.json").to_string_lossy())
+                .build(),
+        )
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--start-minimized"]),
@@ -1378,7 +1559,10 @@ fn main() {
             transcribe_file,
             cancel_file,
             summarize_text,
-            save_text,
+            format_file_text,
+            speaker_model_status,
+            speaker_model_download,
+            export_file,
             copy_text,
             diag_log,
         ])
@@ -1416,6 +1600,14 @@ fn main() {
             } else {
                 startup_log::log("resource_dir: <unresolved>");
             }
+            // PDF export pages a quit or crash in the middle of a print left
+            // in the temp folder.
+            std::thread::spawn(|| {
+                let removed = rudariflow_lib::pdf::remove_stale_pages();
+                if removed > 0 {
+                    startup_log::log(&format!("[export] removed {} stale PDF export pages", removed));
+                }
+            });
 
             // If launched at login (autostart adds --start-minimized), keep the main
             // window hidden so the app lives in the tray. Otherwise show it normally.

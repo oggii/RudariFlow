@@ -10,24 +10,39 @@ import { getLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
 
 export interface FilesHost {
-  settings(): { language: string };
+  settings(): { language: string; fileSpeakers: string };
+  saveSettings(patch: { fileSpeakers?: string }): Promise<void>;
   /** Show the Files section (a file dropped on another tab). */
   showSection(): void;
 }
 
-interface FileTranscript {
+interface Segment {
+  startMs: number;
+  endMs: number;
   text: string;
-  textWithTimes: string;
+  speaker?: number;
+}
+
+interface FileTranscript {
+  segments: Segment[];
+  speakers: number;
+  speakersError?: string;
   language: string;
   durationMs: number;
   elapsedMs: number;
 }
 
 interface FileProgress {
-  phase: "reading" | "loading" | "transcribing";
+  phase: "reading" | "loading" | "transcribing" | "speakers";
   done: number;
   total: number;
   text: string;
+}
+
+interface DownloadProgress {
+  downloaded: number;
+  total: number;
+  percent: number;
 }
 
 const EXTENSIONS = ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "oga", "wma", "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "3gp", "amr"];
@@ -44,20 +59,42 @@ const result = document.getElementById("file-result")!;
 const timesToggle = document.getElementById("file-times") as HTMLInputElement;
 const textArea = document.getElementById("file-text") as HTMLTextAreaElement;
 const copyBtn = document.getElementById("file-copy") as HTMLButtonElement;
-const saveBtn = document.getElementById("file-save") as HTMLButtonElement;
+const exportBtn = document.getElementById("file-export") as HTMLButtonElement;
+const exportList = document.getElementById("file-export-list")!;
+const exportMenu = document.querySelector(".export-menu")!;
 const summarizeBtn = document.getElementById("file-summarize") as HTMLButtonElement;
 const summaryBox = document.getElementById("file-summary-box")!;
 const summaryEl = document.getElementById("file-summary")!;
 const summaryCopy = document.getElementById("file-summary-copy") as HTMLButtonElement;
+const summaryToggle = document.getElementById("file-summary-toggle") as HTMLButtonElement;
+const speakersSelect = document.getElementById("file-speakers") as HTMLSelectElement;
+const speakersHint = document.getElementById("file-speakers-hint")!;
+const speakersRow = document.getElementById("file-speakers-row")!;
+const speakerChips = document.getElementById("file-speaker-chips")!;
 
 let host: FilesHost;
 let running = false;
 let transcript: FileTranscript | null = null;
 let fileName = "";
 let languageSet = false;
+let speakersSet = false;
 /** Counts summaries; a new file or summary makes older results stale. */
 let summaryRun = 0;
 let summarizing = false;
+
+let segments: Segment[] = [];
+/** One name per speaker, "Speaker 1" … until renamed. */
+let names: string[] = [];
+/** When the transcript on screen arrived: the date in export headers. */
+let transcribedAt: Date | null = null;
+/** The speaker model download, while it runs. */
+let modelDownload: Promise<boolean> | null = null;
+/** Cancel was pressed during this run (the backend only hears it once the
+ *  file has started, not while the speaker model downloads). */
+let cancelRequested = false;
+/** This run separates speakers: Whisper fills the progress bar to 80 %,
+ *  the separation the rest. */
+let speakersOn = false;
 
 /// "4:05" or "1:02:03", like the backend's `clock`.
 function clock(ms: number): string {
@@ -88,9 +125,89 @@ function errorText(e: unknown): string {
   return key[code] ? t(key[code]) : `${t("files_err_failed")}: ${code}`;
 }
 
-function showText() {
-  if (!transcript) return;
-  textArea.value = timesToggle.checked ? transcript.textWithTimes : transcript.text;
+/** Why the speakers are missing (the backend's `speakersError`), for the
+ *  status line, and whether that is an error: a cancel or a file without
+ *  voices is not. */
+function speakersNote(code: string): { text: string; error: boolean } {
+  const neutral = ["cancelled", "none_found"];
+  const known = ["no_model", "no_runtime", ...neutral];
+  return {
+    text: known.includes(code) ? t(`files_speakers_missing_${code}`) : t("files_speakers_missing_error").replace("{error}", code),
+    error: !neutral.includes(code),
+  };
+}
+
+/** The transcript as shown: paragraphs, speaker names, times if on. */
+async function shownText(times: boolean): Promise<string> {
+  return invoke<string>("format_file_text", { segments, names, times });
+}
+
+async function showText() {
+  if (!segments.length) return;
+  textArea.value = await shownText(timesToggle.checked);
+}
+
+function defaultName(i: number): string {
+  return t("files_speaker_n").replace("{n}", String(i + 1));
+}
+
+function renderChips() {
+  speakerChips.replaceChildren();
+  speakersRow.classList.toggle("hidden", names.length === 0);
+  names.forEach((name, i) => {
+    const chip = document.createElement("button");
+    chip.className = "speaker-chip";
+    chip.textContent = name;
+    chip.title = t("files_speaker_rename");
+    chip.addEventListener("click", () => renameSpeaker(i, chip));
+    speakerChips.append(chip);
+  });
+}
+
+function renameSpeaker(i: number, chip: HTMLButtonElement) {
+  const input = document.createElement("input");
+  input.className = "speaker-chip-input";
+  input.value = names[i];
+  chip.replaceWith(input);
+  input.focus();
+  input.select();
+  // A new transcription replaces `names` with a fresh array; a rename still
+  // open from the old one must not write into it or re-render for it.
+  const startNames = names;
+  let done = false;
+  const apply = async (keep: boolean) => {
+    if (done || names !== startNames) return;
+    done = true;
+    if (keep) names[i] = input.value.trim() || defaultName(i);
+    renderChips();
+    await showText();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") apply(true);
+    if (e.key === "Escape") apply(false);
+  });
+  input.addEventListener("blur", () => apply(true));
+}
+
+/** Download the speaker model if needed; true when it is ready. */
+function ensureSpeakerModel(): Promise<boolean> {
+  if (modelDownload) return modelDownload;
+  modelDownload = (async () => {
+    try {
+      const status = await invoke<{ downloaded: boolean }>("speaker_model_status");
+      if (status.downloaded) return true;
+      speakersHint.textContent = t("files_speakers_downloading").replace("{percent}", "0");
+      await invoke("speaker_model_download");
+      speakersHint.textContent = t("files_speakers_hint");
+      return true;
+    } catch {
+      speakersHint.textContent = t("files_speakers_download_failed");
+      return false;
+    } finally {
+      modelDownload = null;
+    }
+  })();
+  return modelDownload;
 }
 
 function languageName(code: string): string {
@@ -107,7 +224,12 @@ async function transcribe(path: string) {
     return;
   }
   running = true;
+  cancelRequested = false;
+  segments = [];
+  names = [];
+  renderChips();
   transcript = null;
+  transcribedAt = null;
   fileName = path.split(/[\\/]/).pop() ?? path;
   nameEl.textContent = fileName;
   job.classList.remove("hidden");
@@ -118,21 +240,47 @@ async function transcribe(path: string) {
   summaryBox.classList.add("hidden");
   summaryEl.textContent = "";
   textArea.value = "";
+  textArea.readOnly = false;
   setButtons(false);
   setProgress(0);
   setStatus(t("files_reading"));
+  speakersOn = false;
   try {
-    transcript = await invoke<FileTranscript>("transcribe_file", { path, language: languageSelect.value });
-    showText();
+    // A failed or missing model must not drop the transcript: wait for a
+    // download (or a running one) but transcribe regardless of the outcome —
+    // the backend falls back to an unlabelled transcript and reports why.
+    if (speakersSelect.value !== "off") {
+      speakersOn = await ensureSpeakerModel();
+      // Cancelled while the model downloaded: the file does not start.
+      if (cancelRequested) throw "cancelled";
+    }
+    transcript = await invoke<FileTranscript>("transcribe_file", {
+      path,
+      language: languageSelect.value,
+      speakers: speakersSelect.value,
+    });
+    transcribedAt = new Date();
+    segments = transcript.segments;
+    // Exports are built from the segments and a rename or the Timestamps
+    // switch rewrites the box, so typed edits would be lost: read-only
+    // (selecting and copying still work).
+    textArea.readOnly = segments.length > 0;
+    names = Array.from({ length: transcript.speakers }, (_, i) => defaultName(i));
+    renderChips();
+    await showText();
     setProgress(1);
     const secs = (transcript.elapsedMs / 1000).toFixed(1);
-    setStatus(
-      t("files_done")
-        .replace("{audio}", clock(transcript.durationMs))
-        .replace("{secs}", secs)
-        .replace("{language}", languageName(transcript.language)),
-      "ok",
-    );
+    let status = t("files_done")
+      .replace("{audio}", clock(transcript.durationMs))
+      .replace("{secs}", secs)
+      .replace("{language}", languageName(transcript.language));
+    let tone = "ok";
+    if (transcript.speakersError) {
+      const note = speakersNote(transcript.speakersError);
+      status += " · " + note.text;
+      tone = note.error ? "error" : "";
+    }
+    setStatus(status, tone);
     setButtons(true);
   } catch (e) {
     setStatus(errorText(e), String(e) === "cancelled" ? "" : "error");
@@ -147,7 +295,7 @@ async function transcribe(path: string) {
 
 function setButtons(enabled: boolean, withTimes = enabled) {
   copyBtn.disabled = !enabled;
-  saveBtn.disabled = !enabled;
+  exportBtn.disabled = !enabled || !segments.length;
   summarizeBtn.disabled = !enabled;
   timesToggle.disabled = !withTimes;
 }
@@ -160,9 +308,14 @@ function onProgress(p: FileProgress) {
   } else if (p.phase === "loading") {
     setStatus(t("files_loading"));
     setProgress(0.05);
+  } else if (p.phase === "speakers") {
+    setStatus(t("files_speakers_running").replace("{percent}", String(p.done)));
+    setProgress(0.8 + (p.done / 100) * 0.2);
   } else {
     setStatus(t("files_transcribing").replace("{done}", clock(p.done)).replace("{total}", clock(p.total)));
-    setProgress(0.05 + (p.total > 0 ? (p.done / p.total) * 0.95 : 0));
+    // Whisper ends at 80 % when the speakers are separated after it.
+    const end = speakersOn ? 0.8 : 1;
+    setProgress(0.05 + (p.total > 0 ? (p.done / p.total) * (end - 0.05) : 0));
     if (p.text) {
       textArea.value += (textArea.value ? " " : "") + p.text;
       textArea.scrollTop = textArea.scrollHeight;
@@ -179,14 +332,23 @@ async function chooseFile() {
   if (path && !Array.isArray(path)) await transcribe(path);
 }
 
+function setSummaryCollapsed(collapsed: boolean) {
+  summaryBox.classList.toggle("collapsed", collapsed);
+  const key = collapsed ? "files_summary_show" : "files_summary_hide";
+  summaryToggle.textContent = t(key);
+  summaryToggle.setAttribute("data-i18n", key);
+  summaryToggle.setAttribute("aria-expanded", String(!collapsed));
+}
+
 async function summarize() {
-  const text = transcript?.text ?? textArea.value;
+  const text = segments.length ? await shownText(false) : textArea.value;
   if (!text.trim()) return;
   // A summary still running for an earlier file must not land in this one.
   const run = ++summaryRun;
   summarizing = true;
   summarizeBtn.disabled = true;
   summaryBox.classList.remove("hidden");
+  setSummaryCollapsed(false);
   summaryEl.textContent = t("files_summarizing");
   summaryEl.dataset.tone = "";
   try {
@@ -205,17 +367,45 @@ async function summarize() {
   }
 }
 
-async function saveText() {
+type ExportKind = "pdf" | "docx" | "srt" | "vtt" | "txt";
+
+function setExportMenu(open: boolean) {
+  exportList.classList.toggle("hidden", !open);
+  exportBtn.setAttribute("aria-expanded", String(open));
+}
+
+/** "2:52 · English · 2 speakers · 24.09.2026" under the title, with the
+ *  date of the transcription. */
+function exportMeta(): string {
+  const parts = [clock(transcript?.durationMs ?? 0), languageName(transcript?.language ?? "")];
+  if (names.length === 1) parts.push(t("files_speakers_count_one"));
+  else if (names.length) parts.push(t("files_speakers_count").replace("{n}", String(names.length)));
+  parts.push((transcribedAt ?? new Date()).toLocaleDateString(getLang()));
+  return parts.join(" · ");
+}
+
+async function exportAs(kind: ExportKind) {
+  setExportMenu(false);
   const base = fileName.replace(/\.[^.]+$/, "") || "transcript";
-  const path = await save({ defaultPath: `${base}.txt`, filters: [{ name: "Text", extensions: ["txt"] }] });
+  const path = await save({
+    defaultPath: `${base}.${kind}`,
+    filters: [{ name: t(`files_filter_${kind}`), extensions: [kind] }],
+  });
   if (!path) return;
-  let text = textArea.value;
   const summaryReady = !summarizing && !summaryBox.classList.contains("hidden") && summaryEl.dataset.tone !== "error";
-  if (summaryReady && summaryEl.textContent) {
-    text = `${t("files_summary")}\n\n${summaryEl.textContent}\n\n${t("files_transcript")}\n\n${text}`;
-  }
+  const doc = {
+    title: fileName,
+    meta: exportMeta(),
+    segments,
+    names,
+    times: timesToggle.checked,
+    summary: summaryReady && summaryEl.textContent ? summaryEl.textContent : null,
+    summaryTitle: t("files_summary"),
+    transcriptTitle: t("files_transcript"),
+  };
   try {
-    await invoke("save_text", { path, text });
+    await invoke("export_file", { kind, path, doc });
+    setStatus(t("files_exported").replace("{name}", path.split(/[\\/]/).pop() ?? path), "ok");
   } catch (e) {
     setStatus(`${t("files_err_failed")}: ${e}`, "error");
   }
@@ -233,21 +423,56 @@ export function renderFiles() {
     languageSelect.value = host.settings().language;
     languageSet = true;
   }
+  if (!speakersSet) {
+    speakersSelect.value = host.settings().fileSpeakers || "off";
+    speakersSet = true;
+  }
 }
 
 export function initFiles(h: FilesHost) {
   host = h;
   chooseBtn.addEventListener("click", chooseFile);
   cancelBtn.addEventListener("click", () => {
+    cancelRequested = true;
     setStatus(t("files_cancelling"));
     invoke("cancel_file");
+  });
+  speakersSelect.addEventListener("change", async () => {
+    await host.saveSettings({ fileSpeakers: speakersSelect.value });
+    if (speakersSelect.value !== "off") ensureSpeakerModel();
   });
   timesToggle.addEventListener("change", showText);
   copyBtn.addEventListener("click", () => copy(textArea.value, copyBtn, "files_copy"));
   summaryCopy.addEventListener("click", () => copy(summaryEl.textContent ?? "", summaryCopy, "files_copy"));
-  saveBtn.addEventListener("click", saveText);
+  summaryToggle.addEventListener("click", () => setSummaryCollapsed(!summaryBox.classList.contains("collapsed")));
+  exportBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setExportMenu(exportList.classList.contains("hidden"));
+  });
+  exportList.querySelectorAll<HTMLButtonElement>("[data-kind]").forEach((item) =>
+    item.addEventListener("click", () => exportAs(item.dataset.kind as ExportKind)),
+  );
+  document.addEventListener("click", () => setExportMenu(false));
+  // A disclosure, not an ARIA menu: focus leaving the button and its list
+  // (Tab past the last item, or anywhere else) closes it without trapping
+  // or moving focus; Escape closes it and, only if focus was inside the
+  // list, returns focus to the Export button.
+  exportMenu.addEventListener("focusout", (e) => {
+    const next = (e as FocusEvent).relatedTarget as Node | null;
+    if (!next || !exportMenu.contains(next)) setExportMenu(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      const returnFocus = exportList.contains(document.activeElement);
+      setExportMenu(false);
+      if (returnFocus) exportBtn.focus();
+    }
+  });
   summarizeBtn.addEventListener("click", summarize);
   listen<FileProgress>("file-progress", (e) => onProgress(e.payload));
+  listen<DownloadProgress>("speaker-model-progress", (e) => {
+    speakersHint.textContent = t("files_speakers_downloading").replace("{percent}", String(Math.round(e.payload.percent)));
+  });
   listen<[number, number]>("summary-progress", (e) => {
     const [done, total] = e.payload;
     if (summarizing && total > 1) summaryEl.textContent = t("files_summarizing_parts").replace("{done}", String(done + 1)).replace("{total}", String(total));
