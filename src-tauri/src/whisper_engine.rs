@@ -218,6 +218,7 @@ pub fn model_download_url(model_size: &str) -> String {
 }
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
@@ -232,6 +233,8 @@ pub struct WhisperEngine {
     inner: Mutex<EngineState>,
     /// Flash attention from the settings (PC check); `None` = per API.
     flash_attn: Mutex<Option<bool>>,
+    /// Unloaded by the Free GPU hotkey and not loaded since (see `release`).
+    released: AtomicBool,
 }
 
 struct EngineState {
@@ -252,6 +255,7 @@ impl WhisperEngine {
         Self {
             inner: Mutex::new(EngineState { loaded: None }),
             flash_attn: Mutex::new(None),
+            released: AtomicBool::new(false),
         }
     }
 
@@ -269,6 +273,21 @@ impl WhisperEngine {
     /// and to free the GPU on battery.
     pub fn invalidate(&self) {
         self.lock().loaded = None;
+    }
+
+    /// Free the GPU (Free GPU hotkey): drop the model like `invalidate`, and
+    /// remember it until a load brings it back. Waits for a transcription
+    /// that is running. A file being transcribed keeps its own reference to
+    /// the model until it is done.
+    pub fn release(&self) {
+        let mut state = self.lock();
+        state.loaded = None;
+        self.released.store(true, Ordering::SeqCst);
+    }
+
+    /// Released by `release` and not loaded since.
+    pub fn released(&self) -> bool {
+        self.released.load(Ordering::SeqCst)
     }
 
     pub fn is_loaded(&self) -> bool {
@@ -316,6 +335,7 @@ impl WhisperEngine {
                         ctx,
                         state: wstate,
                     });
+                    self.released.store(false, Ordering::SeqCst);
                     return Ok(backend);
                 }
                 Err(e) => {
@@ -635,6 +655,20 @@ fn collect_segments(state: &WhisperState) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_release_lasts_until_a_model_loads() {
+        let engine = WhisperEngine::new();
+        assert!(!engine.released());
+        engine.release();
+        assert!(engine.released());
+        assert!(!engine.is_loaded());
+        engine.invalidate();
+        assert!(engine.released(), "a settings change keeps it released");
+        // A load that fails does not end the release.
+        assert!(engine.ensure_loaded(Path::new("no-such-model.bin"), "cpu").is_err());
+        assert!(engine.released());
+    }
 
     #[test]
     fn language_names_and_codes_round_trip() {

@@ -134,6 +134,22 @@ const LIST_DEVICES_RETRY: Duration = Duration::from_millis(1500);
 const IDLE_TOUCH: Duration = Duration::from_secs(10 * 60);
 const PRIME_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// A request waits at least this long for a server that the Free GPU hotkey
+/// released: the first dictation after a free gets its AI cleanup a few
+/// seconds late instead of losing it (llama-server needs 4 to 7 s on an
+/// RTX 5080 from a warm disk).
+pub const RELEASED_WAIT: Duration = Duration::from_secs(20);
+
+/// How long a request waits for a loading server: `wait`, but at least
+/// `RELEASED_WAIT` after a release.
+fn wait_budget(wait: Duration, released: bool) -> Duration {
+    if released {
+        wait.max(RELEASED_WAIT)
+    } else {
+        wait
+    }
+}
+
 pub struct LlmServer {
     llama_dir: PathBuf,
     log_path: PathBuf,
@@ -160,6 +176,8 @@ pub struct LlmServer {
     /// A start just failed with the drafter: `ensure_running` tries again
     /// without it right away.
     draft_crashed: AtomicBool,
+    /// Set by `release` (Free GPU hotkey) until a start succeeds.
+    released: AtomicBool,
     on_status: StatusCallback,
     #[cfg(windows)]
     job: Option<job::Job>,
@@ -181,6 +199,7 @@ impl LlmServer {
             speed: Mutex::new(None),
             draft_off: AtomicBool::new(false),
             draft_crashed: AtomicBool::new(false),
+            released: AtomicBool::new(false),
             on_status,
             #[cfg(windows)]
             job: job::Job::new(),
@@ -416,6 +435,7 @@ impl LlmServer {
         match result {
             Ok(endpoint) => {
                 self.failures.store(0, Ordering::SeqCst);
+                self.released.store(false, Ordering::SeqCst);
                 Ok(endpoint)
             }
             Err(_) if self.generation.load(Ordering::SeqCst) != generation => {
@@ -448,13 +468,15 @@ impl LlmServer {
     }
 
     /// The endpoint once the server for `model` is ready, starting it in the
-    /// background if needed. Gives up after `wait`; the start continues.
+    /// background if needed. Gives up after `wait` (at least `RELEASED_WAIT`
+    /// after a release); the start continues.
     pub async fn wait_ready(
         self: &Arc<Self>,
         model: &Path,
         gpu_backend: Option<String>,
         wait: Duration,
     ) -> Result<Endpoint, String> {
+        let wait = wait_budget(wait, self.released());
         if let Some(endpoint) = self.ready_endpoint_now(model) {
             self.mark_used();
             return Ok(endpoint);
@@ -714,6 +736,23 @@ impl LlmServer {
         self.failures.store(0, Ordering::SeqCst);
         self.set_status(ServerStatus::Stopped);
     }
+
+    /// Free the GPU (Free GPU hotkey): stop the server like `stop`, and keep
+    /// it released until a request starts it again. Background starts
+    /// (`warm_ai` in main.rs) leave it off, and the request that brings it
+    /// back waits up to `RELEASED_WAIT` for it.
+    pub fn release(&self) {
+        // Set before `stop` reports Stopped (the AI tab reads it then), and
+        // again after it, in case a start finished in between.
+        self.released.store(true, Ordering::SeqCst);
+        self.stop();
+        self.released.store(true, Ordering::SeqCst);
+    }
+
+    /// Released and not started since.
+    pub fn released(&self) -> bool {
+        self.released.load(Ordering::SeqCst)
+    }
 }
 
 fn no_window(cmd: &mut Command) {
@@ -904,5 +943,38 @@ Available devices:
         let json = serde_json::to_string(&ServerStatus::Ready { device: "RX 6800".into() }).unwrap();
         assert_eq!(json, r#"{"state":"ready","device":"RX 6800"}"#);
         assert_eq!(serde_json::to_string(&ServerStatus::Loading).unwrap(), r#"{"state":"loading"}"#);
+    }
+
+    #[test]
+    fn a_released_server_is_waited_for_longer() {
+        let three = Duration::from_secs(3);
+        assert_eq!(wait_budget(three, false), three);
+        assert_eq!(wait_budget(three, true), RELEASED_WAIT);
+        let summary = Duration::from_secs(120);
+        assert_eq!(wait_budget(summary, true), summary, "a longer wait stays");
+    }
+
+    #[test]
+    fn a_release_lasts_until_a_start_succeeds() {
+        let dir = std::env::temp_dir().join("rudariflow_release");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        std::fs::write(&model, b"not a model").unwrap();
+        // No llama-server in this folder: every start fails.
+        let llm = Arc::new(LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {})));
+        assert!(!llm.released());
+        llm.release();
+        assert!(llm.released());
+        assert_eq!(llm.status(), ServerStatus::Stopped);
+        llm.stop();
+        assert!(llm.released(), "a stop (settings, battery) keeps it");
+        let started = Instant::now();
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(llm.wait_ready(&model, None, Duration::from_secs(3)));
+        assert!(result.unwrap_err().contains("llama-server not found"));
+        assert!(started.elapsed() < Duration::from_secs(3), "a failed start ends the longer wait early");
+        assert!(llm.released(), "only a start that succeeds ends it");
     }
 }
