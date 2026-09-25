@@ -125,6 +125,8 @@ speaker separation (the installer puts the DLLs next to the exe).
 npm run tauri build
 ```
 
+For a release, build in a fresh `CARGO_TARGET_DIR` of at most 4 characters (e.g. `C:\q`) with `$env:CUDAARCHS = "75;80;86;89;120"`: whisper-rs-sys does not rebuild whisper.cpp when `CUDAARCHS` or a `GGML_*` setting changes, so a reused folder keeps its old GPU and CPU targets. `src-tauri/.cargo/config.toml` sets `GGML_NATIVE=OFF`, so whisper.cpp runs on every CPU with AVX2 rather than only on CPUs like the build PC's.
+
 Produces (under `CARGO_TARGET_DIR`):
 - `release/rudariflow.exe` (portable, needs the DLLs from step 3 next to it)
 - `release/bundle/nsis/RudariFlow_x.y.z_x64-setup.exe` (NSIS installer)

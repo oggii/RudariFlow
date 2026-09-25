@@ -123,6 +123,8 @@ für die Sprechertrennung (der Installer legt die DLLs neben die exe).
 npm run tauri build
 ```
 
+Für ein Release in einem frischen `CARGO_TARGET_DIR` mit höchstens 4 Zeichen bauen (z. B. `C:\q`), mit `$env:CUDAARCHS = "75;80;86;89;120"`: whisper-rs-sys baut whisper.cpp nicht neu, wenn sich `CUDAARCHS` oder eine `GGML_*`-Einstellung ändert, ein wiederverwendeter Ordner behält also seine alten GPU- und CPU-Ziele. `src-tauri/.cargo/config.toml` setzt `GGML_NATIVE=OFF`, damit whisper.cpp auf jeder CPU mit AVX2 läuft und nicht nur auf CPUs wie der des Build-PCs.
+
 Erzeugt (unter `CARGO_TARGET_DIR`):
 - `release/rudariflow.exe` (portable, braucht die DLLs aus Schritt 3 daneben)
 - `release/bundle/nsis/RudariFlow_x.y.z_x64-setup.exe` (Installer)
