@@ -71,8 +71,8 @@ pub fn cues(segments: &[Segment]) -> Vec<Cue> {
         let cue = &mut out[i];
         if cue.end_ms < cue.start_ms + MIN_CUE_MS {
             cue.end_ms = match next_start {
-                Some(next) => (cue.start_ms + MIN_CUE_MS).min(next.max(cue.end_ms)),
-                None => cue.start_ms + MIN_CUE_MS,
+                Some(next) if next > cue.start_ms => (cue.start_ms + MIN_CUE_MS).min(next),
+                _ => cue.start_ms + MIN_CUE_MS,
             };
         }
     }
@@ -111,18 +111,39 @@ fn best_cut(window: &str) -> Option<usize> {
             .map(|(i, c)| i + c.len_utf8())
             .last()
     };
-    after(&['.', '!', '?']).or_else(|| after(&[',', ';', ':'])).or_else(|| window.rfind(' ').filter(|&i| i > 0))
+    after(&['.', '!', '?', '。', '！', '？'])
+        .or_else(|| after(&[',', ';', ':', '，', '、', '；', '：']))
+        .or_else(|| {
+            window
+                .char_indices()
+                .filter(|&(i, c)| c == ' ' && i >= min)
+                .map(|(i, _)| i + 1)
+                .last()
+        })
 }
 
 /// A cue's text in at most two lines, broken at the space nearest the middle.
 fn two_lines(text: &str) -> String {
-    if text.chars().count() <= LINE_CHARS {
+    let char_count = text.chars().count();
+    if char_count <= LINE_CHARS {
         return text.to_string();
     }
-    let middle = text.len() / 2;
-    match text.char_indices().filter(|&(_, c)| c == ' ').min_by_key(|&(i, _)| i.abs_diff(middle)) {
-        Some((i, _)) => format!("{}\n{}", &text[..i], &text[i + 1..]),
-        None => text.to_string(),
+    let char_middle = char_count / 2;
+    // Find the space nearest the character middle
+    if let Some((byte_idx, _)) = text
+        .char_indices()
+        .enumerate()
+        .filter(|&(_, (_, c))| c == ' ')
+        .min_by_key(|&(char_idx, _)| char_idx.abs_diff(char_middle))
+    {
+        let space_byte_idx = text.char_indices().nth(byte_idx).map(|(i, _)| i).unwrap_or(0);
+        return format!("{}\n{}", &text[..space_byte_idx], &text[space_byte_idx + 1..]);
+    }
+    // No space found: break at the character middle
+    if let Some((byte_idx, _)) = text.char_indices().nth(char_middle) {
+        format!("{}\n{}", &text[..byte_idx], &text[byte_idx..])
+    } else {
+        text.to_string()
     }
 }
 
@@ -241,5 +262,48 @@ mod tests {
         assert!(v.contains("<v Speaker 2>Version ten is out."), "{v}");
         let tricky = vtt(&[said(0.0, 2.0, Some(0), "a < b & c")], &["A<B>".into()]);
         assert!(tricky.contains("<v AB>a &lt; b &amp; c"), "{tricky}");
+    }
+
+    #[test]
+    fn space_less_cjk_text_breaks_at_character_middle() {
+        // A Chinese sentence with no spaces, about 60 characters
+        let cjk = "这是一个很长的中文句子没有任何空格但是包含很多字符用来测试两行函数是否能够正确地在字符中间进行分割而不会超过四十二个字符的限制";
+        let result = two_lines(cjk);
+        for line in result.split('\n') {
+            assert!(line.chars().count() <= 42, "Line exceeds 42 chars: {} ({})", line, line.chars().count());
+        }
+        let lines: Vec<_> = result.split('\n').collect();
+        assert!(lines.len() <= 2, "More than 2 lines: {:?}", lines);
+    }
+
+    #[test]
+    fn first_third_rule_for_space_cut() {
+        // Test that space fallback respects the first-third rule
+        let text = format!("Hi {}", "x".repeat(200));
+        let parts = split_text(&text, CUE_CHARS);
+        assert!(parts[0].len() > 2, "First part should not be just 'Hi': {:?}", parts[0]);
+        for part in &parts {
+            assert!(part.chars().count() <= CUE_CHARS, "Part exceeds CUE_CHARS: {} ({})", part, part.chars().count());
+        }
+    }
+
+    #[test]
+    fn cjk_sentence_end_is_a_cut_point() {
+        // Text long enough to split: first 30+ chars to exceed first-third, then 。, then much more
+        let text = "开始这是一个很长的中文句子用来测试系统的分割功能是否正确。这是第二个句子继续测试分割功能是否能够在中文句号处正确截断文本这样能够验证我们的分割算法是否有效并且能够在中文句号处进行正确的截断并且返回两个部分来完成测试";
+        let parts = split_text(text, CUE_CHARS);
+        assert!(parts.len() >= 2, "Should split into at least 2 parts, text len={}, got: {:?}", text.chars().count(), parts);
+        assert!(parts[0].ends_with("。"), "First part should end with 。, got: {:?}", parts[0]);
+    }
+
+    #[test]
+    fn zero_length_segment_produces_positive_duration_cues() {
+        let english_sentence = "This is a fairly long English sentence with multiple words and spaces that exceeds eighty-four characters to ensure it gets split into multiple cues.";
+        let cues_result = cues(&[said(5.0, 5.0, None, english_sentence)]);
+        assert!(cues_result.len() >= 2, "Should produce at least 2 cues: {:?}", cues_result);
+        for cue in &cues_result {
+            assert!(cue.end_ms > cue.start_ms, "Cue has zero or negative duration: {:?}", cue);
+            assert!(cue.end_ms >= cue.start_ms + 1000, "Cue duration is less than MIN_CUE_MS: {:?}", cue);
+        }
     }
 }
