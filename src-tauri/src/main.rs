@@ -280,7 +280,7 @@ struct FileTranscript {
     /// Speakers found; 0 when not separated.
     speakers: u8,
     /// Why speakers are missing although asked for: "no_model",
-    /// "no_runtime" or an error text.
+    /// "no_runtime", "none_found" (no voices) or an error text.
     #[serde(rename = "speakersError", skip_serializing_if = "Option::is_none")]
     speakers_error: Option<String>,
     language: String,
@@ -303,8 +303,10 @@ struct FileProgress {
 
 /// Transcribe an audio or video file with the local Whisper model. Progress
 /// and the text so far arrive as "file-progress" events. `language` empty =
-/// the Engine setting. Errors "busy", "no_model", "no_speech", "cancelled"
-/// are shown by the UI in words.
+/// the Engine setting. `speakers` is the Files tab's setting, "off", "auto"
+/// or "2" … "8": unless off, the speakers are separated next to Whisper and
+/// each segment gets its speaker (or `speakersError` says why not). Errors
+/// "busy", "no_model", "no_speech", "cancelled" are shown by the UI in words.
 #[tauri::command]
 async fn transcribe_file(
     app: AppHandle,
@@ -353,7 +355,11 @@ async fn transcribe_file(
         }
         let audio = std::sync::Arc::new(audio);
 
-        // Speakers: on the CPU while Whisper runs on the GPU.
+        emit("loading", 0, 1, String::new());
+        engine.ensure_loaded(&model, &settings.gpu_backend)?;
+
+        // Speakers: on the CPU while Whisper runs on the GPU. Started once
+        // Whisper has loaded, so a failed load leaves nothing running.
         use rudariflow_lib::speakers;
         let mut speakers_error = None;
         let percent = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -385,8 +391,6 @@ async fn transcribe_file(
             }
         };
 
-        emit("loading", 0, 1, String::new());
-        engine.ensure_loaded(&model, &settings.gpu_backend)?;
         let terms = dictionary::terms(&settings.custom_prompt);
         let prompt = screen_context::whisper_prompt(&[], &settings.custom_prompt);
         let spelling = |text: &str| {
@@ -411,11 +415,10 @@ async fn transcribe_file(
             }
             match handle.join() {
                 Ok((Ok(turns), took)) => {
-                    let spans: Vec<(u64, u64)> = segments.iter().map(|s| (s.start_ms, s.end_ms)).collect();
-                    for (segment, speaker) in segments.iter_mut().zip(speakers::assign(&spans, &turns)) {
-                        segment.speaker = speaker;
+                    match file_transcribe::label_speakers(&mut segments, &turns) {
+                        Ok(n) => found = n,
+                        Err(e) => speakers_error = Some(e),
                     }
-                    found = segments.iter().filter_map(|s| s.speaker).max().map_or(0, |m| m + 1);
                     startup_log::log(&format!(
                         "[speakers] {} speakers, {} turns in {:.1} s ({:.0} s of audio, {} threads)",
                         found,
@@ -1476,7 +1479,9 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         // Size, position and maximised state of the main window, restored at
-        // start (not the overlay pill or the hidden PDF export windows).
+        // start (not the overlay pill or the hidden PDF export windows). A
+        // saved position on no current monitor is not restored; the window
+        // then opens centred ("center" in tauri.conf.json).
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_state_flags(
@@ -1580,6 +1585,14 @@ fn main() {
             } else {
                 startup_log::log("resource_dir: <unresolved>");
             }
+            // PDF export pages a quit or crash in the middle of a print left
+            // in the temp folder.
+            std::thread::spawn(|| {
+                let removed = rudariflow_lib::pdf::remove_stale_pages();
+                if removed > 0 {
+                    startup_log::log(&format!("[export] removed {} stale PDF export pages", removed));
+                }
+            });
 
             // If launched at login (autostart adds --start-minimized), keep the main
             // window hidden so the app lives in the tray. Otherwise show it normally.
@@ -1593,11 +1606,6 @@ fn main() {
                     startup_log::log(&format!("[main window event] {:?}", ev));
                     let _ = &mw_for_listener;
                 });
-                // A saved position on a monitor that is gone: centre it.
-                if matches!(main_window.current_monitor(), Ok(None)) {
-                    let _ = main_window.center();
-                    startup_log::log("main window was off-screen; centred");
-                }
                 if started_minimized {
                     startup_log::log("autostart: keeping main hidden");
                 } else {

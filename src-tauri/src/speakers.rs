@@ -135,15 +135,6 @@ pub const MODELS: [ModelFile; 2] = [
     },
 ];
 
-/// With a number, clustering makes exactly that many speakers; with Auto it
-/// merges voices closer than this. 0.9 was the only value that counted the
-/// three probe files right (4, 2 and 2 speakers).
-const AUTO_THRESHOLD: f32 = 0.9;
-/// sherpa-onnx's defaults, used in the probe: shorter speech is dropped,
-/// shorter gaps of one speaker are closed.
-const MIN_DURATION_ON: f32 = 0.3;
-const MIN_DURATION_OFF: f32 = 0.5;
-
 pub fn model_dir(app_dir: &Path) -> PathBuf {
     app_dir.join("speakers")
 }
@@ -198,12 +189,6 @@ pub fn threads() -> i32 {
     (logical / 2).clamp(1, 8) as i32
 }
 
-unsafe extern "C" fn progress_callback(done: i32, total: i32, arg: *mut std::ffi::c_void) -> i32 {
-    let progress = &mut *(arg as *mut &mut dyn FnMut(u32, u32));
-    progress(done.max(0) as u32, total.max(0) as u32);
-    0
-}
-
 /// Who speaks when in `audio` (16 kHz mono), on the CPU. `progress(done,
 /// total)` comes from sherpa-onnx while it runs (chunks of the file).
 pub fn separate(
@@ -212,103 +197,145 @@ pub fn separate(
     app_dir: &Path,
     progress: &mut dyn FnMut(u32, u32),
 ) -> Result<Vec<Turn>, String> {
-    use sherpa_rs_sys as sys;
-    use std::ffi::CString;
-
     if !runtime_available() {
         return Err("the speaker runtime (sherpa-onnx-c-api.dll) is missing".to_string());
     }
     let n_samples =
         i32::try_from(audio.len()).map_err(|_| "the file is too long to separate speakers".to_string())?;
-    let dir = model_dir(app_dir);
-    let path = |file: &str| CString::new(dir.join(file).to_string_lossy().as_bytes()).map_err(|e| e.to_string());
-    let segmentation = path(MODELS[0].file)?;
-    let embedding = path(MODELS[1].file)?;
-    let provider = CString::new("cpu").expect("no NUL");
-    let threads = threads();
-    let num_clusters = match count {
-        SpeakerCount::Auto => -1,
-        SpeakerCount::Exactly(n) => n as i32,
-    };
-    let config = sys::SherpaOnnxOfflineSpeakerDiarizationConfig {
-        segmentation: sys::SherpaOnnxOfflineSpeakerSegmentationModelConfig {
-            pyannote: sys::SherpaOnnxOfflineSpeakerSegmentationPyannoteModelConfig { model: segmentation.as_ptr() },
-            num_threads: threads,
-            debug: 0,
-            provider: provider.as_ptr(),
-        },
-        embedding: sys::SherpaOnnxSpeakerEmbeddingExtractorConfig {
-            model: embedding.as_ptr(),
-            num_threads: threads,
-            debug: 0,
-            provider: provider.as_ptr(),
-        },
-        clustering: sys::SherpaOnnxFastClusteringConfig { num_clusters, threshold: AUTO_THRESHOLD },
-        min_duration_on: MIN_DURATION_ON,
-        min_duration_off: MIN_DURATION_OFF,
-    };
-
-    struct Diarization(*const sys::SherpaOnnxOfflineSpeakerDiarization);
-    impl Drop for Diarization {
-        fn drop(&mut self) {
-            unsafe { sys::SherpaOnnxDestroyOfflineSpeakerDiarization(self.0) }
-        }
-    }
-
-    unsafe {
-        let sd = sys::SherpaOnnxCreateOfflineSpeakerDiarization(&config);
-        if sd.is_null() {
-            return Err("the speaker model could not be loaded".to_string());
-        }
-        let sd = Diarization(sd);
-        let rate = sys::SherpaOnnxOfflineSpeakerDiarizationGetSampleRate(sd.0);
-        if rate != 16_000 {
-            return Err(format!("the speaker model expects {rate} Hz"));
-        }
-        let mut progress: &mut dyn FnMut(u32, u32) = progress;
-        let arg = &mut progress as *mut &mut dyn FnMut(u32, u32) as *mut std::ffi::c_void;
-        let result = sys::SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback(
-            sd.0,
-            audio.as_ptr(),
-            n_samples,
-            Some(progress_callback),
-            arg,
-        );
-        if result.is_null() {
-            return Err("speaker separation failed".to_string());
-        }
-        let n = sys::SherpaOnnxOfflineSpeakerDiarizationResultGetNumSegments(result);
-        let segments = sys::SherpaOnnxOfflineSpeakerDiarizationResultSortByStartTime(result);
-        let mut turns = Vec::new();
-        if !segments.is_null() && n > 0 {
-            for s in std::slice::from_raw_parts(segments, n as usize) {
-                turns.push(Turn {
-                    start_ms: (s.start.max(0.0) * 1000.0) as u64,
-                    end_ms: (s.end.max(0.0) * 1000.0) as u64,
-                    speaker: s.speaker.max(0) as u32,
-                });
-            }
-            sys::SherpaOnnxOfflineSpeakerDiarizationDestroySegment(segments);
-        }
-        sys::SherpaOnnxOfflineSpeakerDiarizationDestroyResult(result);
-        Ok(turns)
-    }
+    imp::separate(audio, n_samples, count, &model_dir(app_dir), progress)
 }
 
 #[cfg(windows)]
 mod imp {
+    use std::ffi::CString;
+    use std::path::Path;
+
+    use sherpa_rs_sys as sys;
+
+    use super::{threads, SpeakerCount, Turn, MODELS};
+
+    /// With a number, clustering makes exactly that many speakers; with Auto
+    /// it merges voices closer than this. 0.9 was the only value that counted
+    /// the three probe files right (4, 2 and 2 speakers).
+    const AUTO_THRESHOLD: f32 = 0.9;
+    /// sherpa-onnx's defaults, used in the probe: shorter speech is dropped,
+    /// shorter gaps of one speaker are closed.
+    const MIN_DURATION_ON: f32 = 0.3;
+    const MIN_DURATION_OFF: f32 = 0.5;
+
     pub fn load(dll: &str) -> bool {
         use windows_sys::Win32::System::LibraryLoader::LoadLibraryW;
         let wide: Vec<u16> = dll.encode_utf16().chain(std::iter::once(0)).collect();
         // The module stays loaded; the delay-load helper then finds it.
         !unsafe { LoadLibraryW(wide.as_ptr()) }.is_null()
     }
+
+    unsafe extern "C" fn progress_callback(done: i32, total: i32, arg: *mut std::ffi::c_void) -> i32 {
+        let progress = &mut *(arg as *mut &mut dyn FnMut(u32, u32));
+        progress(done.max(0) as u32, total.max(0) as u32);
+        0
+    }
+
+    pub fn separate(
+        audio: &[f32],
+        n_samples: i32,
+        count: SpeakerCount,
+        dir: &Path,
+        progress: &mut dyn FnMut(u32, u32),
+    ) -> Result<Vec<Turn>, String> {
+        let path = |file: &str| CString::new(dir.join(file).to_string_lossy().as_bytes()).map_err(|e| e.to_string());
+        let segmentation = path(MODELS[0].file)?;
+        let embedding = path(MODELS[1].file)?;
+        let provider = CString::new("cpu").expect("no NUL");
+        let threads = threads();
+        let num_clusters = match count {
+            SpeakerCount::Auto => -1,
+            SpeakerCount::Exactly(n) => n as i32,
+        };
+        let config = sys::SherpaOnnxOfflineSpeakerDiarizationConfig {
+            segmentation: sys::SherpaOnnxOfflineSpeakerSegmentationModelConfig {
+                pyannote: sys::SherpaOnnxOfflineSpeakerSegmentationPyannoteModelConfig { model: segmentation.as_ptr() },
+                num_threads: threads,
+                debug: 0,
+                provider: provider.as_ptr(),
+            },
+            embedding: sys::SherpaOnnxSpeakerEmbeddingExtractorConfig {
+                model: embedding.as_ptr(),
+                num_threads: threads,
+                debug: 0,
+                provider: provider.as_ptr(),
+            },
+            clustering: sys::SherpaOnnxFastClusteringConfig { num_clusters, threshold: AUTO_THRESHOLD },
+            min_duration_on: MIN_DURATION_ON,
+            min_duration_off: MIN_DURATION_OFF,
+        };
+
+        struct Diarization(*const sys::SherpaOnnxOfflineSpeakerDiarization);
+        impl Drop for Diarization {
+            fn drop(&mut self) {
+                unsafe { sys::SherpaOnnxDestroyOfflineSpeakerDiarization(self.0) }
+            }
+        }
+
+        unsafe {
+            let sd = sys::SherpaOnnxCreateOfflineSpeakerDiarization(&config);
+            if sd.is_null() {
+                return Err("the speaker model could not be loaded".to_string());
+            }
+            let sd = Diarization(sd);
+            let rate = sys::SherpaOnnxOfflineSpeakerDiarizationGetSampleRate(sd.0);
+            if rate != 16_000 {
+                return Err(format!("the speaker model expects {rate} Hz"));
+            }
+            let mut progress: &mut dyn FnMut(u32, u32) = progress;
+            let arg = &mut progress as *mut &mut dyn FnMut(u32, u32) as *mut std::ffi::c_void;
+            let result = sys::SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback(
+                sd.0,
+                audio.as_ptr(),
+                n_samples,
+                Some(progress_callback),
+                arg,
+            );
+            if result.is_null() {
+                return Err("speaker separation failed".to_string());
+            }
+            let n = sys::SherpaOnnxOfflineSpeakerDiarizationResultGetNumSegments(result);
+            let segments = sys::SherpaOnnxOfflineSpeakerDiarizationResultSortByStartTime(result);
+            let mut turns = Vec::new();
+            if !segments.is_null() && n > 0 {
+                for s in std::slice::from_raw_parts(segments, n as usize) {
+                    turns.push(Turn {
+                        start_ms: (s.start.max(0.0) * 1000.0) as u64,
+                        end_ms: (s.end.max(0.0) * 1000.0) as u64,
+                        speaker: s.speaker.max(0) as u32,
+                    });
+                }
+                sys::SherpaOnnxOfflineSpeakerDiarizationDestroySegment(segments);
+            }
+            sys::SherpaOnnxOfflineSpeakerDiarizationDestroyResult(result);
+            Ok(turns)
+        }
+    }
 }
 
 #[cfg(not(windows))]
 mod imp {
+    use std::path::Path;
+
+    use super::{SpeakerCount, Turn};
+
     pub fn load(_dll: &str) -> bool {
         false
+    }
+
+    pub fn separate(
+        _audio: &[f32],
+        _n_samples: i32,
+        _count: SpeakerCount,
+        _dir: &Path,
+        _progress: &mut dyn FnMut(u32, u32),
+    ) -> Result<Vec<Turn>, String> {
+        Err("speaker separation needs Windows".to_string())
     }
 }
 

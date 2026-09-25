@@ -85,8 +85,16 @@ let summarizing = false;
 let segments: Segment[] = [];
 /** One name per speaker, "Speaker 1" … until renamed. */
 let names: string[] = [];
+/** When the transcript on screen arrived: the date in export headers. */
+let transcribedAt: Date | null = null;
 /** The speaker model download, while it runs. */
 let modelDownload: Promise<boolean> | null = null;
+/** Cancel was pressed during this run (the backend only hears it once the
+ *  file has started, not while the speaker model downloads). */
+let cancelRequested = false;
+/** This run separates speakers: Whisper fills the progress bar to 80 %,
+ *  the separation the rest. */
+let speakersOn = false;
 
 /// "4:05" or "1:02:03", like the backend's `clock`.
 function clock(ms: number): string {
@@ -115,6 +123,17 @@ function errorText(e: unknown): string {
     no_ai_model: "files_err_no_ai_model",
   };
   return key[code] ? t(key[code]) : `${t("files_err_failed")}: ${code}`;
+}
+
+/** Why the speakers are missing (the backend's `speakersError`), for the
+ *  status line, and whether that is an error: a file without voices is not. */
+function speakersNote(code: string): { text: string; error: boolean } {
+  const neutral = ["none_found"];
+  const known = ["no_model", "no_runtime", ...neutral];
+  return {
+    text: known.includes(code) ? t(`files_speakers_missing_${code}`) : t("files_speakers_missing_error").replace("{error}", code),
+    error: !neutral.includes(code),
+  };
 }
 
 /** The transcript as shown: paragraphs, speaker names, times if on. */
@@ -204,10 +223,12 @@ async function transcribe(path: string) {
     return;
   }
   running = true;
+  cancelRequested = false;
   segments = [];
   names = [];
   renderChips();
   transcript = null;
+  transcribedAt = null;
   fileName = path.split(/[\\/]/).pop() ?? path;
   nameEl.textContent = fileName;
   job.classList.remove("hidden");
@@ -221,18 +242,22 @@ async function transcribe(path: string) {
   setButtons(false);
   setProgress(0);
   setStatus(t("files_reading"));
-  // A failed or missing model must not drop the transcript: wait for a
-  // download (or a running one) but transcribe regardless of the outcome —
-  // the backend falls back to an unlabelled transcript and reports why.
-  if (speakersSelect.value !== "off") {
-    await ensureSpeakerModel();
-  }
+  speakersOn = false;
   try {
+    // A failed or missing model must not drop the transcript: wait for a
+    // download (or a running one) but transcribe regardless of the outcome —
+    // the backend falls back to an unlabelled transcript and reports why.
+    if (speakersSelect.value !== "off") {
+      speakersOn = await ensureSpeakerModel();
+      // Cancelled while the model downloaded: the file does not start.
+      if (cancelRequested) throw "cancelled";
+    }
     transcript = await invoke<FileTranscript>("transcribe_file", {
       path,
       language: languageSelect.value,
       speakers: speakersSelect.value,
     });
+    transcribedAt = new Date();
     segments = transcript.segments;
     names = Array.from({ length: transcript.speakers }, (_, i) => defaultName(i));
     renderChips();
@@ -243,12 +268,13 @@ async function transcribe(path: string) {
       .replace("{audio}", clock(transcript.durationMs))
       .replace("{secs}", secs)
       .replace("{language}", languageName(transcript.language));
+    let tone = "ok";
     if (transcript.speakersError) {
-      const key = `files_speakers_missing_${transcript.speakersError}`;
-      const known = key === "files_speakers_missing_no_model" || key === "files_speakers_missing_no_runtime";
-      status += " · " + (known ? t(key) : t("files_speakers_missing_error").replace("{error}", transcript.speakersError));
+      const note = speakersNote(transcript.speakersError);
+      status += " · " + note.text;
+      tone = note.error ? "error" : "";
     }
-    setStatus(status, transcript.speakersError ? "error" : "ok");
+    setStatus(status, tone);
     setButtons(true);
   } catch (e) {
     setStatus(errorText(e), String(e) === "cancelled" ? "" : "error");
@@ -278,10 +304,12 @@ function onProgress(p: FileProgress) {
     setProgress(0.05);
   } else if (p.phase === "speakers") {
     setStatus(t("files_speakers_running").replace("{percent}", String(p.done)));
-    setProgress(0.95 + (p.done / 100) * 0.05);
+    setProgress(0.8 + (p.done / 100) * 0.2);
   } else {
     setStatus(t("files_transcribing").replace("{done}", clock(p.done)).replace("{total}", clock(p.total)));
-    setProgress(0.05 + (p.total > 0 ? (p.done / p.total) * 0.95 : 0));
+    // Whisper ends at 80 % when the speakers are separated after it.
+    const end = speakersOn ? 0.8 : 1;
+    setProgress(0.05 + (p.total > 0 ? (p.done / p.total) * (end - 0.05) : 0));
     if (p.text) {
       textArea.value += (textArea.value ? " " : "") + p.text;
       textArea.scrollTop = textArea.scrollHeight;
@@ -340,11 +368,13 @@ function setExportMenu(open: boolean) {
   exportBtn.setAttribute("aria-expanded", String(open));
 }
 
-/** "2:52 · English · 2 speakers · 24.09.2026" under the title. */
+/** "2:52 · English · 2 speakers · 24.09.2026" under the title, with the
+ *  date of the transcription. */
 function exportMeta(): string {
   const parts = [clock(transcript?.durationMs ?? 0), languageName(transcript?.language ?? "")];
-  if (names.length) parts.push(t("files_speakers_count").replace("{n}", String(names.length)));
-  parts.push(new Date().toLocaleDateString(getLang()));
+  if (names.length === 1) parts.push(t("files_speakers_count_one"));
+  else if (names.length) parts.push(t("files_speakers_count").replace("{n}", String(names.length)));
+  parts.push((transcribedAt ?? new Date()).toLocaleDateString(getLang()));
   return parts.join(" · ");
 }
 
@@ -397,6 +427,7 @@ export function initFiles(h: FilesHost) {
   host = h;
   chooseBtn.addEventListener("click", chooseFile);
   cancelBtn.addEventListener("click", () => {
+    cancelRequested = true;
     setStatus(t("files_cancelling"));
     invoke("cancel_file");
   });

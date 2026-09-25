@@ -2,6 +2,7 @@
 //!   $env:PATH = "$PWD\binaries\sherpa-onnx\lib;$env:PATH"
 //!   cargo run --release --example speakers_probe
 
+#[cfg(windows)]
 fn main() {
     assert!(
         rudariflow_lib::speakers::runtime_available(),
@@ -10,3 +11,6 @@ fn main() {
     let version = unsafe { std::ffi::CStr::from_ptr(sherpa_rs_sys::SherpaOnnxGetVersionStr()) };
     println!("sherpa-onnx {}", version.to_string_lossy());
 }
+
+#[cfg(not(windows))]
+fn main() {}

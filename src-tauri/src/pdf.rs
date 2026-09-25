@@ -2,7 +2,7 @@
 //! WebView2's PrintToPdf. The page goes through a temporary file, since
 //! NavigateToString is limited to 2 MB.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 use std::time::Duration;
 
@@ -20,6 +20,35 @@ use crate::export::Paper;
 pub const WINDOW_PREFIX: &str = "pdf-export-";
 static BUSY: AtomicBool = AtomicBool::new(false);
 static NEXT_WINDOW: AtomicU64 = AtomicU64::new(0);
+/// The page to print is `PAGE_PREFIX` + the process id + ".html" in the
+/// temp folder.
+const PAGE_PREFIX: &str = "rudariflow-export-";
+
+/// Remove the pages a quit or crash in the middle of a print left in the
+/// temp folder (each holds a transcript in plaintext). For startup, best
+/// effort; the page of another RudariFlow that is still running stays.
+/// Returns how many were removed.
+pub fn remove_stale_pages() -> usize {
+    remove_stale_pages_in(&std::env::temp_dir(), |pid| crate::foreground_app::process_name(pid) == "rudariflow")
+}
+
+fn remove_stale_pages_in(dir: &Path, rudariflow_running: impl Fn(u32) -> bool) -> usize {
+    let own = std::process::id();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let pid = name.to_str().and_then(|n| n.strip_prefix(PAGE_PREFIX)?.strip_suffix(".html")?.parse::<u32>().ok());
+            // This process has not printed yet: a page with its id is from
+            // an earlier process that had the same id.
+            pid.is_some_and(|pid| pid == own || !rudariflow_running(pid))
+        })
+        .filter(|entry| std::fs::remove_file(entry.path()).is_ok())
+        .count()
+}
 
 /// Print `html` to a PDF at `path`.
 pub async fn print(app: &AppHandle, html: String, paper: Paper, path: PathBuf) -> Result<(), String> {
@@ -34,7 +63,7 @@ pub async fn print(app: &AppHandle, html: String, paper: Paper, path: PathBuf) -
     }
     let _done = Done;
 
-    let page = std::env::temp_dir().join(format!("rudariflow-export-{}.html", std::process::id()));
+    let page = std::env::temp_dir().join(format!("{PAGE_PREFIX}{}.html", std::process::id()));
     std::fs::write(&page, html).map_err(|e| e.to_string())?;
     // Holds the transcript in plaintext, so it must go on every exit from
     // here on, not just the ones that reach the bottom of the function.
@@ -156,5 +185,28 @@ mod imp {
         done: tokio::sync::oneshot::Sender<Result<(), String>>,
     ) {
         let _ = done.send(Err("PDF export needs Windows".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_export_pages_go_but_a_running_exports_page_stays() {
+        let dir = std::env::temp_dir().join("rudariflow_stale_pages_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let own = format!("rudariflow-export-{}.html", std::process::id());
+        for name in ["rudariflow-export-99999.html", &own, "rudariflow-export-4242.html", "rudariflow-export-7.txt", "notes.html"] {
+            std::fs::write(dir.join(name), "<p>a transcript</p>").unwrap();
+        }
+        // 4242 stands for another RudariFlow that is printing right now.
+        assert_eq!(remove_stale_pages_in(&dir, |pid| pid == 4242), 2);
+        let mut left: Vec<String> =
+            std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["notes.html", "rudariflow-export-4242.html", "rudariflow-export-7.txt"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::audio::{quiet_cut, speech_spans};
+use crate::speakers::{assign, Turn};
 use crate::whisper_engine::{Segment, WhisperEngine};
 
 /// A block ends once this much audio is in it...
@@ -27,6 +28,22 @@ const PARAGRAPH_CHARS: usize = 600;
 pub const SUMMARY_CHUNK_CHARS: usize = 12_000;
 
 pub const CANCELLED: &str = "cancelled";
+/// Speakers were asked for, but the separation found no voices.
+pub const NONE_FOUND: &str = "none_found";
+
+/// Give `segments` the speakers of a finished separation (see
+/// `speakers::assign`) and return how many there are, or `NONE_FOUND` when
+/// the separation found no speech: the segments then stay unlabelled.
+pub fn label_speakers(segments: &mut [Segment], turns: &[Turn]) -> Result<u8, String> {
+    if turns.is_empty() {
+        return Err(NONE_FOUND.to_string());
+    }
+    let spans: Vec<(u64, u64)> = segments.iter().map(|s| (s.start_ms, s.end_ms)).collect();
+    for (segment, speaker) in segments.iter_mut().zip(assign(&spans, turns)) {
+        segment.speaker = speaker;
+    }
+    Ok(segments.iter().filter_map(|s| s.speaker).max().map_or(0, |m| m + 1))
+}
 
 /// Where the blocks of `audio` (16 kHz mono) end.
 pub fn block_ends(audio: &[f32]) -> Vec<usize> {
@@ -416,5 +433,19 @@ mod tests {
         );
         assert_eq!(paragraphs(&segments).len(), 3);
         assert_eq!(speaker_name(&["  ".to_string()], 0), "Speaker 1");
+    }
+
+    #[test]
+    fn separated_speakers_label_the_segments_or_none_were_found() {
+        let mut segments = vec![seg(0.0, 2.0, "Hello."), seg(3.0, 5.0, "Hi there.")];
+        // No speech turns: nothing is labelled and the status says why.
+        assert_eq!(label_speakers(&mut segments, &[]), Err(NONE_FOUND.to_string()));
+        assert!(segments.iter().all(|s| s.speaker.is_none()));
+        let turns = [
+            Turn { start_ms: 0, end_ms: 2_500, speaker: 7 },
+            Turn { start_ms: 2_500, end_ms: 5_000, speaker: 3 },
+        ];
+        assert_eq!(label_speakers(&mut segments, &turns), Ok(2));
+        assert_eq!(segments.iter().map(|s| s.speaker).collect::<Vec<_>>(), vec![Some(0), Some(1)]);
     }
 }

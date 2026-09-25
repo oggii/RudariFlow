@@ -123,17 +123,21 @@ fn best_cut(window: &str) -> Option<usize> {
 }
 
 /// A cue's text in at most two lines, broken at the space nearest the middle.
+/// A space more than a quarter of the text away from the middle does not
+/// count (in a Chinese SRT cue the only space is the one after "Name:"), so
+/// such text breaks at the character middle.
 fn two_lines(text: &str) -> String {
     let char_count = text.chars().count();
     if char_count <= LINE_CHARS {
         return text.to_string();
     }
     let char_middle = char_count / 2;
+    let reach = char_count / 4;
     // Find the space nearest the character middle
     if let Some((char_pos, _)) = text
         .char_indices()
         .enumerate()
-        .filter(|&(_, (_, c))| c == ' ')
+        .filter(|&(char_idx, (_, c))| c == ' ' && char_idx.abs_diff(char_middle) <= reach)
         .min_by_key(|&(char_idx, _)| char_idx.abs_diff(char_middle))
     {
         let space_byte_idx = text.char_indices().nth(char_pos).map(|(i, _)| i).unwrap_or(0);
@@ -336,7 +340,7 @@ h2 {{ font-size: 13pt; margin: 16pt 0 6pt; }}
 p {{ margin: 0 0 8pt; orphans: 2; widows: 2; }}
 .summary p {{ margin-bottom: 4pt; }}
 .time {{ color: #888; font-variant-numeric: tabular-nums; }}
-.who {{ font-weight: 600; }}
+.who {{ font-weight: bold; }}
 </style></head>
 <body>
 {body}</body></html>
@@ -437,6 +441,26 @@ mod tests {
     }
 
     #[test]
+    fn a_name_before_cjk_text_does_not_become_the_first_line() {
+        // SRT puts "Name: " before the text; its space is the only one in a
+        // Chinese cue, far from the middle, so the break goes to the middle.
+        let cjk = "这是一个很长的中文句子没有任何空格但是包含很多字符用来测试两行函数是否能够正确地在字符中间进行分割";
+        let text = format!("Saad: {cjk}");
+        let result = two_lines(&text);
+        let lines: Vec<&str> = result.split('\n').collect();
+        assert_eq!(lines.len(), 2, "{result}");
+        assert!(lines[0].starts_with("Saad: "), "{result}");
+        for line in &lines {
+            assert!(line.chars().count() <= LINE_CHARS, "{line} ({} chars)", line.chars().count());
+        }
+        // A space near the middle still wins.
+        let latin = "Saad: this line has spaces everywhere, so it breaks at the one nearest the middle.";
+        let broken = two_lines(latin);
+        assert!(!broken.starts_with("Saad:\n"), "{broken}");
+        assert_eq!(broken.replace('\n', " "), latin);
+    }
+
+    #[test]
     fn first_third_rule_for_space_cut() {
         // Test that space fallback respects the first-third rule
         let text = format!("Hi {}", "x".repeat(200));
@@ -503,6 +527,7 @@ mod tests {
         assert!(html.contains("- One &lt;point&gt;"));
         assert!(html.contains("<span class=\"time\">[0:14]</span>"));
         assert!(html.contains("<span class=\"who\">Speaker 2:</span>"));
+        assert!(html.contains(".who { font-weight: bold; }"), "names are bold");
         d.times = false;
         assert!(!pdf_html(&d, Paper::A4).contains("class=\"time\""));
     }
