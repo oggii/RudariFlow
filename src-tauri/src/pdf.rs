@@ -3,15 +3,23 @@
 //! NavigateToString is limited to 2 MB.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 use std::time::Duration;
 
 use tauri::{AppHandle, WebviewUrl, WebviewWindowBuilder};
 
 use crate::export::Paper;
 
-const WINDOW: &str = "pdf-export";
+/// Every export gets its own `WINDOW_PREFIX` + a counter window label.
+/// `window.destroy()` only posts a close request to the event loop; the
+/// label stays taken in Tauri's window registry until the native window
+/// actually finishes closing, which can be after `BUSY` has already reset
+/// and the next export has started — reusing one fixed label would then
+/// fail `WebviewWindowBuilder::build()` with "a window with label ... already
+/// exists". Public so a window-state plugin can exclude these by prefix.
+pub const WINDOW_PREFIX: &str = "pdf-export-";
 static BUSY: AtomicBool = AtomicBool::new(false);
+static NEXT_WINDOW: AtomicU64 = AtomicU64::new(0);
 
 /// Print `html` to a PDF at `path`.
 pub async fn print(app: &AppHandle, html: String, paper: Paper, path: PathBuf) -> Result<(), String> {
@@ -28,11 +36,21 @@ pub async fn print(app: &AppHandle, html: String, paper: Paper, path: PathBuf) -
 
     let page = std::env::temp_dir().join(format!("rudariflow-export-{}.html", std::process::id()));
     std::fs::write(&page, html).map_err(|e| e.to_string())?;
+    // Holds the transcript in plaintext, so it must go on every exit from
+    // here on, not just the ones that reach the bottom of the function.
+    struct RemoveTemp(PathBuf);
+    impl Drop for RemoveTemp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _page = RemoveTemp(page.clone());
     let url = tauri::Url::from_file_path(&page).map_err(|_| "bad temporary path".to_string())?;
 
+    let label = format!("{WINDOW_PREFIX}{}", NEXT_WINDOW.fetch_add(1, SeqCst));
     let (loaded_tx, loaded_rx) = tokio::sync::oneshot::channel::<()>();
     let loaded_tx = std::sync::Mutex::new(Some(loaded_tx));
-    let window = WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::External(url))
+    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .visible(false)
         .on_page_load(move |_, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
@@ -61,7 +79,6 @@ pub async fn print(app: &AppHandle, html: String, paper: Paper, path: PathBuf) -
     }
     .await;
     let _ = window.destroy();
-    let _ = std::fs::remove_file(&page);
     result
 }
 
