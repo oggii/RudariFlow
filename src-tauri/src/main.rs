@@ -179,6 +179,8 @@ enum HotkeyAction {
     PasteLast,
     /// Select the last dictation and record what to change about it.
     RewriteLast,
+    /// Free the GPU, or load the models again (see `free_gpu_press`).
+    FreeGpu,
 }
 
 impl HotkeyAction {
@@ -187,18 +189,30 @@ impl HotkeyAction {
             "dictation" => Ok(Self::Dictation),
             "pasteLast" => Ok(Self::PasteLast),
             "rewriteLast" => Ok(Self::RewriteLast),
+            "freeGpu" => Ok(Self::FreeGpu),
             _ => Err(format!("Unknown hotkey target: {}", target)),
         }
     }
 }
 
 /// Every hotkey setting with its action.
-fn hotkeys(s: &Settings) -> [(HotkeyAction, String); 3] {
+fn hotkeys(s: &Settings) -> [(HotkeyAction, String); 4] {
     [
         (HotkeyAction::Dictation, s.hotkey.clone()),
         (HotkeyAction::PasteLast, s.paste_last_hotkey.clone()),
         (HotkeyAction::RewriteLast, s.rewrite_last_hotkey.clone()),
+        (HotkeyAction::FreeGpu, s.free_gpu_hotkey.clone()),
     ]
+}
+
+/// Whether `hotkey` is already another action's hotkey: mouse bindings by
+/// button and modifiers, chords without regard to case.
+fn taken_by_other(all: &[(HotkeyAction, String)], action: HotkeyAction, hotkey: &str) -> bool {
+    let same = |h: &str| match (mouse_hotkey::parse(hotkey), mouse_hotkey::parse(h)) {
+        (Some(a), Some(b)) => a == b,
+        _ => hotkey.eq_ignore_ascii_case(h),
+    };
+    all.iter().any(|(a, h)| *a != action && !h.is_empty() && same(h))
 }
 
 /// Settings, models and history. `RUDARIFLOW_DATA_DIR` points a test build at
@@ -1180,9 +1194,9 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     }
 }
 
-/// `target` is "dictation", "pasteLast" or "rewriteLast"; each takes a
-/// keyboard chord or a mouse side button. An empty `new_hotkey` turns
-/// paste-last or rewrite off; dictation always needs one.
+/// `target` is "dictation", "pasteLast", "rewriteLast" or "freeGpu"; each
+/// takes a keyboard chord or a mouse side button. An empty `new_hotkey` turns
+/// paste-last, rewrite or free GPU off; dictation always needs one.
 #[tauri::command]
 fn change_hotkey(
     app: tauri::AppHandle,
@@ -1196,12 +1210,7 @@ fn change_hotkey(
     if new_hotkey.is_empty() && action == HotkeyAction::Dictation {
         return Err("The dictation hotkey cannot be empty".to_string());
     }
-    let same = |h: &str| match (mouse_hotkey::parse(&new_hotkey), mouse_hotkey::parse(h)) {
-        (Some(a), Some(b)) => a == b,
-        _ => new_hotkey.eq_ignore_ascii_case(h),
-    };
-    let taken = all.iter().any(|(a, h)| *a != action && !h.is_empty() && same(h));
-    if !new_hotkey.is_empty() && taken {
+    if !new_hotkey.is_empty() && taken_by_other(&all, action, &new_hotkey) {
         return Err(format!("'{}' is already used by another hotkey", new_hotkey));
     }
     if new_hotkey != current {
@@ -1222,6 +1231,7 @@ fn change_hotkey(
         HotkeyAction::Dictation => settings.hotkey = new_hotkey,
         HotkeyAction::PasteLast => settings.paste_last_hotkey = new_hotkey,
         HotkeyAction::RewriteLast => settings.rewrite_last_hotkey = new_hotkey,
+        HotkeyAction::FreeGpu => settings.free_gpu_hotkey = new_hotkey,
     }
     settings.save(&state.app_dir)?;
     Ok(())
@@ -1245,8 +1255,9 @@ fn set_hotkey_paused(
             unregister_hotkey(&app, &hotkey);
         } else if !hotkey_is_registered(&app, &hotkey) {
             if let Err(e) = register_hotkey(&app, &hotkey, action) {
-                // A paste-last or rewrite chord taken by another app must not
-                // block the dictation hotkey; it is logged by register_hotkey.
+                // An optional chord (paste last, rewrite, free GPU) taken by
+                // another app must not block the dictation hotkey; it is
+                // logged by register_hotkey.
                 if action == HotkeyAction::Dictation {
                     result = Err(e);
                 }
@@ -1262,6 +1273,8 @@ fn on_hotkey_event(handle: &AppHandle, action: HotkeyAction, pressed: bool) {
         HotkeyAction::PasteLast if pressed => paste_last_transcript(handle),
         HotkeyAction::PasteLast => {}
         HotkeyAction::RewriteLast => on_rewrite_hotkey(handle, pressed),
+        HotkeyAction::FreeGpu if pressed => on_free_gpu_hotkey(handle),
+        HotkeyAction::FreeGpu => {}
     }
 }
 
@@ -1423,6 +1436,17 @@ async fn free_gpu_press(handle: &AppHandle, press: u64) -> FreeGpuResult {
     } else {
         FreeGpuResult::LoadFailed
     }
+}
+
+/// The Free GPU hotkey was pressed. The work runs in the background: chords
+/// arrive on the main thread, side buttons on the mouse hook's handler thread.
+fn on_free_gpu_hotkey(handle: &AppHandle) {
+    let press = handle.state::<AppState>().gpu.press.fetch_add(1, Ordering::SeqCst) + 1;
+    let handle = handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = free_gpu_press(&handle, press).await;
+        startup_log::log(&format!("[gpu] press {}: {:?}", press, result));
+    });
 }
 
 /// Test hook: one press of the Free GPU hotkey, waited for. Only with
@@ -1638,6 +1662,7 @@ fn main() {
     let initial_hotkey = settings.hotkey.clone();
     let initial_paste_last_hotkey = settings.paste_last_hotkey.clone();
     let initial_rewrite_last_hotkey = settings.rewrite_last_hotkey.clone();
+    let initial_free_gpu_hotkey = settings.free_gpu_hotkey.clone();
     let initial_autostart = settings.autostart;
 
     tauri::Builder::default()
@@ -1843,8 +1868,8 @@ fn main() {
                 }
             }
 
-            // Paste-last and rewrite are optional: if another app owns the
-            // chord, the setting stays and the failure is in startup.log.
+            // Paste-last, rewrite and free GPU are optional: if another app
+            // owns the chord, the setting stays and the failure is in startup.log.
             if !initial_paste_last_hotkey.is_empty() {
                 let _ = register_hotkey(
                     app.handle(),
@@ -1854,6 +1879,9 @@ fn main() {
             }
             if !initial_rewrite_last_hotkey.is_empty() {
                 let _ = register_hotkey(app.handle(), &initial_rewrite_last_hotkey, HotkeyAction::RewriteLast);
+            }
+            if !initial_free_gpu_hotkey.is_empty() {
+                let _ = register_hotkey(app.handle(), &initial_free_gpu_hotkey, HotkeyAction::FreeGpu);
             }
 
             // Sync persisted autostart preference with the OS — but never
@@ -1937,4 +1965,29 @@ fn main() {
                 app.state::<AppState>().llm.stop();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn free_gpu_is_the_fourth_hotkey() {
+        assert_eq!(HotkeyAction::from_target("freeGpu"), Ok(HotkeyAction::FreeGpu));
+        assert!(HotkeyAction::from_target("freegpu").is_err());
+        let mut s = Settings::default();
+        s.free_gpu_hotkey = "Alt+Shift+F10".to_string();
+        assert_eq!(hotkeys(&s)[3], (HotkeyAction::FreeGpu, "Alt+Shift+F10".to_string()));
+    }
+
+    #[test]
+    fn a_hotkey_serves_one_action() {
+        let mut s = Settings::default();
+        s.rewrite_last_hotkey = "Shift+Mouse5".to_string();
+        let all = hotkeys(&s);
+        assert!(taken_by_other(&all, HotkeyAction::FreeGpu, "shift+mouse5"), "mouse bindings by button and modifiers");
+        assert!(taken_by_other(&all, HotkeyAction::FreeGpu, "cmdorctrl+shift+space"), "chords without case");
+        assert!(!taken_by_other(&all, HotkeyAction::RewriteLast, "Shift+Mouse5"), "its own hotkey");
+        assert!(!taken_by_other(&all, HotkeyAction::FreeGpu, "Alt+Shift+F10"));
+    }
 }

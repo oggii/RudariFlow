@@ -283,6 +283,18 @@
             </div>
             <div class="setting-row">
               <div class="setting-label">
+                <span class="label-text" data-i18n="free_gpu_label">Free GPU</span>
+                <span class="label-hint" data-i18n="free_gpu_hint">Unloads Whisper and the AI model to free your graphics card, e.g. for a game. Press again to load them; a dictation also loads them, the first one takes a few seconds longer.</span>
+              </div>
+              <div class="setting-control hotkey-control">
+                <button id="free-gpu-btn" class="hotkey-btn"><kbd id="free-gpu-text"></kbd></button>
+                <button id="free-gpu-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
+                  <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
                 <span class="label-text" data-i18n="send_command_label">Voice command "send it"</span>
                 <span class="label-hint" data-i18n="send_command_hint">End with "Send it." as its own sentence to submit, for example in chats. German: "Abschicken."</span>
               </div>

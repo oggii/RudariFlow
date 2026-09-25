@@ -45,6 +45,11 @@ pub struct Settings {
     /// change about it (Edit mode). Empty = off.
     #[serde(rename = "rewriteLastHotkey", default)]
     pub rewrite_last_hotkey: String,
+    /// Frees the GPU (unloads Whisper, stops the AI server); the next press
+    /// loads them again. Empty = off, the default: a global chord is taken
+    /// from every app, games included.
+    #[serde(rename = "freeGpuHotkey", default)]
+    pub free_gpu_hotkey: String,
     /// Whisper flash attention: "auto" (on for CUDA, off for Vulkan), "on"
     /// or "off", as the PC check found fastest on this PC.
     #[serde(rename = "whisperFlashAttn", default = "default_auto")]
@@ -182,6 +187,7 @@ impl Default for Settings {
             history: default_history(),
             paste_last_hotkey: default_paste_last_hotkey(),
             rewrite_last_hotkey: String::new(),
+            free_gpu_hotkey: String::new(),
             whisper_flash_attn: default_auto(),
             mute_audio: false,
             ai_cleanup: false,
@@ -493,6 +499,29 @@ mod tests {
         assert_eq!(loaded.send_command, "off");
         assert_eq!(loaded.history, "audio");
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn free_gpu_hotkey_is_off_by_default_and_kept() {
+        assert_eq!(Settings::default().free_gpu_hotkey, "");
+        let before_0_13 = r#"{
+            "microphone": "default",
+            "engine": "local",
+            "whisperModel": "small",
+            "groqApiKey": "",
+            "recordingMode": "toggle",
+            "hotkey": "Mouse5"
+        }"#;
+        let s: Settings = serde_json::from_str(before_0_13).unwrap();
+        assert_eq!(s.free_gpu_hotkey, "");
+
+        let dir = temp_dir().join("typr_test_free_gpu_hotkey");
+        let _ = fs::remove_dir_all(&dir);
+        let mut settings = Settings::default();
+        settings.free_gpu_hotkey = "Ctrl+Mouse5".to_string();
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).free_gpu_hotkey, "Ctrl+Mouse5");
         let _ = fs::remove_dir_all(&dir);
     }
 }

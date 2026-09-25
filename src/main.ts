@@ -29,6 +29,7 @@ interface Settings {
   pasteLastHotkey: string;
   whisperFlashAttn?: string;
   rewriteLastHotkey: string;
+  freeGpuHotkey: string;
   muteAudio: boolean;
   aiCleanup: boolean;
   aiModel: string;
@@ -105,6 +106,9 @@ const pcCheckCopy = document.getElementById("pc-check-copy") as HTMLButtonElemen
 const rewriteLastBtn = document.getElementById("rewrite-last-btn") as HTMLButtonElement;
 const rewriteLastText = document.getElementById("rewrite-last-text")!;
 const rewriteLastClear = document.getElementById("rewrite-last-clear") as HTMLButtonElement;
+const freeGpuBtn = document.getElementById("free-gpu-btn") as HTMLButtonElement;
+const freeGpuText = document.getElementById("free-gpu-text")!;
+const freeGpuClear = document.getElementById("free-gpu-clear") as HTMLButtonElement;
 const sendCommandSelect = document.getElementById("send-command-select") as HTMLSelectElement;
 const muteAudioToggle = document.getElementById("mute-audio-toggle") as HTMLInputElement;
 const replacementList = document.getElementById("replacement-list")!;
@@ -518,9 +522,10 @@ listen<DownloadProgress>("download-progress", (event) => {
 });
 
 // Hotkey capture. "dictation" starts/stops recording, "pasteLast" pastes the
-// last transcript again, "rewriteLast" selects it and records an edit. Each
-// takes a key combination or a mouse side button (with or without modifiers).
-type HotkeyTarget = "dictation" | "pasteLast" | "rewriteLast";
+// last transcript again, "rewriteLast" selects it and records an edit,
+// "freeGpu" unloads the models or loads them again. Each takes a key
+// combination or a mouse side button (with or without modifiers).
+type HotkeyTarget = "dictation" | "pasteLast" | "rewriteLast" | "freeGpu";
 let capturing: HotkeyTarget | null = null;
 
 function hotkeyLabel(combo: string): string {
@@ -538,12 +543,15 @@ function renderHotkeys() {
   pasteLastClear.classList.toggle("hidden", !currentSettings.pasteLastHotkey);
   rewriteLastText.textContent = hotkeyLabel(currentSettings.rewriteLastHotkey);
   rewriteLastClear.classList.toggle("hidden", !currentSettings.rewriteLastHotkey);
+  freeGpuText.textContent = hotkeyLabel(currentSettings.freeGpuHotkey);
+  freeGpuClear.classList.toggle("hidden", !currentSettings.freeGpuHotkey);
 }
 
 function captureElements(target: HotkeyTarget) {
   if (target === "dictation") return { btn: hotkeyBtn, text: hotkeyText };
   if (target === "pasteLast") return { btn: pasteLastBtn, text: pasteLastText };
-  return { btn: rewriteLastBtn, text: rewriteLastText };
+  if (target === "rewriteLast") return { btn: rewriteLastBtn, text: rewriteLastText };
+  return { btn: freeGpuBtn, text: freeGpuText };
 }
 
 function modifierTokens(e: KeyboardEvent | MouseEvent): string[] {
@@ -635,7 +643,8 @@ async function setHotkey(target: HotkeyTarget, combo: string) {
   await invoke("change_hotkey", { target, newHotkey: combo });
   if (target === "dictation") currentSettings.hotkey = combo;
   else if (target === "pasteLast") currentSettings.pasteLastHotkey = combo;
-  else currentSettings.rewriteLastHotkey = combo;
+  else if (target === "rewriteLast") currentSettings.rewriteLastHotkey = combo;
+  else currentSettings.freeGpuHotkey = combo;
 }
 
 function onOutsideClick(e: MouseEvent) {
@@ -671,6 +680,15 @@ pasteLastClear.addEventListener("click", async () => {
     await setHotkey("pasteLast", "");
   } catch (err) {
     console.error("clearing paste-last hotkey failed:", err);
+  }
+  renderHotkeys();
+});
+freeGpuBtn.addEventListener("click", () => startCapture("freeGpu"));
+freeGpuClear.addEventListener("click", async () => {
+  try {
+    await setHotkey("freeGpu", "");
+  } catch (err) {
+    console.error("clearing free-GPU hotkey failed:", err);
   }
   renderHotkeys();
 });

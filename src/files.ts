@@ -121,6 +121,7 @@ function errorText(e: unknown): string {
     no_speech: "files_err_no_speech",
     cancelled: "files_cancelled",
     no_ai_model: "files_err_no_ai_model",
+    gpu_freed: "files_err_gpu_freed",
   };
   return key[code] ? t(key[code]) : `${t("files_err_failed")}: ${code}`;
 }

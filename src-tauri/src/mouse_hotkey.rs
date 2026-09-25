@@ -1,4 +1,4 @@
-//! Mouse side buttons as global hotkeys (dictation, paste last, rewrite last).
+//! Mouse side buttons as global hotkeys (dictation, paste last, rewrite last, free GPU).
 //!
 //! `RegisterHotKey` (used by tauri-plugin-global-shortcut) only accepts
 //! keyboard keys, so side buttons go through a low-level mouse hook
@@ -57,7 +57,7 @@ pub fn parse(hotkey: &str) -> Option<MouseBinding> {
 /// Handler invoked with `true` on press and `false` on release.
 pub type Handler = Box<dyn Fn(bool) + Send + Sync + 'static>;
 
-/// Most bindings at once (three hotkeys use them today).
+/// Most bindings at once (four hotkeys use them today).
 const SLOTS: usize = 8;
 
 /// A binding as the hook compares it: the button (1 = XBUTTON1, 2 =
