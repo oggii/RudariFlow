@@ -1475,6 +1475,18 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        // Size, position and maximised state of the main window, restored at
+        // start (not the overlay pill or the hidden PDF export windows).
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .with_filter(|label| label == "main")
+                .build(),
+        )
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--start-minimized"]),
@@ -1578,6 +1590,11 @@ fn main() {
                     startup_log::log(&format!("[main window event] {:?}", ev));
                     let _ = &mw_for_listener;
                 });
+                // A saved position on a monitor that is gone: centre it.
+                if matches!(main_window.current_monitor(), Ok(None)) {
+                    let _ = main_window.center();
+                    startup_log::log("main window was off-screen; centred");
+                }
                 if started_minimized {
                     startup_log::log("autostart: keeping main hidden");
                 } else {

@@ -66,6 +66,7 @@ const summarizeBtn = document.getElementById("file-summarize") as HTMLButtonElem
 const summaryBox = document.getElementById("file-summary-box")!;
 const summaryEl = document.getElementById("file-summary")!;
 const summaryCopy = document.getElementById("file-summary-copy") as HTMLButtonElement;
+const summaryToggle = document.getElementById("file-summary-toggle") as HTMLButtonElement;
 const speakersSelect = document.getElementById("file-speakers") as HTMLSelectElement;
 const speakersHint = document.getElementById("file-speakers-hint")!;
 const speakersRow = document.getElementById("file-speakers-row")!;
@@ -297,6 +298,12 @@ async function chooseFile() {
   if (path && !Array.isArray(path)) await transcribe(path);
 }
 
+function setSummaryCollapsed(collapsed: boolean) {
+  summaryBox.classList.toggle("collapsed", collapsed);
+  summaryToggle.textContent = t(collapsed ? "files_summary_show" : "files_summary_hide");
+  summaryToggle.setAttribute("aria-expanded", String(!collapsed));
+}
+
 async function summarize() {
   const text = segments.length ? await shownText(false) : textArea.value;
   if (!text.trim()) return;
@@ -305,6 +312,7 @@ async function summarize() {
   summarizing = true;
   summarizeBtn.disabled = true;
   summaryBox.classList.remove("hidden");
+  setSummaryCollapsed(false);
   summaryEl.textContent = t("files_summarizing");
   summaryEl.dataset.tone = "";
   try {
@@ -397,6 +405,7 @@ export function initFiles(h: FilesHost) {
   timesToggle.addEventListener("change", showText);
   copyBtn.addEventListener("click", () => copy(textArea.value, copyBtn, "files_copy"));
   summaryCopy.addEventListener("click", () => copy(summaryEl.textContent ?? "", summaryCopy, "files_copy"));
+  summaryToggle.addEventListener("click", () => setSummaryCollapsed(!summaryBox.classList.contains("collapsed")));
   exportBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     setExportMenu(exportList.classList.contains("hidden"));
