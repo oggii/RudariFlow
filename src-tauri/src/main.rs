@@ -17,7 +17,7 @@ use rudariflow_lib::dictionary;
 use rudariflow_lib::downloader;
 use rudariflow_lib::foreground_app;
 use rudariflow_lib::history::{self, History, HistoryEntry};
-use rudariflow_lib::llm_server::{LlmServer, ServerStatus};
+use rudariflow_lib::llm_server::{self, LlmServer, ServerStatus};
 use rudariflow_lib::mouse_hotkey;
 use rudariflow_lib::paste::paste_text;
 use rudariflow_lib::polish::{self, polish, Polished};
@@ -560,9 +560,21 @@ fn cancel_file() {
 }
 
 /// A summary request that failed because the Free GPU hotkey stopped the
-/// AI server: "gpu_freed", which the Files tab shows in words.
+/// AI server while it answered: "gpu_freed", which the Files tab shows in
+/// words.
 fn summary_error(llm: &LlmServer, error: String) -> String {
     if llm.released() {
+        "gpu_freed".to_string()
+    } else {
+        error
+    }
+}
+
+/// The summary's wait for the AI server: "gpu_freed" only when the Free GPU
+/// hotkey's release ended it. A start that fails after a free (e.g. while a
+/// game holds the memory) keeps its own error.
+fn summary_wait_error(llm: &LlmServer, error: String) -> String {
+    if error == llm_server::STOPPED && llm.released() {
         "gpu_freed".to_string()
     } else {
         error
@@ -588,7 +600,7 @@ async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String
         .llm
         .wait_ready(&model_path, Some(settings.gpu_backend.clone()), std::time::Duration::from_secs(120))
         .await
-        .map_err(|e| summary_error(&state.llm, e))?;
+        .map_err(|e| summary_wait_error(&state.llm, e))?;
     let started = std::time::Instant::now();
     let mut material = text.trim().to_string();
     let chunk_chars = file_transcribe::summary_chunk_chars(&material);
@@ -1996,5 +2008,22 @@ mod tests {
         assert!(taken_by_other(&all, HotkeyAction::FreeGpu, "cmdorctrl+shift+space"), "chords without case");
         assert!(!taken_by_other(&all, HotkeyAction::RewriteLast, "Shift+Mouse5"), "its own hotkey");
         assert!(!taken_by_other(&all, HotkeyAction::FreeGpu, "Alt+Shift+F10"));
+    }
+
+    #[test]
+    fn a_summary_says_gpu_freed_only_for_the_release() {
+        use rudariflow_lib::llm_server::STOPPED;
+        let dir = std::env::temp_dir().join("rudariflow_summary_error");
+        let llm = LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {}));
+        assert_eq!(summary_error(&llm, "error sending request".into()), "error sending request");
+        assert_eq!(summary_wait_error(&llm, STOPPED.into()), STOPPED, "another stop (settings)");
+        llm.release();
+        assert_eq!(summary_wait_error(&llm, STOPPED.into()), "gpu_freed", "the Free GPU press");
+        // A start after the free that failed, e.g. while a game holds the memory.
+        let failed = "The AI model failed to load (exit code: 1); see llm-server.log";
+        assert_eq!(summary_wait_error(&llm, failed.into()), failed);
+        assert_eq!(summary_wait_error(&llm, "The AI model is still loading".into()), "The AI model is still loading");
+        // A request the press cut off mid-answer.
+        assert_eq!(summary_error(&llm, "error sending request".into()), "gpu_freed");
     }
 }
