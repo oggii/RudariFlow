@@ -61,6 +61,7 @@ const textArea = document.getElementById("file-text") as HTMLTextAreaElement;
 const copyBtn = document.getElementById("file-copy") as HTMLButtonElement;
 const exportBtn = document.getElementById("file-export") as HTMLButtonElement;
 const exportList = document.getElementById("file-export-list")!;
+const exportMenu = document.querySelector(".export-menu")!;
 const summarizeBtn = document.getElementById("file-summarize") as HTMLButtonElement;
 const summaryBox = document.getElementById("file-summary-box")!;
 const summaryEl = document.getElementById("file-summary")!;
@@ -404,8 +405,20 @@ export function initFiles(h: FilesHost) {
     item.addEventListener("click", () => exportAs(item.dataset.kind as ExportKind)),
   );
   document.addEventListener("click", () => setExportMenu(false));
+  // A disclosure, not an ARIA menu: focus leaving the button and its list
+  // (Tab past the last item, or anywhere else) closes it without trapping
+  // or moving focus; Escape closes it and, only if focus was inside the
+  // list, returns focus to the Export button.
+  exportMenu.addEventListener("focusout", (e) => {
+    const next = (e as FocusEvent).relatedTarget as Node | null;
+    if (!next || !exportMenu.contains(next)) setExportMenu(false);
+  });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") setExportMenu(false);
+    if (e.key === "Escape") {
+      const returnFocus = exportList.contains(document.activeElement);
+      setExportMenu(false);
+      if (returnFocus) exportBtn.focus();
+    }
   });
   summarizeBtn.addEventListener("click", summarize);
   listen<FileProgress>("file-progress", (e) => onProgress(e.payload));

@@ -473,7 +473,7 @@ async fn export_file(app: AppHandle, kind: String, path: String, doc: rudariflow
         "txt" => write(export::text(&doc).as_bytes()),
         "srt" => write(export::srt(&doc.segments, &doc.names).as_bytes()),
         "vtt" => write(export::vtt(&doc.segments, &doc.names).as_bytes()),
-        "docx" => write(&export::docx(&doc, paper)?),
+        "docx" => export::docx(&doc, paper).and_then(|bytes| write(&bytes)),
         "pdf" => rudariflow_lib::pdf::print(&app, export::pdf_html(&doc, paper), paper, path.clone()).await,
         other => Err(format!("unknown export '{}'", other)),
     };
