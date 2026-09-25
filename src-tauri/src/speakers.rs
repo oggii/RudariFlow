@@ -208,9 +208,13 @@ pub fn separate(
 #[cfg(windows)]
 mod imp {
     use std::ffi::CString;
+    use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
+    use std::ptr::{null, null_mut};
 
     use sherpa_rs_sys as sys;
+    use windows_sys::Win32::Globalization::{GetACP, WideCharToMultiByte, CP_UTF8, WC_NO_BEST_FIT_CHARS};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
 
     use super::{threads, SpeakerCount, Turn, MODELS};
 
@@ -230,6 +234,67 @@ mod imp {
         !unsafe { LoadLibraryW(wide.as_ptr()) }.is_null()
     }
 
+    /// A model path as sherpa-onnx can open it. sherpa-onnx reads its models
+    /// with a narrow `std::ifstream`, which takes the path in the ANSI code
+    /// page (Windows-1252 on English and German Windows), not UTF-8: a UTF-8
+    /// "C:\Users\Jürg" names a folder that does not exist. A path the code
+    /// page holds goes in that code page; any other as its 8.3 short name,
+    /// which is ASCII on volumes that keep short names.
+    fn narrow_path(path: &Path) -> Result<CString, String> {
+        narrow_path_in(path, unsafe { GetACP() })
+    }
+
+    pub fn narrow_path_in(path: &Path, code_page: u32) -> Result<CString, String> {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        let bytes = encode(&wide, code_page)
+            .or_else(|| short_path(&wide).and_then(|short| encode(&short, code_page)))
+            .ok_or_else(|| "the speaker model's folder name contains characters sherpa-onnx cannot open".to_string())?;
+        CString::new(bytes).map_err(|e| e.to_string())
+    }
+
+    /// `wide` in `code_page`, or `None` when a character is not in it: no
+    /// best-fit stand-ins such as "a" for "ā", which would name another path.
+    pub fn encode(wide: &[u16], code_page: u32) -> Option<Vec<u8>> {
+        if code_page == CP_UTF8 {
+            // Windows' "Use Unicode UTF-8 for worldwide language support".
+            return String::from_utf16(wide).ok().map(String::into_bytes);
+        }
+        if wide.is_empty() {
+            return Some(Vec::new());
+        }
+        let len = i32::try_from(wide.len()).ok()?;
+        let flags = WC_NO_BEST_FIT_CHARS;
+        unsafe {
+            let size = WideCharToMultiByte(code_page, flags, wide.as_ptr(), len, null_mut(), 0, null(), null_mut());
+            if size <= 0 {
+                return None;
+            }
+            let mut out = vec![0u8; size as usize];
+            let mut used_default = 0;
+            let written =
+                WideCharToMultiByte(code_page, flags, wide.as_ptr(), len, out.as_mut_ptr(), size, null(), &mut used_default);
+            (written == size && used_default == 0).then_some(out)
+        }
+    }
+
+    /// The 8.3 short form of an existing path.
+    fn short_path(wide: &[u16]) -> Option<Vec<u16>> {
+        let long: Vec<u16> = wide.iter().copied().chain(std::iter::once(0)).collect();
+        unsafe {
+            let needed = GetShortPathNameW(long.as_ptr(), null_mut(), 0);
+            if needed == 0 {
+                return None;
+            }
+            let mut short = vec![0u16; needed as usize];
+            let len = GetShortPathNameW(long.as_ptr(), short.as_mut_ptr(), needed);
+            if len == 0 || len >= needed {
+                return None;
+            }
+            short.truncate(len as usize);
+            Some(short)
+        }
+    }
+
     unsafe extern "C" fn progress_callback(done: i32, total: i32, arg: *mut std::ffi::c_void) -> i32 {
         let progress = &mut *(arg as *mut &mut dyn FnMut(u32, u32));
         progress(done.max(0) as u32, total.max(0) as u32);
@@ -243,9 +308,8 @@ mod imp {
         dir: &Path,
         progress: &mut dyn FnMut(u32, u32),
     ) -> Result<Vec<Turn>, String> {
-        let path = |file: &str| CString::new(dir.join(file).to_string_lossy().as_bytes()).map_err(|e| e.to_string());
-        let segmentation = path(MODELS[0].file)?;
-        let embedding = path(MODELS[1].file)?;
+        let segmentation = narrow_path(&dir.join(MODELS[0].file))?;
+        let embedding = narrow_path(&dir.join(MODELS[1].file))?;
         let provider = CString::new("cpu").expect("no NUL");
         let threads = threads();
         let num_clusters = match count {
@@ -392,5 +456,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!models_ready(&dir));
         assert!((1..=8).contains(&threads()));
+    }
+
+    /// Windows-1252, the ANSI code page of English and German Windows.
+    #[cfg(windows)]
+    const WESTERN: u32 = 1252;
+
+    #[cfg(windows)]
+    #[test]
+    fn model_paths_go_in_the_code_page_only_when_it_holds_every_character() {
+        use super::imp::encode;
+        let wide = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        assert_eq!(encode(&wide(r"C:\t\rf-tëst"), WESTERN), Some(b"C:\\t\\rf-t\xEBst".to_vec()));
+        assert_eq!(encode(&wide(r"C:\t\rf-тест"), WESTERN), None);
+        // Windows-1251 (Cyrillic) holds it.
+        assert_eq!(encode(&wide(r"C:\t\rf-тест"), 1251), Some(b"C:\\t\\rf-\xF2\xE5\xF1\xF2".to_vec()));
+        // No best-fit stand-in ("a" for "ā"): it would name another folder.
+        assert_eq!(encode(&wide(r"C:\Users\Māori"), WESTERN), None);
+        // Windows set to UTF-8 for all programs: the path stays UTF-8.
+        assert_eq!(encode(&wide(r"C:\t\rf-тест"), 65001), Some(r"C:\t\rf-тест".as_bytes().to_vec()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_model_path_outside_the_code_page_goes_as_its_short_name() {
+        use super::imp::narrow_path_in;
+        let dir = std::env::temp_dir().join("rudariflow_тест_speakers");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("segmentation.onnx");
+        std::fs::write(&file, b"model").unwrap();
+        match narrow_path_in(&file, WESTERN) {
+            // The 8.3 short name: ASCII, and the same file.
+            Ok(short) => {
+                let short = short.to_str().unwrap().to_string();
+                assert!(short.is_ascii(), "{short}");
+                assert_eq!(std::fs::read(&short).unwrap(), b"model", "{short}");
+            }
+            // A volume that keeps no short names.
+            Err(e) => assert!(e.contains("cannot open"), "{e}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        // A path the code page holds is passed as it is.
+        let latin = narrow_path_in(Path::new(r"C:\t\rf-tëst\speakers\embedding.onnx"), WESTERN).unwrap();
+        assert_eq!(latin.as_bytes(), b"C:\\t\\rf-t\xEBst\\speakers\\embedding.onnx");
+        // No short name for a path that does not exist: a clear error.
+        let missing = narrow_path_in(Path::new(r"C:\no-such-folder-тест\embedding.onnx"), WESTERN).unwrap_err();
+        assert!(missing.contains("cannot open"), "{missing}");
     }
 }
