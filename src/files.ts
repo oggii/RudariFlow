@@ -59,7 +59,8 @@ const result = document.getElementById("file-result")!;
 const timesToggle = document.getElementById("file-times") as HTMLInputElement;
 const textArea = document.getElementById("file-text") as HTMLTextAreaElement;
 const copyBtn = document.getElementById("file-copy") as HTMLButtonElement;
-const saveBtn = document.getElementById("file-save") as HTMLButtonElement;
+const exportBtn = document.getElementById("file-export") as HTMLButtonElement;
+const exportList = document.getElementById("file-export-list")!;
 const summarizeBtn = document.getElementById("file-summarize") as HTMLButtonElement;
 const summaryBox = document.getElementById("file-summary-box")!;
 const summaryEl = document.getElementById("file-summary")!;
@@ -260,7 +261,7 @@ async function transcribe(path: string) {
 
 function setButtons(enabled: boolean, withTimes = enabled) {
   copyBtn.disabled = !enabled;
-  saveBtn.disabled = !enabled;
+  exportBtn.disabled = !enabled || !segments.length;
   summarizeBtn.disabled = !enabled;
   timesToggle.disabled = !withTimes;
 }
@@ -321,17 +322,43 @@ async function summarize() {
   }
 }
 
-async function saveText() {
+type ExportKind = "pdf" | "docx" | "srt" | "vtt" | "txt";
+
+function setExportMenu(open: boolean) {
+  exportList.classList.toggle("hidden", !open);
+  exportBtn.setAttribute("aria-expanded", String(open));
+}
+
+/** "2:52 · English · 2 speakers · 24.09.2026" under the title. */
+function exportMeta(): string {
+  const parts = [clock(transcript?.durationMs ?? 0), languageName(transcript?.language ?? "")];
+  if (names.length) parts.push(t("files_speakers_count").replace("{n}", String(names.length)));
+  parts.push(new Date().toLocaleDateString(getLang()));
+  return parts.join(" · ");
+}
+
+async function exportAs(kind: ExportKind) {
+  setExportMenu(false);
   const base = fileName.replace(/\.[^.]+$/, "") || "transcript";
-  const path = await save({ defaultPath: `${base}.txt`, filters: [{ name: "Text", extensions: ["txt"] }] });
+  const path = await save({
+    defaultPath: `${base}.${kind}`,
+    filters: [{ name: t(`files_filter_${kind}`), extensions: [kind] }],
+  });
   if (!path) return;
-  let text = textArea.value;
   const summaryReady = !summarizing && !summaryBox.classList.contains("hidden") && summaryEl.dataset.tone !== "error";
-  if (summaryReady && summaryEl.textContent) {
-    text = `${t("files_summary")}\n\n${summaryEl.textContent}\n\n${t("files_transcript")}\n\n${text}`;
-  }
+  const doc = {
+    title: fileName,
+    meta: exportMeta(),
+    segments,
+    names,
+    times: timesToggle.checked,
+    summary: summaryReady && summaryEl.textContent ? summaryEl.textContent : null,
+    summaryTitle: t("files_summary"),
+    transcriptTitle: t("files_transcript"),
+  };
   try {
-    await invoke("save_text", { path, text });
+    await invoke("export_file", { kind, path, doc });
+    setStatus(t("files_exported").replace("{name}", path.split(/[\\/]/).pop() ?? path), "ok");
   } catch (e) {
     setStatus(`${t("files_err_failed")}: ${e}`, "error");
   }
@@ -369,7 +396,17 @@ export function initFiles(h: FilesHost) {
   timesToggle.addEventListener("change", showText);
   copyBtn.addEventListener("click", () => copy(textArea.value, copyBtn, "files_copy"));
   summaryCopy.addEventListener("click", () => copy(summaryEl.textContent ?? "", summaryCopy, "files_copy"));
-  saveBtn.addEventListener("click", saveText);
+  exportBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setExportMenu(exportList.classList.contains("hidden"));
+  });
+  exportList.querySelectorAll<HTMLButtonElement>("[data-kind]").forEach((item) =>
+    item.addEventListener("click", () => exportAs(item.dataset.kind as ExportKind)),
+  );
+  document.addEventListener("click", () => setExportMenu(false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") setExportMenu(false);
+  });
   summarizeBtn.addEventListener("click", summarize);
   listen<FileProgress>("file-progress", (e) => onProgress(e.payload));
   listen<DownloadProgress>("speaker-model-progress", (e) => {

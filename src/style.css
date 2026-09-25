@@ -862,6 +862,44 @@ kbd {
   gap: 6px;
   flex-wrap: wrap;
 }
+.export-menu {
+  position: relative;
+}
+
+.export-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.export-list.hidden {
+  display: none;
+}
+
+.export-list button {
+  font: inherit;
+  text-align: left;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.export-list button:hover,
+.export-list button:focus-visible {
+  background: var(--bg);
+}
 .file-text {
   width: 100%;
   min-height: 220px;

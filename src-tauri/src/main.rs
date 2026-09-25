@@ -461,10 +461,27 @@ async fn transcribe_file(
     Ok(transcript)
 }
 
-/// Write a transcript (and its summary) to a text file.
+/// Write the Files tab's transcript as `kind`: "pdf", "docx", "srt", "vtt"
+/// or "txt".
 #[tauri::command]
-fn save_text(path: String, text: String) -> Result<(), String> {
-    std::fs::write(&path, text).map_err(|e| e.to_string())
+async fn export_file(app: AppHandle, kind: String, path: String, doc: rudariflow_lib::export::ExportDoc) -> Result<(), String> {
+    use rudariflow_lib::export;
+    let paper = export::Paper::for_region();
+    let path = std::path::PathBuf::from(path);
+    let write = |bytes: &[u8]| std::fs::write(&path, bytes).map_err(|e| e.to_string());
+    let result = match kind.as_str() {
+        "txt" => write(export::text(&doc).as_bytes()),
+        "srt" => write(export::srt(&doc.segments, &doc.names).as_bytes()),
+        "vtt" => write(export::vtt(&doc.segments, &doc.names).as_bytes()),
+        "docx" => write(&export::docx(&doc, paper)?),
+        "pdf" => rudariflow_lib::pdf::print(&app, export::pdf_html(&doc, paper), paper, path.clone()).await,
+        other => Err(format!("unknown export '{}'", other)),
+    };
+    startup_log::log(&match &result {
+        Ok(()) => format!("[export] {} with {} segments", kind, doc.segments.len()),
+        Err(e) => format!("[export] {} failed: {}", kind, e),
+    });
+    result
 }
 
 /// Stop the file transcription after the block that is running.
@@ -1510,7 +1527,7 @@ fn main() {
             format_file_text,
             speaker_model_status,
             speaker_model_download,
-            save_text,
+            export_file,
             copy_text,
             diag_log,
         ])

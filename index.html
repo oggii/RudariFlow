@@ -582,7 +582,16 @@
               </label>
               <div class="file-actions">
                 <button id="file-copy" class="btn-secondary" data-i18n="files_copy">Copy</button>
-                <button id="file-save" class="btn-secondary" data-i18n="files_save">Save as text…</button>
+                <div class="export-menu">
+                  <button id="file-export" class="btn-secondary" aria-haspopup="menu" aria-expanded="false"><span data-i18n="files_export">Export</span> ▾</button>
+                  <div id="file-export-list" class="export-list hidden" role="menu">
+                    <button role="menuitem" data-kind="pdf" data-i18n="files_export_pdf">PDF…</button>
+                    <button role="menuitem" data-kind="docx" data-i18n="files_export_docx">Word (.docx)…</button>
+                    <button role="menuitem" data-kind="srt" data-i18n="files_export_srt">Subtitles (.srt)…</button>
+                    <button role="menuitem" data-kind="vtt" data-i18n="files_export_vtt">Subtitles (.vtt)…</button>
+                    <button role="menuitem" data-kind="txt" data-i18n="files_export_txt">Text (.txt)…</button>
+                  </div>
+                </div>
                 <button id="file-summarize" class="btn-secondary" data-i18n="files_summarize">Summarise with AI</button>
               </div>
             </div>
