@@ -122,28 +122,29 @@ fn best_cut(window: &str) -> Option<usize> {
         })
 }
 
-/// A cue's text in at most two lines, broken at the space nearest the middle.
-/// A space more than a quarter of the text away from the middle does not
-/// count (in a Chinese SRT cue the only space is the one after "Name:"), so
-/// such text breaks at the character middle.
+/// A cue's text in at most two lines, broken at the space nearest the
+/// character middle among the spaces that leave both lines within
+/// `LINE_CHARS`. When no space does (in a Chinese SRT cue the only space is
+/// the one after "Name:", which leaves the rest on one line; or a single
+/// token spans the middle), the text breaks at the character middle instead.
 fn two_lines(text: &str) -> String {
     let char_count = text.chars().count();
     if char_count <= LINE_CHARS {
         return text.to_string();
     }
     let char_middle = char_count / 2;
-    let reach = char_count / 4;
-    // Find the space nearest the character middle
+    // Find the valid space (one that leaves both lines within LINE_CHARS)
+    // nearest the character middle.
     if let Some((char_pos, _)) = text
         .char_indices()
         .enumerate()
-        .filter(|&(char_idx, (_, c))| c == ' ' && char_idx.abs_diff(char_middle) <= reach)
+        .filter(|&(char_idx, (_, c))| c == ' ' && char_idx <= LINE_CHARS && char_count - char_idx - 1 <= LINE_CHARS)
         .min_by_key(|&(char_idx, _)| char_idx.abs_diff(char_middle))
     {
         let space_byte_idx = text.char_indices().nth(char_pos).map(|(i, _)| i).unwrap_or(0);
         return format!("{}\n{}", &text[..space_byte_idx], &text[space_byte_idx + 1..]);
     }
-    // No space found: break at the character middle
+    // No valid space: break at the character middle
     if let Some((byte_idx, _)) = text.char_indices().nth(char_middle) {
         format!("{}\n{}", &text[..byte_idx], &text[byte_idx..])
     } else {
@@ -458,6 +459,15 @@ mod tests {
         let broken = two_lines(latin);
         assert!(!broken.starts_with("Saad:\n"), "{broken}");
         assert_eq!(broken.replace('\n', " "), latin);
+    }
+
+    #[test]
+    fn a_long_word_across_the_middle_does_not_get_split() {
+        // M7 regression: the reach filter excluded every space that kept
+        // both lines within LINE_CHARS, so a long German word past the
+        // character middle got split inside itself instead of at a space.
+        let text = "Saad: Das Bundesverfassungsgerichtsurteil ist da.";
+        assert_eq!(two_lines(text), "Saad: Das\nBundesverfassungsgerichtsurteil ist da.");
     }
 
     #[test]
