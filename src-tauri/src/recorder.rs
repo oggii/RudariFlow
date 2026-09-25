@@ -231,6 +231,16 @@ fn mic_label(mic_name: &str) -> String {
     }
 }
 
+/// Counts the notices in the pill (one pill per app).
+static NOTICES: AtomicU64 = AtomicU64::new(0);
+
+/// Whether the timer of notice number `notice` hides the pill: only while it
+/// is the `latest` one, so a notice that follows gets its full time, and not
+/// once a recording has started (the pill shows the dictation then).
+fn hides_pill(notice: u64, latest: u64, state: &RecordingState) -> bool {
+    notice == latest && *state == RecordingState::Ready
+}
+
 /// Briefly show the overlay with a notice (`audio-empty`, `mic-error`) so a
 /// failed hotkey press is visible instead of silently doing nothing.
 fn show_notice(app: &AppHandle, state: Arc<Mutex<RecordingState>>, event: &str, hide_after_ms: u64) {
@@ -244,6 +254,7 @@ fn show_notice_with<P: serde::Serialize + Clone>(
     payload: P,
     hide_after_ms: u64,
 ) {
+    let notice = NOTICES.fetch_add(1, Ordering::SeqCst) + 1;
     if let Some(overlay) = app.get_webview_window("overlay") {
         let _ = overlay.set_always_on_top(false);
         let _ = overlay.set_always_on_top(true);
@@ -254,10 +265,11 @@ fn show_notice_with<P: serde::Serialize + Clone>(
     let state_clone = state.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(hide_after_ms)).await;
-        // If a new recording started during the grace window, leave the
-        // overlay alone — don't hide it mid-dictation.
+        // A later notice hides the pill itself, after its own full time. If
+        // a new recording started during the grace window, leave the overlay
+        // alone — don't hide it mid-dictation.
         let current = lock(&state_clone).clone();
-        if current == RecordingState::Ready {
+        if hides_pill(notice, NOTICES.load(Ordering::SeqCst), &current) {
             if let Some(overlay) = app_clone.get_webview_window("overlay") {
                 let _ = overlay.hide();
             }
@@ -871,5 +883,13 @@ mod tests {
     fn test_initial_state_is_ready() {
         let recorder = Recorder::new();
         assert_eq!(recorder.get_state(), RecordingState::Ready);
+    }
+
+    #[test]
+    fn only_the_latest_notice_hides_the_pill() {
+        assert!(hides_pill(2, 2, &RecordingState::Ready));
+        assert!(!hides_pill(1, 2, &RecordingState::Ready), "a later notice keeps its full time");
+        assert!(!hides_pill(2, 2, &RecordingState::Recording), "never mid-dictation");
+        assert!(!hides_pill(2, 2, &RecordingState::Transcribing), "never mid-dictation");
     }
 }
