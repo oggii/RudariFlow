@@ -581,7 +581,10 @@
           <div id="file-job" class="file-job hidden">
             <div class="file-job-head">
               <span id="file-name" class="file-name"></span>
-              <button id="file-cancel" class="btn-ghost hidden" data-i18n="files_cancel">Cancel</button>
+              <div class="file-job-actions">
+                <button id="file-cancel" class="btn-ghost hidden" data-i18n="files_cancel">Cancel</button>
+                <button id="file-clear" class="btn-ghost" data-i18n="files_clear" data-i18n-title="files_clear_title" title="Removes the transcript to start over. The audio file stays where it is.">Clear</button>
+              </div>
             </div>
             <div class="progress-track"><div class="progress-fill" id="file-progress-fill"></div></div>
             <span id="file-status" class="label-hint file-status"></span>
