@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -20,7 +21,7 @@ use rudariflow_lib::llm_server::{LlmServer, ServerStatus};
 use rudariflow_lib::mouse_hotkey;
 use rudariflow_lib::paste::paste_text;
 use rudariflow_lib::polish::{self, polish, Polished};
-use rudariflow_lib::power;
+use rudariflow_lib::power::{self, GpuToggle};
 use rudariflow_lib::recorder::{model_label, transcribe_samples, Recorder, RecordingState};
 use rudariflow_lib::send_command::strip_send_command;
 use rudariflow_lib::settings::Settings;
@@ -46,6 +47,19 @@ struct AppState {
     ai_download: Mutex<Option<String>>,
     /// Last hotkey press or recording start, for unloading on battery.
     last_activity: Mutex<std::time::Instant>,
+    /// The Free GPU hotkey (see `free_gpu_press`).
+    gpu: GpuFree,
+}
+
+/// State of the Free GPU hotkey.
+#[derive(Default)]
+struct GpuFree {
+    /// The last press freed the GPU; a press that loads clears it.
+    freed: AtomicBool,
+    /// Counts presses, so a load that a newer press overtook shows no notice.
+    press: AtomicU64,
+    /// Presses run one after the other.
+    ops: tokio::sync::Mutex<()>,
 }
 
 /// On battery, free the GPU after `power::IDLE_UNLOAD` without dictation
@@ -111,28 +125,48 @@ fn whisper_model_to_load(settings: &Settings, app_dir: &std::path::Path) -> Opti
     path.exists().then_some(path)
 }
 
-/// Load the Whisper model now instead of at the first dictation.
-async fn load_whisper(state: &AppState) {
+/// Load the Whisper model now instead of at the first dictation. False when
+/// a load was tried and failed (the log says why); true when it loaded or
+/// the settings load none (Groq, or no model downloaded).
+async fn load_whisper(state: &AppState) -> bool {
     let settings = state.settings.lock().unwrap().clone();
     state.whisper_engine.set_flash_attn(settings.flash_attn_pref());
     let Some(model) = whisper_model_to_load(&settings, &state.app_dir) else {
-        return;
+        return true;
     };
     let engine = state.whisper_engine.clone();
     let started = std::time::Instant::now();
     let loaded = tauri::async_runtime::spawn_blocking(move || engine.ensure_loaded(&model, &settings.gpu_backend)).await;
     match loaded {
-        Ok(Ok(_)) => startup_log::log(&format!("[engine] ready after {} ms", started.elapsed().as_millis())),
-        Ok(Err(e)) => startup_log::log(&format!("[engine] load failed: {}", e)),
-        Err(e) => startup_log::log(&format!("[engine] load task failed: {}", e)),
+        Ok(Ok(_)) => {
+            startup_log::log(&format!("[engine] ready after {} ms", started.elapsed().as_millis()));
+            true
+        }
+        Ok(Err(e)) => {
+            startup_log::log(&format!("[engine] load failed: {}", e));
+            false
+        }
+        Err(e) => {
+            startup_log::log(&format!("[engine] load task failed: {}", e));
+            false
+        }
     }
 }
 
-/// Start the AI server in the background when it should run.
-fn warm_ai(state: &AppState) {
+/// Start the AI server in the background when the settings use it.
+fn start_ai(state: &AppState) {
     let settings = state.settings.lock().unwrap().clone();
     if let Some(model) = ai_model_to_run(&settings, &state.app_dir) {
         state.llm.warm(model, Some(settings.gpu_backend));
+    }
+}
+
+/// `start_ai` for background starts (app start, settings, a download), but
+/// not while the Free GPU hotkey keeps the AI unloaded: then the next
+/// request starts it.
+fn warm_ai(state: &AppState) {
+    if !state.llm.released() {
+        start_ai(state);
     }
 }
 
@@ -199,11 +233,14 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     *state.settings.lock().unwrap() = settings;
     if engine_invalidate {
         state.whisper_engine.invalidate();
-        // Load the new model or backend now, not at the next dictation.
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            load_whisper(app.state::<AppState>().inner()).await;
-        });
+        // Load the new model or backend now, not at the next dictation;
+        // after a Free GPU press the next use loads it.
+        if !state.whisper_engine.released() {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                load_whisper(app.state::<AppState>().inner()).await;
+            });
+        }
     }
     if ai_restart {
         state.llm.stop();
@@ -508,9 +545,20 @@ fn cancel_file() {
     FILE_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// A summary request that failed because the Free GPU hotkey stopped the
+/// AI server: "gpu_freed", which the Files tab shows in words.
+fn summary_error(llm: &LlmServer, error: String) -> String {
+    if llm.released() {
+        "gpu_freed".to_string()
+    } else {
+        error
+    }
+}
+
 /// Summarise a transcript with the AI model, even with AI cleanup off. A
 /// long one is summarised in parts first ("summary-progress" events with
-/// done and total requests).
+/// done and total requests). Fails with the AI's error, or "gpu_freed" when
+/// the Free GPU hotkey stopped the AI.
 #[tauri::command]
 async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<String, String> {
     const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
@@ -548,7 +596,8 @@ async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String
                 700,
                 TIMEOUT,
             )
-            .await?;
+            .await
+            .map_err(|e| summary_error(&state.llm, e))?;
             notes.push(answer.text.trim().to_string());
             requests += 1;
         }
@@ -564,7 +613,8 @@ async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String
         900,
         TIMEOUT,
     )
-    .await?;
+    .await
+    .map_err(|e| summary_error(&state.llm, e))?;
     startup_log::log(&format!(
         "[file] summary of {} characters in {} requests, {:.1} s",
         text.chars().count(),
@@ -856,6 +906,9 @@ struct AiStatus {
     installed: bool,
     models: Vec<AiModelInfo>,
     downloading: Option<String>,
+    /// Unloaded by the Free GPU hotkey; the next request starts it.
+    #[serde(rename = "gpuFreed")]
+    gpu_freed: bool,
 }
 
 #[tauri::command]
@@ -873,6 +926,7 @@ fn ai_status(state: State<AppState>) -> AiStatus {
             })
             .collect(),
         downloading: state.ai_download.lock().unwrap().clone(),
+        gpu_freed: state.llm.released(),
     }
 }
 
@@ -1062,11 +1116,12 @@ async fn caret_test(state: State<'_, AppState>, text: String) -> Result<(Option<
     Ok((before, pasted))
 }
 
-/// Restart the AI server, e.g. after it failed twice.
+/// Restart the AI server, e.g. after it failed twice. Retry is asked for, so
+/// it starts after a Free GPU press too.
 #[tauri::command]
 fn ai_restart(state: State<AppState>) {
     state.llm.stop();
-    warm_ai(&state);
+    start_ai(&state);
 }
 
 /// Save the dictionary as a text file, one entry per line (to move it to
@@ -1219,7 +1274,6 @@ static REWRITE_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 /// stops like the dictation hotkey.
 fn on_rewrite_hotkey(handle: &AppHandle, pressed: bool) {
     use rudariflow_lib::selection::{select_last, Target};
-    use std::sync::atomic::Ordering;
     REWRITE_HELD.store(pressed, Ordering::SeqCst);
     let state = handle.state::<AppState>();
     if !pressed || state.recorder.get_state() != RecordingState::Ready {
@@ -1283,6 +1337,102 @@ fn paste_last_transcript(handle: &AppHandle) {
         }
         None => startup_log::log("[paste-last] nothing to paste yet"),
     });
+}
+
+/// What a press of the Free GPU hotkey did.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+enum FreeGpuResult {
+    Freed,
+    Loaded,
+    /// Whisper or the AI did not load; the log and the AI tab say why.
+    LoadFailed,
+    /// A newer press came while the AI was loading.
+    Overtaken,
+}
+
+/// A Free GPU notice in the pill ("freed", "loading", "loaded", "failed"),
+/// but not during a dictation: the pill shows its recording then.
+fn gpu_notice(handle: &AppHandle, kind: &str) {
+    let state = handle.state::<AppState>();
+    if state.recorder.get_state() == RecordingState::Ready {
+        state.recorder.notice(handle, "gpu-notice", kind);
+    }
+}
+
+/// One press of the Free GPU hotkey, number `press` of `GpuFree::press`:
+/// free the GPU, or load the models again when the last press freed it and
+/// nothing has loaded them since (`power::gpu_toggle`). Presses run in order.
+async fn free_gpu_press(handle: &AppHandle, press: u64) -> FreeGpuResult {
+    let state = handle.state::<AppState>();
+    let ops = state.gpu.ops.lock().await;
+    let toggle = power::gpu_toggle(
+        state.gpu.freed.load(Ordering::SeqCst),
+        state.whisper_engine.released(),
+        state.llm.released(),
+    );
+    if toggle == GpuToggle::Free {
+        // A dictation keeps its models until it is pasted.
+        if state.recorder.get_state() != RecordingState::Ready {
+            startup_log::log("[gpu] freeing once the dictation is done");
+            while state.recorder.get_state() != RecordingState::Ready {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+        state.gpu.freed.store(true, Ordering::SeqCst);
+        let (llm, engine) = (state.llm.clone(), state.whisper_engine.clone());
+        // Stopping llama-server waits for it to exit; Whisper waits for a
+        // block of a file that is running (the file keeps its own reference
+        // to the model until it is done).
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            llm.release();
+            engine.release();
+        })
+        .await;
+        startup_log::log("[gpu] freed: Whisper unloaded, AI server stopped");
+        gpu_notice(handle, "freed");
+        return FreeGpuResult::Freed;
+    }
+    state.gpu.freed.store(false, Ordering::SeqCst);
+    // Asked for now: the battery watcher must not unload them at its next look.
+    *state.last_activity.lock().unwrap() = std::time::Instant::now();
+    gpu_notice(handle, "loading");
+    let started = std::time::Instant::now();
+    // Whisper first, as at start: llama-server's --fit measures the free
+    // video memory once, when it loads.
+    let whisper_ok = load_whisper(state.inner()).await;
+    // A press from here on frees the GPU at once; its release stops this start.
+    drop(ops);
+    let settings = state.settings.lock().unwrap().clone();
+    let ai_ok = match ai_model_to_run(&settings, &state.app_dir) {
+        Some(model) => state.llm.ensure_running(&model, Some(settings.gpu_backend.as_str())).await.is_ok(),
+        None => true,
+    };
+    if state.gpu.press.load(Ordering::SeqCst) != press {
+        return FreeGpuResult::Overtaken;
+    }
+    let loaded = whisper_ok && ai_ok;
+    startup_log::log(&format!(
+        "[gpu] models {} after {} ms",
+        if loaded { "loaded" } else { "not all loaded" },
+        started.elapsed().as_millis()
+    ));
+    gpu_notice(handle, if loaded { "loaded" } else { "failed" });
+    if loaded {
+        FreeGpuResult::Loaded
+    } else {
+        FreeGpuResult::LoadFailed
+    }
+}
+
+/// Test hook: one press of the Free GPU hotkey, waited for. Only with
+/// RUDARIFLOW_TEST_COMMANDS=1.
+#[tauri::command]
+async fn free_gpu_test(app: AppHandle, state: State<'_, AppState>) -> Result<FreeGpuResult, String> {
+    if std::env::var("RUDARIFLOW_TEST_COMMANDS").as_deref() != Ok("1") {
+        return Err("test commands are off".to_string());
+    }
+    let press = state.gpu.press.fetch_add(1, Ordering::SeqCst) + 1;
+    Ok(free_gpu_press(&app, press).await)
 }
 
 /// Keyboard chords go through the global-shortcut plugin; mouse side buttons
@@ -1523,6 +1673,7 @@ fn main() {
             llm,
             ai_download: Mutex::new(None),
             last_activity: Mutex::new(std::time::Instant::now()),
+            gpu: GpuFree::default(),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -1550,6 +1701,7 @@ fn main() {
             edit_live_test,
             screen_context_test,
             caret_test,
+            free_gpu_test,
             ai_restart,
             list_open_apps,
             dictionary_export,

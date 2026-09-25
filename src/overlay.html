@@ -291,12 +291,16 @@
           mic_missing: "Microphone not found", no_mic: "No microphone found",
           rewrite_missing: "Last dictation not found here", rewrite_needs_ai: "Rewriting needs AI cleanup and Edit mode",
           editing: "Editing", word: "word", words: "words", edit_failed: "Edit failed, text unchanged",
+          gpu_freed: "GPU freed", gpu_loading: "Loading models…", gpu_loaded: "Models loaded",
+          gpu_failed: "Models could not be loaded",
         },
         de: {
           audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar", polishing: "Überarbeitung",
           mic_missing: "Mikrofon nicht gefunden", no_mic: "Kein Mikrofon gefunden",
           rewrite_missing: "Letztes Diktat hier nicht gefunden", rewrite_needs_ai: "Umschreiben braucht KI-Korrektur und Bearbeiten",
           editing: "Bearbeiten", word: "Wort", words: "Wörter", edit_failed: "Bearbeiten ging nicht, Text unverändert",
+          gpu_freed: "GPU freigegeben", gpu_loading: "Modelle werden geladen…", gpu_loaded: "Modelle geladen",
+          gpu_failed: "Modelle konnten nicht geladen werden",
         },
       };
       function pickLang() {
@@ -344,6 +348,14 @@
         const t = NOTICE_TEXT[pickLang()];
         diag(`rewrite-failed received (${event.payload})`);
         showNotice(event.payload === "needs-ai" ? t.rewrite_needs_ai : t.rewrite_missing, 3000);
+      });
+
+      // Free GPU hotkey: "freed", "loading", "loaded" or "failed".
+      listen("gpu-notice", (event) => {
+        const t = NOTICE_TEXT[pickLang()];
+        const text = { freed: t.gpu_freed, loading: t.gpu_loading, loaded: t.gpu_loaded, failed: t.gpu_failed }[event.payload];
+        diag(`gpu-notice received (${event.payload})`);
+        if (text) showNotice(text, 3000);
       });
 
       document.getElementById("cancel").addEventListener("click", async (e) => {
