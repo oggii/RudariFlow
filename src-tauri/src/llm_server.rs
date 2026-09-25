@@ -498,12 +498,25 @@ impl LlmServer {
             return Err(error);
         }
         self.warm(model.to_path_buf(), gpu_backend);
+        // The generation this wait's own start began at: a release() that
+        // stops it after this point (a Free GPU press, most likely) must end
+        // the wait at once, not after the full budget. A release from
+        // *before* this point is the reason this wait's own start exists
+        // (e.g. the first dictation after a free) and must still be waited
+        // for, so only a generation change from here on counts, and only
+        // when it is a release (`released()`) rather than some other stop
+        // (settings, battery, an explicit restart), which keeps waiting as
+        // before.
+        let generation = self.generation.load(Ordering::SeqCst);
         let begun = Instant::now();
         loop {
             tokio::time::sleep(Duration::from_millis(50)).await;
             if let Some(endpoint) = self.ready_endpoint_now(model) {
                 self.mark_used();
                 return Ok(endpoint);
+            }
+            if self.generation.load(Ordering::SeqCst) != generation && self.released() {
+                return Err("The AI model was stopped".to_string());
             }
             // Once the start had time to begin, a failed and finished start
             // ends the wait early.
@@ -989,6 +1002,51 @@ Available devices:
         assert!(result.unwrap_err().contains("llama-server not found"));
         assert!(started.elapsed() < Duration::from_secs(3), "a failed start ends the longer wait early");
         assert!(llm.released(), "only a start that succeeds ends it");
+    }
+
+    /// A Free GPU press that lands while a caller is still in `wait_ready`
+    /// (e.g. summarize_text's own wait, before it ever reaches an endpoint)
+    /// must end that wait at once, not after its full budget: the loop must
+    /// notice a release, not just a `Failed` status.
+    #[test]
+    fn a_release_during_the_wait_ends_it_at_once() {
+        let dir = std::env::temp_dir().join("rudariflow_release_during_wait");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        std::fs::write(&model, b"not a model").unwrap();
+        // No llama-server in this folder: the start `wait_ready` kicks off
+        // fails almost at once ("llama-server not found"), but that alone
+        // does not bump the generation (only stop()/release() do), and the
+        // *existing* Failed-status check only looks once 300 ms have
+        // passed. That leaves a clean multi-hundred-ms window in which
+        // wait_ready is genuinely still polling, so a release() landing
+        // there proves the *new* check on its own, well before the Failed
+        // check or the wait budget could otherwise end it.
+        let llm = Arc::new(LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {})));
+        assert!(!llm.released());
+
+        // A real multi-thread runtime: the spawned wait_ready task must run
+        // concurrently with this thread's sleep + release() below, not only
+        // once this thread later blocks on it.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let waiter = {
+            let llm = llm.clone();
+            let model = model.clone();
+            rt.spawn(async move {
+                let started = Instant::now();
+                let result = llm.wait_ready(&model, None, Duration::from_secs(5)).await;
+                (result, started.elapsed())
+            })
+        };
+        // Long past wait_ready's first 50 ms tick (so it is truly in its
+        // polling loop), short of the existing Failed check's 300 ms gate.
+        std::thread::sleep(Duration::from_millis(100));
+        llm.release();
+        let (result, elapsed) = rt.block_on(waiter).unwrap();
+        assert_eq!(result, Err("The AI model was stopped".to_string()));
+        assert!(elapsed < Duration::from_millis(300), "should have ended at once on the release, took {elapsed:?}");
+        assert!(llm.released());
     }
 
     #[test]

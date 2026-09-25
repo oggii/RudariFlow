@@ -573,7 +573,8 @@ async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String
     let endpoint = state
         .llm
         .wait_ready(&model_path, Some(settings.gpu_backend.clone()), std::time::Duration::from_secs(120))
-        .await?;
+        .await
+        .map_err(|e| summary_error(&state.llm, e))?;
     let started = std::time::Instant::now();
     let mut material = text.trim().to_string();
     let chunk_chars = file_transcribe::summary_chunk_chars(&material);
