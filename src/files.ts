@@ -240,6 +240,7 @@ async function transcribe(path: string) {
   summaryBox.classList.add("hidden");
   summaryEl.textContent = "";
   textArea.value = "";
+  textArea.readOnly = false;
   setButtons(false);
   setProgress(0);
   setStatus(t("files_reading"));
@@ -260,6 +261,10 @@ async function transcribe(path: string) {
     });
     transcribedAt = new Date();
     segments = transcript.segments;
+    // Exports are built from the segments and a rename or the Timestamps
+    // switch rewrites the box, so typed edits would be lost: read-only
+    // (selecting and copying still work).
+    textArea.readOnly = segments.length > 0;
     names = Array.from({ length: transcript.speakers }, (_, i) => defaultName(i));
     renderChips();
     await showText();

@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **The Export menu replaces "Save as text…":** PDF, Word, subtitles and
   text all come from one menu, and carry the timestamps switch, the
   speaker names and the summary shown on screen.
+- **The transcript box is read-only** once a file is done, so exports and
+  Copy always use the transcript as shown; to correct words, edit the
+  exported file.
 
 ## [0.11.0] - 2026-09-24 - AI on CUDA, sturdier dictation and files
 
