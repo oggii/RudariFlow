@@ -14,10 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   included. The speaker model (45 MB) downloads on first use and runs on
   the CPU: about 21 s for a 10-minute meeting on a Ryzen 9 7900X (8
   threads).
-- **Export** file transcripts as PDF, Word (.docx), subtitles (.srt, .vtt)
-  or text, with or without timestamps and with the summary on top.
+- **Export** file transcripts as PDF, Word (.docx) or text, with or
+  without timestamps and the summary on top when one is shown, or as
+  subtitles (.srt, .vtt), always timed.
 - **A resizable window:** the main window can be resized and maximised,
-  and remembers its size and position. Long transcripts use the height.
+  and remembers its size and position. Long transcripts use the height,
+  and the summary can be hidden to give the transcript more room.
 
 ### Changed
 - **The Export menu replaces "Save as text…":** PDF, Word, subtitles and
