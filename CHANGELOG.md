@@ -10,10 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 - **Speakers in file transcripts:** choose Auto or 2 to 8 speakers next to
   the language, and each change of speaker starts a paragraph with the
-  name. Rename a speaker once and the name is used everywhere, the summary
-  included. The speaker model (45 MB) downloads on first use and runs on
-  the CPU: about 21 s for a 10-minute meeting on a Ryzen 9 7900X (8
-  threads).
+  name. Rename a speaker once and the transcript and its exports use the
+  name; rename before summarising and the summary uses the names too. The
+  speaker model (45 MB) downloads on first use and runs on the CPU: about
+  21 s for a 10-minute meeting on a Ryzen 9 7900X (8 threads).
 - **Export** file transcripts as PDF, Word (.docx) or text, with or
   without timestamps and the summary on top when one is shown, or as
   subtitles (.srt, .vtt), always timed.
