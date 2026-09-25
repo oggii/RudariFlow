@@ -148,9 +148,12 @@ function renameSpeaker(i: number, chip: HTMLButtonElement) {
   chip.replaceWith(input);
   input.focus();
   input.select();
+  // A new transcription replaces `names` with a fresh array; a rename still
+  // open from the old one must not write into it or re-render for it.
+  const startNames = names;
   let done = false;
   const apply = async (keep: boolean) => {
-    if (done) return;
+    if (done || names !== startNames) return;
     done = true;
     if (keep) names[i] = input.value.trim() || defaultName(i);
     renderChips();
@@ -215,11 +218,11 @@ async function transcribe(path: string) {
   setButtons(false);
   setProgress(0);
   setStatus(t("files_reading"));
-  if (speakersSelect.value !== "off" && !(await ensureSpeakerModel())) {
-    setStatus(t("files_speakers_download_failed"), "error");
-    running = false;
-    cancelBtn.classList.add("hidden");
-    return;
+  // A failed or missing model must not drop the transcript: wait for a
+  // download (or a running one) but transcribe regardless of the outcome —
+  // the backend falls back to an unlabelled transcript and reports why.
+  if (speakersSelect.value !== "off") {
+    await ensureSpeakerModel();
   }
   try {
     transcript = await invoke<FileTranscript>("transcribe_file", {
