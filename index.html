@@ -546,6 +546,25 @@
                 <select id="file-language"></select>
               </div>
             </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="files_speakers_label">Speakers</span>
+                <span class="label-hint" id="file-speakers-hint" data-i18n="files_speakers_hint">Who speaks when, for meetings and interviews. Off keeps voice messages fast.</span>
+              </div>
+              <div class="setting-control">
+                <select id="file-speakers">
+                  <option value="off" data-i18n="files_speakers_off">Off</option>
+                  <option value="auto" data-i18n="files_speakers_auto">Auto</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                  <option value="6">6</option>
+                  <option value="7">7</option>
+                  <option value="8">8</option>
+                </select>
+              </div>
+            </div>
           </div>
           <div id="file-job" class="file-job hidden">
             <div class="file-job-head">
@@ -566,6 +585,10 @@
                 <button id="file-save" class="btn-secondary" data-i18n="files_save">Save as text…</button>
                 <button id="file-summarize" class="btn-secondary" data-i18n="files_summarize">Summarise with AI</button>
               </div>
+            </div>
+            <div id="file-speakers-row" class="file-speakers hidden">
+              <span class="label-hint" data-i18n="files_speakers_names">Speakers:</span>
+              <div id="file-speaker-chips" class="file-speaker-chips"></div>
             </div>
             <div id="file-summary-box" class="file-summary hidden">
               <div class="file-summary-head">

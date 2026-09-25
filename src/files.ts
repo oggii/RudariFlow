@@ -10,24 +10,39 @@ import { getLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
 
 export interface FilesHost {
-  settings(): { language: string };
+  settings(): { language: string; fileSpeakers: string };
+  saveSettings(patch: { fileSpeakers?: string }): Promise<void>;
   /** Show the Files section (a file dropped on another tab). */
   showSection(): void;
 }
 
-interface FileTranscript {
+interface Segment {
+  startMs: number;
+  endMs: number;
   text: string;
-  textWithTimes: string;
+  speaker?: number;
+}
+
+interface FileTranscript {
+  segments: Segment[];
+  speakers: number;
+  speakersError?: string;
   language: string;
   durationMs: number;
   elapsedMs: number;
 }
 
 interface FileProgress {
-  phase: "reading" | "loading" | "transcribing";
+  phase: "reading" | "loading" | "transcribing" | "speakers";
   done: number;
   total: number;
   text: string;
+}
+
+interface DownloadProgress {
+  downloaded: number;
+  total: number;
+  percent: number;
 }
 
 const EXTENSIONS = ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "oga", "wma", "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "3gp", "amr"];
@@ -49,15 +64,26 @@ const summarizeBtn = document.getElementById("file-summarize") as HTMLButtonElem
 const summaryBox = document.getElementById("file-summary-box")!;
 const summaryEl = document.getElementById("file-summary")!;
 const summaryCopy = document.getElementById("file-summary-copy") as HTMLButtonElement;
+const speakersSelect = document.getElementById("file-speakers") as HTMLSelectElement;
+const speakersHint = document.getElementById("file-speakers-hint")!;
+const speakersRow = document.getElementById("file-speakers-row")!;
+const speakerChips = document.getElementById("file-speaker-chips")!;
 
 let host: FilesHost;
 let running = false;
 let transcript: FileTranscript | null = null;
 let fileName = "";
 let languageSet = false;
+let speakersSet = false;
 /** Counts summaries; a new file or summary makes older results stale. */
 let summaryRun = 0;
 let summarizing = false;
+
+let segments: Segment[] = [];
+/** One name per speaker, "Speaker 1" … until renamed. */
+let names: string[] = [];
+/** The speaker model download, while it runs. */
+let modelDownload: Promise<boolean> | null = null;
 
 /// "4:05" or "1:02:03", like the backend's `clock`.
 function clock(ms: number): string {
@@ -88,9 +114,74 @@ function errorText(e: unknown): string {
   return key[code] ? t(key[code]) : `${t("files_err_failed")}: ${code}`;
 }
 
-function showText() {
-  if (!transcript) return;
-  textArea.value = timesToggle.checked ? transcript.textWithTimes : transcript.text;
+/** The transcript as shown: paragraphs, speaker names, times if on. */
+async function shownText(times: boolean): Promise<string> {
+  return invoke<string>("format_file_text", { segments, names, times });
+}
+
+async function showText() {
+  if (!segments.length) return;
+  textArea.value = await shownText(timesToggle.checked);
+}
+
+function defaultName(i: number): string {
+  return t("files_speaker_n").replace("{n}", String(i + 1));
+}
+
+function renderChips() {
+  speakerChips.replaceChildren();
+  speakersRow.classList.toggle("hidden", names.length === 0);
+  names.forEach((name, i) => {
+    const chip = document.createElement("button");
+    chip.className = "speaker-chip";
+    chip.textContent = name;
+    chip.title = t("files_speaker_rename");
+    chip.addEventListener("click", () => renameSpeaker(i, chip));
+    speakerChips.append(chip);
+  });
+}
+
+function renameSpeaker(i: number, chip: HTMLButtonElement) {
+  const input = document.createElement("input");
+  input.className = "speaker-chip-input";
+  input.value = names[i];
+  chip.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const apply = async (keep: boolean) => {
+    if (done) return;
+    done = true;
+    if (keep) names[i] = input.value.trim() || defaultName(i);
+    renderChips();
+    await showText();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") apply(true);
+    if (e.key === "Escape") apply(false);
+  });
+  input.addEventListener("blur", () => apply(true));
+}
+
+/** Download the speaker model if needed; true when it is ready. */
+function ensureSpeakerModel(): Promise<boolean> {
+  if (modelDownload) return modelDownload;
+  modelDownload = (async () => {
+    try {
+      const status = await invoke<{ downloaded: boolean }>("speaker_model_status");
+      if (status.downloaded) return true;
+      speakersHint.textContent = t("files_speakers_downloading").replace("{percent}", "0");
+      await invoke("speaker_model_download");
+      speakersHint.textContent = t("files_speakers_hint");
+      return true;
+    } catch {
+      speakersHint.textContent = t("files_speakers_download_failed");
+      return false;
+    } finally {
+      modelDownload = null;
+    }
+  })();
+  return modelDownload;
 }
 
 function languageName(code: string): string {
@@ -107,6 +198,9 @@ async function transcribe(path: string) {
     return;
   }
   running = true;
+  segments = [];
+  names = [];
+  renderChips();
   transcript = null;
   fileName = path.split(/[\\/]/).pop() ?? path;
   nameEl.textContent = fileName;
@@ -121,18 +215,34 @@ async function transcribe(path: string) {
   setButtons(false);
   setProgress(0);
   setStatus(t("files_reading"));
+  if (speakersSelect.value !== "off" && !(await ensureSpeakerModel())) {
+    setStatus(t("files_speakers_download_failed"), "error");
+    running = false;
+    cancelBtn.classList.add("hidden");
+    return;
+  }
   try {
-    transcript = await invoke<FileTranscript>("transcribe_file", { path, language: languageSelect.value });
-    showText();
+    transcript = await invoke<FileTranscript>("transcribe_file", {
+      path,
+      language: languageSelect.value,
+      speakers: speakersSelect.value,
+    });
+    segments = transcript.segments;
+    names = Array.from({ length: transcript.speakers }, (_, i) => defaultName(i));
+    renderChips();
+    await showText();
     setProgress(1);
     const secs = (transcript.elapsedMs / 1000).toFixed(1);
-    setStatus(
-      t("files_done")
-        .replace("{audio}", clock(transcript.durationMs))
-        .replace("{secs}", secs)
-        .replace("{language}", languageName(transcript.language)),
-      "ok",
-    );
+    let status = t("files_done")
+      .replace("{audio}", clock(transcript.durationMs))
+      .replace("{secs}", secs)
+      .replace("{language}", languageName(transcript.language));
+    if (transcript.speakersError) {
+      const key = `files_speakers_missing_${transcript.speakersError}`;
+      const known = key === "files_speakers_missing_no_model" || key === "files_speakers_missing_no_runtime";
+      status += " · " + (known ? t(key) : t("files_speakers_missing_error").replace("{error}", transcript.speakersError));
+    }
+    setStatus(status, transcript.speakersError ? "error" : "ok");
     setButtons(true);
   } catch (e) {
     setStatus(errorText(e), String(e) === "cancelled" ? "" : "error");
@@ -160,6 +270,9 @@ function onProgress(p: FileProgress) {
   } else if (p.phase === "loading") {
     setStatus(t("files_loading"));
     setProgress(0.05);
+  } else if (p.phase === "speakers") {
+    setStatus(t("files_speakers_running").replace("{percent}", String(p.done)));
+    setProgress(0.95 + (p.done / 100) * 0.05);
   } else {
     setStatus(t("files_transcribing").replace("{done}", clock(p.done)).replace("{total}", clock(p.total)));
     setProgress(0.05 + (p.total > 0 ? (p.done / p.total) * 0.95 : 0));
@@ -180,7 +293,7 @@ async function chooseFile() {
 }
 
 async function summarize() {
-  const text = transcript?.text ?? textArea.value;
+  const text = segments.length ? await shownText(false) : textArea.value;
   if (!text.trim()) return;
   // A summary still running for an earlier file must not land in this one.
   const run = ++summaryRun;
@@ -233,6 +346,10 @@ export function renderFiles() {
     languageSelect.value = host.settings().language;
     languageSet = true;
   }
+  if (!speakersSet) {
+    speakersSelect.value = host.settings().fileSpeakers || "off";
+    speakersSet = true;
+  }
 }
 
 export function initFiles(h: FilesHost) {
@@ -242,12 +359,19 @@ export function initFiles(h: FilesHost) {
     setStatus(t("files_cancelling"));
     invoke("cancel_file");
   });
+  speakersSelect.addEventListener("change", async () => {
+    await host.saveSettings({ fileSpeakers: speakersSelect.value });
+    if (speakersSelect.value !== "off") ensureSpeakerModel();
+  });
   timesToggle.addEventListener("change", showText);
   copyBtn.addEventListener("click", () => copy(textArea.value, copyBtn, "files_copy"));
   summaryCopy.addEventListener("click", () => copy(summaryEl.textContent ?? "", summaryCopy, "files_copy"));
   saveBtn.addEventListener("click", saveText);
   summarizeBtn.addEventListener("click", summarize);
   listen<FileProgress>("file-progress", (e) => onProgress(e.payload));
+  listen<DownloadProgress>("speaker-model-progress", (e) => {
+    speakersHint.textContent = t("files_speakers_downloading").replace("{percent}", String(Math.round(e.payload.percent)));
+  });
   listen<[number, number]>("summary-progress", (e) => {
     const [done, total] = e.payload;
     if (summarizing && total > 1) summaryEl.textContent = t("files_summarizing_parts").replace("{done}", String(done + 1)).replace("{total}", String(total));

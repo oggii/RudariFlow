@@ -1219,3 +1219,46 @@ kbd {
 .ai-output-warn {
   color: var(--yellow);
 }
+
+/* ── Files: speakers ────────────────────────────────── */
+
+.file-speakers {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.file-speaker-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.speaker-chip,
+.speaker-chip-input {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.speaker-chip {
+  cursor: pointer;
+}
+
+.speaker-chip:hover {
+  border-color: var(--accent);
+}
+
+.speaker-chip-input {
+  width: 140px;
+  outline: none;
+  border-color: var(--accent);
+  user-select: text;
+  -webkit-user-select: text;
+}
