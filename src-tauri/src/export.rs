@@ -293,6 +293,60 @@ pub fn docx(doc: &ExportDoc, paper: Paper) -> Result<Vec<u8>, String> {
     Ok(out.into_inner())
 }
 
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// The page the PDF is printed from: system fonts (every script Windows can
+/// show), 20 mm margins, page numbers "n / total" in the footer.
+pub fn pdf_html(doc: &ExportDoc, paper: Paper) -> String {
+    let mut body = format!(
+        "<h1>{}</h1>\n<div class=\"meta\">{}</div>\n",
+        html_escape(&doc.title),
+        html_escape(&doc.meta)
+    );
+    if let Some(summary) = doc.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        body.push_str(&format!("<h2>{}</h2>\n<div class=\"summary\">\n", html_escape(&doc.summary_title)));
+        for line in summary.lines().filter(|l| !l.trim().is_empty()) {
+            body.push_str(&format!("<p>{}</p>\n", html_escape(line)));
+        }
+        body.push_str("</div>\n");
+    }
+    body.push_str(&format!("<h2>{}</h2>\n", html_escape(&doc.transcript_title)));
+    for p in paragraphs(&doc.segments) {
+        body.push_str("<p>");
+        if doc.times {
+            body.push_str(&format!("<span class=\"time\">[{}]</span> ", clock(p.start_ms)));
+        }
+        if let Some(s) = p.speaker {
+            body.push_str(&format!("<span class=\"who\">{}:</span> ", html_escape(&speaker_name(&doc.names, s))));
+        }
+        body.push_str(&html_escape(&p.text));
+        body.push_str("</p>\n");
+    }
+    format!(
+        r#"<!doctype html>
+<html><head><meta charset="utf-8"><title>{title}</title>
+<style>
+@page {{ size: {size}; margin: 20mm; @bottom-center {{ content: counter(page) " / " counter(pages); font: 9pt "Segoe UI", sans-serif; color: #888; }} }}
+body {{ font: 11pt/1.5 "Segoe UI", "Segoe UI Emoji", "Microsoft YaHei", "Yu Gothic", "Malgun Gothic", "Nirmala UI", "Leelawadee UI", sans-serif; color: #111; margin: 0; }}
+h1 {{ font-size: 18pt; margin: 0 0 4pt; }}
+.meta {{ color: #666; font-size: 9.5pt; margin-bottom: 14pt; }}
+h2 {{ font-size: 13pt; margin: 16pt 0 6pt; }}
+p {{ margin: 0 0 8pt; orphans: 2; widows: 2; }}
+.summary p {{ margin-bottom: 4pt; }}
+.time {{ color: #888; font-variant-numeric: tabular-nums; }}
+.who {{ font-weight: 600; }}
+</style></head>
+<body>
+{body}</body></html>
+"#,
+        title = html_escape(&doc.title),
+        size = paper.css(),
+        body = body
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +491,19 @@ mod tests {
         assert_eq!(Paper::A4.twips(), (11906, 16838));
         assert_eq!(Paper::Letter.twips(), (12240, 15840));
         assert_eq!(Paper::Letter.css(), "letter");
+    }
+
+    #[test]
+    fn pdf_html_has_paper_header_names_and_escapes() {
+        let mut d = doc(Some("- One <point>"));
+        d.title = "Q&A.mp3".into();
+        let html = pdf_html(&d, Paper::Letter);
+        assert!(html.contains("size: letter"));
+        assert!(html.contains("<h1>Q&amp;A.mp3</h1>"));
+        assert!(html.contains("- One &lt;point&gt;"));
+        assert!(html.contains("<span class=\"time\">[0:14]</span>"));
+        assert!(html.contains("<span class=\"who\">Speaker 2:</span>"));
+        d.times = false;
+        assert!(!pdf_html(&d, Paper::A4).contains("class=\"time\""));
     }
 }

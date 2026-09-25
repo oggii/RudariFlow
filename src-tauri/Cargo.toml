@@ -97,6 +97,9 @@ windows = { version = "0.61", features = [
 # (scripts/setup-speakers.ps1). Not the sherpa-rs wrapper: it runs the
 # models on one thread, three times slower.
 sherpa-rs-sys = { version = "=0.6.8", default-features = false }
+# PDF export (src/pdf.rs): WebView2's PrintToPdf on a hidden window; the
+# version wry 0.54 uses, so the COM types match Tauri's webview.
+webview2-com = "0.38"
 
 # sherpa-rs-sys's build script links the debug C runtime (msvcrtd) when it is
 # built with debug assertions; we link sherpa-onnx's release DLLs, so build
