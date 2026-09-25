@@ -300,7 +300,9 @@ async function chooseFile() {
 
 function setSummaryCollapsed(collapsed: boolean) {
   summaryBox.classList.toggle("collapsed", collapsed);
-  summaryToggle.textContent = t(collapsed ? "files_summary_show" : "files_summary_hide");
+  const key = collapsed ? "files_summary_show" : "files_summary_hide";
+  summaryToggle.textContent = t(key);
+  summaryToggle.setAttribute("data-i18n", key);
   summaryToggle.setAttribute("aria-expanded", String(!collapsed));
 }
 

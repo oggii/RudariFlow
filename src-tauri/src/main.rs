@@ -1485,6 +1485,9 @@ fn main() {
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
                 .with_filter(|label| label == "main")
+                // The state file lives in the app's own data folder, so a
+                // RUDARIFLOW_DATA_DIR build stays separate from the real one.
+                .with_filename(get_app_dir().join(".window-state.json").to_string_lossy())
                 .build(),
         )
         .plugin(tauri_plugin_autostart::init(
