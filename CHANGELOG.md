@@ -5,6 +5,17 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **The AI model for other programs:** while the AI is ready, RudariFlow
+  writes `llm-endpoint.json` to its data folder (address, key and a third
+  llama-server slot of their own), so the Twitch Live Translate caption
+  service translates with the model that is already loaded instead of
+  loading a second one. The dictation slot and its prompt cache are not
+  shared. Costs about 100 MB of video memory. Free GPU, turning the AI off
+  or quitting takes the file away.
+
 ## [0.13.0] - 2026-09-25 - Free GPU hotkey and a Clear button
 
 Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.

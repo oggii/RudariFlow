@@ -143,6 +143,15 @@ pub const RELEASED_WAIT: Duration = Duration::from_secs(20);
 /// The error of a start or a wait that `stop` or `release` ended.
 pub const STOPPED: &str = "The AI model was stopped";
 
+/// llama-server slots: ai_cleanup::DICTATION_SLOT, LONG_SLOT and SHARED_SLOT,
+/// 8192 tokens each. Every slot after the first costs about 100 MB of video
+/// memory.
+const SLOTS: u32 = 3;
+const SLOT_CONTEXT: u32 = 8192;
+
+/// Where other programs find the ready server: `publish_endpoint`.
+pub const ENDPOINT_FILE: &str = "llm-endpoint.json";
+
 /// How long a request waits for a loading server: `wait`, but at least
 /// `RELEASED_WAIT` after a release.
 fn wait_budget(wait: Duration, released: bool) -> Duration {
@@ -188,6 +197,8 @@ pub struct LlmServer {
 
 impl LlmServer {
     pub fn new(llama_dir: PathBuf, log_path: PathBuf, on_status: StatusCallback) -> Self {
+        // A hard kill leaves the file of a server that no longer exists.
+        let _ = std::fs::remove_file(log_path.with_file_name(ENDPOINT_FILE));
         Self {
             llama_dir,
             log_path,
@@ -222,12 +233,45 @@ impl LlmServer {
     }
 
     fn set_status(&self, status: ServerStatus) {
+        // Only a ready server is published. Anything else - loading, stopped,
+        // Free GPU, crashed - takes the file away, changed state or not.
+        if !matches!(status, ServerStatus::Ready { .. }) {
+            self.withdraw_endpoint();
+        }
         let mut current = lock(&self.status);
         if *current != status {
             *current = status.clone();
             drop(current);
             (self.on_status)(&status);
         }
+    }
+
+    fn endpoint_file(&self) -> PathBuf {
+        self.log_path.with_file_name(ENDPOINT_FILE)
+    }
+
+    /// Tell other programs on this PC (the Twitch caption service) where the
+    /// ready server is and which slot is theirs. Written through a temp file
+    /// and a rename, so a reader never sees half of it.
+    fn publish_endpoint(&self, endpoint: &Endpoint, model: &Path) {
+        let pid = lock(&self.running).as_ref().map(|r| r.child.id());
+        let body = serde_json::json!({
+            "version": 1,
+            "baseUrl": endpoint.base_url,
+            "apiKey": endpoint.api_key,
+            "slot": crate::ai_cleanup::SHARED_SLOT,
+            "model": model.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+            "pid": pid,
+        });
+        let path = self.endpoint_file();
+        let tmp = path.with_extension("json.tmp");
+        if let Err(e) = std::fs::write(&tmp, body.to_string()).and_then(|_| std::fs::rename(&tmp, &path)) {
+            startup_log::log(&format!("[ai] could not publish {}: {}", ENDPOINT_FILE, e));
+        }
+    }
+
+    fn withdraw_endpoint(&self) {
+        let _ = std::fs::remove_file(self.endpoint_file());
     }
 
     /// The endpoint if a server for `model` is running and ready. Notices a
@@ -597,15 +641,16 @@ impl LlmServer {
         let log = File::create(&self.log_path).map_err(|e| format!("llm-server.log: {}", e))?;
         let log_err = log.try_clone().map_err(|e| e.to_string())?;
         let port_arg = port.to_string();
+        let context_arg = (SLOTS * SLOT_CONTEXT).to_string();
+        let slots_arg = SLOTS.to_string();
 
         let mut cmd = self.server_command();
         cmd.arg("-m")
             .arg(model)
             .args(["--host", "127.0.0.1", "--port", &port_arg, "--api-key", &api_key])
             .args(["-dev", device.as_ref().map_or("none", |d| d.id.as_str())])
-            // Two slots of 8192 tokens (ai_cleanup::DICTATION_SLOT and
-            // LONG_SLOT); the second costs about 100 MB of video memory.
-            .args(["--fit", "on", "-c", "16384", "-np", "2", "--reasoning-budget", "0", "--no-webui"])
+            // SLOTS slots of SLOT_CONTEXT tokens each (see SLOTS).
+            .args(["--fit", "on", "-c", &context_arg, "-np", &slots_arg, "--reasoning-budget", "0", "--no-webui"])
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err));
@@ -689,6 +734,7 @@ impl LlmServer {
             label,
             started.elapsed().as_millis()
         ));
+        self.publish_endpoint(&endpoint, model);
         self.set_status(ServerStatus::Ready { device: label });
         Ok(endpoint)
     }
@@ -1193,5 +1239,72 @@ Available devices:
             ServerStatus::Failed { error } => assert!(error.contains("stopped unexpectedly"), "got: {error}"),
             other => panic!("expected Failed from the reap, got {other:?}"),
         }
+    }
+
+    fn temp_server(name: &str) -> (LlmServer, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("rf-endpoint-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let llm = LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {}));
+        (llm, dir)
+    }
+
+    fn published(dir: &Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(dir.join(ENDPOINT_FILE)).unwrap()).unwrap()
+    }
+
+    fn endpoint() -> Endpoint {
+        Endpoint { base_url: "http://127.0.0.1:5555".into(), api_key: "k".into(), on_cpu: false }
+    }
+
+    #[test]
+    fn publishes_the_shared_slot_and_withdraws_it_on_stop() {
+        let (llm, dir) = temp_server("stop");
+        llm.publish_endpoint(&endpoint(), Path::new("C:/m/gemma-4-E4B-it-Q4_K_M.gguf"));
+        let json = published(&dir);
+        assert_eq!(json["version"], 1);
+        assert_eq!(json["baseUrl"], "http://127.0.0.1:5555");
+        assert_eq!(json["apiKey"], "k");
+        assert_eq!(json["slot"], crate::ai_cleanup::SHARED_SLOT);
+        assert_eq!(json["model"], "gemma-4-E4B-it-Q4_K_M");
+        assert!(!dir.join("llm-endpoint.json.tmp").exists(), "written through a temp file");
+        llm.stop();
+        assert!(!dir.join(ENDPOINT_FILE).exists());
+    }
+
+    #[test]
+    fn free_gpu_withdraws_the_endpoint() {
+        let (llm, dir) = temp_server("release");
+        llm.publish_endpoint(&endpoint(), Path::new("m.gguf"));
+        llm.release();
+        assert!(!dir.join(ENDPOINT_FILE).exists());
+    }
+
+    #[test]
+    fn loading_and_failing_withdraw_the_endpoint() {
+        let (llm, dir) = temp_server("states");
+        for status in [ServerStatus::Loading, ServerStatus::Failed { error: "x".into() }] {
+            llm.publish_endpoint(&endpoint(), Path::new("m.gguf"));
+            llm.set_status(status);
+            assert!(!dir.join(ENDPOINT_FILE).exists());
+        }
+    }
+
+    #[test]
+    fn a_leftover_from_a_hard_kill_is_removed_at_startup() {
+        let (_, dir) = temp_server("startup");
+        std::fs::write(dir.join(ENDPOINT_FILE), "{}").unwrap();
+        let _llm = LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {}));
+        assert!(!dir.join(ENDPOINT_FILE).exists());
+    }
+
+    #[test]
+    fn every_slot_keeps_8192_tokens_and_the_shared_one_exists() {
+        use crate::ai_cleanup::{DICTATION_SLOT, LONG_SLOT, SHARED_SLOT};
+        assert_eq!(SLOT_CONTEXT, 8192);
+        assert_eq!(SLOTS, 3);
+        let slots = [DICTATION_SLOT, LONG_SLOT, SHARED_SLOT];
+        assert!(slots.iter().all(|s| (0..SLOTS as i32).contains(s)));
+        assert_eq!(slots.iter().collect::<std::collections::HashSet<_>>().len(), 3);
     }
 }

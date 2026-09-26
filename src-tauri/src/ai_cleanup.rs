@@ -388,6 +388,11 @@ fn speed_of(json: &serde_json::Value) -> Option<Speed> {
 pub const DICTATION_SLOT: i32 = 0;
 pub const LONG_SLOT: i32 = 1;
 
+/// For other programs on this PC (the Twitch caption service), published in
+/// `llm-endpoint.json`. RudariFlow never sends to it, so their prompts never
+/// push the dictation prompt out of slot 0's cache.
+pub const SHARED_SLOT: i32 = 2;
+
 /// Ask the server for the edited text in the dictation slot. Non-streaming;
 /// `timeout` covers the whole request.
 pub async fn complete(
