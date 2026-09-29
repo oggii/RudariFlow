@@ -1,8 +1,13 @@
 //! Audio from media files (MP3, M4A, WAV, FLAC, MP4, MOV, MKV, WebM, ...)
 //! for file transcription and the soundboard, decoded by Windows Media
-//! Foundation: no extra download, and every format Windows plays. Ogg Opus
-//! (WhatsApp voice messages), which Windows cannot open, is decoded with
-//! libopus.
+//! Foundation: no extra download, and every format Windows plays. Ogg is
+//! decoded ourselves: Media Foundation has no byte-stream handler for the
+//! Ogg container at all (confirmed: no `.ogg`/`audio-ogg` entry under
+//! `HKLM\SOFTWARE\Microsoft\Windows Media Foundation\ByteStreamHandlers`,
+//! even with Web Media Extensions installed, which only covers WebM).
+//! Ogg Opus (WhatsApp voice messages) is decoded with libopus; Ogg Vorbis
+//! with lewton (pure Rust), resampled with rubato when the file's own
+//! rate isn't the target rate.
 
 use std::path::Path;
 
@@ -36,10 +41,18 @@ fn is_ogg(path: &Path) -> bool {
 /// the two).
 pub fn decode_16k_mono(path: &Path, mut progress: impl FnMut(u64, u64)) -> Result<Vec<f32>, String> {
     if is_ogg(path) {
-        // Ogg Vorbis and FLAC in Ogg go to Media Foundation, which opens them
-        // where Windows has the codec (Web Media Extensions).
         match decode_ogg_opus(path, 16_000, opus::Channels::Mono, MAX_SECS, &mut progress) {
             Err(e) if e == NOT_OPUS => {}
+            decoded => return decoded,
+        }
+        // Media Foundation cannot open the Ogg container (see the module
+        // doc comment); Vorbis is decoded ourselves instead of falling
+        // through to it. FLAC-in-Ogg and other, rarer Ogg codecs still
+        // fall through to Media Foundation below (which will fail too,
+        // for the same reason, but that is unchanged pre-existing
+        // behaviour for codecs outside the soundboard's 8 formats).
+        match decode_ogg_vorbis(path, 16_000, 1, MAX_SECS, &mut progress) {
+            Err(e) if e == NOT_VORBIS => {}
             decoded => return decoded,
         }
     }
@@ -54,23 +67,33 @@ pub fn decode_16k_mono(path: &Path, mut progress: impl FnMut(u64, u64)) -> Resul
 /// channels down to two. Fails with `NO_AUDIO` when there is nothing to
 /// play and with `too_long(max_secs)` for a longer file.
 pub fn decode_48k_stereo(path: &Path, max_secs: u64) -> Result<Vec<f32>, String> {
-    let (samples, rate, channels) = if is_ogg(path) {
+    let stereo = if is_ogg(path) {
         match decode_ogg_opus(path, 48_000, opus::Channels::Stereo, max_secs, |_, _| {}) {
-            Err(e) if e == NOT_OPUS => imp::decode(path, 48_000, 2, max_secs, |_, _| {})?,
-            decoded => (decoded?, 48_000, 2),
+            Err(e) if e == NOT_OPUS => match decode_ogg_vorbis(path, 48_000, 2, max_secs, |_, _| {}) {
+                Err(e) if e == NOT_VORBIS => mf_stereo(path, max_secs)?,
+                decoded => decoded?,
+            },
+            decoded => decoded?,
         }
     } else {
-        imp::decode(path, 48_000, 2, max_secs, |_, _| {})?
+        mf_stereo(path, max_secs)?
     };
-    let stereo = to_stereo(samples, channels);
-    let stereo = if rate == 48_000 { stereo } else { resample_stereo(&stereo, rate, 48_000) };
     if stereo.is_empty() {
         return Err(NO_AUDIO.to_string());
     }
     Ok(stereo)
 }
 
+/// The Media Foundation path to 48 kHz stereo, shared by the non-Ogg case
+/// and the Ogg fallback (any Ogg codec besides Opus and Vorbis).
+fn mf_stereo(path: &Path, max_secs: u64) -> Result<Vec<f32>, String> {
+    let (samples, rate, channels) = imp::decode(path, 48_000, 2, max_secs, |_, _| {})?;
+    let stereo = to_stereo(samples, channels);
+    Ok(if rate == 48_000 { stereo } else { resample_stereo(&stereo, rate, 48_000) })
+}
+
 const NOT_OPUS: &str = "only Opus audio is supported in Ogg files";
+const NOT_VORBIS: &str = "not a Vorbis stream";
 
 /// Ogg Opus, decoded by libopus straight to `rate` Hz with `channels` (it
 /// resamples and mixes itself).
@@ -127,6 +150,69 @@ fn decode_ogg_opus(
     Ok(out)
 }
 
+/// Ogg Vorbis, decoded by lewton straight from the raw packets (no Ogg
+/// container support is asked of Media Foundation, which does not have
+/// any). Mixed to `target_channels` (1: mono; 2: stereo, mono on both
+/// sides) and resampled to `rate` with rubato when the file's own rate
+/// differs — unlike libopus, lewton neither resamples nor mixes for us.
+fn decode_ogg_vorbis(
+    path: &Path,
+    rate: u32,
+    target_channels: usize,
+    max_secs: u64,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<Vec<f32>, String> {
+    use lewton::audio::{read_audio_packet_generic, PreviousWindowRight};
+    use lewton::header::{read_header_ident, read_header_setup, HeaderReadError};
+    use lewton::samples::InterleavedSamples;
+    use std::io::Seek;
+
+    let file = std::fs::File::open(path).map_err(|e| format!("cannot open the file: {}", e))?;
+    let total = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut reader = ogg::PacketReader::new(std::io::BufReader::new(file));
+    let bad = |e: ogg::OggReadError| format!("cannot read the file: {}", e);
+    let head = reader.read_packet().map_err(bad)?.ok_or("the file is empty")?;
+    let ident = match read_header_ident(&head.data) {
+        Err(HeaderReadError::NotVorbisHeader) => return Err(NOT_VORBIS.to_string()),
+        Err(e) => return Err(format!("Vorbis: {:?}", e)),
+        Ok(ident) => ident,
+    };
+    let serial = head.stream_serial();
+    let channels = (ident.audio_channels as usize).max(1);
+    let source_rate = ident.audio_sample_rate;
+    let _comment = reader.read_packet().map_err(bad)?.ok_or("the file is empty")?;
+    let setup_packet = reader.read_packet().map_err(bad)?.ok_or("the file is empty")?;
+    let setup = read_header_setup(&setup_packet.data, ident.audio_channels, (ident.blocksize_0, ident.blocksize_1))
+        .map_err(|e| format!("Vorbis: {:?}", e))?;
+
+    let max_samples = (max_secs as usize + 60) * source_rate as usize * channels;
+    let mut pwr = PreviousWindowRight::new();
+    let mut out: Vec<f32> = Vec::new();
+    let mut packets = 0u32;
+    while let Some(packet) = reader.read_packet().map_err(bad)? {
+        if packet.stream_serial() != serial {
+            continue;
+        }
+        // A damaged packet is skipped instead of failing the whole file,
+        // as for Opus above.
+        if let Ok(decoded) = read_audio_packet_generic::<InterleavedSamples<f32>>(&ident, &setup, &packet.data, &mut pwr) {
+            out.extend_from_slice(&decoded.samples);
+        }
+        if out.len() > max_samples {
+            return Err(too_long(max_secs));
+        }
+        packets += 1;
+        if packets.is_multiple_of(500) {
+            let done = reader.get_mut().stream_position().unwrap_or(0);
+            progress(done, total);
+        }
+    }
+    progress(total, total);
+
+    let mixed = if target_channels <= 1 { mix_down(&out, channels) } else { to_stereo(out, channels) };
+    Ok(if source_rate == rate { mixed } else { resample_interleaved(&mixed, target_channels.max(1), source_rate, rate) })
+}
+
 /// Mono from interleaved `channels`.
 fn mix_down(samples: &[f32], channels: usize) -> Vec<f32> {
     if channels <= 1 {
@@ -152,6 +238,73 @@ fn resample_stereo(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
     let left = crate::audio::resample(&left, from, to);
     let right = crate::audio::resample(&right, from, to);
     left.into_iter().zip(right).flat_map(|(l, r)| [l, r]).collect()
+}
+
+/// Interleaved `channels`-channel resample with rubato's windowed-sinc
+/// resampler (used for Vorbis, which — unlike libopus — does not resample
+/// for us). `channels` is 1 or 2 here.
+fn resample_interleaved(samples: &[f32], channels: usize, from: u32, to: u32) -> Vec<f32> {
+    if from == to || samples.is_empty() || channels == 0 {
+        return samples.to_vec();
+    }
+    let frames = samples.len() / channels;
+    let mut planar: Vec<Vec<f32>> = vec![Vec::with_capacity(frames); channels];
+    for frame in samples.chunks_exact(channels) {
+        for (c, &s) in frame.iter().enumerate() {
+            planar[c].push(s);
+        }
+    }
+    use rubato::Resampler;
+    let ratio = to as f64 / from as f64;
+    let params = rubato::SincInterpolationParameters {
+        sinc_len: 128,
+        f_cutoff: 0.925,
+        oversampling_factor: 128,
+        interpolation: rubato::SincInterpolationType::Linear,
+        window: rubato::WindowFunction::BlackmanHarris2,
+    };
+    // A whole file at once: no real-time deadline, so a chunk size that
+    // covers short soundboard sounds in one call is fine; longer files
+    // (Files-tab transcription) just take a few more chunks.
+    let chunk_size = 4096.min(frames.max(1));
+    let mut resampler = match rubato::SincFixedIn::<f32>::new(ratio, 2.0, params, chunk_size, channels) {
+        Ok(r) => r,
+        Err(_) => return samples.to_vec(),
+    };
+    let delay = resampler.output_delay();
+    let mut out_planar: Vec<Vec<f32>> = vec![Vec::new(); channels];
+    let mut pos = 0;
+    while pos < frames {
+        let need = resampler.input_frames_next();
+        let end = (pos + need).min(frames);
+        let chunk: Vec<&[f32]> = planar.iter().map(|c| &c[pos..end]).collect();
+        let result =
+            if end - pos == need { resampler.process(&chunk, None) } else { resampler.process_partial(Some(&chunk), None) };
+        if let Ok(result) = result {
+            for (o, r) in out_planar.iter_mut().zip(result) {
+                o.extend(r);
+            }
+        }
+        pos = end;
+    }
+    // Flush the filter's group delay: one more call with no input.
+    if let Ok(result) = resampler.process_partial::<Vec<f32>>(None, None) {
+        for (o, r) in out_planar.iter_mut().zip(result) {
+            o.extend(r);
+        }
+    }
+    let target_frames = (frames as f64 * ratio).round() as usize;
+    for chan in out_planar.iter_mut() {
+        chan.drain(..delay.min(chan.len()));
+        chan.resize(target_frames, 0.0);
+    }
+    let mut out = Vec::with_capacity(target_frames * channels);
+    for i in 0..target_frames {
+        for chan in &out_planar {
+            out.push(chan[i]);
+        }
+    }
+    out
 }
 
 #[cfg(windows)]
@@ -373,5 +526,25 @@ mod tests {
         assert_eq!(decode_48k_stereo(&fixture("video-only.m4a"), 60), Err(NO_AUDIO.to_string()));
         assert_eq!(decode_48k_stereo(&fixture("tone.wav"), 0), Err(too_long(0)));
         assert_eq!(decode_48k_stereo(&fixture("tone.mp3"), 0), Err(too_long(0)));
+    }
+
+    // The Files tab's `decode_16k_mono` hits the same Ogg Vorbis path as the
+    // soundboard's `decode_48k_stereo` (both fall through from `decode_ogg_opus`
+    // to `decode_ogg_vorbis`), so the fixture that stands in for the format is
+    // the same `tone.ogg`. Mixed to mono, the left-channel tone is halved
+    // (averaged with the silent right channel): 0.5 * sin becomes 0.25 * sin.
+    #[cfg(windows)]
+    #[test]
+    fn the_vorbis_fixture_also_decodes_through_the_16k_mono_path() {
+        let samples = decode_16k_mono(&fixture("tone.ogg"), |_, _| {}).expect("decode");
+        // 1 s at 16 kHz, give or take the encoder's padding.
+        assert!((15_000..=17_500).contains(&samples.len()), "{} samples", samples.len());
+        // 0.1 s to 0.9 s.
+        let window: Vec<f32> = samples.iter().skip(1_600).take(12_800).copied().collect();
+        let rms = (window.iter().map(|&s| (s as f64).powi(2)).sum::<f64>() / window.len() as f64).sqrt();
+        assert!((0.15..0.21).contains(&rms), "mono RMS {}", rms);
+        // 440 Hz: 704 zero crossings in 0.8 s, independent of the sample rate.
+        let crossings = window.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
+        assert!((690..=718).contains(&crossings), "{} zero crossings", crossings);
     }
 }

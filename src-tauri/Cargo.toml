@@ -40,8 +40,10 @@ regex = "1"
 getrandom = "0.3"
 whatlang = "0.18"
 sha2 = "0.10"
-# WhatsApp voice messages and other Ogg Opus files, which Windows cannot open
-# (src/media.rs).
+# WhatsApp voice messages and other Ogg Opus/Vorbis files: Windows Media
+# Foundation has no byte-stream handler for the Ogg container at all
+# (src/media.rs), so Opus goes through libopus, Vorbis through lewton, both
+# fed by our own `ogg::PacketReader`.
 ogg = "0.9"
 opus = "0.4"
 futures-util = "0.3"
@@ -51,6 +53,14 @@ whisper-rs = { version = "0.16", features = ["raw-api"] }
 # Word export of file transcripts (src/export.rs); default features add
 # image support (embedding pictures), which this code does not use.
 docx-rs = { version = "0.4", default-features = false }
+# Ogg Vorbis (src/media.rs): default features pull in lewton's own `ogg`
+# 0.8 (for its `inside_ogg` convenience module), a second, older copy next
+# to our own `ogg` 0.9 above; disabled, since we only use its per-packet
+# `header`/`audio` functions on raw bytes from our own `ogg::PacketReader`.
+lewton = { version = "0.10.2", default-features = false }
+# Resamples Ogg Vorbis to the target rate: lewton, unlike libopus, does not
+# resample for us.
+rubato = { version = "0.15", default-features = false }
 
 [dev-dependencies]
 # Reads back the Word doc's XML in export.rs's docx() test.
