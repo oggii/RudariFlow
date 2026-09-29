@@ -57,7 +57,7 @@ Decisions from the discussion:
 - **Switch.** "Virtual microphone" on/off. Off: no stream is open, no microphone is captured, sound hotkeys are released. The state is remembered across restarts; on at start opens the engine (Windows then shows the microphone-in-use icon).
 - **Streams (on):**
   - **Mic in:** the chosen microphone (default: the Recording setting's microphone), WASAPI shared mode through cpal.
-  - **Cable out ("what others hear"):** the chosen output (default: the first output whose name contains "CABLE Input"). Carries `mic + Σ sounds × sound volume × others volume`.
+  - **Cable out ("what others hear"):** the chosen output (default: an output whose name contains "VB-Audio Virtual Cable" or "CABLE Input", preferring one without "16 Ch" — the current VB-Cable driver names its endpoints "Speakers (VB-Audio Virtual Cable)" and "CABLE In 16 Ch (VB-Audio Virtual Cable)"; both feed "CABLE Output"). Carries `mic + Σ sounds × sound volume × others volume`.
   - **Headphones out ("what you hear"):** the chosen output (default: Windows' default output). Carries `Σ sounds × sound volume × me volume` — never the user's own voice (no echo).
   - Either volume at 0 gives "only me" / "only them".
 - **Mic → cable.** The mic callback converts to stereo at the cable's rate and writes into the drift buffer; the cable callback reads from it. Target fill about 10 ms; above target + 20 ms a few frames are dropped, on underrun silence is inserted, spread out so speech stays clean. Expected extra delay of the voice: 20–30 ms.
@@ -115,7 +115,7 @@ Folder: `<app data>\soundboard\` (`%APPDATA%\com.rudariflow.app\soundboard\`, or
 ### UI
 
 - **Soundboard tab** (sidebar, after Files):
-  - Top: the Virtual microphone switch and a status line ("On: your mic + sounds → CABLE Input", or why it is off/failed), the sliders "Others hear" and "You hear", the switch "Play sounds over each other", the Stop all hotkey, and a collapsible **Devices** area (Microphone, Virtual cable, Headphones; each "Automatic (…)" plus the list).
+  - Top: the Virtual microphone switch and a status line ("On: your mic + sounds → Speakers (VB-Audio Virtual Cable)", i.e. the chosen cable output, or why it is off/failed), the sliders "Others hear" and "You hear", the switch "Play sounds over each other", the Stop all hotkey, and a collapsible **Devices** area (Microphone, Virtual cable, Headphones; each "Automatic (…)" plus the list).
   - Toolbar: **Add sounds…** (multi-select file picker filtered to the 8 formats) and drag and drop onto the tab; a **search** box that filters by name as you type; **category chips** (All, each category, "+ New"; a category chip can be renamed or deleted); **Stop all**; **Pop out**.
   - List, one row per sound: play/stop button (disabled while the Virtual microphone is off, with the hint "Turn on the virtual microphone to play"), name (click to rename), category (select), hotkey (click to capture; ✕ clears), volume slider, length, delete. The playing sound is highlighted with its progress.
   - Empty state: how to add sounds; when no virtual cable is found, a short explanation with a link to <https://vb-audio.com/Cable/> and the Discord hint below.
