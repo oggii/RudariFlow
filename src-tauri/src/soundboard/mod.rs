@@ -248,10 +248,12 @@ impl Soundboard {
 
     fn save_enabled(&self, enabled: bool) {
         if lock(&self.board).enabled != enabled {
-            let _ = self.update(|b| {
+            if let Err(e) = self.update(|b| {
                 b.enabled = enabled;
                 Ok(())
-            });
+            }) {
+                startup_log::log(&format!("[soundboard] could not save the switch: {}", e));
+            }
         }
     }
 
@@ -269,8 +271,11 @@ impl Soundboard {
     fn update<R>(&self, change: impl FnOnce(&mut Board) -> Result<R, String>) -> Result<R, String> {
         let result = {
             let mut board = lock(&self.board);
-            let result = change(&mut board)?;
-            board.save(&self.dir).map_err(|e| format!("disk: {}", e))?;
+            // Changed on a copy, kept only once it is saved.
+            let mut changed = board.clone();
+            let result = change(&mut changed)?;
+            changed.save(&self.dir).map_err(|e| format!("disk: {}", e))?;
+            *board = changed;
             result
         };
         (self.events)(Event::Changed);
@@ -287,14 +292,19 @@ impl Soundboard {
     /// Save the chosen devices ("" = automatic). While on, the engine
     /// starts again on them; a missing one turns it off with the reason.
     pub fn set_devices(&self, devices: Devices, recording_mic: &str) -> Status {
-        let _ = self.update(|b| {
+        if let Err(e) = self.update(|b| {
             b.devices = devices;
             Ok(())
-        });
+        }) {
+            startup_log::log(&format!("[soundboard] could not save the devices: {}", e));
+        }
         let _life = lock(&self.lifecycle);
         if self.is_on() {
             self.stop_engine();
             let _ = self.turn_on_locked(recording_mic);
+        } else if matches!(self.status(), Status::Error { .. }) {
+            // A new choice clears the old error.
+            self.set_status(Status::Off);
         }
         self.status()
     }
@@ -422,21 +432,31 @@ impl Soundboard {
             }
         }
         // The decode runs without the engine slot, so stop/turn_off/stats do
-        // not wait for it; one at a time, and only for a sound still in the
+        // not wait for it. A cache that exists is used at once; building one
+        // is serialised (shared temp file) and only for a sound still in the
         // library (a removal holds the same lock).
-        let wav = {
+        let wav = if prepare::cache_path(&self.dir, id).exists() {
+            prepare::cache_path(&self.dir, id)
+        } else {
             let _cache = lock(&self.cache_lock);
             if lock(&self.board).sound(id).is_none() {
                 return Err("no_sound".into());
             }
             prepare::ensure_cache(&self.dir, &sound)?
         };
+        // Toggle and start under one hold of the slot: two quick presses
+        // cannot both start the sound.
         let slot = lock(&self.engine);
         let engine = slot.as_ref().ok_or("off")?;
+        if engine.with_mixer(|m| m.stop_sound(id)) {
+            return Ok(false);
+        }
         match engine.start_voice(id, sound.volume, &wav) {
             Ok(()) => Ok(true),
             // The engine ended (a device was lost); the lost event follows.
             Err(e) if e == "engine_stopped" => Err("off".into()),
+            // A removal deleted the file after the check above.
+            Err(_) if !wav.exists() => Err("missing".into()),
             Err(e) => Err(e),
         }
     }
@@ -459,7 +479,7 @@ impl Soundboard {
 
     /// The pop-out window opened or closed, or its Always on top switch.
     pub fn set_window(&self, popped_out: Option<bool>, always_on_top: Option<bool>) {
-        let _ = self.update(|b| {
+        if let Err(e) = self.update(|b| {
             if let Some(popped_out) = popped_out {
                 b.window.popped_out = popped_out;
             }
@@ -467,7 +487,9 @@ impl Soundboard {
                 b.window.always_on_top = always_on_top;
             }
             Ok(())
-        });
+        }) {
+            startup_log::log(&format!("[soundboard] could not save the window: {}", e));
+        }
     }
 
     /// For the live checks; None while off.
@@ -579,10 +601,39 @@ mod tests {
         assert_eq!(sb.status(), Status::Error { problem });
         assert!(!sb.board().enabled);
         assert!(drain(&rx).iter().any(|e| e.starts_with("status:Error")));
+        // Choosing devices again clears the old error (nothing is opened while off).
+        assert_eq!(sb.set_devices(Devices::default(), "default"), Status::Off);
+        assert!(drain(&rx).iter().any(|e| e == "status:Off"));
         sb.turn_off();
         assert_eq!(sb.status(), Status::Off);
         assert_eq!(serde_json::to_string(&Status::Off).unwrap(), r#"{"state":"off"}"#);
         assert_eq!(serde_json::to_string(&Status::On { cable: "C".into() }).unwrap(), r#"{"state":"on","cable":"C"}"#);
+    }
+
+    #[test]
+    fn a_failed_save_changes_nothing() {
+        let (sb, rx, app_dir) = board("savefail");
+        let id = sb.add(&[fixture("tone.wav")])[0].id.clone().unwrap();
+        let before = sb.board();
+        // A folder where soundboard.json belongs: every save fails.
+        let json = app_dir.join("soundboard").join(library::FILE);
+        std::fs::remove_file(&json).unwrap();
+        std::fs::create_dir(&json).unwrap();
+        drain(&rx);
+        let added = sb.add(&[fixture("tone.ogg")]);
+        assert!(added[0].error.as_deref().unwrap_or("").starts_with("disk"), "{:?}", added);
+        assert_eq!(sb.board(), before, "no ghost sound");
+        assert_eq!(std::fs::read_dir(sb.dir().join("sounds")).unwrap().count(), 1, "its files are removed");
+        let sound = before.sound(&id).unwrap().clone();
+        assert!(sb.remove(&id).unwrap_err().starts_with("disk"));
+        assert_eq!(sb.board(), before, "the sound stays");
+        assert!(sb.dir().join(&sound.file).exists() && prepare::cache_path(sb.dir(), &id).exists());
+        assert!(sb.rename(&id, "x").is_err());
+        assert_eq!(sb.board(), before);
+        assert!(drain(&rx).is_empty(), "no change event for a failed save");
+        std::fs::remove_dir(&json).unwrap();
+        assert!(sb.remove(&id).is_ok());
+        assert!(!sb.dir().join(&sound.file).exists());
     }
 
     #[test]
