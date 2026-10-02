@@ -241,14 +241,41 @@ fn all_hotkeys(settings: &Settings, board: &Board) -> Vec<(HotkeyAction, String)
     all
 }
 
-/// The action other than `action` that already has `hotkey`: mouse
-/// bindings by button and modifiers, chords without regard to case.
+/// Whether two hotkey strings are the same binding: mouse bindings by
+/// button and modifiers, chords by key and modifiers (so "CmdOrCtrl" is
+/// "Ctrl", in any order and case), anything else without regard to case.
+fn same_hotkey(a: &str, b: &str) -> bool {
+    use tauri_plugin_global_shortcut::Shortcut;
+    match (mouse_hotkey::parse(a), mouse_hotkey::parse(b)) {
+        (Some(a), Some(b)) => return a == b,
+        (Some(_), None) | (None, Some(_)) => return false,
+        (None, None) => {}
+    }
+    match (a.parse::<Shortcut>(), b.parse::<Shortcut>()) {
+        (Ok(a), Ok(b)) => a.mods == b.mods && a.key == b.key,
+        _ => a.eq_ignore_ascii_case(b),
+    }
+}
+
+/// The action other than `action` that already has `hotkey` (see
+/// `same_hotkey`).
 fn taken_by(all: &[(HotkeyAction, String)], action: &HotkeyAction, hotkey: &str) -> Option<HotkeyAction> {
-    let same = |h: &str| match (mouse_hotkey::parse(hotkey), mouse_hotkey::parse(h)) {
-        (Some(a), Some(b)) => a == b,
-        _ => hotkey.eq_ignore_ascii_case(h),
-    };
-    all.iter().find(|(a, h)| a != action && !h.is_empty() && same(h)).map(|(a, _)| a.clone())
+    all.iter().find(|(a, h)| a != action && !h.is_empty() && same_hotkey(h, hotkey)).map(|(a, _)| a.clone())
+}
+
+/// The app hotkey (dictation, paste last, rewrite last, Free GPU) that has
+/// `hotkey`. A board key never registers over one: a mouse binding would
+/// replace its handler, and releasing the board key later would release it.
+fn app_hotkey_owner(app: &[(HotkeyAction, String)], hotkey: &str) -> Option<HotkeyAction> {
+    app.iter().find(|(_, h)| !h.is_empty() && same_hotkey(h, hotkey)).map(|(a, _)| a.clone())
+}
+
+/// Whether a chord with no modifier is a key that may stand alone: the
+/// numpad and F1-F24 (Soundpad-like sound and stop-all keys).
+fn may_stand_alone(key: tauri_plugin_global_shortcut::Code) -> bool {
+    let name = format!("{:?}", key);
+    name.starts_with("Numpad")
+        || name.strip_prefix('F').and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=24).contains(&n))
 }
 
 /// The owner in an "already used by" error, for the UI to put in words:
@@ -262,8 +289,9 @@ fn owner_label(action: &HotkeyAction, board: &Board) -> String {
 
 /// Whether `hotkey` may become a sound's or stop all's: not a Windows
 /// shortcut, a key or side button the hotkey code knows, and no other
-/// hotkey's. Empty (off) is always fine. A key alone (the numpad, F13) is
-/// allowed here; the settings UI only offers that for the soundboard.
+/// hotkey's. Empty (off) is always fine. A key alone is allowed only for
+/// the numpad and F1-F24 (the settings UI offers that only for the
+/// soundboard); a side button keeps the mouse rules.
 fn check_board_hotkey(all: &[(HotkeyAction, String)], board: &Board, action: &HotkeyAction, hotkey: &str) -> Result<(), String> {
     if hotkey.is_empty() {
         return Ok(());
@@ -271,8 +299,16 @@ fn check_board_hotkey(all: &[(HotkeyAction, String)], board: &Board, action: &Ho
     if rudariflow_lib::settings::is_windows_shortcut(hotkey) {
         return Err(format!("'{}' is a Windows shortcut (select all, copy, paste, ...)", hotkey));
     }
-    if mouse_hotkey::parse(hotkey).is_none() && hotkey.parse::<tauri_plugin_global_shortcut::Shortcut>().is_err() {
-        return Err(format!("'{}' is not a valid hotkey", hotkey));
+    if mouse_hotkey::parse(hotkey).is_none() {
+        let Ok(chord) = hotkey.parse::<tauri_plugin_global_shortcut::Shortcut>() else {
+            return Err(format!("'{}' is not a valid hotkey", hotkey));
+        };
+        if chord.mods.is_empty() && !may_stand_alone(chord.key) {
+            return Err(format!(
+                "'{}' is a key alone; only the numpad and F1-F24 work without Ctrl, Alt, Shift or Win",
+                hotkey
+            ));
+        }
     }
     match taken_by(all, action, hotkey) {
         Some(owner) => Err(format!("'{}' is already used by {}", hotkey, owner_label(&owner, board))),
@@ -1318,6 +1354,9 @@ fn change_hotkey(
         HotkeyAction::StopSounds | HotkeyAction::Sound(_) => {}
     }
     settings.save(&state.app_dir)?;
+    drop(settings);
+    // The board's keys never sit on an app hotkey's (see `sync_board_hotkeys`).
+    spawn_board_hotkey_sync(&app);
     Ok(())
 }
 
@@ -1785,42 +1824,82 @@ fn hotkey_is_registered(app: &AppHandle, hotkey: &str) -> bool {
     }
 }
 
-/// The stop-all and sound hotkeys registered now, with their actions.
-static BOARD_HOTKEYS: Mutex<Vec<(String, HotkeyAction)>> = Mutex::new(Vec::new());
+/// What a board hotkey sync works from. A sync with the same inputs as the
+/// last one has nothing to do (a volume drag, a rename), so keys another
+/// program owns are retried only when the board turns on or a hotkey changes.
+#[derive(Clone, PartialEq, Debug)]
+struct SyncInputs {
+    on: bool,
+    paused: bool,
+    /// The board hotkeys to register: none while off or paused.
+    wanted: Vec<(HotkeyAction, String)>,
+    /// The app's own four, which a board key never takes over.
+    app: Vec<(HotkeyAction, String)>,
+}
+
+fn sync_inputs(on: bool, paused: bool, board: &Board, settings: &Settings) -> SyncInputs {
+    SyncInputs {
+        on,
+        paused,
+        wanted: if on && !paused { board_hotkeys(board) } else { Vec::new() },
+        app: hotkeys(settings).to_vec(),
+    }
+}
+
+/// The stop-all and sound hotkeys registered now, with their actions, and
+/// the inputs of the last completed sync.
+struct BoardHotkeys {
+    registered: Vec<(String, HotkeyAction)>,
+    last: Option<SyncInputs>,
+}
+
+static BOARD_HOTKEYS: Mutex<BoardHotkeys> = Mutex::new(BoardHotkeys { registered: Vec::new(), last: None });
 /// A hotkey is being captured in the UI: the board's hotkeys stay released.
 static HOTKEYS_PAUSED: AtomicBool = AtomicBool::new(false);
 
 /// Make the registered board hotkeys what the board wants: its stop-all
 /// and sound hotkeys while it is on and no hotkey is being captured, none
-/// otherwise. Keys another program owns are reported to the board ("Taken
-/// by another program"). Never on the main thread: registering waits for it.
+/// otherwise. Keys another program or an app hotkey owns are reported to
+/// the board ("Taken by another program"). Never on the main thread:
+/// registering waits for it.
 fn sync_board_hotkeys(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let mut registered = BOARD_HOTKEYS.lock().unwrap_or_else(|p| p.into_inner());
-    let wanted = if state.soundboard.is_on() && !HOTKEYS_PAUSED.load(Ordering::SeqCst) {
-        board_hotkeys(&state.soundboard.board())
-    } else {
-        Vec::new()
-    };
-    registered.retain(|(hotkey, action)| {
-        let keep = wanted.iter().any(|(a, h)| h == hotkey && a == action);
-        if !keep {
+    let mut sync = BOARD_HOTKEYS.lock().unwrap_or_else(|p| p.into_inner());
+    let (on, board) = (state.soundboard.is_on(), state.soundboard.board());
+    let paused = HOTKEYS_PAUSED.load(Ordering::SeqCst);
+    let inputs = sync_inputs(on, paused, &board, &state.settings.lock().unwrap());
+    if sync.last.as_ref() == Some(&inputs) {
+        return;
+    }
+    sync.registered.retain(|(hotkey, action)| {
+        let owner = app_hotkey_owner(&inputs.app, hotkey);
+        let keep = owner.is_none() && inputs.wanted.iter().any(|(a, h)| h == hotkey && a == action);
+        if let Some(owner) = owner {
+            // An app hotkey has this key now: releasing it would release that one.
+            startup_log::log(&format!("[soundboard] hotkey {} left to {:?}", hotkey, owner));
+        } else if !keep {
             unregister_hotkey(app, hotkey);
             startup_log::log(&format!("[soundboard] hotkey {} released", hotkey));
         }
         keep
     });
     let mut taken = Vec::new();
-    for (action, hotkey) in wanted {
-        if registered.iter().any(|(h, a)| *h == hotkey && *a == action) {
+    for (action, hotkey) in &inputs.wanted {
+        if sync.registered.iter().any(|(h, a)| h == hotkey && a == action) {
             continue;
         }
-        match register_hotkey(app, &hotkey, action.clone()) {
-            Ok(()) => registered.push((hotkey, action)),
+        if let Some(owner) = app_hotkey_owner(&inputs.app, hotkey) {
+            startup_log::log(&format!("[soundboard] hotkey {} not registered: {:?} has it", hotkey, owner));
+            taken.push(action.target());
+            continue;
+        }
+        match register_hotkey(app, hotkey, action.clone()) {
+            Ok(()) => sync.registered.push((hotkey.clone(), action.clone())),
             Err(_) => taken.push(action.target()),
         }
     }
-    drop(registered);
+    sync.last = Some(inputs);
+    drop(sync);
     state.soundboard.set_hotkeys_taken(taken);
 }
 
@@ -2418,6 +2497,57 @@ mod tests {
             check_board_hotkey(&all, &board, &HotkeyAction::StopSounds, "Alt+Shift+V"),
             Err("'Alt+Shift+V' is already used by pasteLast".to_string())
         );
+    }
+
+    #[test]
+    fn a_key_alone_is_only_a_numpad_or_function_key() {
+        let board = board_with("", &[("s-b", "drums", "")]);
+        let all = all_hotkeys(&Settings::default(), &board);
+        let drums = HotkeyAction::Sound("s-b".into());
+        for alone in ["A", "Space", "Enter", "Digit1"] {
+            let err = check_board_hotkey(&all, &board, &drums, alone).unwrap_err();
+            assert!(err.contains("is a key alone"), "{}: {}", alone, err);
+        }
+        for ok in ["F1", "F13", "F24", "Numpad5", "NumpadAdd", "Ctrl+Q", "Alt+A", "Mouse4", "Shift+Mouse5"] {
+            assert_eq!(check_board_hotkey(&all, &board, &drums, ok), Ok(()), "{}", ok);
+        }
+        assert!(check_board_hotkey(&all, &board, &drums, "F25").unwrap_err().contains("not a valid hotkey"));
+    }
+
+    #[test]
+    fn a_board_key_never_takes_an_app_hotkey() {
+        let mut s = Settings::default();
+        s.free_gpu_hotkey = "CmdOrCtrl+Mouse4".to_string();
+        let app = hotkeys(&s);
+        assert_eq!(app_hotkey_owner(&app, "Ctrl+Shift+Space"), Some(HotkeyAction::Dictation), "CmdOrCtrl is Ctrl");
+        assert_eq!(app_hotkey_owner(&app, "shift+control+space"), Some(HotkeyAction::Dictation), "any order and case");
+        assert_eq!(app_hotkey_owner(&app, "Ctrl+Mouse4"), Some(HotkeyAction::FreeGpu));
+        assert_eq!(app_hotkey_owner(&app, "alt+shift+v"), Some(HotkeyAction::PasteLast));
+        assert_eq!(app_hotkey_owner(&app, "Mouse4"), None, "other modifiers");
+        assert_eq!(app_hotkey_owner(&app, "F13"), None);
+        // The conflict check before saving compares the same way.
+        let board = board_with("", &[("s-b", "drums", "")]);
+        let all = all_hotkeys(&s, &board);
+        assert_eq!(taken_by(&all, &HotkeyAction::Sound("s-b".into()), "Ctrl+Shift+Space"), Some(HotkeyAction::Dictation));
+    }
+
+    #[test]
+    fn only_a_hotkey_or_switch_change_needs_a_sync() {
+        let s = Settings::default();
+        let mut board = board_with("F14", &[("s-a", "airhorn", "F13")]);
+        let before = sync_inputs(true, false, &board, &s);
+        board.others_volume = 0.3;
+        board.sounds[0].volume = 0.2;
+        board.sounds[0].name = "horn".to_string();
+        assert_eq!(sync_inputs(true, false, &board, &s), before, "volumes and names");
+        assert!(sync_inputs(false, false, &board, &s).wanted.is_empty(), "off");
+        assert!(sync_inputs(true, true, &board, &s).wanted.is_empty(), "capturing a hotkey");
+        assert_ne!(sync_inputs(false, false, &board, &s), before, "turning on again retries");
+        let mut moved = s.clone();
+        moved.free_gpu_hotkey = "F13".to_string();
+        assert_ne!(sync_inputs(true, false, &board, &moved), before, "an app hotkey changed");
+        board.sounds[0].hotkey = "F15".to_string();
+        assert_ne!(sync_inputs(true, false, &board, &s), before, "a sound's hotkey changed");
     }
 
     #[test]
