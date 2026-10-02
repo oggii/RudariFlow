@@ -8,7 +8,7 @@
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -208,6 +208,9 @@ pub struct Engine {
     stopped: Receiver<()>,
     mixer: Arc<Mutex<Mixer>>,
     drift: Arc<Mutex<DriftBuffer>>,
+    /// The engine thread is past its streams (stopped or lost); set under
+    /// the mixer's lock, so no voice starts that nothing would play.
+    ended: Arc<AtomicBool>,
     info: EngineInfo,
 }
 
@@ -219,8 +222,8 @@ impl Engine {
         let (control, control_rx) = mpsc::channel::<Control>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<EngineInfo, Problem>>();
         let (stopped_tx, stopped) = mpsc::channel::<()>();
-        let (m, d, c, open) = (mixer.clone(), drift.clone(), control.clone(), devices.clone());
-        let Callbacks { mut on_tick, on_lost } = callbacks;
+        let ended = Arc::new(AtomicBool::new(false));
+        let (m, d, c, e, open) = (mixer.clone(), drift.clone(), control.clone(), ended.clone(), devices.clone());
         std::thread::Builder::new()
             .name("rf-soundboard".into())
             .spawn(move || {
@@ -235,20 +238,11 @@ impl Engine {
                         return;
                     }
                 };
-                let lost = run_until_stopped(&control_rx, &m, &mut *on_tick);
-                drop(streams);
-                // Every voice ends, so its reader thread stops.
-                lock(&m).clear();
-                let _ = stopped_tx.send(());
-                if let Some(problem) = lost {
-                    // Off this thread: the handler takes the engine out of
-                    // the board and waits for it to stop.
-                    std::thread::spawn(move || on_lost(problem));
-                }
+                serve(streams, &control_rx, &m, &e, callbacks, stopped_tx);
             })
             .map_err(|e| Problem::new("open_failed", "cable", &devices.cable, &e.to_string()))?;
         match ready_rx.recv_timeout(OPEN_TIMEOUT) {
-            Ok(Ok(info)) => Ok(Engine { generation, control, stopped, mixer, drift, info }),
+            Ok(Ok(info)) => Ok(Engine { generation, control, stopped, mixer, drift, ended, info }),
             Ok(Err(problem)) => Err(problem),
             Err(_) => {
                 // Streams that open later close at once.
@@ -272,9 +266,21 @@ impl Engine {
 
     /// Start playing a prepared WAV (the first 200 ms are read before it
     /// starts; the rest on a reader thread).
+    /// "engine_stopped" once the engine has ended (a device was lost).
     pub fn start_voice(&self, sound_id: &str, volume: f32, wav: &Path) -> Result<(), String> {
+        const STOPPED: &str = "engine_stopped";
+        if self.ended.load(Ordering::Acquire) {
+            return Err(STOPPED.to_string());
+        }
         let (shared, frames) = spawn_reader(wav)?;
-        lock(&self.mixer).start(sound_id, volume, frames, shared);
+        let mut mixer = lock(&self.mixer);
+        // Checked again under the lock the engine thread sets it under.
+        if self.ended.load(Ordering::Acquire) {
+            drop(mixer);
+            shared.done.store(true, Ordering::Relaxed);
+            return Err(STOPPED.to_string());
+        }
+        mixer.start(sound_id, volume, frames, shared);
         Ok(())
     }
 
@@ -285,7 +291,7 @@ impl Engine {
         let _ = self.stopped.recv_timeout(Duration::from_secs(3));
         // A wedged stream may still hold the mixer: end the voices anyway, so
         // no reader thread outlives the engine.
-        lock(&self.mixer).clear();
+        end_voices(&self.mixer, &self.ended);
     }
 }
 
@@ -293,6 +299,37 @@ impl Drop for Engine {
     fn drop(&mut self) {
         let _ = self.control.send(Control::Stop);
     }
+}
+
+/// The engine thread once its streams are open: run until Stop or a lost
+/// device, end every voice, close the streams, report a lost device once.
+fn serve<S>(
+    streams: S,
+    control: &Receiver<Control>,
+    mixer: &Mutex<Mixer>,
+    ended: &AtomicBool,
+    callbacks: Callbacks,
+    stopped: Sender<()>,
+) {
+    let Callbacks { mut on_tick, on_lost } = callbacks;
+    let lost = run_until_stopped(control, mixer, &mut *on_tick);
+    // Before closing the streams (a wedged device may hang that): from now
+    // on no voice starts, and the playing ones end, so their readers stop.
+    end_voices(mixer, ended);
+    drop(streams);
+    let _ = stopped.send(());
+    if let Some(problem) = lost {
+        // Off this thread: the handler takes the engine out of the board
+        // and waits for it to stop.
+        std::thread::spawn(move || on_lost(problem));
+    }
+}
+
+/// Mark the engine ended and end every voice, under the mixer's lock.
+fn end_voices(mixer: &Mutex<Mixer>, ended: &AtomicBool) {
+    let mut mixer = lock(mixer);
+    ended.store(true, Ordering::Release);
+    mixer.clear();
 }
 
 /// Wait for Stop or a lost device, reporting the playing voices every
@@ -736,5 +773,102 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         tx.send(Control::Stop).unwrap();
         assert_eq!(run_until_stopped(&rx, &mixer, &mut |_| {}), None);
+    }
+
+    /// An engine with no devices: `serve` runs exactly as after the streams
+    /// opened, with `()` for the streams.
+    fn engine_without_devices(on_lost: Box<dyn FnOnce(Problem) + Send>) -> Engine {
+        let mixer = Arc::new(Mutex::new(Mixer::new(false, 1.0, 1.0)));
+        let ended = Arc::new(AtomicBool::new(false));
+        let (control, control_rx) = mpsc::channel();
+        let (stopped_tx, stopped) = mpsc::channel();
+        let (m, e) = (mixer.clone(), ended.clone());
+        let callbacks = Callbacks { on_tick: Box::new(|_| {}), on_lost };
+        std::thread::spawn(move || serve((), &control_rx, &m, &e, callbacks, stopped_tx));
+        let info = EngineInfo {
+            microphone: String::new(),
+            cable: String::new(),
+            headphones: String::new(),
+            mic_rate: 48_000,
+            mic_channels: 2,
+            cable_rate: 48_000,
+            cable_channels: 2,
+            headphones_rate: 48_000,
+            headphones_channels: 2,
+        };
+        let drift = Arc::new(Mutex::new(DriftBuffer::new(48_000)));
+        Engine { generation: 1, control, stopped, mixer, drift, ended, info }
+    }
+
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let since = Instant::now();
+        while !done() {
+            assert!(since.elapsed() < Duration::from_secs(2), "{}", what);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn no_sound_starts_after_the_engine_ended() {
+        let dir = std::env::temp_dir().join("rudariflow_sb_ended");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("long.wav");
+        write_wav(&wav, 144_000);
+
+        // A device is lost: on_lost runs once, the playing voice ends and
+        // no new one starts.
+        let (lost_tx, lost_rx) = mpsc::channel();
+        let engine = engine_without_devices(Box::new(move |p| lost_tx.send(p).unwrap()));
+        engine.start_voice("s-a", 1.0, &wav).unwrap();
+        let playing = engine.with_mixer(|m| m.playing().len());
+        assert_eq!(playing, 1);
+        engine.control.send(Control::Lost(Problem::new("lost", "cable", "CABLE", "gone"))).unwrap();
+        let problem = lost_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(problem, Problem::new("lost", "cable", "CABLE", "gone"));
+        assert!(engine.with_mixer(|m| m.is_idle()), "the voices end with the engine");
+        assert_eq!(engine.start_voice("s-b", 1.0, &wav), Err("engine_stopped".to_string()));
+        assert!(engine.with_mixer(|m| m.is_idle()));
+        assert!(lost_rx.recv_timeout(Duration::from_millis(200)).is_err(), "on_lost runs once");
+        engine.stop();
+
+        // Stopped (the thread ended): the same.
+        let engine = engine_without_devices(Box::new(|_| panic!("not lost")));
+        engine.control.send(Control::Stop).unwrap();
+        wait_until("the engine thread ends", || engine.ended.load(Ordering::Relaxed));
+        assert_eq!(engine.start_voice("s-c", 1.0, &wav), Err("engine_stopped".to_string()));
+        engine.stop();
+    }
+
+    #[test]
+    fn a_reader_finishes_when_its_voice_or_the_engine_ends() {
+        let dir = std::env::temp_dir().join("rudariflow_sb_reader_exit");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("five_seconds.wav");
+        write_wav(&wav, 240_000);
+
+        // The voice is over: its reader stops and finishes the buffer.
+        let (shared, frames) = spawn_reader(&wav).unwrap();
+        assert_eq!(frames, 240_000);
+        assert!(!lock(&shared.buffer).is_finished(), "5 s do not fit in the first chunk");
+        shared.done.store(true, Ordering::Relaxed);
+        wait_until("the reader finishes after done", || lock(&shared.buffer).is_finished());
+        assert!(lock(&shared.buffer).end() < frames, "it stopped before the end of the file");
+
+        // The engine ends: Mixer::clear marks every voice done.
+        let (shared, frames) = spawn_reader(&wav).unwrap();
+        let mut mixer = Mixer::new(false, 1.0, 1.0);
+        mixer.start("s-long", 1.0, frames, shared.clone());
+        assert!(!lock(&shared.buffer).is_finished());
+        mixer.clear();
+        wait_until("the reader finishes after clear", || lock(&shared.buffer).is_finished());
+
+        // Dropping the mixer does the same.
+        let (shared, frames) = spawn_reader(&wav).unwrap();
+        let mut mixer = Mixer::new(false, 1.0, 1.0);
+        mixer.start("s-long", 1.0, frames, shared.clone());
+        drop(mixer);
+        wait_until("the reader finishes after the mixer is dropped", || lock(&shared.buffer).is_finished());
     }
 }

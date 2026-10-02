@@ -1,9 +1,12 @@
 //! The soundboard engine on the real devices, without the app: plays a
 //! sound into the VB-Audio cable and measures what arrives on "CABLE
-//! Output" and on the headphones output. The headphones output is the
-//! cable's 16-channel endpoint, so nothing plays on the speakers. Where the
-//! two cable inputs share one driver pin, the second fails to open
-//! (0x8889000A, AUDCLNT_E_DEVICE_IN_USE) and the probe stops at "start".
+//! Output" and on the headphones output. The "headphones" are the cable's
+//! own input endpoint, the same one as the cable, so nothing plays on the
+//! speakers. Not the cable's 16-channel endpoint: the two cable inputs share
+//! one driver pin, and on this PC the second to open fails (0x8889000A,
+//! AUDCLNT_E_DEVICE_IN_USE). Two shared-mode streams on one endpoint are
+//! fine; the loopback then measures that shared endpoint (both outputs'
+//! sounds), not the headphones path alone.
 //!
 //!   cargo run --no-default-features --example soundboard_probe -- <audio file of 8 s>
 
@@ -23,19 +26,17 @@ fn main() {
     println!("prepared: {} ms", prepared.duration_ms);
     let list = engine::device_list();
     println!("inputs: {:?}\noutputs: {:?}", list.inputs, list.outputs);
+    let cable = engine::auto_cable(&list.outputs).expect("no VB-Audio Virtual Cable");
+    // Never a real output: the headphones are the cable endpoint itself.
+    assert!(cable.contains("VB-Audio"), "not a VB-Audio cable endpoint: {}", cable);
     let devices = EngineDevices {
         microphone: list
             .default_input
             .clone()
             .filter(|n| !n.contains("VB-Audio"))
             .expect("no microphone, or Windows' default microphone is the cable itself"),
-        cable: engine::auto_cable(&list.outputs).expect("no VB-Audio Virtual Cable"),
-        headphones: list
-            .outputs
-            .iter()
-            .find(|n| n.to_ascii_lowercase().replace(' ', "").contains("16ch") && n.contains("VB-Audio"))
-            .cloned()
-            .expect("no 16 Ch cable endpoint"),
+        cable: cable.clone(),
+        headphones: cable,
     };
     let callbacks = Callbacks { on_tick: Box::new(|_| {}), on_lost: Box::new(|p| eprintln!("lost: {:?}", p)) };
     let running = Engine::start(1, devices.clone(), Mixer::new(false, 1.0, 1.0), callbacks).expect("start");
