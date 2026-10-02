@@ -166,6 +166,7 @@ mod tests {
             hotkey: String::new(),
             volume: 1.0,
             duration_ms: p.duration_ms,
+            looping: false,
         }
     }
 
@@ -232,6 +233,7 @@ mod tests {
                 hotkey: String::new(),
                 volume: 1.0,
                 duration_ms: 0,
+                looping: false,
             };
             assert!(is_missing(&dir, &sound), "{}", file);
             assert_eq!(ensure_cache(&dir, &sound).unwrap_err(), "missing");

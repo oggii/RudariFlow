@@ -298,6 +298,16 @@ input[type="range"] {
   max-width: none;
 }
 
+/* The Soundboard may grow wide (two columns, see "Soundboard layout"). */
+#section-soundboard {
+  max-width: none;
+  container: sbmain / inline-size;
+}
+#section-soundboard .sb-layout {
+  max-width: 680px;
+  margin: 0 auto;
+}
+
 #section-files.active {
   display: flex;
   flex-direction: column;
@@ -1347,6 +1357,59 @@ kbd {
 .sb.dragging {
   outline-color: var(--accent);
 }
+.sb-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* Soundboard layout: with room (main content area >= 900 px) the settings sit
+   in a left column and the sound library in a wide right column. The page
+   scrolls as one; the pop-out and narrow windows keep one column. */
+@container sbmain (min-width: 900px) {
+  #section-soundboard .sb-layout {
+    max-width: 1800px;
+    display: grid;
+    grid-template-columns: minmax(360px, 460px) minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    column-gap: 40px;
+    align-items: start;
+  }
+  #section-soundboard .section-header {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  /* The board root dissolves so its two groups are grid items. */
+  #section-soundboard #sb-root {
+    display: contents;
+  }
+  #section-soundboard .sb-col-settings {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  #section-soundboard .sb-col-library,
+  #section-soundboard #sb-root > .sb-popped {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+  /* The narrower settings column: long hints wrap instead of running under the controls. */
+  #section-soundboard .sb-col-settings .setting-row {
+    gap: 16px;
+  }
+  #section-soundboard .sb-col-settings .setting-label {
+    min-width: 0;
+  }
+  #section-soundboard .sb-col-settings .setting-control {
+    flex: 0 0 auto;
+  }
+  /* Drop target outline moves to the whole layout (the root has no box). */
+  #section-soundboard .sb-layout:has(.sb.dragging) {
+    outline: 1px dashed var(--accent);
+    outline-offset: 6px;
+    border-radius: var(--radius-lg);
+  }
+}
 .sb-control {
   align-items: center;
   flex-wrap: wrap;
@@ -1530,11 +1593,20 @@ kbd {
   background: var(--accent);
   transition: width 100ms linear;
 }
+.sb-progress-fill.no-slide {
+  transition: none;
+}
 .sb-side {
   grid-area: side;
   display: flex;
   align-items: center;
   gap: 6px;
+}
+/* Loop on: the accent, also on a playing row's tinted background. */
+.sb-loop[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 .sb-length {
   font-size: 12px;
@@ -1564,6 +1636,10 @@ kbd {
 .sb-note {
   font-size: 11px;
   color: var(--yellow);
+}
+/* A sound's hotkey while the sound hotkeys are switched off. */
+.sb-hotkey.off .hotkey-btn:not(.capturing) kbd {
+  opacity: 0.5;
 }
 .sb-popped {
   display: flex;

@@ -43,7 +43,7 @@ fn main() {
     println!("started: {}", serde_json::to_string(&running.stats()).unwrap());
     let quiet = engine::capture_levels(CABLE_OUTPUT, 1000, false).expect("capture");
     println!("cable before: {:?}", quiet);
-    running.start_voice("s-probe", 1.0, &prepare::cache_path(&dir, "s-probe")).expect("play");
+    running.start_voice("s-probe", 1.0, &prepare::cache_path(&dir, "s-probe"), false).expect("play");
     std::thread::sleep(Duration::from_millis(300));
     let cable = engine::capture_levels(CABLE_OUTPUT, 1000, false).expect("capture");
     let headphones = engine::capture_levels(&devices.headphones, 1000, true).expect("loopback");

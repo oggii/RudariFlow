@@ -22,6 +22,10 @@ fn me_default() -> f32 {
     0.7
 }
 
+fn yes() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Board {
@@ -44,6 +48,13 @@ pub struct Board {
     /// Stops every sound; empty = off.
     #[serde(default)]
     pub stop_hotkey: String,
+    /// The sounds' hotkeys are registered (while on). Off, they stay
+    /// assigned but do nothing; stop all and the toggle keep working.
+    #[serde(default = "yes")]
+    pub sound_hotkeys: bool,
+    /// Turns `sound_hotkeys` on and off; empty = off.
+    #[serde(default)]
+    pub toggle_hotkey: String,
     #[serde(default)]
     pub window: WindowPrefs,
     #[serde(default)]
@@ -95,6 +106,10 @@ pub struct Sound {
     pub volume: f32,
     #[serde(default)]
     pub duration_ms: u64,
+    /// Plays again from the start, without a gap, until it is stopped.
+    /// Saved as "loop"; files from before it load as false.
+    #[serde(default, rename = "loop")]
+    pub looping: bool,
 }
 
 impl Default for Board {
@@ -107,6 +122,8 @@ impl Default for Board {
             layer: false,
             devices: Devices::default(),
             stop_hotkey: String::new(),
+            sound_hotkeys: true,
+            toggle_hotkey: String::new(),
             window: WindowPrefs::default(),
             categories: Vec::new(),
             sounds: Vec::new(),
@@ -218,6 +235,11 @@ impl Board {
         Ok(())
     }
 
+    pub fn set_sound_loop(&mut self, id: &str, looping: bool) -> Result<(), String> {
+        self.sound_mut(id)?.looping = looping;
+        Ok(())
+    }
+
     /// A new category; returns its id.
     pub fn add_category(&mut self, name: &str) -> Result<String, String> {
         let name = clean_name(name)?;
@@ -312,6 +334,7 @@ mod tests {
             hotkey: String::new(),
             volume: 1.0,
             duration_ms: 1000,
+            looping: false,
         }
     }
 
@@ -324,6 +347,25 @@ mod tests {
         assert_eq!((board.others_volume, board.me_volume), (1.0, 0.7));
         assert_eq!(board.devices, Devices::default());
         assert!(board.stop_hotkey.is_empty() && board.sounds.is_empty() && board.categories.is_empty());
+        assert!(board.sound_hotkeys, "sound hotkeys are on");
+        assert!(board.toggle_hotkey.is_empty(), "no hotkey turns them off");
+    }
+
+    #[test]
+    fn a_file_from_before_the_sound_hotkeys_switch_keeps_them_on() {
+        let dir = temp("before_toggle");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(FILE),
+            r#"{"version": 1, "enabled": true, "stopHotkey": "F14",
+                "sounds": [{"id": "s-0123456789ab", "name": "a", "file": "sounds/s-0123456789ab.wav", "hotkey": "Numpad1"}]}"#,
+        )
+        .unwrap();
+        let board = Board::load(&dir);
+        assert!(board.sound_hotkeys);
+        assert_eq!(board.toggle_hotkey, "");
+        assert_eq!((board.stop_hotkey.as_str(), board.sounds[0].hotkey.as_str()), ("F14", "Numpad1"));
+        assert!(!board.sounds[0].looping, "a sound from before the loop switch does not loop");
     }
 
     #[test]
@@ -335,19 +377,24 @@ mod tests {
         board.stop_hotkey = "F14".into();
         board.devices.cable = "Speakers (VB-Audio Virtual Cable)".into();
         board.window.always_on_top = true;
+        board.sound_hotkeys = false;
+        board.toggle_hotkey = "F15".into();
         let memes = board.add_category("Memes").unwrap();
         let mut s = sound("s-0123456789ab", "airhorn");
         s.category = memes;
         s.hotkey = "Numpad1".into();
         s.volume = 0.5;
+        s.looping = true;
         board.add_sound(s);
+        board.add_sound(sound("s-ba9876543210", "drums"));
         board.save(&dir).unwrap();
         assert!(!dir.join("soundboard.json.tmp").exists(), "written through a temp file");
         assert_eq!(Board::load(&dir), board);
         let json = std::fs::read_to_string(dir.join(FILE)).unwrap();
-        for key in ["\"othersVolume\"", "\"meVolume\"", "\"stopHotkey\"", "\"poppedOut\"", "\"alwaysOnTop\"", "\"durationMs\""] {
+        for key in ["\"othersVolume\"", "\"meVolume\"", "\"stopHotkey\"", "\"poppedOut\"", "\"alwaysOnTop\"", "\"durationMs\"", "\"soundHotkeys\"", "\"toggleHotkey\""] {
             assert!(json.contains(key), "{} in {}", key, json);
         }
+        assert!(json.contains("\"loop\": true") && json.contains("\"loop\": false"), "{}", json);
     }
 
     #[test]
@@ -442,6 +489,9 @@ mod tests {
         assert_eq!(board.set_sound_volume("s-2", 1.5), Ok(()));
         assert_eq!(board.sound("s-2").unwrap().volume, 1.0);
         assert_eq!(board.set_sound_hotkey("s-2", "F13"), Ok(()));
+        assert_eq!(board.set_sound_loop("s-2", true), Ok(()));
+        assert!(board.sound("s-2").unwrap().looping);
+        assert_eq!(board.set_sound_loop("s-9", true), Err("no_sound".into()));
         assert_eq!(board.remove_sound("s-1").unwrap().name, "horn");
         assert!(board.remove_sound("s-1").is_none());
         assert_eq!(board.sounds.len(), 1);

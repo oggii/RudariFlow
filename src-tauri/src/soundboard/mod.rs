@@ -53,7 +53,8 @@ pub struct BoardState {
     pub playing: Vec<PlayingVoice>,
     /// Sounds whose files were deleted by hand.
     pub missing: Vec<String>,
-    /// Sound ids, and "stopSounds", whose hotkey another program owns.
+    /// Sound ids, "stopSounds" and "toggleSoundHotkeys", whose hotkey another
+    /// program owns.
     pub hotkeys_taken: Vec<String>,
 }
 
@@ -358,6 +359,7 @@ impl Soundboard {
                         hotkey: String::new(),
                         volume: 1.0,
                         duration_ms: prepared.duration_ms,
+                        looping: false,
                     };
                     let kept = sound.clone();
                     self.update(|b| {
@@ -401,6 +403,17 @@ impl Soundboard {
         Ok(())
     }
 
+    /// Loop the sound until it is stopped. Applies to it while it plays,
+    /// too: switched off, the round that plays is the last (both outputs
+    /// end where the further one's round ends); switched on, from its
+    /// reader's next seam, unless the reader already reached the end of
+    /// the file (the last second of the sound).
+    pub fn set_sound_loop(&self, id: &str, looping: bool) -> Result<(), String> {
+        self.update(|b| b.set_sound_loop(id, looping))?;
+        self.with_mixer(|m| m.set_sound_loop(id, looping));
+        Ok(())
+    }
+
     /// Saved as given; main.rs checks it and registers it.
     pub fn set_sound_hotkey(&self, id: &str, hotkey: &str) -> Result<(), String> {
         self.update(|b| b.set_sound_hotkey(id, hotkey))
@@ -413,7 +426,39 @@ impl Soundboard {
         })
     }
 
-    /// The hotkeys another program owns (sound ids, "stopSounds"); the views
+    /// Turn the sounds' hotkeys on or off (they stay assigned); main.rs
+    /// registers or releases them from the change event.
+    pub fn set_sound_hotkeys(&self, enabled: bool) -> Result<(), String> {
+        self.update(|b| {
+            b.sound_hotkeys = enabled;
+            Ok(())
+        })
+    }
+
+    /// The sounds' hotkeys are switched on (without copying the board).
+    pub fn sound_hotkeys_on(&self) -> bool {
+        lock(&self.board).sound_hotkeys
+    }
+
+    /// The toggle hotkey: flip the sounds' hotkeys; true when they are on now.
+    pub fn toggle_sound_hotkeys(&self) -> Result<bool, String> {
+        self.update(|b| {
+            b.sound_hotkeys = !b.sound_hotkeys;
+            Ok(b.sound_hotkeys)
+        })
+    }
+
+    /// The hotkey that turns the sounds' hotkeys on and off ("" = none);
+    /// saved as given, main.rs checks it.
+    pub fn set_toggle_hotkey(&self, hotkey: &str) -> Result<(), String> {
+        self.update(|b| {
+            b.toggle_hotkey = hotkey.to_string();
+            Ok(())
+        })
+    }
+
+    /// The hotkeys another program owns (sound ids, "stopSounds",
+    /// "toggleSoundHotkeys"); the views
     /// hear about it only when the list changes.
     pub fn set_hotkeys_taken(&self, taken: Vec<String>) {
         let changed = {
@@ -461,7 +506,9 @@ impl Soundboard {
         if engine.with_mixer(|m| m.stop_sound(id)) {
             return Ok(false);
         }
-        match engine.start_voice(id, sound.volume, &wav) {
+        // The loop switch as it is now, not as when the press came in.
+        let looping = lock(&self.board).sound(id).is_some_and(|s| s.looping);
+        match engine.start_voice(id, sound.volume, &wav, looping) {
             Ok(()) => Ok(true),
             // The engine ended (a device was lost); the lost event follows.
             Err(e) if e == "engine_stopped" => Err("off".into()),
@@ -684,5 +731,45 @@ mod tests {
         sb.set_hotkeys_taken(vec!["stopSounds".into()]);
         assert_eq!(drain(&rx), ["changed"]);
         assert_eq!(sb.state().hotkeys_taken, vec!["stopSounds".to_string()]);
+    }
+
+    #[test]
+    fn a_sound_is_set_to_loop_and_saved() {
+        let (sb, rx, app_dir) = board("loop");
+        let id = sb.add(&[fixture("tone.wav")])[0].id.clone().unwrap();
+        assert!(!sb.board().sound(&id).unwrap().looping, "a new sound does not loop");
+        drain(&rx);
+        sb.set_sound_loop(&id, true).unwrap();
+        assert_eq!(drain(&rx), ["changed"]);
+        assert!(sb.board().sound(&id).unwrap().looping);
+        assert!(Board::load(&app_dir.join("soundboard")).sound(&id).unwrap().looping, "saved");
+        sb.set_sound_loop(&id, false).unwrap();
+        assert!(!Board::load(&app_dir.join("soundboard")).sound(&id).unwrap().looping);
+        assert_eq!(drain(&rx), ["changed"]);
+        assert_eq!(sb.set_sound_loop("s-none", true), Err("no_sound".to_string()));
+        assert!(drain(&rx).is_empty(), "no change event for an unknown sound");
+    }
+
+    #[test]
+    fn sound_hotkeys_are_switched_and_their_toggle_saved() {
+        let (sb, rx, app_dir) = board("toggle");
+        assert!(sb.board().sound_hotkeys, "on by default");
+        assert!(sb.sound_hotkeys_on());
+        drain(&rx);
+        sb.set_toggle_hotkey("F15").unwrap();
+        assert_eq!(drain(&rx), ["changed"]);
+        sb.set_sound_hotkeys(false).unwrap();
+        assert_eq!(drain(&rx), ["changed"]);
+        assert!(!sb.sound_hotkeys_on(), "a hotkey press that races the switch sees it off");
+        let saved = Board::load(&app_dir.join("soundboard"));
+        assert_eq!((saved.sound_hotkeys, saved.toggle_hotkey.as_str()), (false, "F15"));
+        // The toggle hotkey flips the switch and says where it is now.
+        assert_eq!(sb.toggle_sound_hotkeys(), Ok(true));
+        assert!(Board::load(&app_dir.join("soundboard")).sound_hotkeys);
+        assert_eq!(sb.toggle_sound_hotkeys(), Ok(false));
+        assert!(!sb.board().sound_hotkeys);
+        assert_eq!(drain(&rx), ["changed", "changed"]);
+        sb.set_toggle_hotkey("").unwrap();
+        assert_eq!(Board::load(&app_dir.join("soundboard")).toggle_hotkey, "");
     }
 }

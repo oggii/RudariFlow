@@ -29,6 +29,8 @@ const PLAY_ICON = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3.5 2.2
 const STOP_ICON = '<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1" fill="currentColor"/></svg>';
 const X_ICON =
   '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+const LOOP_ICON =
+  '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M1.8 5.6V5a2 2 0 0 1 2-2h5.7M8.2 1.5L9.7 3 8.2 4.5M10.2 6.4V7a2 2 0 0 1-2 2H2.5M3.8 7.5L2.3 9l1.5 1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const PEN_ICON =
   '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 9.5l.6-2.3 5-5 1.7 1.7-5 5z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></svg>';
 
@@ -185,15 +187,19 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     if (!options.popOut && s.board.window.poppedOut) return [popped()];
     listBox = el("div", "sb-list");
     fillList(listBox, s);
-    const parts = [top(s), devicesBox(s), ...hints(s), toolbar(), chips(s)];
+    // Two groups: settings (left in a wide main window) and the sound library (right).
+    const settings = el("div", "sb-col sb-col-settings");
+    settings.append(top(s), devicesBox(s), ...hints(s));
+    const library = el("div", "sb-col sb-col-library");
+    library.append(toolbar(), chips(s));
     if (notice.text) {
       const line = el("p", "sb-notice", notice.text);
       line.dataset.tone = notice.tone;
       line.setAttribute("role", "status");
-      parts.push(line);
+      library.append(line);
     }
-    parts.push(listBox);
-    return parts;
+    library.append(listBox);
+    return [settings, library];
   }
 
   function row(label: string, hint: string, ...controls: HTMLElement[]): HTMLElement {
@@ -235,8 +241,9 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     return wrap;
   }
 
-  function hotkeyControl(key: string, current: string, taken: boolean, save: (combo: string) => Promise<unknown>): HTMLElement {
-    const wrap = el("div", "hotkey-control sb-hotkey");
+  /** `off`: a sound's hotkey while the sound hotkeys are switched off (shown dimmed). */
+  function hotkeyControl(key: string, current: string, taken: boolean, save: (combo: string) => Promise<unknown>, off = false): HTMLElement {
+    const wrap = el("div", `hotkey-control sb-hotkey${off ? " off" : ""}`);
     const kbd = el("kbd", "", hotkeyLabel(current));
     const btn = button("hotkey-btn", "", key, () => {
       const started = startCapture({
@@ -256,7 +263,8 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       if (started) editing++;
     });
     btn.append(kbd);
-    btn.setAttribute("aria-label", `${t("sb_hotkey")}: ${hotkeyLabel(current)}`);
+    btn.setAttribute("aria-label", `${t("sb_hotkey")}: ${hotkeyLabel(current)}${off && current ? ` (${t("sb_sound_hotkeys_off_note")})` : ""}`);
+    if (off && current) btn.title = t("sb_sound_hotkeys_off_note");
     wrap.append(btn);
     if (current) wrap.append(iconButton(X_ICON, t("paste_last_clear"), `${key}-clear`, () => void save("").catch(fail)));
     if (taken) wrap.append(el("span", "sb-note", t("sb_hotkey_elsewhere")));
@@ -294,6 +302,16 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
         t("sb_stop_hotkey_label"),
         t("sb_stop_hotkey_hint"),
         hotkeyControl("stop-hotkey", b.stopHotkey, s.hotkeysTaken.includes("stopSounds"), (combo) => api.setStopHotkey(combo)),
+      ),
+      row(
+        t("sb_sound_hotkeys_label"),
+        t("sb_sound_hotkeys_hint"),
+        toggle("sound-hotkeys", t("sb_sound_hotkeys_label"), b.soundHotkeys, (on) => void api.setSoundHotkeys(on).catch(fail)),
+      ),
+      row(
+        t("sb_toggle_hotkey_label"),
+        t("sb_toggle_hotkey_hint"),
+        hotkeyControl("toggle-hotkey", b.toggleHotkey, s.hotkeysTaken.includes("toggleSoundHotkeys"), (combo) => api.setToggleHotkey(combo)),
       ),
     );
     if (options.popOut) {
@@ -496,7 +514,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     if (missing) main.append(el("span", "sb-note", t("sb_missing")));
 
     const side = el("div", "sb-side");
-    side.append(el("span", "sb-length", clock(sound.durationMs)), deleteButton(sound));
+    side.append(loopButton(sound, s.board.soundHotkeys), el("span", "sb-length", clock(sound.durationMs)), deleteButton(sound));
 
     const controls = el("div", "sb-controls");
     const cat = el("select", "sb-category");
@@ -507,11 +525,32 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     cat.addEventListener("change", () => void api.setCategory(sound.id, cat.value).catch(fail));
     controls.append(
       cat,
-      hotkeyControl(`${sound.id}-hotkey`, sound.hotkey, s.hotkeysTaken.includes(sound.id), (combo) => api.setHotkey(sound.id, combo)),
+      hotkeyControl(
+        `${sound.id}-hotkey`,
+        sound.hotkey,
+        s.hotkeysTaken.includes(sound.id),
+        (combo) => api.setHotkey(sound.id, combo),
+        !s.board.soundHotkeys,
+      ),
       slider(`${sound.id}-volume`, `${t("sb_volume")}: ${sound.name}`, sound.volume, (v) => void api.setSoundVolume(sound.id, v).catch(fail)),
     );
     r.append(play, main, side, controls);
     return r;
+  }
+
+  /** Loop on/off: a looping sound repeats until it is stopped. */
+  function loopButton(sound: Sound, soundHotkeys: boolean): HTMLElement {
+    const b = iconButton(LOOP_ICON, `${t("sb_loop")}: ${sound.name}`, `${sound.id}-loop`, () => {
+      // From the button as it shows now, flipped at once: a second click
+      // before the redraw sends the other value, not the same one again.
+      const next = b.getAttribute("aria-pressed") !== "true";
+      b.setAttribute("aria-pressed", String(next));
+      void api.setSoundLoop(sound.id, next).catch(fail);
+    });
+    b.classList.add("sb-loop");
+    b.title = t(soundHotkeys ? "sb_loop_hint" : "sb_loop_hint_keys_off");
+    b.setAttribute("aria-pressed", String(sound.loop));
+    return b;
   }
 
   function deleteButton(sound: Sound): HTMLElement {
@@ -541,7 +580,14 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       const voice = byId.get(r.dataset.id ?? "");
       r.classList.toggle("playing", voice !== undefined);
       const fill = r.querySelector<HTMLElement>(".sb-progress-fill");
-      if (fill) fill.style.width = voice && voice.durationMs > 0 ? `${Math.min(100, (voice.posMs / voice.durationMs) * 100)}%` : "0%";
+      if (fill) {
+        const width = voice && voice.durationMs > 0 ? Math.min(100, (voice.posMs / voice.durationMs) * 100) : 0;
+        // A looping sound starts its next round: jump back rather than slide.
+        const back = width < Number(fill.dataset.width ?? 0);
+        fill.classList.toggle("no-slide", back);
+        fill.dataset.width = String(width);
+        fill.style.width = `${width}%`;
+      }
       const play = r.querySelector<HTMLButtonElement>(".sb-play");
       const icon = voice ? "stop" : "play";
       if (play && play.dataset.icon !== icon) {

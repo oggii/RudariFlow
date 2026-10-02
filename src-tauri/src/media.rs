@@ -595,6 +595,21 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn a_mono_file_plays_on_both_sides() {
+        // Media Foundation (mp3, wav), Vorbis and Opus each have their own channel handling.
+        for name in ["mono.mp3", "mono.wav", "mono.ogg", "mono.opus"] {
+            let samples = decode_48k_stereo(&fixture(name), 60).unwrap_or_else(|e| panic!("{}: {}", name, e));
+            let window: Vec<&[f32]> = samples.chunks(2).skip(4_800).take(38_400).collect();
+            let rms = |c: usize| (window.iter().map(|f| (f[c] as f64).powi(2)).sum::<f64>() / window.len() as f64).sqrt();
+            assert!((0.30..0.40).contains(&rms(0)), "{}: left RMS {}", name, rms(0));
+            assert!((0.30..0.40).contains(&rms(1)), "{}: right RMS {}", name, rms(1));
+            let differ = window.iter().map(|f| (f[0] - f[1]).abs()).fold(0.0f32, f32::max);
+            assert!(differ < 1e-4, "{}: the sides differ by {}", name, differ);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn a_file_without_audio_or_over_the_limit_is_refused() {
         assert_eq!(decode_48k_stereo(&fixture("video-only.m4a"), 60), Err(NO_AUDIO.to_string()));
         assert_eq!(decode_48k_stereo(&fixture("tone.wav"), 0), Err(too_long(0)));

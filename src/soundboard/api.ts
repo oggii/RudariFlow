@@ -15,6 +15,8 @@ export interface Sound {
   hotkey: string;
   volume: number;
   durationMs: number;
+  /** Plays again from the start, without a gap, until it is stopped. */
+  loop: boolean;
 }
 
 /** Device names; "" = automatic. */
@@ -32,6 +34,10 @@ export interface Board {
   layer: boolean;
   devices: Devices;
   stopHotkey: string;
+  /** The sounds' hotkeys work (while on); off, they keep their keys but do nothing. */
+  soundHotkeys: boolean;
+  /** Turns `soundHotkeys` on and off; "" = none. */
+  toggleHotkey: string;
   window: { poppedOut: boolean; alwaysOnTop: boolean };
   categories: Category[];
   sounds: Sound[];
@@ -58,7 +64,7 @@ export interface BoardState {
   playing: PlayingVoice[];
   /** Sounds whose files were deleted by hand. */
   missing: string[];
-  /** Sound ids, and "stopSounds", whose hotkey another program owns. */
+  /** Sound ids, "stopSounds" and "toggleSoundHotkeys", whose hotkey another program owns. */
   hotkeysTaken: string[];
 }
 
@@ -90,8 +96,11 @@ export const api = {
   rename: (id: string, name: string) => invoke<void>("soundboard_rename", { id, name }),
   setCategory: (id: string, category: string) => invoke<void>("soundboard_set_category", { id, category }),
   setSoundVolume: (id: string, volume: number) => invoke<void>("soundboard_set_sound_volume", { id, volume }),
+  setSoundLoop: (id: string, loop: boolean) => invoke<void>("soundboard_set_sound_loop", { id, looping: loop }),
   setHotkey: (id: string, hotkey: string) => invoke<void>("soundboard_set_hotkey", { id, hotkey }),
   setStopHotkey: (hotkey: string) => invoke<void>("soundboard_set_stop_hotkey", { hotkey }),
+  setSoundHotkeys: (enabled: boolean) => invoke<void>("soundboard_set_sound_hotkeys", { enabled }),
+  setToggleHotkey: (hotkey: string) => invoke<void>("soundboard_set_toggle_hotkey", { hotkey }),
   play: (id: string) => invoke<boolean>("soundboard_play", { id }),
   stopAll: () => invoke<void>("soundboard_stop_all"),
   categoryAdd: (name: string) => invoke<string>("soundboard_category_add", { name }),
