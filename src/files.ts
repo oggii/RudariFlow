@@ -14,6 +14,8 @@ export interface FilesHost {
   saveSettings(patch: { fileSpeakers?: string }): Promise<void>;
   /** Show the Files section (a file dropped on another tab). */
   showSection(): void;
+  /** False while another tab takes files dropped on the window (the Soundboard). */
+  acceptsDrops(): boolean;
 }
 
 interface Segment {
@@ -535,6 +537,10 @@ export function initFiles(h: FilesHost) {
   });
   // A file dropped anywhere on the window is transcribed.
   getCurrentWebview().onDragDropEvent((event) => {
+    if (!host.acceptsDrops()) {
+      drop.classList.remove("dragging");
+      return;
+    }
     const p = event.payload;
     if (p.type === "over" || p.type === "enter") {
       drop.classList.add("dragging");

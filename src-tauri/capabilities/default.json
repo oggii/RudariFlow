@@ -13,7 +13,7 @@
     "autostart:allow-is-enabled",
     {
       "identifier": "shell:allow-open",
-      "allow": [{ "url": "https://0ggi.ch" }]
+      "allow": [{ "url": "https://0ggi.ch" }, { "url": "https://vb-audio.com/Cable/" }]
     }
   ]
 }

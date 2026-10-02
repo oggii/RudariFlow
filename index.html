@@ -81,6 +81,13 @@
             </svg>
             <span data-i18n="nav_files">Files</span>
           </a>
+          <a class="nav-item" data-section="soundboard">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M2.5 6.2h2.3L8 3.5v9L4.8 9.8H2.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+              <path d="M10.5 6a2.8 2.8 0 010 4M12.3 4.3a5.2 5.2 0 010 7.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            <span data-i18n="nav_soundboard">Soundboard</span>
+          </a>
         </nav>
         <div class="sidebar-footer">
           <span class="version-text" id="version-text"></span>
@@ -624,6 +631,13 @@
             </div>
             <textarea id="file-text" class="file-text" spellcheck="false"></textarea>
           </div>
+        </section>
+        <section id="section-soundboard" class="content-section">
+          <div class="section-header">
+            <h2 class="section-title" data-i18n="sb_title">Soundboard</h2>
+            <p class="section-desc" data-i18n="sb_desc">Play sounds into Discord or a game with a hotkey. Your friends hear your voice and the sounds through a virtual microphone.</p>
+          </div>
+          <div id="sb-root"></div>
         </section>
       </main>
       </div>
