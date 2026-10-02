@@ -1589,3 +1589,25 @@ kbd {
     transition: none;
   }
 }
+
+/* The soundboard in its own window (soundboard.html). */
+body.sb-page {
+  overflow-y: auto;
+}
+.sb-page-main {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 20px 20px 0;
+}
+.sb-page-main > .section-title {
+  margin-bottom: 16px;
+}
+.sb-page .setting-row {
+  gap: 16px;
+}
+.sb-page .setting-label {
+  min-width: 0;
+}
+.sb-page .sb-slider input[type="range"] {
+  width: 110px;
+}

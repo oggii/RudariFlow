@@ -103,6 +103,8 @@ export function startCapture(target: CaptureTarget): boolean {
   target.text.textContent = t("hotkey_press_keys");
   window.addEventListener("keydown", onKey, true);
   // Losing focus (Alt+Tab, a pop-out) cancels, so the hotkeys are never left paused.
+  // Each window has its own `capturing`; the backend counts the pauses
+  // (set_hotkey_paused), so one window finishing cannot un-pause the other.
   window.addEventListener("blur", onBlur);
   // A click outside cancels.
   setTimeout(() => window.addEventListener("mousedown", onMouse, true), 0);

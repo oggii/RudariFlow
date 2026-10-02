@@ -8,6 +8,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_window_state::AppHandleExt;
 
 use rudariflow_lib::ai_cleanup::AppContext;
 use rudariflow_lib::ai_models;
@@ -1370,6 +1371,22 @@ fn set_hotkey_paused(
     state: State<AppState>,
     paused: bool,
 ) -> Result<(), String> {
+    // Two windows (main, soundboard pop-out) can each hold a capture: count
+    // them, so one finishing never re-registers the hotkeys under the other.
+    // Every capture sends exactly one true and one false (hotkey-capture.ts).
+    if paused {
+        if HOTKEY_PAUSES.fetch_add(1, Ordering::SeqCst) > 0 {
+            return Ok(());
+        }
+    } else {
+        let left = HOTKEY_PAUSES
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_sub(1)))
+            .unwrap_or(0)
+            .saturating_sub(1);
+        if left > 0 {
+            return Ok(());
+        }
+    }
     let all = hotkeys(&state.settings.lock().unwrap());
     let mut result = Ok(());
     for (action, hotkey) in all {
@@ -1761,6 +1778,54 @@ async fn soundboard_engine_stats(state: State<'_, AppState>) -> Result<engine::E
     state.soundboard.stats().ok_or_else(|| "off".to_string())
 }
 
+/// Open the board in its own window (label "soundboard"), or bring that
+/// window to the front. `focus` false leaves the focus where it is (the
+/// live checks). Async: building a window in a sync command deadlocks on
+/// Windows.
+#[tauri::command]
+async fn soundboard_pop_out(app: AppHandle, state: State<'_, AppState>, focus: bool) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("soundboard") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        if focus {
+            let _ = window.set_focus();
+        }
+    } else {
+        let on_top = state.soundboard.board().window.always_on_top;
+        WebviewWindowBuilder::new(&app, "soundboard", WebviewUrl::App("soundboard.html".into()))
+            .title("RudariFlow Soundboard")
+            .inner_size(460.0, 680.0)
+            .min_inner_size(380.0, 420.0)
+            .resizable(true)
+            .always_on_top(on_top)
+            .focused(focus)
+            .build()
+            .map_err(|e| e.to_string())?;
+    }
+    state.soundboard.set_window(Some(true), None);
+    Ok(())
+}
+
+/// Close the pop-out window ("Bring back"); the board goes back to its tab.
+#[tauri::command]
+async fn soundboard_dock(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("soundboard") {
+        window.close().map_err(|e| e.to_string())?;
+    }
+    state.soundboard.set_window(Some(false), None);
+    Ok(())
+}
+
+/// The pop-out's Always on top switch, remembered for the next pop-out.
+#[tauri::command]
+async fn soundboard_set_always_on_top(app: AppHandle, state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("soundboard") {
+        window.set_always_on_top(on).map_err(|e| e.to_string())?;
+    }
+    state.soundboard.set_window(None, Some(on));
+    Ok(())
+}
+
 /// Keyboard chords go through the global-shortcut plugin; mouse side buttons
 /// (`Mouse4`, `Mouse5`, optionally with modifiers) through a mouse hook.
 fn register_hotkey(app: &AppHandle, hotkey: &str, action: HotkeyAction) -> Result<(), String> {
@@ -1857,6 +1922,8 @@ struct BoardHotkeys {
 static BOARD_HOTKEYS: Mutex<BoardHotkeys> = Mutex::new(BoardHotkeys { registered: Vec::new(), last: None });
 /// A hotkey is being captured in the UI: the board's hotkeys stay released.
 static HOTKEYS_PAUSED: AtomicBool = AtomicBool::new(false);
+/// Open hotkey captures (set_hotkey_paused true minus false), across windows.
+static HOTKEY_PAUSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Make the registered board hotkeys what the board wants: its stop-all
 /// and sound hotkeys while it is on and no hotkey is being captured, none
@@ -2047,6 +2114,13 @@ async fn do_toggle_recording(
     }
 }
 
+/// Window state kept for the main window and the soundboard pop-out.
+fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
+    tauri_plugin_window_state::StateFlags::SIZE
+        | tauri_plugin_window_state::StateFlags::POSITION
+        | tauri_plugin_window_state::StateFlags::MAXIMIZED
+}
+
 fn main() {
     let app_dir = get_app_dir();
     startup_log::init(&app_dir);
@@ -2074,18 +2148,14 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        // Size, position and maximised state of the main window, restored at
-        // start (not the overlay pill or the hidden PDF export windows). A
-        // saved position on no current monitor is not restored; the window
-        // then opens centred ("center" in tauri.conf.json).
+        // Size, position and maximised state of the main window and the
+        // soundboard pop-out, restored when they open (not the overlay pill
+        // or the hidden PDF export windows). A saved position on no current
+        // monitor is not restored; the window then opens centred.
         .plugin(
             tauri_plugin_window_state::Builder::new()
-                .with_state_flags(
-                    tauri_plugin_window_state::StateFlags::SIZE
-                        | tauri_plugin_window_state::StateFlags::POSITION
-                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
-                )
-                .with_filter(|label| label == "main")
+                .with_state_flags(window_state_flags())
+                .with_filter(|label| label == "main" || label == "soundboard")
                 // The state file lives in the app's own data folder, so a
                 // RUDARIFLOW_DATA_DIR build stays separate from the real one.
                 .with_filename(get_app_dir().join(".window-state.json").to_string_lossy())
@@ -2169,6 +2239,9 @@ fn main() {
             soundboard_category_remove,
             soundboard_capture_test,
             soundboard_engine_stats,
+            soundboard_pop_out,
+            soundboard_dock,
+            soundboard_set_always_on_top,
         ])
         .on_window_event(|window, event| {
             // Close button (X) on the main window hides to tray instead of quitting.
@@ -2176,6 +2249,16 @@ fn main() {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     let _ = window.hide();
                     api.prevent_close();
+                }
+            }
+            // The pop-out closed (its X or Bring back): the board goes back
+            // to its tab, and the window's size and position are saved now,
+            // not only at a clean exit.
+            if window.label() == "soundboard" {
+                if let WindowEvent::Destroyed = event {
+                    let app = window.app_handle();
+                    app.state::<AppState>().soundboard.set_window(Some(false), None);
+                    let _ = app.save_window_state(window_state_flags());
                 }
             }
         })
