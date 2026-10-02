@@ -510,7 +510,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     if (missing) main.append(el("span", "sb-note", t("sb_missing")));
 
     const side = el("div", "sb-side");
-    side.append(loopButton(sound), el("span", "sb-length", clock(sound.durationMs)), deleteButton(sound));
+    side.append(loopButton(sound, s.board.soundHotkeys), el("span", "sb-length", clock(sound.durationMs)), deleteButton(sound));
 
     const controls = el("div", "sb-controls");
     const cat = el("select", "sb-category");
@@ -535,12 +535,16 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
   }
 
   /** Loop on/off: a looping sound repeats until it is stopped. */
-  function loopButton(sound: Sound): HTMLElement {
+  function loopButton(sound: Sound, soundHotkeys: boolean): HTMLElement {
     const b = iconButton(LOOP_ICON, `${t("sb_loop")}: ${sound.name}`, `${sound.id}-loop`, () => {
-      void api.setSoundLoop(sound.id, !sound.loop).catch(fail);
+      // From the button as it shows now, flipped at once: a second click
+      // before the redraw sends the other value, not the same one again.
+      const next = b.getAttribute("aria-pressed") !== "true";
+      b.setAttribute("aria-pressed", String(next));
+      void api.setSoundLoop(sound.id, next).catch(fail);
     });
     b.classList.add("sb-loop");
-    b.title = t("sb_loop_hint");
+    b.title = t(soundHotkeys ? "sb_loop_hint" : "sb_loop_hint_keys_off");
     b.setAttribute("aria-pressed", String(sound.loop));
     return b;
   }
