@@ -127,6 +127,11 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
   /** Rename fields and hotkey captures open: redraws wait until they close. */
   let editing = 0;
   let pending = false;
+  /** The virtual microphone switch is being changed: it stays disabled across redraws. */
+  let switching = false;
+  /** Newest refresh started / applied (an older answer is dropped). */
+  let refreshSeq = 0;
+  let appliedSeq = 0;
   let notice = { text: "", tone: "" };
   let armedDelete: string | null = null;
   let armedTimer: number | undefined;
@@ -134,8 +139,13 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
   root.classList.add("sb");
 
   async function refresh() {
-    state = await api.state();
+    const seq = ++refreshSeq;
+    const fresh = await api.state();
     if (!devices) devices = await api.devices().catch(() => null);
+    // A newer refresh already drew; this answer is older.
+    if (seq < appliedSeq) return;
+    appliedSeq = seq;
+    state = fresh;
     render();
   }
 
@@ -162,6 +172,13 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
   function setNotice(text: string, tone = "") {
     notice = { text, tone };
     render();
+  }
+
+  /** A command failed: say so in the notice line, and redraw from the backend's state. */
+  function fail(e: unknown) {
+    console.error("soundboard command failed:", e);
+    setNotice(reasonText(String(e)), "error");
+    void refresh().catch(console.error);
   }
 
   function build(s: BoardState): HTMLElement[] {
@@ -241,7 +258,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     btn.append(kbd);
     btn.setAttribute("aria-label", `${t("sb_hotkey")}: ${hotkeyLabel(current)}`);
     wrap.append(btn);
-    if (current) wrap.append(iconButton(X_ICON, t("paste_last_clear"), `${key}-clear`, () => void save("").catch(console.error)));
+    if (current) wrap.append(iconButton(X_ICON, t("paste_last_clear"), `${key}-clear`, () => void save("").catch(fail)));
     if (taken) wrap.append(el("span", "sb-note", t("sb_hotkey_elsewhere")));
     return wrap;
   }
@@ -250,24 +267,29 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     const b = s.board;
     const list = el("div", "settings-list sb-top");
     const onSwitch = toggle("enabled", t("sb_switch_label"), s.status.state === "on", async (wanted, input) => {
+      if (switching) return;
+      switching = true;
       input.disabled = true;
       try {
         const status = await api.setEnabled(wanted);
         if (state) state.status = status;
       } catch (e) {
         console.error("soundboard_set_enabled failed:", e);
+        notice = { text: reasonText(String(e)), tone: "error" };
       }
+      switching = false;
       render();
     });
+    onSwitch.querySelector("input")!.disabled = switching;
     const switchRow = row(t("sb_switch_label"), t("sb_switch_hint"), onSwitch);
     const status = el("span", "label-hint sb-status", statusText(s.status));
     status.dataset.tone = s.status.state;
     switchRow.querySelector(".setting-label")?.append(status);
     list.append(
       switchRow,
-      row(t("sb_others_label"), t("sb_others_hint"), slider("others", t("sb_others_label"), b.othersVolume, (v) => void api.setVolumes(v, b.meVolume).catch(console.error))),
-      row(t("sb_me_label"), t("sb_me_hint"), slider("me", t("sb_me_label"), b.meVolume, (v) => void api.setVolumes(b.othersVolume, v).catch(console.error))),
-      row(t("sb_layer_label"), t("sb_layer_hint"), toggle("layer", t("sb_layer_label"), b.layer, (on) => void api.setLayer(on).catch(console.error))),
+      row(t("sb_others_label"), t("sb_others_hint"), slider("others", t("sb_others_label"), b.othersVolume, (v) => void api.setVolumes(v, b.meVolume).catch(fail))),
+      row(t("sb_me_label"), t("sb_me_hint"), slider("me", t("sb_me_label"), b.meVolume, (v) => void api.setVolumes(b.othersVolume, v).catch(fail))),
+      row(t("sb_layer_label"), t("sb_layer_hint"), toggle("layer", t("sb_layer_label"), b.layer, (on) => void api.setLayer(on).catch(fail))),
       row(
         t("sb_stop_hotkey_label"),
         t("sb_stop_hotkey_hint"),
@@ -275,7 +297,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       ),
     );
     if (options.popOut) {
-      list.append(row(t("sb_always_on_top"), "", toggle("on-top", t("sb_always_on_top"), b.window.alwaysOnTop, (on) => void api.setAlwaysOnTop(on).catch(console.error))));
+      list.append(row(t("sb_always_on_top"), "", toggle("on-top", t("sb_always_on_top"), b.window.alwaysOnTop, (on) => void api.setAlwaysOnTop(on).catch(fail))));
     }
     return list;
   }
@@ -313,7 +335,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       if (saved && !names.includes(saved)) select.append(option(saved, `${saved} (${t("mic_not_connected")})`));
       select.value = saved;
       select.addEventListener("change", () => {
-        void api.setDevices({ ...s.board.devices, [kind]: select.value }).catch(console.error);
+        void api.setDevices({ ...s.board.devices, [kind]: select.value }).catch(fail);
       });
       return row(label, "", select);
     };
@@ -362,9 +384,9 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     bar.append(
       button("btn-secondary", t("sb_add"), "add", () => void chooseFiles()),
       search,
-      button("btn-secondary", t("sb_stop_all"), "stop-all", () => void api.stopAll().catch(console.error)),
+      button("btn-secondary", t("sb_stop_all"), "stop-all", () => void api.stopAll().catch(fail)),
     );
-    if (!options.popOut) bar.append(button("btn-secondary", t("sb_pop_out"), "pop-out", () => void api.popOut(true).catch(console.error)));
+    if (!options.popOut) bar.append(button("btn-secondary", t("sb_pop_out"), "pop-out", () => void api.popOut(true).catch(fail)));
     return bar;
   }
 
@@ -482,11 +504,11 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     cat.setAttribute("aria-label", `${t("sb_category")}: ${sound.name}`);
     cat.append(option("", t("sb_no_category")), ...s.board.categories.map((c) => option(c.id, c.name)));
     cat.value = sound.category;
-    cat.addEventListener("change", () => void api.setCategory(sound.id, cat.value).catch(console.error));
+    cat.addEventListener("change", () => void api.setCategory(sound.id, cat.value).catch(fail));
     controls.append(
       cat,
       hotkeyControl(`${sound.id}-hotkey`, sound.hotkey, s.hotkeysTaken.includes(sound.id), (combo) => api.setHotkey(sound.id, combo)),
-      slider(`${sound.id}-volume`, `${t("sb_volume")}: ${sound.name}`, sound.volume, (v) => void api.setSoundVolume(sound.id, v).catch(console.error)),
+      slider(`${sound.id}-volume`, `${t("sb_volume")}: ${sound.name}`, sound.volume, (v) => void api.setSoundVolume(sound.id, v).catch(fail)),
     );
     r.append(play, main, side, controls);
     return r;
@@ -556,7 +578,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
 
   function popped(): HTMLElement {
     const box = el("div", "sb-popped");
-    box.append(el("p", "empty-state", t("sb_popped")), button("btn-secondary", t("sb_bring_back"), "dock", () => void api.dock().catch(console.error)));
+    box.append(el("p", "empty-state", t("sb_popped")), button("btn-secondary", t("sb_bring_back"), "dock", () => void api.dock().catch(fail)));
     return box;
   }
 
@@ -571,7 +593,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     render();
   });
   getCurrentWebview().onDragDropEvent((event) => {
-    if (!active) return;
+    if (!active || (state && !options.popOut && state.board.window.poppedOut)) return;
     const p = event.payload;
     if (p.type === "enter" || p.type === "over") root.classList.add("dragging");
     else if (p.type === "leave") root.classList.remove("dragging");

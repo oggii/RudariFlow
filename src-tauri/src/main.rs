@@ -271,10 +271,11 @@ fn app_hotkey_owner(app: &[(HotkeyAction, String)], hotkey: &str) -> Option<Hotk
 }
 
 /// Whether a chord with no modifier is a key that may stand alone: the
-/// numpad and F1-F24 (Soundpad-like sound and stop-all keys).
+/// numpad and F1-F24 (Soundpad-like sound and stop-all keys). Not NumpadEnter
+/// and NumpadEqual: the hotkey crate registers those as Enter and E.
 fn may_stand_alone(key: tauri_plugin_global_shortcut::Code) -> bool {
     let name = format!("{:?}", key);
-    name.starts_with("Numpad")
+    (name.starts_with("Numpad") && name != "NumpadEnter" && name != "NumpadEqual")
         || name.strip_prefix('F').and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=24).contains(&n))
 }
 
@@ -2504,11 +2505,11 @@ mod tests {
         let board = board_with("", &[("s-b", "drums", "")]);
         let all = all_hotkeys(&Settings::default(), &board);
         let drums = HotkeyAction::Sound("s-b".into());
-        for alone in ["A", "Space", "Enter", "Digit1"] {
+        for alone in ["A", "Space", "Enter", "Digit1", "NumpadEnter", "NumpadEqual"] {
             let err = check_board_hotkey(&all, &board, &drums, alone).unwrap_err();
             assert!(err.contains("is a key alone"), "{}: {}", alone, err);
         }
-        for ok in ["F1", "F13", "F24", "Numpad5", "NumpadAdd", "Ctrl+Q", "Alt+A", "Mouse4", "Shift+Mouse5"] {
+        for ok in ["F1", "F13", "F24", "Numpad5", "NumpadAdd", "Ctrl+NumpadEnter", "Alt+NumpadEqual", "Ctrl+Q", "Alt+A", "Mouse4", "Shift+Mouse5"] {
             assert_eq!(check_board_hotkey(&all, &board, &drums, ok), Ok(()), "{}", ok);
         }
         assert!(check_board_hotkey(&all, &board, &drums, "F25").unwrap_err().contains("not a valid hotkey"));

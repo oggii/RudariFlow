@@ -23,7 +23,8 @@ export interface CaptureTarget {
 let capturing: CaptureTarget | null = null;
 
 /** Keys a soundboard hotkey may use alone. */
-const BARE_KEY = /^(Numpad\w+|F([1-9]|1\d|2[0-4]))$/;
+// NumpadEnter and NumpadEqual are left out: the hotkey crate maps them to Enter and E.
+const BARE_KEY = /^(Numpad(?!Enter$|Equal$)\w+|F([1-9]|1\d|2[0-4]))$/;
 
 export function hotkeyLabel(combo: string): string {
   if (!combo) return t("hotkey_none");
@@ -101,6 +102,8 @@ export function startCapture(target: CaptureTarget): boolean {
   target.button.classList.add("capturing");
   target.text.textContent = t("hotkey_press_keys");
   window.addEventListener("keydown", onKey, true);
+  // Losing focus (Alt+Tab, a pop-out) cancels, so the hotkeys are never left paused.
+  window.addEventListener("blur", onBlur);
   // A click outside cancels.
   setTimeout(() => window.addEventListener("mousedown", onMouse, true), 0);
   return true;
@@ -111,11 +114,16 @@ function stopCapture() {
   capturing = null;
   window.removeEventListener("keydown", onKey, true);
   window.removeEventListener("mousedown", onMouse, true);
+  window.removeEventListener("blur", onBlur);
   invoke("set_hotkey_paused", { paused: false }).catch(console.error);
   if (!target) return;
   target.button.classList.remove("capturing");
   target.render();
   target.done?.();
+}
+
+function onBlur() {
+  stopCapture();
 }
 
 async function onKey(e: KeyboardEvent) {
