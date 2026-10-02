@@ -235,8 +235,9 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     return wrap;
   }
 
-  function hotkeyControl(key: string, current: string, taken: boolean, save: (combo: string) => Promise<unknown>): HTMLElement {
-    const wrap = el("div", "hotkey-control sb-hotkey");
+  /** `off`: a sound's hotkey while the sound hotkeys are switched off (shown dimmed). */
+  function hotkeyControl(key: string, current: string, taken: boolean, save: (combo: string) => Promise<unknown>, off = false): HTMLElement {
+    const wrap = el("div", `hotkey-control sb-hotkey${off ? " off" : ""}`);
     const kbd = el("kbd", "", hotkeyLabel(current));
     const btn = button("hotkey-btn", "", key, () => {
       const started = startCapture({
@@ -256,7 +257,8 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       if (started) editing++;
     });
     btn.append(kbd);
-    btn.setAttribute("aria-label", `${t("sb_hotkey")}: ${hotkeyLabel(current)}`);
+    btn.setAttribute("aria-label", `${t("sb_hotkey")}: ${hotkeyLabel(current)}${off && current ? ` (${t("sb_sound_hotkeys_off_note")})` : ""}`);
+    if (off && current) btn.title = t("sb_sound_hotkeys_off_note");
     wrap.append(btn);
     if (current) wrap.append(iconButton(X_ICON, t("paste_last_clear"), `${key}-clear`, () => void save("").catch(fail)));
     if (taken) wrap.append(el("span", "sb-note", t("sb_hotkey_elsewhere")));
@@ -294,6 +296,16 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
         t("sb_stop_hotkey_label"),
         t("sb_stop_hotkey_hint"),
         hotkeyControl("stop-hotkey", b.stopHotkey, s.hotkeysTaken.includes("stopSounds"), (combo) => api.setStopHotkey(combo)),
+      ),
+      row(
+        t("sb_sound_hotkeys_label"),
+        t("sb_sound_hotkeys_hint"),
+        toggle("sound-hotkeys", t("sb_sound_hotkeys_label"), b.soundHotkeys, (on) => void api.setSoundHotkeys(on).catch(fail)),
+      ),
+      row(
+        t("sb_toggle_hotkey_label"),
+        t("sb_toggle_hotkey_hint"),
+        hotkeyControl("toggle-hotkey", b.toggleHotkey, s.hotkeysTaken.includes("toggleSoundHotkeys"), (combo) => api.setToggleHotkey(combo)),
       ),
     );
     if (options.popOut) {
@@ -507,7 +519,13 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     cat.addEventListener("change", () => void api.setCategory(sound.id, cat.value).catch(fail));
     controls.append(
       cat,
-      hotkeyControl(`${sound.id}-hotkey`, sound.hotkey, s.hotkeysTaken.includes(sound.id), (combo) => api.setHotkey(sound.id, combo)),
+      hotkeyControl(
+        `${sound.id}-hotkey`,
+        sound.hotkey,
+        s.hotkeysTaken.includes(sound.id),
+        (combo) => api.setHotkey(sound.id, combo),
+        !s.board.soundHotkeys,
+      ),
       slider(`${sound.id}-volume`, `${t("sb_volume")}: ${sound.name}`, sound.volume, (v) => void api.setSoundVolume(sound.id, v).catch(fail)),
     );
     r.append(play, main, side, controls);

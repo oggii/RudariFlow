@@ -103,6 +103,7 @@ function ownerName(target: string, name?: string): string {
     rewriteLast: "rewrite_last_label",
     freeGpu: "free_gpu_label",
     stopSounds: "sb_stop_hotkey_label",
+    toggleSoundHotkeys: "sb_toggle_hotkey_owner",
   };
   return keys[target] ? t(keys[target]) : target;
 }

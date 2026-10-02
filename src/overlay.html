@@ -293,6 +293,7 @@
           editing: "Editing", word: "word", words: "words", edit_failed: "Edit failed, text unchanged",
           gpu_freed: "GPU freed", gpu_loading: "Loading models…", gpu_loaded: "Models loaded",
           gpu_failed: "Models could not be loaded",
+          sb_hotkeys_off: "Sound hotkeys off", sb_hotkeys_on: "Sound hotkeys on",
         },
         de: {
           audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar", polishing: "Überarbeitung",
@@ -301,6 +302,7 @@
           editing: "Bearbeiten", word: "Wort", words: "Wörter", edit_failed: "Bearbeiten ging nicht, Text unverändert",
           gpu_freed: "GPU freigegeben", gpu_loading: "Modelle werden geladen…", gpu_loaded: "Modelle geladen",
           gpu_failed: "Modelle konnten nicht geladen werden",
+          sb_hotkeys_off: "Sound-Tastenkürzel aus", sb_hotkeys_on: "Sound-Tastenkürzel ein",
         },
       };
       function pickLang() {
@@ -355,6 +357,14 @@
         const t = NOTICE_TEXT[pickLang()];
         const text = { freed: t.gpu_freed, loading: t.gpu_loading, loaded: t.gpu_loaded, failed: t.gpu_failed }[event.payload];
         diag(`gpu-notice received (${event.payload})`);
+        if (text) showNotice(text, 3000);
+      });
+
+      // Soundboard toggle hotkey: "hotkeys-off" or "hotkeys-on".
+      listen("soundboard-notice", (event) => {
+        const t = NOTICE_TEXT[pickLang()];
+        const text = { "hotkeys-off": t.sb_hotkeys_off, "hotkeys-on": t.sb_hotkeys_on }[event.payload];
+        diag(`soundboard-notice received (${event.payload})`);
         if (text) showNotice(text, 3000);
       });
 

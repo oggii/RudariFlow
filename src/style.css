@@ -1565,6 +1565,10 @@ kbd {
   font-size: 11px;
   color: var(--yellow);
 }
+/* A sound's hotkey while the sound hotkeys are switched off. */
+.sb-hotkey.off .hotkey-btn:not(.capturing) kbd {
+  opacity: 0.5;
+}
 .sb-popped {
   display: flex;
   flex-direction: column;
