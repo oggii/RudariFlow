@@ -22,9 +22,16 @@ pub const SKIP_OVER_MS: u32 = 20;
 const WINDOW_MS: u32 = 250;
 /// The rate is corrected by this much per ms of fill above (below) the
 /// target, plus this much more per ms and window for as long as it stays
-/// so (which finds the clocks' difference; critically damped, about 5 s) ...
-const PPM_PER_MS: f64 = 400.0;
-const PPM_PER_MS_WINDOW: f64 = 10.0;
+/// so (which finds the clocks' difference). The measured fill moves in steps
+/// of about 10 ms (a callback beat, a late microphone callback), so the gains
+/// are low: a step of that size asks for 10 x PPM_PER_MS, well under the
+/// limit, instead of hitting it for a second. In seconds the loop is
+/// s^2 + p s + i = 0 with p = PPM_PER_MS / 1000 and i = PPM_PER_MS_WINDOW x 4
+/// / 1000 (four windows a second); p^2 = 4 i is critically damped, with a
+/// time constant of 2 / p = 10 s. The clocks' difference is found in a
+/// few of those; the fill is held within the 15-25 ms band meanwhile.
+const PPM_PER_MS: f64 = 200.0;
+const PPM_PER_MS_WINDOW: f64 = 2.5;
 /// ... with the clocks' difference taken as at most 0.2 % and the whole
 /// correction at most 0.4 % (7 cents).
 const MAX_DRIFT_PPM: f64 = 2_000.0;
@@ -34,8 +41,11 @@ const XFADE_MS: u32 = 5;
 /// A cable that stopped reading: frames beyond this are dropped at once.
 const CAP_MS: u32 = 200;
 /// Microphone frames converted at a time, so a push never holds more than
-/// the cap plus one slice (and never reallocates).
+/// the cap plus one converted slice (and never reallocates).
 const SLICE: usize = 2_048;
+/// The first this many ms of the cable's and the microphone's gaps are left
+/// out of the stats (the streams are still starting up).
+const GAP_WARMUP_MS: f32 = 1_000.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,9 +65,16 @@ pub struct DriftStats {
     /// Frames the microphone delivered, at the cable's rate.
     pub pushed: u64,
     /// The longest time between two reads of the cable, and between two
-    /// pushes of the microphone (the engine notes them), in ms.
+    /// pushes of the microphone (the engine notes them), in ms, not counting
+    /// the first second after the start.
     pub read_gap_ms: f32,
     pub push_gap_ms: f32,
+}
+
+/// The most frames a slice of the microphone makes at the cable's rate.
+fn slice_out(mic_rate: u32, rate: u32) -> usize {
+    let ratio = (rate as f64 / mic_rate.max(1) as f64).max(1.0);
+    (SLICE as f64 * ratio * 1.01).ceil() as usize
 }
 
 pub struct DriftBuffer {
@@ -82,6 +99,8 @@ pub struct DriftBuffer {
     /// The correction the fill's history asks for (the clocks' difference), in ppm.
     drift_ppm: f64,
     stats: DriftStats,
+    /// Time the gap stats have seen so far, per stream (cable, microphone), in ms.
+    gap_seen: [f32; 2],
 }
 
 impl DriftBuffer {
@@ -90,9 +109,12 @@ impl DriftBuffer {
         let frames_in = |ms: u32| (rate as u64 * ms as u64 / 1000) as usize;
         let cap = frames_in(CAP_MS);
         DriftBuffer {
-            // Room for the cap and a slice: a push past it after a stall must
-            // not reallocate in the microphone callback before the excess is dropped.
-            frames: VecDeque::with_capacity(2 * cap + 2 * SLICE),
+            // Room for the cap and one converted slice (a slice of the
+            // microphone makes at most 1.01 x cable rate / mic rate times as
+            // many frames, more than 1 for a slower microphone): a push past
+            // the cap after a stall must not reallocate in the microphone
+            // callback before the excess is dropped.
+            frames: VecDeque::with_capacity(cap + slice_out(mic_rate, rate) + 16),
             resampler: Resampler::new(mic_rate, rate),
             rate,
             target: frames_in(TARGET_MS),
@@ -107,6 +129,7 @@ impl DriftBuffer {
             skip: 0,
             drift_ppm: 0.0,
             stats: DriftStats::default(),
+            gap_seen: [0.0; 2],
         }
     }
 
@@ -195,11 +218,19 @@ impl DriftBuffer {
 
     /// The time since the cable's previous read, in ms.
     pub fn note_read_gap(&mut self, ms: f32) {
+        if self.gap_seen[0] < GAP_WARMUP_MS {
+            self.gap_seen[0] += ms.max(1.0);
+            return;
+        }
         self.stats.read_gap_ms = self.stats.read_gap_ms.max(ms);
     }
 
     /// The time since the microphone's previous push, in ms.
     pub fn note_push_gap(&mut self, ms: f32) {
+        if self.gap_seen[1] < GAP_WARMUP_MS {
+            self.gap_seen[1] += ms.max(1.0);
+            return;
+        }
         self.stats.push_gap_ms = self.stats.push_gap_ms.max(ms);
     }
 
@@ -430,7 +461,6 @@ mod tests {
         println!("1000 ppm, no stall: {:?}; at 25 s {:?}", r.stats, sidebands(&r, 25.0));
     }
 
-
     #[test]
     fn the_delay_stays_near_the_target_when_the_clocks_drift() {
         // 0.1 % of 5 minutes at 48 kHz: 14,400 frames to make up, by the rate alone.
@@ -439,7 +469,7 @@ mod tests {
             let s = buffer.stats();
             assert_eq!((s.underruns, s.skips, s.dropped), (0, 0, 0), "{}: {:?}", skew, s);
             assert!(s.max_fill_ms <= (TARGET_MS + SKIP_OVER_MS) as f32, "{}: {:?}", skew, s);
-            assert!(lowest >= 2.0, "{}: the fill fell to {} ms", skew, lowest);
+            assert!(lowest >= 4.0, "{}: the fill fell to {} ms", skew, lowest);
             // On average the correction is the skew (microphone fast: its frames
             // are converted to fewer), give or take a callback's step it works off.
             let ppm = skew * 1e6;
@@ -465,6 +495,112 @@ mod tests {
         }
     }
 
+    /// A 440 Hz-ish microphone at `mic_rate` into the cable at 48 kHz (480
+    /// frames every 10 ms on a clock `skew` slower). The microphone's
+    /// callbacks happen at the times in `calls` (us); each one delivers
+    /// what the microphone made since the previous. Returns the buffer, the
+    /// lowest fill after a read once primed (ms) and the trace as in `Run`.
+    fn run_calls(mic_rate: u32, skew: f64, secs: f64, calls: &[f64]) -> (DriftBuffer, f32, Vec<(f64, f32)>) {
+        let mut buffer = DriftBuffer::new(mic_rate, 48_000);
+        let (mut next, mut delivered, mut cable_t) = (0usize, 0u64, 0.0f64);
+        let (mut lowest, mut trace) = (f32::MAX, Vec::new());
+        let mut out = vec![0f32; 960];
+        while cable_t < secs * 1e6 {
+            if next < calls.len() && calls[next] <= cable_t {
+                let made = (calls[next] * mic_rate as f64 / 1e6) as u64;
+                let frames = vec![[0.1f32, 0.1]; (made - delivered) as usize];
+                delivered = made;
+                buffer.push(&frames);
+                next += 1;
+                continue;
+            }
+            out.fill(0.0);
+            buffer.read_into(&mut out[..960], 2);
+            if buffer.primed {
+                lowest = lowest.min(buffer.frames.len() as f32 / 48.0);
+            }
+            trace.push((cable_t / 1e6, buffer.frames.len() as f32 / 48.0));
+            cable_t += 10_000.0 * (1.0 + skew);
+        }
+        (buffer, lowest, trace)
+    }
+
+    /// 10 ms callbacks, each up to 2 ms early or late (a seeded sequence),
+    /// and every 3.7 s one that is 6 ms later still (together up to 12 ms
+    /// more than the beat, which the 15 ms target has room for).
+    fn jittered_calls(secs: f64) -> Vec<f64> {
+        let (mut seed, mut t, mut calls) = (12_345u64, 0.0f64, Vec::new());
+        let mut k = 0u32;
+        while t < secs * 1e6 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            let jitter = ((seed >> 33) as f64 / (1u64 << 31) as f64 - 0.5) * 4_000.0;
+            let late = if k % 370 == 369 { 6_000.0 } else { 0.0 };
+            calls.push((t + 3_000.0 + jitter + late).max(calls.last().copied().unwrap_or(0.0)));
+            t += 10_000.0;
+            k += 1;
+        }
+        calls
+    }
+
+    #[test]
+    fn jittered_callbacks_do_not_starve_the_cable() {
+        // 44.1 kHz microphone, a tenth of a percent slow and fast.
+        for skew in [0.001, -0.001, 0.0] {
+            let calls = jittered_calls(120.0);
+            let (buffer, lowest, trace) = run_calls(44_100, skew, 120.0, &calls);
+            let s = buffer.stats();
+            assert_eq!((s.underruns, s.skips, s.dropped), (0, 0, 0), "{}: {:?}", skew, s);
+            assert!(lowest >= 3.0, "{}: the fill fell to {} ms", skew, lowest);
+            let highest = trace.iter().map(|t| t.1).fold(0.0f32, f32::max);
+            assert!(highest <= (TARGET_MS + SKIP_OVER_MS) as f32, "{}: the fill rose to {} ms", skew, highest);
+            // A late callback does not push the rate to its limit.
+            assert!(s.speed_ppm.abs() < 3_000.0, "{}: {:?}", skew, s);
+        }
+    }
+
+    #[test]
+    fn a_microphone_stall_costs_one_gap_and_one_skip() {
+        // The microphone stops for 100 ms at 5 s, then delivers its backlog at once.
+        let mut calls: Vec<f64> = (0..1_000).map(|k| 3_000.0 + k as f64 * 10_000.0).collect();
+        calls.retain(|&t| !(5e6..5.1e6).contains(&t));
+        let (buffer, _, trace) = run_calls(44_100, 50e-6, 10.0, &calls);
+        let s = buffer.stats();
+        assert_eq!((s.underruns, s.skips), (1, 1), "{:?}", s);
+        let limit = (TARGET_MS + 10) as f32;
+        let last_over = trace.iter().filter(|t| t.0 >= 5.1 && t.1 > limit).map(|t| t.0).fold(5.1, f64::max);
+        assert!(last_over - 5.1 <= 1.0, "back within target + 10 ms only after {} s", last_over - 5.1);
+    }
+
+    #[test]
+    fn a_slow_microphone_into_a_fast_cable_does_not_reallocate() {
+        let mut buf = DriftBuffer::new(8_000, 96_000);
+        let before = buf.frames.capacity();
+        // Right after a stall: the cap is full, then slices of the microphone arrive.
+        buf.push(&vec![[0.0, 0.0]; 4 * SLICE]);
+        buf.push(&vec![[0.0, 0.0]; 4 * SLICE]);
+        assert_eq!(buf.frames.len(), buf.cap);
+        assert_eq!(buf.frames.capacity(), before);
+        // And at the slowest correction (more frames out).
+        buf.resampler.set_speed(1.0 - MAX_PPM * 1e-6);
+        buf.push(&vec![[0.0, 0.0]; 4 * SLICE]);
+        assert_eq!(buf.frames.capacity(), before);
+    }
+
+    #[test]
+    fn the_gaps_of_the_first_second_are_not_counted() {
+        let mut buf = DriftBuffer::new(48_000, 48_000);
+        buf.note_read_gap(300.0);
+        buf.note_push_gap(300.0);
+        for _ in 0..70 {
+            buf.note_read_gap(10.0);
+            buf.note_push_gap(10.0);
+        }
+        assert_eq!((buf.stats().read_gap_ms, buf.stats().push_gap_ms), (0.0, 0.0));
+        buf.note_read_gap(25.0);
+        buf.note_push_gap(30.0);
+        assert_eq!((buf.stats().read_gap_ms, buf.stats().push_gap_ms), (25.0, 30.0));
+    }
+
     #[test]
     fn no_frame_is_dropped_or_repeated_in_steady_state() {
         // The worst drift the rate covers comfortably, and none.
@@ -483,7 +619,7 @@ mod tests {
     fn a_push_past_the_cap_does_not_reallocate() {
         let mut buf = DriftBuffer::new(48_000, 48_000);
         let before = buf.frames.capacity();
-        assert!(before >= 2 * buf.cap);
+        assert!(before >= buf.cap + SLICE);
         buf.push(&vec![[0.0, 0.0]; buf.cap]);
         buf.push(&vec![[0.0, 0.0]; buf.cap]);
         assert_eq!(buf.frames.len(), buf.cap);
