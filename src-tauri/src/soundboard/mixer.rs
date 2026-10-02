@@ -14,6 +14,9 @@ use crate::audio::lock;
 pub const SOURCE_RATE: u32 = 48_000;
 /// A stopped or replaced sound fades out over this time.
 pub const FADE_MS: u32 = 15;
+/// A starting sound fades in over this time, so a first sample that is not
+/// zero does not click.
+pub const FADE_IN_MS: u32 = 5;
 
 /// What others hear (the virtual cable) and what the user hears.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +111,8 @@ struct Track {
     pos: f64,
     /// Frames left of the fade-out, and its length, once it started.
     fade: Option<(u32, u32)>,
+    /// Frames rendered so far, for the fade-in.
+    age: u32,
     done: bool,
 }
 
@@ -218,6 +223,7 @@ impl Mixer {
         };
         let step = SOURCE_RATE as f64 / rate.max(1) as f64;
         let fade_len = (rate * FADE_MS / 1000).max(1);
+        let fade_in = (rate * FADE_IN_MS / 1000).max(1);
         let o = output as usize;
         for voice in &mut self.voices {
             let track = &mut voice.out[o];
@@ -237,11 +243,16 @@ impl Mixer {
                 }
                 let Some(a) = buffer.get(at) else {
                     // Not read yet (a slow disk): wait for it rather than skip ahead.
-                    track.done = buffer.finished;
+                    // A fading-out voice ends rather than wait for a slow or dead reader.
+                    track.done = buffer.finished || voice.stopping;
                     break;
                 };
                 let b = buffer.get(at + 1).unwrap_or(a);
                 let mut g = gain;
+                if track.age < fade_in {
+                    g *= track.age as f32 / fade_in as f32;
+                }
+                track.age = track.age.saturating_add(1);
                 if let Some((left, len)) = track.fade.as_mut() {
                     if *left == 0 {
                         track.done = true;
@@ -321,10 +332,10 @@ mod tests {
     fn a_sound_plays_on_both_outputs_at_its_volumes() {
         let mut m = Mixer::new(false, 1.0, 0.5);
         m.start("a", 0.8, 480, sound(480, 0.5));
-        let cable = render(&mut m, Output::Cable, 100, 48_000);
-        assert!(close(cable[0], 0.4) && close(cable[1], -0.4), "{:?}", &cable[..2]);
-        let phones = render(&mut m, Output::Headphones, 100, 48_000);
-        assert!(close(phones[0], 0.2) && close(phones[1], -0.2), "{:?}", &phones[..2]);
+        let cable = render(&mut m, Output::Cable, 300, 48_000);
+        assert!(close(cable[598], 0.4) && close(cable[599], -0.4), "{:?}", &cable[598..]);
+        let phones = render(&mut m, Output::Headphones, 300, 48_000);
+        assert!(close(phones[598], 0.2) && close(phones[599], -0.2), "{:?}", &phones[598..]);
     }
 
     #[test]
@@ -355,7 +366,7 @@ mod tests {
         let mut m = Mixer::new(false, 1.0, 1.0);
         m.start("ramp", 1.0, 4_800, shared);
         let out = render(&mut m, Output::Cable, 5_000, 44_100);
-        for j in [1, 1_000, 3_000, 4_409] {
+        for j in [500, 1_000, 3_000, 4_409] {
             let expected = (j as f64 * 48_000.0 / 44_100.0 / 4_800.0) as f32;
             assert!((out[2 * j] - expected).abs() < 1e-4, "frame {}: {} vs {}", j, out[2 * j], expected);
         }
@@ -367,13 +378,13 @@ mod tests {
         let mut m = Mixer::new(false, 1.0, 1.0);
         let a = sound(48_000, 1.0);
         m.start("a", 1.0, 48_000, a.clone());
-        render(&mut m, Output::Cable, 100, 48_000);
-        render(&mut m, Output::Headphones, 100, 48_000);
+        render(&mut m, Output::Cable, 300, 48_000);
+        render(&mut m, Output::Headphones, 300, 48_000);
         m.start("b", 1.0, 48_000, sound(48_000, 0.25));
         assert_eq!(m.playing().iter().map(|v| v.id.as_str()).collect::<Vec<_>>(), ["b"]);
         // 15 ms at 48 kHz: 720 frames from full to silent.
         let out = render(&mut m, Output::Cable, 800, 48_000);
-        assert!(close(out[0], 1.25), "{}", out[0]);
+        assert!(close(out[0], 1.0), "{}", out[0]);
         assert!(close(out[2 * 360], 0.75), "{}", out[2 * 360]);
         assert!(close(out[2 * 720], 0.25) && close(out[2 * 799], 0.25));
         assert!(!a.done.load(Ordering::Relaxed), "still fading on the headphones");
@@ -390,8 +401,8 @@ mod tests {
         let mut ids: Vec<String> = m.playing().into_iter().map(|v| v.id).collect();
         ids.sort();
         assert_eq!(ids, ["a", "b"]);
-        let out = render(&mut m, Output::Cable, 10, 48_000);
-        assert!(close(out[0], 0.75) && close(out[1], -0.75));
+        let out = render(&mut m, Output::Cable, 300, 48_000);
+        assert!(close(out[598], 0.75) && close(out[599], -0.75));
     }
 
     #[test]
@@ -418,14 +429,14 @@ mod tests {
         let mut m = Mixer::new(false, 1.0, 0.0);
         m.start("a", 1.0, 480, sound(480, 0.5));
         assert!(render(&mut m, Output::Headphones, 600, 48_000).iter().all(|&s| s == 0.0));
-        assert!(close(render(&mut m, Output::Cable, 600, 48_000)[0], 0.5));
+        assert!(close(render(&mut m, Output::Cable, 600, 48_000)[2 * 400], 0.5));
         assert!(m.is_idle());
         m.start("b", 1.0, 480, sound(480, 0.5));
         m.others_volume = 0.0;
         m.me_volume = 1.0;
         m.set_sound_volume("b", 0.5);
-        assert!(render(&mut m, Output::Cable, 10, 48_000).iter().all(|&s| s == 0.0));
-        assert!(close(render(&mut m, Output::Headphones, 10, 48_000)[0], 0.25));
+        assert!(render(&mut m, Output::Cable, 300, 48_000).iter().all(|&s| s == 0.0));
+        assert!(close(render(&mut m, Output::Headphones, 300, 48_000)[598], 0.25));
     }
 
     #[test]
@@ -435,7 +446,7 @@ mod tests {
         let mut m = Mixer::new(false, 1.0, 1.0);
         m.start("slow", 1.0, 1_000, shared.clone());
         let out = render(&mut m, Output::Cable, 200, 48_000);
-        assert!(close(out[2 * 99], 0.5) && out[2 * 100] == 0.0);
+        assert!(close(out[2 * 99], 0.5 * 99.0 / 240.0) && out[2 * 100] == 0.0);
         assert_eq!(shared.played[0].load(Ordering::Relaxed), 100);
         {
             let mut buffer = lock(&shared.buffer);
@@ -443,7 +454,33 @@ mod tests {
             buffer.finish();
         }
         let out = render(&mut m, Output::Cable, 10, 48_000);
-        assert!(close(out[0], 0.25), "it goes on at frame 100, not later");
+        assert!(close(out[0], 0.25 * 100.0 / 240.0), "it goes on at frame 100, not later");
+    }
+
+    #[test]
+    fn a_stopping_voice_ends_even_when_the_reader_has_not_delivered() {
+        let shared = Arc::new(VoiceShared::default());
+        lock(&shared.buffer).push(&vec![[0.5, 0.5]; 10]);
+        let mut m = Mixer::new(false, 1.0, 1.0);
+        m.start("slow", 1.0, 1_000, shared.clone());
+        render(&mut m, Output::Cable, 100, 48_000);
+        render(&mut m, Output::Headphones, 100, 48_000);
+        assert!(!m.is_idle(), "a playing voice waits for its reader");
+        assert!(m.stop_sound("slow"));
+        render(&mut m, Output::Cable, 100, 48_000);
+        render(&mut m, Output::Headphones, 100, 48_000);
+        assert!(m.is_idle() && m.playing().is_empty());
+        assert!(shared.done.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_sound_fades_in_over_a_few_milliseconds() {
+        let mut m = Mixer::new(false, 1.0, 1.0);
+        m.start("a", 1.0, 1_000, sound(1_000, 1.0));
+        let out = render(&mut m, Output::Cable, 300, 48_000);
+        assert!(out[0].abs() < 0.01, "{}", out[0]);
+        assert!(out[2] > 0.0 && out[2] < 0.1);
+        assert!(close(out[2 * 240], 1.0) && close(out[2 * 299], 1.0));
     }
 
     #[test]
