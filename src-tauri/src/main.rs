@@ -29,6 +29,8 @@ use rudariflow_lib::startup_log;
 use rudariflow_lib::voice_edit::{self, Edit};
 use rudariflow_lib::whisper_engine::WhisperEngine;
 use rudariflow_lib::{ai_cleanup, file_transcribe, media, screen_context};
+use rudariflow_lib::soundboard::library::{Board, Devices};
+use rudariflow_lib::soundboard::{self, engine, AddResult, BoardState, Soundboard, Status};
 
 /// One file is transcribed at a time; setting the flag stops it after the
 /// block that is running.
@@ -49,6 +51,8 @@ struct AppState {
     last_activity: Mutex<std::time::Instant>,
     /// The Free GPU hotkey (see `free_gpu_press`).
     gpu: GpuFree,
+    /// The soundboard (library, engine while on).
+    soundboard: Arc<Soundboard>,
 }
 
 /// State of the Free GPU hotkey.
@@ -171,7 +175,7 @@ fn warm_ai(state: &AppState) {
 }
 
 /// What a global hotkey does.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 enum HotkeyAction {
     /// Start / stop dictation (the main hotkey).
     Dictation,
@@ -181,6 +185,10 @@ enum HotkeyAction {
     RewriteLast,
     /// Free the GPU, or load the models again (see `free_gpu_press`).
     FreeGpu,
+    /// Stop every soundboard sound (registered while the board is on).
+    StopSounds,
+    /// Play or stop a soundboard sound, by id (registered while the board is on).
+    Sound(String),
 }
 
 impl HotkeyAction {
@@ -191,6 +199,19 @@ impl HotkeyAction {
             "rewriteLast" => Ok(Self::RewriteLast),
             "freeGpu" => Ok(Self::FreeGpu),
             _ => Err(format!("Unknown hotkey target: {}", target)),
+        }
+    }
+
+    /// The name the UI knows this hotkey by: "dictation", "pasteLast",
+    /// "rewriteLast", "freeGpu", "stopSounds", or the sound's id.
+    fn target(&self) -> String {
+        match self {
+            Self::Dictation => "dictation".to_string(),
+            Self::PasteLast => "pasteLast".to_string(),
+            Self::RewriteLast => "rewriteLast".to_string(),
+            Self::FreeGpu => "freeGpu".to_string(),
+            Self::StopSounds => "stopSounds".to_string(),
+            Self::Sound(id) => id.clone(),
         }
     }
 }
@@ -205,14 +226,58 @@ fn hotkeys(s: &Settings) -> [(HotkeyAction, String); 4] {
     ]
 }
 
-/// Whether `hotkey` is already another action's hotkey: mouse bindings by
-/// button and modifiers, chords without regard to case.
-fn taken_by_other(all: &[(HotkeyAction, String)], action: HotkeyAction, hotkey: &str) -> bool {
+/// The stop-all and sound hotkeys that are set.
+fn board_hotkeys(board: &Board) -> Vec<(HotkeyAction, String)> {
+    std::iter::once((HotkeyAction::StopSounds, board.stop_hotkey.clone()))
+        .chain(board.sounds.iter().map(|s| (HotkeyAction::Sound(s.id.clone()), s.hotkey.clone())))
+        .filter(|(_, hotkey)| !hotkey.is_empty())
+        .collect()
+}
+
+/// Every hotkey: the app's four and the soundboard's.
+fn all_hotkeys(settings: &Settings, board: &Board) -> Vec<(HotkeyAction, String)> {
+    let mut all = hotkeys(settings).to_vec();
+    all.extend(board_hotkeys(board));
+    all
+}
+
+/// The action other than `action` that already has `hotkey`: mouse
+/// bindings by button and modifiers, chords without regard to case.
+fn taken_by(all: &[(HotkeyAction, String)], action: &HotkeyAction, hotkey: &str) -> Option<HotkeyAction> {
     let same = |h: &str| match (mouse_hotkey::parse(hotkey), mouse_hotkey::parse(h)) {
         (Some(a), Some(b)) => a == b,
         _ => hotkey.eq_ignore_ascii_case(h),
     };
-    all.iter().any(|(a, h)| *a != action && !h.is_empty() && same(h))
+    all.iter().find(|(a, h)| a != action && !h.is_empty() && same(h)).map(|(a, _)| a.clone())
+}
+
+/// The owner in an "already used by" error, for the UI to put in words:
+/// its target, and for a sound "sound:<name>".
+fn owner_label(action: &HotkeyAction, board: &Board) -> String {
+    match action {
+        HotkeyAction::Sound(id) => format!("sound:{}", board.sound(id).map_or("", |s| s.name.as_str())),
+        other => other.target(),
+    }
+}
+
+/// Whether `hotkey` may become a sound's or stop all's: not a Windows
+/// shortcut, a key or side button the hotkey code knows, and no other
+/// hotkey's. Empty (off) is always fine. A key alone (the numpad, F13) is
+/// allowed here; the settings UI only offers that for the soundboard.
+fn check_board_hotkey(all: &[(HotkeyAction, String)], board: &Board, action: &HotkeyAction, hotkey: &str) -> Result<(), String> {
+    if hotkey.is_empty() {
+        return Ok(());
+    }
+    if rudariflow_lib::settings::is_windows_shortcut(hotkey) {
+        return Err(format!("'{}' is a Windows shortcut (select all, copy, paste, ...)", hotkey));
+    }
+    if mouse_hotkey::parse(hotkey).is_none() && hotkey.parse::<tauri_plugin_global_shortcut::Shortcut>().is_err() {
+        return Err(format!("'{}' is not a valid hotkey", hotkey));
+    }
+    match taken_by(all, action, hotkey) {
+        Some(owner) => Err(format!("'{}' is already used by {}", hotkey, owner_label(&owner, board))),
+        None => Ok(()),
+    }
 }
 
 /// Settings, models and history. `RUDARIFLOW_DATA_DIR` points a test build at
@@ -1209,7 +1274,8 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
 
 /// `target` is "dictation", "pasteLast", "rewriteLast" or "freeGpu"; each
 /// takes a keyboard chord or a mouse side button. An empty `new_hotkey` turns
-/// paste-last, rewrite or free GPU off; dictation always needs one.
+/// paste-last, rewrite or free GPU off; dictation always needs one. A key a
+/// soundboard hotkey has is refused too, even while the board is off.
 #[tauri::command]
 fn change_hotkey(
     app: tauri::AppHandle,
@@ -1218,25 +1284,28 @@ fn change_hotkey(
     new_hotkey: String,
 ) -> Result<(), String> {
     let action = HotkeyAction::from_target(&target)?;
-    let all = hotkeys(&state.settings.lock().unwrap());
+    let board = state.soundboard.board();
+    let all = all_hotkeys(&state.settings.lock().unwrap(), &board);
     let current = all.iter().find(|(a, _)| *a == action).map(|(_, h)| h.clone()).unwrap_or_default();
     if new_hotkey.is_empty() && action == HotkeyAction::Dictation {
         return Err("The dictation hotkey cannot be empty".to_string());
     }
-    if !new_hotkey.is_empty() && taken_by_other(&all, action, &new_hotkey) {
-        return Err(format!("'{}' is already used by another hotkey", new_hotkey));
+    if !new_hotkey.is_empty() {
+        if let Some(owner) = taken_by(&all, &action, &new_hotkey) {
+            return Err(format!("'{}' is already used by {}", new_hotkey, owner_label(&owner, &board)));
+        }
     }
     if new_hotkey != current {
         // Register the new chord before dropping the old one, so a rejected
         // chord (invalid name, taken by another app) leaves the old one working.
         if !new_hotkey.is_empty() {
-            register_hotkey(&app, &new_hotkey, action)?;
+            register_hotkey(&app, &new_hotkey, action.clone())?;
         }
         if !current.is_empty() {
             unregister_hotkey(&app, &current);
         }
     } else if !new_hotkey.is_empty() && !hotkey_is_registered(&app, &current) {
-        register_hotkey(&app, &new_hotkey, action)?;
+        register_hotkey(&app, &new_hotkey, action.clone())?;
     }
     startup_log::log(&format!("[hotkey] {:?} changed {} -> {}", action, current, new_hotkey));
     let mut settings = state.settings.lock().unwrap();
@@ -1245,6 +1314,8 @@ fn change_hotkey(
         HotkeyAction::PasteLast => settings.paste_last_hotkey = new_hotkey,
         HotkeyAction::RewriteLast => settings.rewrite_last_hotkey = new_hotkey,
         HotkeyAction::FreeGpu => settings.free_gpu_hotkey = new_hotkey,
+        // `from_target` names only the app's four.
+        HotkeyAction::StopSounds | HotkeyAction::Sound(_) => {}
     }
     settings.save(&state.app_dir)?;
     Ok(())
@@ -1252,6 +1323,7 @@ fn change_hotkey(
 
 /// Temporarily release the global hotkeys while the settings UI captures a
 /// new chord; a registered chord never reaches the webview as a keydown.
+/// The soundboard's hotkeys follow off the main thread.
 #[tauri::command]
 fn set_hotkey_paused(
     app: tauri::AppHandle,
@@ -1267,20 +1339,23 @@ fn set_hotkey_paused(
         if paused {
             unregister_hotkey(&app, &hotkey);
         } else if !hotkey_is_registered(&app, &hotkey) {
+            let dictation = action == HotkeyAction::Dictation;
             if let Err(e) = register_hotkey(&app, &hotkey, action) {
                 // An optional chord (paste last, rewrite, free GPU) taken by
                 // another app must not block the dictation hotkey; it is
                 // logged by register_hotkey.
-                if action == HotkeyAction::Dictation {
+                if dictation {
                     result = Err(e);
                 }
             }
         }
     }
+    HOTKEYS_PAUSED.store(paused, Ordering::SeqCst);
+    spawn_board_hotkey_sync(&app);
     result
 }
 
-fn on_hotkey_event(handle: &AppHandle, action: HotkeyAction, pressed: bool) {
+fn on_hotkey_event(handle: &AppHandle, action: &HotkeyAction, pressed: bool) {
     match action {
         HotkeyAction::Dictation => on_hotkey(handle, pressed),
         HotkeyAction::PasteLast if pressed => paste_last_transcript(handle),
@@ -1288,7 +1363,28 @@ fn on_hotkey_event(handle: &AppHandle, action: HotkeyAction, pressed: bool) {
         HotkeyAction::RewriteLast => on_rewrite_hotkey(handle, pressed),
         HotkeyAction::FreeGpu if pressed => on_free_gpu_hotkey(handle),
         HotkeyAction::FreeGpu => {}
+        HotkeyAction::StopSounds if pressed => on_stop_sounds_hotkey(handle),
+        HotkeyAction::StopSounds => {}
+        HotkeyAction::Sound(id) if pressed => on_sound_hotkey(handle, id),
+        HotkeyAction::Sound(_) => {}
     }
+}
+
+/// A sound's hotkey: play it, or stop it while it plays. Off the hotkey's
+/// thread (chords arrive on the main thread).
+fn on_sound_hotkey(handle: &AppHandle, id: &str) {
+    let (handle, id) = (handle.clone(), id.to_string());
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(e) = handle.state::<AppState>().soundboard.play(&id) {
+            startup_log::log(&format!("[soundboard] {} not played: {}", id, e));
+        }
+    });
+}
+
+/// The stop-all hotkey.
+fn on_stop_sounds_hotkey(handle: &AppHandle) {
+    let handle = handle.clone();
+    tauri::async_runtime::spawn_blocking(move || handle.state::<AppState>().soundboard.stop_all());
 }
 
 /// Whether the rewrite hotkey is held (push-to-talk): a release that comes
@@ -1482,6 +1578,149 @@ async fn free_gpu_test(app: AppHandle, state: State<'_, AppState>) -> Result<Fre
     Ok(free_gpu_press(&app, press).await)
 }
 
+#[tauri::command]
+async fn soundboard_state(state: State<'_, AppState>) -> Result<BoardState, String> {
+    Ok(state.soundboard.state())
+}
+
+/// The Virtual microphone switch. Returns the status after it (on, off, or
+/// the reason it could not turn on).
+#[tauri::command]
+async fn soundboard_set_enabled(state: State<'_, AppState>, enabled: bool) -> Result<Status, String> {
+    let (board, mic) = (state.soundboard.clone(), state.settings.lock().unwrap().microphone.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        if enabled {
+            let _ = board.turn_on(&mic);
+        } else {
+            board.turn_off();
+        }
+        board.status()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Inputs and outputs for the Devices area, with the automatic picks.
+#[tauri::command]
+async fn soundboard_devices(state: State<'_, AppState>) -> Result<engine::DeviceChoices, String> {
+    let mic = state.settings.lock().unwrap().microphone.clone();
+    tauri::async_runtime::spawn_blocking(move || engine::choices(&mic)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn soundboard_set_devices(state: State<'_, AppState>, devices: Devices) -> Result<Status, String> {
+    let (board, mic) = (state.soundboard.clone(), state.settings.lock().unwrap().microphone.clone());
+    tauri::async_runtime::spawn_blocking(move || board.set_devices(devices, &mic)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn soundboard_set_volumes(state: State<'_, AppState>, others: f32, me: f32) -> Result<(), String> {
+    state.soundboard.set_volumes(others, me)
+}
+
+#[tauri::command]
+async fn soundboard_set_layer(state: State<'_, AppState>, layer: bool) -> Result<(), String> {
+    state.soundboard.set_layer(layer)
+}
+
+/// Add files (copied into the soundboard folder); a result per file.
+#[tauri::command]
+async fn soundboard_add(state: State<'_, AppState>, paths: Vec<String>) -> Result<Vec<AddResult>, String> {
+    let board = state.soundboard.clone();
+    tauri::async_runtime::spawn_blocking(move || board.add(&paths)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn soundboard_remove(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let board = state.soundboard.clone();
+    tauri::async_runtime::spawn_blocking(move || board.remove(&id).map(|_| ())).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn soundboard_rename(state: State<'_, AppState>, id: String, name: String) -> Result<(), String> {
+    state.soundboard.rename(&id, &name)
+}
+
+#[tauri::command]
+async fn soundboard_set_category(state: State<'_, AppState>, id: String, category: String) -> Result<(), String> {
+    state.soundboard.set_category(&id, &category)
+}
+
+#[tauri::command]
+async fn soundboard_set_sound_volume(state: State<'_, AppState>, id: String, volume: f32) -> Result<(), String> {
+    state.soundboard.set_sound_volume(&id, volume)
+}
+
+/// A sound's hotkey ("" = none): checked against every other hotkey; the
+/// board's hotkeys follow from the change event.
+#[tauri::command]
+async fn soundboard_set_hotkey(state: State<'_, AppState>, id: String, hotkey: String) -> Result<(), String> {
+    let board = state.soundboard.board();
+    let all = all_hotkeys(&state.settings.lock().unwrap(), &board);
+    check_board_hotkey(&all, &board, &HotkeyAction::Sound(id.clone()), &hotkey)?;
+    state.soundboard.set_sound_hotkey(&id, &hotkey)
+}
+
+/// The stop-all hotkey ("" = off).
+#[tauri::command]
+async fn soundboard_set_stop_hotkey(state: State<'_, AppState>, hotkey: String) -> Result<(), String> {
+    let board = state.soundboard.board();
+    let all = all_hotkeys(&state.settings.lock().unwrap(), &board);
+    check_board_hotkey(&all, &board, &HotkeyAction::StopSounds, &hotkey)?;
+    state.soundboard.set_stop_hotkey(&hotkey)
+}
+
+/// Play a sound, or stop it while it plays; true when it started.
+#[tauri::command]
+async fn soundboard_play(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let board = state.soundboard.clone();
+    tauri::async_runtime::spawn_blocking(move || board.play(&id)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn soundboard_stop_all(state: State<'_, AppState>) -> Result<(), String> {
+    state.soundboard.stop_all();
+    Ok(())
+}
+
+#[tauri::command]
+async fn soundboard_category_add(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    state.soundboard.category_add(&name)
+}
+
+#[tauri::command]
+async fn soundboard_category_rename(state: State<'_, AppState>, id: String, name: String) -> Result<(), String> {
+    state.soundboard.category_rename(&id, &name)
+}
+
+#[tauri::command]
+async fn soundboard_category_remove(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.soundboard.category_remove(&id)
+}
+
+/// Test hook: record `ms` (at most 10 s) from an input such as "CABLE
+/// Output", or with `loopback` what an output plays, and measure it. Only
+/// with RUDARIFLOW_TEST_COMMANDS=1.
+#[tauri::command]
+async fn soundboard_capture_test(device: String, ms: u64, loopback: bool) -> Result<engine::Levels, String> {
+    if std::env::var("RUDARIFLOW_TEST_COMMANDS").as_deref() != Ok("1") {
+        return Err("test commands are off".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || engine::capture_levels(&device, ms.min(10_000), loopback))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Test hook: the engine's devices, formats and microphone buffer; "off"
+/// while off. Only with RUDARIFLOW_TEST_COMMANDS=1.
+#[tauri::command]
+async fn soundboard_engine_stats(state: State<'_, AppState>) -> Result<engine::EngineStats, String> {
+    if std::env::var("RUDARIFLOW_TEST_COMMANDS").as_deref() != Ok("1") {
+        return Err("test commands are off".to_string());
+    }
+    state.soundboard.stats().ok_or_else(|| "off".to_string())
+}
+
 /// Keyboard chords go through the global-shortcut plugin; mouse side buttons
 /// (`Mouse4`, `Mouse5`, optionally with modifiers) through a mouse hook.
 fn register_hotkey(app: &AppHandle, hotkey: &str, action: HotkeyAction) -> Result<(), String> {
@@ -1503,7 +1742,7 @@ fn register_hotkey(app: &AppHandle, hotkey: &str, action: HotkeyAction) -> Resul
                     label,
                     if pressed { "Pressed" } else { "Released" }
                 ));
-                on_hotkey_event(&handle, action, pressed);
+                on_hotkey_event(&handle, &action, pressed);
             }),
         )
         .map_err(|e| {
@@ -1521,7 +1760,7 @@ fn register_hotkey(app: &AppHandle, hotkey: &str, action: HotkeyAction) -> Resul
                 shortcut.into_string(),
                 event.state
             ));
-            on_hotkey_event(&handle, action, event.state == ShortcutState::Pressed);
+            on_hotkey_event(&handle, &action, event.state == ShortcutState::Pressed);
         })
         .map_err(|e| {
             let msg = format!("Failed to register hotkey '{}': {}", hotkey, e);
@@ -1543,6 +1782,69 @@ fn hotkey_is_registered(app: &AppHandle, hotkey: &str) -> bool {
     match mouse_hotkey::parse(hotkey) {
         Some(binding) => mouse_hotkey::is_registered(binding),
         None => app.global_shortcut().is_registered(hotkey),
+    }
+}
+
+/// The stop-all and sound hotkeys registered now, with their actions.
+static BOARD_HOTKEYS: Mutex<Vec<(String, HotkeyAction)>> = Mutex::new(Vec::new());
+/// A hotkey is being captured in the UI: the board's hotkeys stay released.
+static HOTKEYS_PAUSED: AtomicBool = AtomicBool::new(false);
+
+/// Make the registered board hotkeys what the board wants: its stop-all
+/// and sound hotkeys while it is on and no hotkey is being captured, none
+/// otherwise. Keys another program owns are reported to the board ("Taken
+/// by another program"). Never on the main thread: registering waits for it.
+fn sync_board_hotkeys(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let mut registered = BOARD_HOTKEYS.lock().unwrap_or_else(|p| p.into_inner());
+    let wanted = if state.soundboard.is_on() && !HOTKEYS_PAUSED.load(Ordering::SeqCst) {
+        board_hotkeys(&state.soundboard.board())
+    } else {
+        Vec::new()
+    };
+    registered.retain(|(hotkey, action)| {
+        let keep = wanted.iter().any(|(a, h)| h == hotkey && a == action);
+        if !keep {
+            unregister_hotkey(app, hotkey);
+            startup_log::log(&format!("[soundboard] hotkey {} released", hotkey));
+        }
+        keep
+    });
+    let mut taken = Vec::new();
+    for (action, hotkey) in wanted {
+        if registered.iter().any(|(h, a)| *h == hotkey && *a == action) {
+            continue;
+        }
+        match register_hotkey(app, &hotkey, action.clone()) {
+            Ok(()) => registered.push((hotkey, action)),
+            Err(_) => taken.push(action.target()),
+        }
+    }
+    drop(registered);
+    state.soundboard.set_hotkeys_taken(taken);
+}
+
+fn spawn_board_hotkey_sync(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || sync_board_hotkeys(&app));
+}
+
+/// The soundboard's changes as events for both views. Its hotkeys follow
+/// every change and every status (see `sync_board_hotkeys`).
+fn soundboard_event(event: soundboard::Event) {
+    let Some(app) = APP_HANDLE.get() else { return };
+    match event {
+        soundboard::Event::Changed => {
+            let _ = app.emit("soundboard-changed", ());
+            spawn_board_hotkey_sync(app);
+        }
+        soundboard::Event::Playing(voices) => {
+            let _ = app.emit("soundboard-playing", voices);
+        }
+        soundboard::Event::Status(status) => {
+            let _ = app.emit("soundboard-status", status);
+            spawn_board_hotkey_sync(app);
+        }
     }
 }
 
@@ -1671,6 +1973,7 @@ fn main() {
     let settings = Settings::load(&app_dir);
     startup_log::log("settings loaded");
     let history = Arc::new(History::load(&app_dir));
+    let soundboard = Soundboard::new(&app_dir, Box::new(soundboard_event));
     let llm = Arc::new(LlmServer::new(
         llama_dir(),
         app_dir.join("llm-server.log"),
@@ -1722,6 +2025,7 @@ fn main() {
             ai_download: Mutex::new(None),
             last_activity: Mutex::new(std::time::Instant::now()),
             gpu: GpuFree::default(),
+            soundboard,
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -1765,6 +2069,26 @@ fn main() {
             export_file,
             copy_text,
             diag_log,
+            soundboard_state,
+            soundboard_set_enabled,
+            soundboard_devices,
+            soundboard_set_devices,
+            soundboard_set_volumes,
+            soundboard_set_layer,
+            soundboard_add,
+            soundboard_remove,
+            soundboard_rename,
+            soundboard_set_category,
+            soundboard_set_sound_volume,
+            soundboard_set_hotkey,
+            soundboard_set_stop_hotkey,
+            soundboard_play,
+            soundboard_stop_all,
+            soundboard_category_add,
+            soundboard_category_rename,
+            soundboard_category_remove,
+            soundboard_capture_test,
+            soundboard_engine_stats,
         ])
         .on_window_event(|window, event| {
             // Close button (X) on the main window hides to tray instead of quitting.
@@ -1905,6 +2229,16 @@ fn main() {
             if !initial_free_gpu_hotkey.is_empty() {
                 let _ = register_hotkey(app.handle(), &initial_free_gpu_hotkey, HotkeyAction::FreeGpu);
             }
+            // The virtual microphone was on when RudariFlow last ran: on
+            // again. Its hotkeys follow from the status event.
+            if app.state::<AppState>().soundboard.board().enabled {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let state = handle.state::<AppState>();
+                    let mic = state.settings.lock().unwrap().microphone.clone();
+                    let _ = state.soundboard.turn_on(&mic);
+                });
+            }
 
             // Sync persisted autostart preference with the OS — but never
             // register a debug build at autostart (would point Windows at a
@@ -1984,7 +2318,10 @@ fn main() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let RunEvent::Exit = event {
-                app.state::<AppState>().llm.stop();
+                let state = app.state::<AppState>();
+                state.llm.stop();
+                // Keeps the saved switch: on again at the next start.
+                state.soundboard.shutdown();
             }
         });
 }
@@ -1992,6 +2329,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rudariflow_lib::soundboard::library::Sound;
 
     #[test]
     fn free_gpu_is_the_fourth_hotkey() {
@@ -2007,10 +2345,79 @@ mod tests {
         let mut s = Settings::default();
         s.rewrite_last_hotkey = "Shift+Mouse5".to_string();
         let all = hotkeys(&s);
-        assert!(taken_by_other(&all, HotkeyAction::FreeGpu, "shift+mouse5"), "mouse bindings by button and modifiers");
-        assert!(taken_by_other(&all, HotkeyAction::FreeGpu, "cmdorctrl+shift+space"), "chords without case");
-        assert!(!taken_by_other(&all, HotkeyAction::RewriteLast, "Shift+Mouse5"), "its own hotkey");
-        assert!(!taken_by_other(&all, HotkeyAction::FreeGpu, "Alt+Shift+F10"));
+        assert_eq!(
+            taken_by(&all, &HotkeyAction::FreeGpu, "shift+mouse5"),
+            Some(HotkeyAction::RewriteLast),
+            "mouse bindings by button and modifiers"
+        );
+        assert_eq!(taken_by(&all, &HotkeyAction::FreeGpu, "cmdorctrl+shift+space"), Some(HotkeyAction::Dictation), "chords without case");
+        assert_eq!(taken_by(&all, &HotkeyAction::RewriteLast, "Shift+Mouse5"), None, "its own hotkey");
+        assert_eq!(taken_by(&all, &HotkeyAction::FreeGpu, "Alt+Shift+F10"), None);
+    }
+
+    fn board_with(stop: &str, sounds: &[(&str, &str, &str)]) -> Board {
+        let mut board = Board::default();
+        board.stop_hotkey = stop.to_string();
+        for (id, name, hotkey) in sounds {
+            board.sounds.push(Sound {
+                id: id.to_string(),
+                name: name.to_string(),
+                file: format!("sounds/{}.wav", id),
+                category: String::new(),
+                hotkey: hotkey.to_string(),
+                volume: 1.0,
+                duration_ms: 1000,
+            });
+        }
+        board
+    }
+
+    #[test]
+    fn sound_and_stop_hotkeys_join_the_conflict_check() {
+        let board = board_with("F14", &[("s-a", "airhorn", "F13"), ("s-b", "drums", "")]);
+        assert_eq!(
+            board_hotkeys(&board),
+            vec![(HotkeyAction::StopSounds, "F14".to_string()), (HotkeyAction::Sound("s-a".into()), "F13".to_string())]
+        );
+        let all = all_hotkeys(&Settings::default(), &board);
+        assert_eq!(all.len(), 6);
+        let drums = HotkeyAction::Sound("s-b".into());
+        assert_eq!(taken_by(&all, &drums, "f13"), Some(HotkeyAction::Sound("s-a".into())));
+        assert_eq!(taken_by(&all, &drums, "F14"), Some(HotkeyAction::StopSounds));
+        assert_eq!(taken_by(&all, &drums, "CmdOrCtrl+Shift+Space"), Some(HotkeyAction::Dictation));
+        assert_eq!(
+            taken_by(&all, &HotkeyAction::FreeGpu, "F13"),
+            Some(HotkeyAction::Sound("s-a".into())),
+            "the app's hotkeys cannot take a sound's key"
+        );
+        assert_eq!(taken_by(&all, &HotkeyAction::Sound("s-a".into()), "F13"), None, "its own");
+        assert_eq!(taken_by(&all, &drums, "F15"), None);
+    }
+
+    #[test]
+    fn a_taken_hotkey_names_its_owner() {
+        let board = board_with("", &[("s-a", "air horn", "F13")]);
+        assert_eq!(owner_label(&HotkeyAction::Sound("s-a".into()), &board), "sound:air horn");
+        assert_eq!(owner_label(&HotkeyAction::StopSounds, &board), "stopSounds");
+        assert_eq!(owner_label(&HotkeyAction::Dictation, &board), "dictation");
+        assert_eq!(HotkeyAction::Sound("s-a".into()).target(), "s-a");
+    }
+
+    #[test]
+    fn board_hotkeys_are_checked_before_saving() {
+        let board = board_with("", &[("s-a", "airhorn", "F13"), ("s-b", "drums", "")]);
+        let all = all_hotkeys(&Settings::default(), &board);
+        let drums = HotkeyAction::Sound("s-b".into());
+        assert_eq!(check_board_hotkey(&all, &board, &drums, ""), Ok(()), "off");
+        assert_eq!(check_board_hotkey(&all, &board, &drums, "Numpad1"), Ok(()), "a key alone");
+        assert_eq!(check_board_hotkey(&all, &board, &drums, "Shift+Mouse4"), Ok(()));
+        assert!(check_board_hotkey(&all, &board, &drums, "CmdOrCtrl+C").unwrap_err().contains("Windows shortcut"));
+        assert!(check_board_hotkey(&all, &board, &drums, "Banana+Q").unwrap_err().contains("not a valid hotkey"));
+        assert_eq!(check_board_hotkey(&all, &board, &drums, "F13"), Err("'F13' is already used by sound:airhorn".to_string()));
+        assert_eq!(
+            check_board_hotkey(&all, &board, &HotkeyAction::StopSounds, "Alt+Shift+V"),
+            Err("'Alt+Shift+V' is already used by pasteLast".to_string())
+        );
     }
 
     #[test]
