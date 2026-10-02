@@ -7,14 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-02 - Soundboard, Free GPU hotkey and a Clear button
+
+Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
+
 ### Added
-- **The AI model for other programs:** while the AI is ready, RudariFlow
-  writes `llm-endpoint.json` to its data folder (address, key and a third
-  llama-server slot of their own), so the Twitch Live Translate caption
-  service translates with the model that is already loaded instead of
-  loading a second one. The dictation slot and its prompt cache are not
-  shared. Costs about 100 MB of video memory. Free GPU, turning the AI off
-  or quitting takes the file away.
 - **Soundboard** (new tab, can pop out into its own window): sounds on
   hotkeys for Discord and games, like Soundpad. Turn on "Virtual
   microphone" and RudariFlow sends your microphone plus the sounds to the
@@ -28,16 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   hotkey stops it, and a Stop all hotkey stops everything. Sound hotkeys
   are taken from other apps only while the virtual microphone is on. The
   pop-out window can stay on top and remembers its size and position.
-
-### Fixed
-- Ogg Vorbis files now open in the Files tab on PCs whose Media Foundation
-  cannot read them (RudariFlow decodes them itself).
-
-## [0.13.0] - 2026-09-25 - Free GPU hotkey and a Clear button
-
-Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
-
-### Added
 - **Free GPU hotkey:** a fourth hotkey (Settings → Recording, off by
   default, a key combination or a mouse side button) unloads Whisper and
   stops the AI model, so a game gets the graphics card's memory: about
@@ -51,6 +38,17 @@ Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
   transcript, the speaker names, the summary and the file line go, and
   the audio file stays where it is. Not while a file, a summary or an
   export is running.
+- **The AI model for other programs:** while the AI is ready, RudariFlow
+  writes `llm-endpoint.json` to its data folder (address, key and a third
+  llama-server slot of their own), so the Twitch Live Translate caption
+  service translates with the model that is already loaded instead of
+  loading a second one. The dictation slot and its prompt cache are not
+  shared. Costs about 100 MB of video memory. Free GPU, turning the AI off
+  or quitting takes the file away.
+
+### Fixed
+- Ogg Vorbis files now open in the Files tab on PCs whose Media Foundation
+  cannot read them (RudariFlow decodes them itself).
 
 ## [0.12.0] - 2026-09-25 - Speakers, exports and a resizable window
 
