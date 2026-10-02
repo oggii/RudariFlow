@@ -6,7 +6,7 @@
 //! memory, so no audio callback touches a file.
 
 use std::fs::File;
-use std::io::{BufReader, Read, Seek};
+use std::io::{BufReader, Read};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use super::drift::{mic_frames, DriftBuffer, DriftStats, Resampler};
 use super::library::Devices;
-use super::mixer::{Mixer, Output, PlayingVoice, VoiceShared, SOURCE_RATE};
+use super::mixer::{Mixer, Output, PlayingVoice, VoiceShared, NO_END, SOURCE_RATE};
 use crate::audio::lock;
 use crate::startup_log;
 
@@ -32,6 +32,19 @@ const AHEAD: u64 = SOURCE_RATE as u64;
 const CHUNK: usize = 4_800;
 /// Read before the sound starts, so it starts at once (200 ms).
 const FIRST: usize = 9_600;
+/// A frame with a sample of at least -60 dBFS (about 33 LSB of 16 bit) is
+/// sound; quieter ones at the start or end of a file are codec padding and
+/// encoder ramps (an MP3: about 1100 frames before, 950 after), which a
+/// loop leaves out.
+const QUIET: f32 = 0.001;
+/// The crossfade at a loop's seam (10 ms); a tenth of the loop when the
+/// loop is shorter than 100 ms.
+const XFADE: u64 = 480;
+/// The padding is looked for in the first and the last 2 s of a file.
+const EDGE_SCAN: u64 = 2 * SOURCE_RATE as u64;
+/// A sound up to 1.5 s long is read into memory once (a "1 s" sound from a
+/// compressed file is a little longer).
+const IN_MEMORY: u64 = SOURCE_RATE as u64 * 3 / 2;
 
 /// The audio devices Windows has now, by name.
 #[derive(Debug, Clone, Default)]
@@ -485,11 +498,11 @@ fn open_streams(
 }
 
 /// Open a prepared WAV (48 kHz stereo 16-bit), read its first 200 ms and
-/// keep reading ahead on a thread of its own; `looping`, it goes on from
-/// the start at each end of the file until the voice ends or the loop is
-/// switched off. Returns the shared buffer and the sound's length in frames.
+/// keep reading ahead on a thread of its own; `looping`, it goes round (see
+/// `Stream`) until the voice ends or the loop is switched off. Returns the
+/// shared buffer and the sound's length in frames.
 pub fn spawn_reader(wav: &Path, looping: bool) -> Result<(Arc<VoiceShared>, u64), String> {
-    let mut reader = hound::WavReader::open(wav).map_err(|e| e.to_string())?;
+    let reader = hound::WavReader::open(wav).map_err(|e| e.to_string())?;
     let spec = reader.spec();
     if spec.channels != 2 || spec.sample_rate != SOURCE_RATE || spec.bits_per_sample != 16 {
         return Err("not a prepared sound".to_string());
@@ -497,8 +510,9 @@ pub fn spawn_reader(wav: &Path, looping: bool) -> Result<(Arc<VoiceShared>, u64)
     let frames = reader.duration() as u64;
     let shared = Arc::new(VoiceShared::default());
     shared.looping.store(looping, Ordering::Relaxed);
-    let mut chunk = Vec::with_capacity(FIRST);
-    let finished = read_chunk(&mut reader, FIRST, &mut chunk, &shared.looping)?;
+    let mut stream = Stream::new(Source::open(reader)?);
+    let mut chunk = Vec::with_capacity(FIRST + XFADE as usize);
+    let finished = stream.fill(FIRST, &mut chunk, &shared)?;
     {
         let mut buffer = lock(&shared.buffer);
         buffer.push(&chunk);
@@ -510,35 +524,233 @@ pub fn spawn_reader(wav: &Path, looping: bool) -> Result<(Arc<VoiceShared>, u64)
         let s = shared.clone();
         std::thread::Builder::new()
             .name("rf-sound-reader".into())
-            .spawn(move || read_ahead(reader, s))
+            .spawn(move || read_ahead(stream, s))
             .map_err(|e| e.to_string())?;
     }
     Ok((shared, frames))
 }
 
-/// Read up to `n` frames into `out`. At the end of the file a looping
-/// sound goes on from its first frame, in the same chunk (a sound shorter
-/// than a chunk repeats in it); true at the end of a sound that does not
-/// loop (any more).
-fn read_chunk<R: Read + Seek>(
-    reader: &mut hound::WavReader<R>,
-    n: usize,
-    out: &mut Vec<[f32; 2]>,
-    looping: &AtomicBool,
-) -> Result<bool, String> {
-    out.clear();
-    loop {
-        if !read_frames(reader, n, out)? {
-            return Ok(false);
+/// A prepared sound's frames: from its file, or from memory for a sound up
+/// to 1.5 s long (looping, it would seek and read every round).
+enum Source {
+    File { reader: hound::WavReader<BufReader<File>>, pos: u64 },
+    Memory { frames: Vec<[f32; 2]>, pos: u64 },
+}
+
+impl Source {
+    fn open(mut reader: hound::WavReader<BufReader<File>>) -> Result<Source, String> {
+        let len = reader.duration() as u64;
+        if len > IN_MEMORY {
+            return Ok(Source::File { reader, pos: 0 });
         }
-        // A file without frames would go round forever.
-        if !looping.load(Ordering::Relaxed) || reader.duration() == 0 {
-            return Ok(true);
+        let mut frames = Vec::with_capacity(len as usize);
+        read_frames(&mut reader, len as usize, &mut frames)?;
+        Ok(Source::Memory { frames, pos: 0 })
+    }
+
+    fn len(&self) -> u64 {
+        match self {
+            Source::File { reader, .. } => reader.duration() as u64,
+            Source::Memory { frames, .. } => frames.len() as u64,
         }
-        reader.seek(0).map_err(|e| e.to_string())?;
-        if out.len() >= n {
-            return Ok(false);
+    }
+
+    /// The file frame read next.
+    fn pos(&self) -> u64 {
+        match self {
+            Source::File { pos, .. } | Source::Memory { pos, .. } => *pos,
         }
+    }
+
+    fn seek(&mut self, to: u64) -> Result<(), String> {
+        match self {
+            Source::File { reader, pos } => {
+                if *pos != to {
+                    reader.seek(to as u32).map_err(|e| e.to_string())?;
+                    *pos = to;
+                }
+            }
+            Source::Memory { frames, pos } => *pos = to.min(frames.len() as u64),
+        }
+        Ok(())
+    }
+
+    /// Add up to `n` frames to `out`; how many (0 at the end of the file).
+    fn read(&mut self, n: usize, out: &mut Vec<[f32; 2]>) -> Result<usize, String> {
+        match self {
+            Source::File { reader, pos } => {
+                let before = out.len();
+                read_frames(reader, before + n, out)?;
+                *pos += (out.len() - before) as u64;
+                Ok(out.len() - before)
+            }
+            Source::Memory { frames, pos } => {
+                let from = *pos as usize;
+                let to = (from + n).min(frames.len());
+                out.extend_from_slice(&frames[from..to]);
+                *pos = to as u64;
+                Ok(to - from)
+            }
+        }
+    }
+}
+
+/// Where a looping sound goes round: from its first frame of sound to past
+/// its last, with a crossfade of `fade` frames at each seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LoopRange {
+    start: u64,
+    end: u64,
+    fade: u64,
+}
+
+impl LoopRange {
+    /// The frames of each round after the first.
+    fn round(&self) -> u64 {
+        self.end - self.start - self.fade
+    }
+}
+
+fn is_sound(frame: &[f32; 2]) -> bool {
+    frame[0].abs() >= QUIET || frame[1].abs() >= QUIET
+}
+
+/// The loop of `src`: its last frame of sound within its last 2 s and its
+/// first within its first 2 s (a quieter edge longer than that is part of
+/// the sound, not padding). The position stays where it was. None for a
+/// file without frames.
+fn find_loop(src: &mut Source, scratch: &mut Vec<[f32; 2]>) -> Result<Option<LoopRange>, String> {
+    let back = src.pos();
+    let from = src.len().saturating_sub(EDGE_SCAN);
+    src.seek(from)?;
+    scratch.clear();
+    src.read(EDGE_SCAN as usize, scratch)?;
+    let read_to = from + scratch.len() as u64;
+    let end = scratch.iter().rposition(is_sound).map_or(read_to, |i| from + i as u64 + 1);
+    // From the start: padding is short, so this reads a chunk or two.
+    src.seek(0)?;
+    let (limit, mut start) = (end.min(EDGE_SCAN), 0);
+    while src.pos() < limit {
+        let at = src.pos();
+        scratch.clear();
+        if src.read(CHUNK.min((limit - at) as usize), scratch)? == 0 {
+            break;
+        }
+        if let Some(i) = scratch.iter().position(is_sound) {
+            start = at + i as u64;
+            break;
+        }
+    }
+    src.seek(back)?;
+    if end <= start {
+        return Ok(None);
+    }
+    let range = end - start;
+    let fade = if range >= 10 * XFADE { XFADE } else { range / 10 };
+    Ok(Some(LoopRange { start, end, fade }))
+}
+
+/// A voice's frames in the order its buffer numbers them. Not looping: the
+/// file. Looping: the first round from frame 0, then round after round
+/// between the first and the last frame of sound (a compressed original's
+/// padding left out). At each seam the last `fade` frames before the end
+/// blend (equal power) into the first after the start, and the round goes
+/// on after those; the buffer's numbering stays continuous.
+struct Stream {
+    src: Source,
+    /// The buffer frame made next.
+    made: u64,
+    lp: Option<LoopRange>,
+    /// The loop was looked for.
+    searched: bool,
+    /// The file frame where the next seam starts.
+    seam: u64,
+    /// A seam was passed by (the loop is off): the rest of the file, then
+    /// the end, whatever the loop switch says from then on.
+    to_end: bool,
+    head: Vec<[f32; 2]>,
+}
+
+impl Stream {
+    fn new(src: Source) -> Stream {
+        Stream { src, made: 0, lp: None, searched: false, seam: 0, to_end: false, head: Vec::new() }
+    }
+
+    /// Make about `n` frames into `out` (a seam's crossfade may add a few
+    /// more); true at the end of the sound.
+    fn fill(&mut self, n: usize, out: &mut Vec<[f32; 2]>, shared: &VoiceShared) -> Result<bool, String> {
+        out.clear();
+        while out.len() < n {
+            if !self.searched && !self.to_end && shared.looping.load(Ordering::Acquire) {
+                self.start_looping(shared)?;
+            }
+            let seam = match self.lp {
+                Some(_) if !self.to_end => self.seam,
+                _ => u64::MAX,
+            };
+            let pos = self.src.pos();
+            if pos < seam {
+                let want = (seam - pos).min((n - out.len()) as u64) as usize;
+                let read = self.src.read(want, out)?;
+                if read == 0 {
+                    return Ok(true);
+                }
+                self.made += read as u64;
+                continue;
+            }
+            // At a seam: go round while the loop is on; switched off, until
+            // the end the mixer set is read (`end` is set before the loop
+            // goes off, so it is seen here with it).
+            let looping = shared.looping.load(Ordering::Acquire);
+            let end = shared.end.load(Ordering::Acquire);
+            if looping || (end != NO_END && self.made < end) {
+                self.cross(out)?;
+            } else {
+                self.to_end = true;
+            }
+        }
+        Ok(false)
+    }
+
+    /// Find the loop and tell the mixer where the rounds are, before the
+    /// first seam.
+    fn start_looping(&mut self, shared: &VoiceShared) -> Result<(), String> {
+        self.searched = true;
+        let Some(lp) = find_loop(&mut self.src, &mut self.head)? else {
+            return Ok(());
+        };
+        let pos = self.src.pos();
+        // Switched on during the fade or the padding at the end: the seam is here.
+        self.seam = (lp.end - lp.fade).max(pos);
+        self.lp = Some(lp);
+        shared.round.store(lp.round(), Ordering::Release);
+        shared.first_seam.store(self.made + (self.seam - pos), Ordering::Release);
+        Ok(())
+    }
+
+    /// A seam: the next `fade` frames fade out while the first after the
+    /// loop's start fade in; the round goes on after those.
+    fn cross(&mut self, out: &mut Vec<[f32; 2]>) -> Result<(), String> {
+        let Some(lp) = self.lp else {
+            return Ok(());
+        };
+        let fade = lp.fade as usize;
+        let at = out.len();
+        self.src.read(fade, out)?;
+        // Past the end of the file: silence.
+        out.resize(at + fade, [0.0; 2]);
+        self.src.seek(lp.start)?;
+        self.head.clear();
+        self.src.read(fade, &mut self.head)?;
+        self.head.resize(fade, [0.0; 2]);
+        for (j, (tail, head)) in out[at..].iter_mut().zip(&self.head).enumerate() {
+            let x = (j as f32 + 0.5) / fade as f32 * std::f32::consts::FRAC_PI_2;
+            let (fade_out, fade_in) = (x.cos(), x.sin());
+            *tail = [tail[0] * fade_out + head[0] * fade_in, tail[1] * fade_out + head[1] * fade_in];
+        }
+        self.made += lp.fade;
+        self.seam = lp.end - lp.fade;
+        Ok(())
     }
 }
 
@@ -555,10 +767,10 @@ fn read_frames<R: Read>(reader: &mut hound::WavReader<R>, n: usize, out: &mut Ve
     Ok(false)
 }
 
-/// Keep about a second ahead of the slower output until the file ends (a
-/// looping sound: the end of the file once the loop is off) or the voice
-/// is over.
-fn read_ahead(mut reader: hound::WavReader<BufReader<File>>, shared: Arc<VoiceShared>) {
+/// Keep about a second ahead of the slower output until the sound ends (a
+/// looping sound: the end of the file once the loop is off and the end the
+/// mixer set is read) or the voice is over.
+fn read_ahead(mut stream: Stream, shared: Arc<VoiceShared>) {
     // Whichever way this thread ends (the end of the file, a read error, the
     // voice or the engine stopping, a panic), the buffer is finished, so the
     // voice can end. A looping sound is never finished while it loops.
@@ -569,7 +781,7 @@ fn read_ahead(mut reader: hound::WavReader<BufReader<File>>, shared: Arc<VoiceSh
         }
     }
     let _finish = Finish(shared.clone());
-    let mut chunk = Vec::with_capacity(CHUNK);
+    let mut chunk = Vec::with_capacity(CHUNK + XFADE as usize);
     while !shared.done.load(Ordering::Relaxed) {
         let slowest = shared.slowest();
         let end = {
@@ -581,7 +793,7 @@ fn read_ahead(mut reader: hound::WavReader<BufReader<File>>, shared: Arc<VoiceSh
             std::thread::sleep(Duration::from_millis(20));
             continue;
         }
-        match read_chunk(&mut reader, CHUNK, &mut chunk, &shared.looping) {
+        match stream.fill(CHUNK, &mut chunk, &shared) {
             Ok(finished) => {
                 let mut buffer = lock(&shared.buffer);
                 buffer.push(&chunk);
@@ -608,6 +820,54 @@ pub struct Levels {
     pub frames: u64,
     pub rate: u32,
     pub channels: u16,
+    /// The longest run of frames quieter than -60 dBFS on every channel
+    /// between two louder ones (a gap in a sound), in ms.
+    pub longest_gap_ms: f32,
+    /// The biggest change from one sample to the next on any channel (a
+    /// click or a jump).
+    pub max_step: f32,
+}
+
+/// What `capture_levels` adds up while it records.
+#[derive(Clone, Default)]
+struct Measure {
+    squares: Vec<f64>,
+    peak: f32,
+    frames: u64,
+    last: Vec<f32>,
+    heard: bool,
+    quiet: u64,
+    longest_gap: u64,
+    max_step: f32,
+}
+
+impl Measure {
+    fn add(&mut self, frame: &[f32]) {
+        if self.squares.len() < frame.len() {
+            self.squares.resize(frame.len(), 0.0);
+        }
+        let mut loud = false;
+        for (c, &v) in frame.iter().enumerate() {
+            self.squares[c] += (v as f64).powi(2);
+            self.peak = self.peak.max(v.abs());
+            loud |= v.abs() >= 0.001;
+            if let Some(&before) = self.last.get(c) {
+                self.max_step = self.max_step.max((v - before).abs());
+            }
+        }
+        self.last.clear();
+        self.last.extend_from_slice(frame);
+        if loud {
+            if self.heard {
+                self.longest_gap = self.longest_gap.max(self.quiet);
+            }
+            self.heard = true;
+            self.quiet = 0;
+        } else {
+            self.quiet += 1;
+        }
+        self.frames += 1;
+    }
 }
 
 /// Record `ms` from an input device, or with `loopback` what an output
@@ -620,7 +880,7 @@ pub fn capture_levels(device: &str, ms: u64, loopback: bool) -> Result<Levels, S
         return Err(format!("unsupported sample format {:?}", config.sample_format()));
     }
     let channels = config.channels() as usize;
-    let sums = Arc::new(Mutex::new((vec![0f64; channels], 0f32, 0u64)));
+    let sums = Arc::new(Mutex::new(Measure::default()));
     let s = sums.clone();
     let stream = dev
         .build_input_stream(
@@ -628,11 +888,7 @@ pub fn capture_levels(device: &str, ms: u64, loopback: bool) -> Result<Levels, S
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 let mut sums = lock(&s);
                 for frame in data.chunks_exact(channels) {
-                    for (c, v) in frame.iter().enumerate() {
-                        sums.0[c] += (*v as f64).powi(2);
-                        sums.1 = sums.1.max(v.abs());
-                    }
-                    sums.2 += 1;
+                    sums.add(frame);
                 }
             },
             |e| startup_log::log(&format!("[soundboard] capture test: {}", e)),
@@ -642,9 +898,18 @@ pub fn capture_levels(device: &str, ms: u64, loopback: bool) -> Result<Levels, S
     stream.play().map_err(|e| e.to_string())?;
     std::thread::sleep(Duration::from_millis(ms));
     drop(stream);
-    let (squares, peak, frames) = lock(&sums).clone();
-    let rms = squares.iter().map(|s| (s / frames.max(1) as f64).sqrt() as f32).fold(0.0, f32::max);
-    Ok(Levels { rms, peak, frames, rate: config.sample_rate().0, channels: channels as u16 })
+    let m = lock(&sums).clone();
+    let rms = m.squares.iter().map(|s| (s / m.frames.max(1) as f64).sqrt() as f32).fold(0.0, f32::max);
+    let rate = config.sample_rate().0;
+    Ok(Levels {
+        rms,
+        peak: m.peak,
+        frames: m.frames,
+        rate,
+        channels: channels as u16,
+        longest_gap_ms: m.longest_gap as f32 * 1000.0 / rate.max(1) as f32,
+        max_step: m.max_step,
+    })
 }
 
 #[cfg(test)]
@@ -901,25 +1166,59 @@ mod tests {
         wait_until("the reader finishes after the mixer is dropped", || lock(&shared.buffer).is_finished());
     }
 
-    /// `frames` frames of [16 k, -16 k]: every frame of the file differs.
-    fn write_ramp(path: &Path, frames: u32) {
+    fn write_frames(path: &Path, frames: &[[i16; 2]]) {
         let spec = hound::WavSpec { channels: 2, sample_rate: 48_000, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
         let mut writer = hound::WavWriter::create(path, spec).unwrap();
-        for k in 0..frames {
-            writer.write_sample((k * 16) as i16).unwrap();
-            writer.write_sample(-((k * 16) as i16)).unwrap();
+        for f in frames {
+            writer.write_sample(f[0]).unwrap();
+            writer.write_sample(f[1]).unwrap();
         }
         writer.finalize().unwrap();
     }
 
-    /// Frame `k` of the ramp of `len` frames, looping, after the fade-in.
-    fn ramp_frame(k: usize, len: usize) -> f32 {
-        let mut v = ((k % len) * 16) as f32 / 32768.0;
-        let fade_in = (SOURCE_RATE * FADE_IN_MS / 1000) as usize;
-        if k < fade_in {
-            v *= k as f32 / fade_in as f32;
+    /// `frames` frames of [16 k, -16 k] (k up to 2000): every frame differs,
+    /// and frames 0 to 2 are quieter than -60 dBFS.
+    fn ramp(frames: u32) -> Vec<[i16; 2]> {
+        (0..frames).map(|k| [((k % 2_000) * 16) as i16, -(((k % 2_000) * 16) as i16)]).collect()
+    }
+
+    fn write_ramp(path: &Path, frames: u32) {
+        write_frames(path, &ramp(frames));
+    }
+
+    fn as_f32(frames: &[[i16; 2]]) -> Vec<[f32; 2]> {
+        frames.iter().map(|f| [f[0] as f32 / 32768.0, f[1] as f32 / 32768.0]).collect()
+    }
+
+    /// What a looping sound plays, worked out here on its own: the file up
+    /// to `end - fade`, then rounds of an equal-power crossfade from the
+    /// `fade` frames before `end` into those from `start`, and the frames up
+    /// to `end - fade` again. With the mixer's fade-in.
+    fn looped_stream(file: &[[f32; 2]], start: usize, end: usize, fade: usize, len: usize) -> Vec<[f32; 2]> {
+        let mut out = file[..end - fade].to_vec();
+        while out.len() < len {
+            for j in 0..fade {
+                let x = (j as f32 + 0.5) / fade as f32 * std::f32::consts::FRAC_PI_2;
+                let (t, h) = (file[end - fade + j], file[start + j]);
+                out.push([t[0] * x.cos() + h[0] * x.sin(), t[1] * x.cos() + h[1] * x.sin()]);
+            }
+            out.extend_from_slice(&file[start + fade..end - fade]);
         }
-        v
+        out.truncate(len);
+        let fade_in = (SOURCE_RATE * FADE_IN_MS / 1000) as usize;
+        for (k, f) in out.iter_mut().enumerate().take(fade_in) {
+            let g = k as f32 / fade_in as f32;
+            *f = [f[0] * g, f[1] * g];
+        }
+        out
+    }
+
+    /// The frames of interleaved stereo `got` match `want` from frame `from` to `to`.
+    fn matches(got: &[f32], want: &[[f32; 2]], from: usize, to: usize, what: &str) {
+        for k in from..to {
+            let (g, w) = ([got[2 * k], got[2 * k + 1]], want[k]);
+            assert!((g[0] - w[0]).abs() < 1e-5 && (g[1] - w[1]).abs() < 1e-5, "{}: frame {}: {:?} vs {:?}", what, k, g, w);
+        }
     }
 
     /// Render both outputs 10 ms at a time, as the devices would, waiting
@@ -942,9 +1241,21 @@ mod tests {
         }
     }
 
+    /// Render 10 ms of one output once the reader has them; added to `got`.
+    fn block(mixer: &mut Mixer, shared: &VoiceShared, output: Output, got: &mut Vec<f32>) {
+        let want = shared.played[output as usize].load(Ordering::Relaxed) + 481;
+        wait_until("the reader keeps up", || {
+            let buffer = lock(&shared.buffer);
+            buffer.end() >= want || buffer.is_finished()
+        });
+        let mut out = vec![0f32; 960];
+        mixer.render(output, &mut out, 2, 48_000);
+        got.extend_from_slice(&out);
+    }
+
     #[test]
     fn a_short_looping_sound_repeats_without_a_gap_until_its_loop_is_off() {
-        let dir = std::env::temp_dir().join("rudariflow_sb_loop");
+        let dir = std::env::temp_dir().join("rudariflow_sb_loop_short");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let wav = dir.join("short.wav");
@@ -954,6 +1265,11 @@ mod tests {
         let (shared, frames) = spawn_reader(&wav, true).unwrap();
         assert_eq!(frames, LEN as u64);
         assert!(lock(&shared.buffer).end() >= FIRST as u64, "the first read goes round the sound");
+        // Frames 0 to 2 are quiet: the loop is frames 3 to 1099, crossfaded
+        // over a tenth of that (109 frames). The first seam is at 1100 - 109.
+        let (start, end, fade) = (3, LEN, 109);
+        assert_eq!(shared.first_seam.load(Ordering::Relaxed), (end - fade) as u64);
+        assert_eq!(shared.round.load(Ordering::Relaxed), (end - start - fade) as u64);
         let mut mixer = Mixer::new(false, 1.0, 1.0);
         mixer.start("s-short", 1.0, frames, shared.clone());
         let mut got = Vec::new();
@@ -962,28 +1278,152 @@ mod tests {
         assert_eq!(got.len() / 2, 144_000, "it never ended");
         assert!(!lock(&shared.buffer).is_finished(), "never finished while it loops");
         let most = lock(&shared.buffer).len();
-        assert!(most as u64 <= AHEAD + (CHUNK + FIRST) as u64, "{} frames held", most);
-        // Frame N + k is frame k: no gap and no jump at any seam.
-        for (k, f) in got.chunks(2).enumerate() {
-            let v = ramp_frame(k, LEN);
-            assert!((f[0] - v).abs() < 1e-6 && (f[1] + v).abs() < 1e-6, "frame {}: {:?} vs {}", k, f, v);
-        }
+        assert!(most as u64 <= AHEAD + (CHUNK + FIRST) as u64 + XFADE, "{} frames held", most);
+        let want = looped_stream(&as_f32(&ramp(LEN as u32)), start, end, fade, 200_000);
+        matches(&got, &want, 0, 144_000, "looping");
         let progress = mixer.playing()[0].clone();
-        // 144000 frames played: 1000 into round 131.
-        assert_eq!((progress.duration_ms, progress.pos_ms), (22, 20), "the progress wraps per round");
+        let round = (end - start - fade) as u64;
+        let within = (144_000 - (end - fade) as u64) % round;
+        assert_eq!((progress.duration_ms, progress.pos_ms), (round * 1000 / 48_000, within * 1000 / 48_000), "the progress wraps per round");
 
         // The loop is switched off: the round that plays is the last.
         let played = got.len() / 2;
         mixer.set_sound_loop("s-short", false);
+        let stop = shared.end.load(Ordering::Relaxed) as usize;
+        assert_eq!(stop, played + (round - within) as usize, "the end of this round");
         play_for(&mut mixer, &shared, 96_000, &mut got);
         assert!(mixer.is_idle(), "it ended");
-        let end = played.div_ceil(LEN) * LEN;
-        assert!(end > played, "switched off within a round");
-        for (k, f) in got.chunks(2).enumerate().skip(played) {
-            let v = if k < end { ramp_frame(k, LEN) } else { 0.0 };
-            assert!((f[0] - v).abs() < 1e-6, "frame {}: {:?} vs {}", k, f, v);
+        // Up to the 15 ms fade-out into that end, then silence.
+        matches(&got, &want, played, stop - 720, "the last round");
+        for k in stop - 720..stop {
+            assert!(got[2 * k].abs() <= want[k][0].abs() + 1e-6, "frame {} fades", k);
         }
-        wait_until("its reader finishes at the next end of the file", || lock(&shared.buffer).is_finished());
+        assert!(got[2 * stop..].iter().all(|&s| s == 0.0));
+        wait_until("its reader finishes", || lock(&shared.buffer).is_finished());
+    }
+
+    #[test]
+    fn padding_is_left_out_of_the_loop_and_the_seam_is_crossfaded() {
+        let dir = std::env::temp_dir().join("rudariflow_sb_loop_padding");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("padded.wav");
+        // As an MP3 decodes: 1355 silent frames, 0.5 s of a 440 Hz tone (not whole periods) that
+        // starts at -0.37, 950 silent frames.
+        let (lead, body, trail) = (1_355usize, 24_050usize, 950usize);
+        let w = 2.0 * std::f64::consts::PI * 440.0 / 48_000.0;
+        let phase = (-0.74f64).asin();
+        let mut file = vec![[0i16; 2]; lead];
+        for k in 0..body {
+            let v = (0.5 * (phase + w * k as f64).sin() * 32_767.0) as i16;
+            file.push([v, -v]);
+        }
+        file.extend(vec![[0i16; 2]; trail]);
+        write_frames(&wav, &file);
+        let pcm = as_f32(&file);
+        let loud = |f: &[f32; 2]| f[0].abs() >= QUIET || f[1].abs() >= QUIET;
+        let start = pcm.iter().position(loud).unwrap();
+        let end = pcm.iter().rposition(loud).unwrap() + 1;
+        assert_eq!(start, lead);
+        assert!(end > lead + body - 3, "{}", end);
+        assert!((pcm[end - 1][0] - pcm[start][0]).abs() > 0.3, "going round as it is would jump");
+
+        let (shared, frames) = spawn_reader(&wav, true).unwrap();
+        assert_eq!(shared.first_seam.load(Ordering::Relaxed), (end - 480) as u64);
+        assert_eq!(shared.round.load(Ordering::Relaxed), (end - start - 480) as u64);
+        let mut mixer = Mixer::new(false, 1.0, 1.0);
+        mixer.start("s-padded", 1.0, frames, shared.clone());
+        let mut got = Vec::new();
+        play_for(&mut mixer, &shared, 144_000, &mut got);
+        let want = looped_stream(&pcm, start, end, 480, 144_000);
+        matches(&got, &want, 0, 144_000, "padded");
+        // The first round starts at frame 0, its padding included; after it
+        // no silence and no jump bigger than the tone's own steps and the
+        // crossfade's (0.5 * w per frame, plus pi/2 / 480 of the amplitude).
+        let (mut quiet_run, mut longest, mut jump) = (0, 0, 0f32);
+        // (The file itself jumps at frame 1355, from its padding to -0.37.)
+        for k in lead + 1..144_000 {
+            quiet_run = if got[2 * k].abs() < QUIET { quiet_run + 1 } else { 0 };
+            longest = longest.max(quiet_run);
+            jump = jump.max((got[2 * k] - got[2 * k - 2]).abs());
+        }
+        assert!(longest <= 2, "{} silent frames in a row", longest);
+        assert!(jump < 0.05, "a jump of {}", jump);
+        mixer.stop_all();
+        play_for(&mut mixer, &shared, 4_800, &mut got);
+        assert!(mixer.is_idle());
+    }
+
+    #[test]
+    fn a_loop_switched_off_with_the_outputs_in_different_rounds_ends_both_at_one_frame() {
+        let dir = std::env::temp_dir().join("rudariflow_sb_loop_rounds");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("long.wav");
+        // 1.6 s, read from the file a chunk at a time, never silent.
+        const LEN: usize = 76_800;
+        let file: Vec<[i16; 2]> = (0..LEN).map(|k| [((k % 1_000) as i16 + 100) * 16, -((k % 1_000) as i16 + 100) * 16]).collect();
+        write_frames(&wav, &file);
+        let (shared, frames) = spawn_reader(&wav, true).unwrap();
+        let seam = LEN - 480;
+        assert_eq!(shared.first_seam.load(Ordering::Relaxed), seam as u64);
+        let mut mixer = Mixer::new(false, 1.0, 1.0);
+        mixer.start("s-long", 1.0, frames, shared.clone());
+        let (mut cable, mut phones) = (Vec::new(), Vec::new());
+        // Both to 60000, then the cable on to 80000: the seam at 76320 is
+        // between them (0.42 s apart, within the reader's second ahead).
+        while shared.played[1].load(Ordering::Relaxed) < 60_000 {
+            block(&mut mixer, &shared, Output::Cable, &mut cable);
+            block(&mut mixer, &shared, Output::Headphones, &mut phones);
+        }
+        while shared.played[0].load(Ordering::Relaxed) < 80_000 {
+            block(&mut mixer, &shared, Output::Cable, &mut cable);
+        }
+        mixer.set_sound_loop("s-long", false);
+        // The end of the cable's round: the next seam, a round after the first.
+        let stop = 2 * seam;
+        assert_eq!(shared.end.load(Ordering::Relaxed), stop as u64);
+        let mut blocks = 0;
+        while !mixer.is_idle() {
+            block(&mut mixer, &shared, Output::Cable, &mut cable);
+            block(&mut mixer, &shared, Output::Headphones, &mut phones);
+            blocks += 1;
+            assert!(blocks < 300, "the voice never ended");
+        }
+        assert_eq!(shared.played[0].load(Ordering::Relaxed), stop as u64);
+        assert_eq!(shared.played[1].load(Ordering::Relaxed), stop as u64);
+        let want = looped_stream(&as_f32(&file), 0, LEN, 480, 2 * LEN);
+        for (got, what) in [(&cable, "cable"), (&phones, "headphones")] {
+            matches(got, &want, 0, stop - 720, what);
+            assert!(got[2 * stop..].iter().all(|&s| s == 0.0), "{} is silent after the end", what);
+        }
+        wait_until("its reader finishes", || lock(&shared.buffer).is_finished());
+    }
+
+    #[test]
+    fn a_loop_switched_on_while_it_plays_goes_round_from_the_next_seam() {
+        let dir = std::env::temp_dir().join("rudariflow_sb_loop_on");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("long.wav");
+        const LEN: usize = 76_800;
+        let file: Vec<[i16; 2]> = (0..LEN).map(|k| [((k % 1_000) as i16 + 100) * 16, 0]).collect();
+        write_frames(&wav, &file);
+        let (shared, frames) = spawn_reader(&wav, false).unwrap();
+        let mut mixer = Mixer::new(false, 1.0, 1.0);
+        mixer.start("s-long", 1.0, frames, shared.clone());
+        let mut got = Vec::new();
+        play_for(&mut mixer, &shared, 9_600, &mut got);
+        assert_eq!(shared.first_seam.load(Ordering::Relaxed), 0, "not looked for while it does not loop");
+        mixer.set_sound_loop("s-long", true);
+        play_for(&mut mixer, &shared, 3 * LEN, &mut got);
+        assert!(!mixer.is_idle(), "it goes round");
+        assert_eq!(shared.first_seam.load(Ordering::Relaxed), (LEN - 480) as u64);
+        let want = looped_stream(&as_f32(&file), 0, LEN, 480, got.len() / 2);
+        matches(&got, &want, 0, got.len() / 2, "switched on");
+        mixer.stop_all();
+        play_for(&mut mixer, &shared, 4_800, &mut got);
+        assert!(mixer.is_idle());
     }
 
     #[test]
@@ -1028,12 +1468,41 @@ mod tests {
         }
 
         // A sound read in its first chunk starts no reader; looping, it does
-        // and finishes once its loop is off.
+        // and finishes once its loop is off: at its next seam it reads the
+        // rest of the file (frames 1801 to 1999) and ends.
         let (shared, _) = spawn_reader(&wav, false).unwrap();
         assert!(lock(&shared.buffer).is_finished());
         let (shared, _) = spawn_reader(&wav, true).unwrap();
+        let (first, round) = (shared.first_seam.load(Ordering::Relaxed), shared.round.load(Ordering::Relaxed));
+        assert_eq!((first, round), (1_801, 1_798), "frames 0 to 2 are quiet; a 199-frame crossfade");
         shared.looping.store(false, Ordering::Relaxed);
         wait_until("the reader finishes at the end of the file", || lock(&shared.buffer).is_finished());
-        assert_eq!(lock(&shared.buffer).end() % 2_000, 0, "at the end of a round");
+        let end = lock(&shared.buffer).end();
+        assert_eq!((end - first - 199) % round, 0, "the rest of the file after a seam: {}", end);
+    }
+
+    #[test]
+    fn a_capture_measures_gaps_between_sounds_and_the_biggest_step() {
+        let mut m = Measure::default();
+        // Quiet before the sound starts and after it ends is no gap.
+        for v in [0.0, 0.0, 0.5, 0.4, 0.0, 0.0, 0.0, 0.3, 0.0005, 0.0] {
+            m.add(&[v, -v]);
+        }
+        assert_eq!((m.longest_gap, m.frames), (3, 10));
+        assert!((m.max_step - 0.5).abs() < 1e-6, "0 to 0.5: {}", m.max_step);
+    }
+
+    #[test]
+    fn a_short_sound_is_read_into_memory_and_a_long_one_from_its_file() {
+        let dir = std::env::temp_dir().join("rudariflow_sb_memory");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (frames, memory) in [(72_000u32, true), (72_001, false)] {
+            let wav = dir.join(format!("{}.wav", frames));
+            write_ramp(&wav, frames);
+            let source = Source::open(hound::WavReader::open(&wav).unwrap()).unwrap();
+            assert_eq!(matches!(source, Source::Memory { .. }), memory, "{} frames", frames);
+            assert_eq!(source.len(), frames as u64);
+        }
     }
 }

@@ -404,9 +404,10 @@ impl Soundboard {
     }
 
     /// Loop the sound until it is stopped. Applies to it while it plays,
-    /// too: switched off, the round that plays is the last; switched on,
-    /// from the end of the round its reader is in, unless the reader
-    /// already reached the end of the file (the last second of the sound).
+    /// too: switched off, the round that plays is the last (both outputs
+    /// end where the further one's round ends); switched on, from its
+    /// reader's next seam, unless the reader already reached the end of
+    /// the file (the last second of the sound).
     pub fn set_sound_loop(&self, id: &str, looping: bool) -> Result<(), String> {
         self.update(|b| b.set_sound_loop(id, looping))?;
         self.with_mixer(|m| m.set_sound_loop(id, looping));
