@@ -3,6 +3,7 @@
 //! headphones. See docs/superpowers/specs/2026-09-29-soundboard-design.md.
 
 pub mod drift;
+pub mod engine;
 pub mod library;
 pub mod mixer;
 

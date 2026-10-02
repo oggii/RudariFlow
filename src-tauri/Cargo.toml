@@ -199,3 +199,7 @@ path = "examples/speakers_probe.rs"
 [[example]]
 name = "speakers_bench"
 path = "examples/speakers_bench.rs"
+
+[[example]]
+name = "soundboard_probe"
+path = "examples/soundboard_probe.rs"
