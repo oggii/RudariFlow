@@ -8,7 +8,7 @@
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -207,6 +207,84 @@ pub struct EngineStats {
     pub info: EngineInfo,
     #[serde(flatten)]
     pub drift: DriftStats,
+    /// How the microphone's, the cable's and the headphones' threads were
+    /// raised (see `Boosts`).
+    pub boosts: [u8; 3],
+}
+
+/// How each stream's thread was raised, set by its first callback: 0 not
+/// yet, 1 MMCSS "Pro Audio", 2 time-critical priority, 3 neither. cpal
+/// 0.15's own boost fails (it passes a thread id as a handle), so without
+/// this the audio threads run at normal priority and a busy moment can
+/// hold a callback back.
+#[derive(Debug, Default)]
+pub struct Boosts([AtomicU8; 3]);
+
+impl Boosts {
+    const MICROPHONE: usize = 0;
+    const CABLE: usize = 1;
+    const HEADPHONES: usize = 2;
+
+    fn get(&self) -> [u8; 3] {
+        [0, 1, 2].map(|i| self.0[i].load(Ordering::Relaxed))
+    }
+
+    /// For the log, once every stream has called back.
+    fn describe(&self) -> Option<String> {
+        let name = |b: u8| match b {
+            1 => "Pro Audio",
+            2 => "time-critical",
+            _ => "normal priority",
+        };
+        let [m, c, h] = self.get();
+        (m != 0 && c != 0 && h != 0)
+            .then(|| format!("microphone {}, cable {}, headphones {}", name(m), name(c), name(h)))
+    }
+}
+
+/// Raise the calling audio thread: MMCSS "Pro Audio", else time-critical
+/// priority. Returns the `Boosts` code. System calls only, no allocation.
+#[cfg(windows)]
+fn boost_this_thread() -> u8 {
+    use windows_sys::Win32::System::Threading::{
+        AvSetMmThreadCharacteristicsW, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+    };
+    const PRO_AUDIO: [u16; 10] = {
+        let text = b"Pro Audio\0";
+        let mut wide = [0u16; 10];
+        let mut i = 0;
+        while i < text.len() {
+            wide[i] = text[i] as u16;
+            i += 1;
+        }
+        wide
+    };
+    let mut task = 0u32;
+    // SAFETY: a NUL-terminated UTF-16 name and a valid out pointer; the
+    // pseudo handle of the current thread needs no closing. The MMCSS
+    // registration ends with the thread.
+    unsafe {
+        if !AvSetMmThreadCharacteristicsW(PRO_AUDIO.as_ptr(), &mut task).is_null() {
+            return 1;
+        }
+        if SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != 0 {
+            return 2;
+        }
+    }
+    3
+}
+
+#[cfg(not(windows))]
+fn boost_this_thread() -> u8 {
+    3
+}
+
+/// In a stream's callback: raise its thread on the first call.
+fn boost_once(boosted: &mut bool, boosts: &Boosts, which: usize) {
+    if !*boosted {
+        *boosted = true;
+        boosts.0[which].store(boost_this_thread(), Ordering::Relaxed);
+    }
 }
 
 enum Control {
@@ -224,6 +302,7 @@ pub struct Engine {
     /// The engine thread is past its streams (stopped or lost); set under
     /// the mixer's lock, so no voice starts that nothing would play.
     ended: Arc<AtomicBool>,
+    boosts: Arc<Boosts>,
     info: EngineInfo,
 }
 
@@ -236,12 +315,14 @@ impl Engine {
         let (ready_tx, ready_rx) = mpsc::channel::<Result<EngineInfo, Problem>>();
         let (stopped_tx, stopped) = mpsc::channel::<()>();
         let ended = Arc::new(AtomicBool::new(false));
+        let boosts = Arc::new(Boosts::default());
         let (m, d, c, e, open) = (mixer.clone(), drift.clone(), control.clone(), ended.clone(), devices.clone());
+        let b = boosts.clone();
         std::thread::Builder::new()
             .name("rf-soundboard".into())
             .spawn(move || {
                 // cpal streams stay on the thread that made them.
-                let streams = match open_streams(&open, &m, &d, &c) {
+                let streams = match open_streams(&open, &m, &d, &c, &b) {
                     Ok((streams, info)) => {
                         let _ = ready_tx.send(Ok(info));
                         streams
@@ -251,11 +332,11 @@ impl Engine {
                         return;
                     }
                 };
-                serve(streams, &control_rx, &m, &e, callbacks, stopped_tx);
+                serve(streams, &control_rx, &m, &e, &b, callbacks, stopped_tx);
             })
             .map_err(|e| Problem::new("open_failed", "cable", &devices.cable, &e.to_string()))?;
         match ready_rx.recv_timeout(OPEN_TIMEOUT) {
-            Ok(Ok(info)) => Ok(Engine { generation, control, stopped, mixer, drift, ended, info }),
+            Ok(Ok(info)) => Ok(Engine { generation, control, stopped, mixer, drift, ended, boosts, info }),
             Ok(Err(problem)) => Err(problem),
             Err(_) => {
                 // Streams that open later close at once.
@@ -270,7 +351,7 @@ impl Engine {
     }
 
     pub fn stats(&self) -> EngineStats {
-        EngineStats { info: self.info.clone(), drift: lock(&self.drift).stats() }
+        EngineStats { info: self.info.clone(), drift: lock(&self.drift).stats(), boosts: self.boosts.get() }
     }
 
     pub fn with_mixer<R>(&self, f: impl FnOnce(&mut Mixer) -> R) -> R {
@@ -321,11 +402,22 @@ fn serve<S>(
     control: &Receiver<Control>,
     mixer: &Mutex<Mixer>,
     ended: &AtomicBool,
+    boosts: &Boosts,
     callbacks: Callbacks,
     stopped: Sender<()>,
 ) {
     let Callbacks { mut on_tick, on_lost } = callbacks;
-    let lost = run_until_stopped(control, mixer, &mut *on_tick);
+    // The streams' threads report how they were raised; logged once, here.
+    let mut logged = false;
+    let mut log_boosts = || {
+        if !logged {
+            if let Some(text) = boosts.describe() {
+                logged = true;
+                startup_log::log(&format!("[soundboard] audio threads: {}", text));
+            }
+        }
+    };
+    let lost = run_until_stopped(control, mixer, &mut *on_tick, &mut log_boosts);
     // Before closing the streams (a wedged device may hang that): from now
     // on no voice starts, and the playing ones end, so their readers stop.
     end_voices(mixer, ended);
@@ -346,11 +438,13 @@ fn end_voices(mixer: &Mutex<Mixer>, ended: &AtomicBool) {
 }
 
 /// Wait for Stop or a lost device, reporting the playing voices every
-/// 100 ms while something plays. Returns the problem when a device was lost.
+/// 100 ms while something plays (and calling `on_wait` every 100 ms).
+/// Returns the problem when a device was lost.
 fn run_until_stopped(
     control: &Receiver<Control>,
     mixer: &Mutex<Mixer>,
     on_tick: &mut dyn FnMut(Vec<PlayingVoice>),
+    on_wait: &mut dyn FnMut(),
 ) -> Option<Problem> {
     let mut was_playing = false;
     loop {
@@ -358,6 +452,7 @@ fn run_until_stopped(
             Ok(Control::Stop) | Err(RecvTimeoutError::Disconnected) => return None,
             Ok(Control::Lost(problem)) => return Some(problem),
             Err(RecvTimeoutError::Timeout) => {
+                on_wait();
                 let playing = lock(mixer).playing();
                 if !playing.is_empty() || was_playing {
                     was_playing = !playing.is_empty();
@@ -419,6 +514,7 @@ fn open_streams(
     mixer: &Arc<Mutex<Mixer>>,
     drift: &Arc<Mutex<DriftBuffer>>,
     control: &Sender<Control>,
+    boosts: &Arc<Boosts>,
 ) -> Result<(Vec<cpal::Stream>, EngineInfo), Problem> {
     let host = cpal::default_host();
     let missing = |kind: &str, name: &str| Problem::new("not_connected", kind, name, "");
@@ -437,10 +533,12 @@ fn open_streams(
     // The cable: the microphone and the sounds at "Others hear".
     let (m, d) = (mixer.clone(), drift.clone());
     let mut last_read: Option<Instant> = None;
+    let (b, mut boosted) = (boosts.clone(), false);
     let cable_stream = cable
         .build_output_stream(
             &cable_config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                boost_once(&mut boosted, &b, Boosts::CABLE);
                 data.fill(0.0);
                 let gap = since(&mut last_read);
                 let mut drift = lock(&d);
@@ -457,10 +555,12 @@ fn open_streams(
 
     // The headphones: the sounds at "You hear", never the user's voice.
     let m = mixer.clone();
+    let (b, mut boosted) = (boosts.clone(), false);
     let headphones_stream = headphones
         .build_output_stream(
             &headphones_config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                boost_once(&mut boosted, &b, Boosts::HEADPHONES);
                 data.fill(0.0);
                 lock(&m).render(Output::Headphones, data, headphones_channels, headphones_rate);
                 clip(data);
@@ -475,10 +575,12 @@ fn open_streams(
     let mut frames = Vec::with_capacity(8_192);
     let mut last_push: Option<Instant> = None;
     let d = drift.clone();
+    let (b, mut boosted) = (boosts.clone(), false);
     let mic_stream = mic
         .build_input_stream(
             &mic_config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                boost_once(&mut boosted, &b, Boosts::MICROPHONE);
                 frames.clear();
                 mic_frames(data, mic_channels, &mut frames);
                 let gap = since(&mut last_push);
@@ -1057,6 +1159,28 @@ mod tests {
     }
 
     #[test]
+    fn an_audio_thread_is_raised_once_and_reported() {
+        let boosts = Boosts::default();
+        assert_eq!(boosts.describe(), None, "nothing until every stream called back");
+        // On a thread of its own, as a stream's callback runs.
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let mut boosted = false;
+                boost_once(&mut boosted, &boosts, Boosts::CABLE);
+                assert!(boosted);
+            });
+        });
+        let cable = boosts.get()[Boosts::CABLE];
+        #[cfg(windows)]
+        assert!(cable == 1 || cable == 2, "MMCSS or time-critical, got {}", cable);
+        assert_ne!(cable, 0);
+        boosts.0[Boosts::MICROPHONE].store(1, Ordering::Relaxed);
+        boosts.0[Boosts::HEADPHONES].store(3, Ordering::Relaxed);
+        let text = boosts.describe().unwrap();
+        assert!(text.starts_with("microphone Pro Audio, cable ") && text.ends_with(", headphones normal priority"), "{}", text);
+    }
+
+    #[test]
     fn a_lost_device_ends_the_engine_and_ticks_report_the_voices() {
         let mixer = Arc::new(Mutex::new(Mixer::new(false, 1.0, 1.0)));
         let shared = Arc::new(VoiceShared::default());
@@ -1071,7 +1195,7 @@ mod tests {
             tx.send(Control::Lost(Problem::new("lost", "cable", "CABLE", "gone"))).unwrap();
         });
         let mut ticks = Vec::new();
-        let lost = run_until_stopped(&rx, &mixer, &mut |voices: Vec<PlayingVoice>| ticks.push(voices.len()));
+        let lost = run_until_stopped(&rx, &mixer, &mut |voices: Vec<PlayingVoice>| ticks.push(voices.len()), &mut || {});
         driver.join().unwrap();
         assert_eq!(lost, Some(Problem::new("lost", "cable", "CABLE", "gone")));
         // While it plays: one voice per tick; after stop all: one empty tick, then none.
@@ -1080,7 +1204,7 @@ mod tests {
         assert_eq!(*ticks.last().unwrap(), 0);
         let (tx, rx) = mpsc::channel();
         tx.send(Control::Stop).unwrap();
-        assert_eq!(run_until_stopped(&rx, &mixer, &mut |_| {}), None);
+        assert_eq!(run_until_stopped(&rx, &mixer, &mut |_| {}, &mut || {}), None);
     }
 
     /// An engine with no devices: `serve` runs exactly as after the streams
@@ -1092,7 +1216,9 @@ mod tests {
         let (stopped_tx, stopped) = mpsc::channel();
         let (m, e) = (mixer.clone(), ended.clone());
         let callbacks = Callbacks { on_tick: Box::new(|_| {}), on_lost };
-        std::thread::spawn(move || serve((), &control_rx, &m, &e, callbacks, stopped_tx));
+        let boosts = Arc::new(Boosts::default());
+        let b = boosts.clone();
+        std::thread::spawn(move || serve((), &control_rx, &m, &e, &b, callbacks, stopped_tx));
         let info = EngineInfo {
             microphone: String::new(),
             cable: String::new(),
@@ -1105,7 +1231,7 @@ mod tests {
             headphones_channels: 2,
         };
         let drift = Arc::new(Mutex::new(DriftBuffer::new(48_000, 48_000)));
-        Engine { generation: 1, control, stopped, mixer, drift, ended, info }
+        Engine { generation: 1, control, stopped, mixer, drift, ended, boosts, info }
     }
 
     fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
