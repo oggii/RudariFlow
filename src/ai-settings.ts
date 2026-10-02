@@ -44,6 +44,8 @@ interface AiStatus {
   installed: boolean;
   models: AiModelInfo[];
   downloading: string | null;
+  /** Unloaded by the Free GPU hotkey; the next dictation loads it. */
+  gpuFreed: boolean;
 }
 
 interface Polished {
@@ -159,6 +161,8 @@ function renderStatus() {
   } else if (server.state === "failed") {
     text = `${t("ai_status_failed")}: ${server.error ?? ""}`;
     tone = "error";
+  } else if (status.gpuFreed) {
+    text = t("ai_status_freed");
   } else {
     text = t("ai_status_starting");
   }

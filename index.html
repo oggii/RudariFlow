@@ -81,6 +81,13 @@
             </svg>
             <span data-i18n="nav_files">Files</span>
           </a>
+          <a class="nav-item" data-section="soundboard">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M2.5 6.2h2.3L8 3.5v9L4.8 9.8H2.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+              <path d="M10.5 6a2.8 2.8 0 010 4M12.3 4.3a5.2 5.2 0 010 7.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            <span data-i18n="nav_soundboard">Soundboard</span>
+          </a>
         </nav>
         <div class="sidebar-footer">
           <span class="version-text" id="version-text"></span>
@@ -277,6 +284,18 @@
               <div class="setting-control hotkey-control">
                 <button id="rewrite-last-btn" class="hotkey-btn"><kbd id="rewrite-last-text"></kbd></button>
                 <button id="rewrite-last-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
+                  <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="free_gpu_label">Free GPU</span>
+                <span class="label-hint" data-i18n="free_gpu_hint">Unloads Whisper and the AI model to free your graphics card, e.g. for a game. Press again to load them; a dictation also loads them, the first one takes a few seconds longer.</span>
+              </div>
+              <div class="setting-control hotkey-control">
+                <button id="free-gpu-btn" class="hotkey-btn"><kbd id="free-gpu-text"></kbd></button>
+                <button id="free-gpu-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
                   <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
                 </button>
               </div>
@@ -569,7 +588,10 @@
           <div id="file-job" class="file-job hidden">
             <div class="file-job-head">
               <span id="file-name" class="file-name"></span>
-              <button id="file-cancel" class="btn-ghost hidden" data-i18n="files_cancel">Cancel</button>
+              <div class="file-job-actions">
+                <button id="file-cancel" class="btn-ghost hidden" data-i18n="files_cancel">Cancel</button>
+                <button id="file-clear" class="btn-ghost" data-i18n="files_clear" data-i18n-title="files_clear_title" title="Removes the transcript to start over. The audio file stays where it is.">Clear</button>
+              </div>
             </div>
             <div class="progress-track"><div class="progress-fill" id="file-progress-fill"></div></div>
             <span id="file-status" class="label-hint file-status"></span>
@@ -609,6 +631,13 @@
             </div>
             <textarea id="file-text" class="file-text" spellcheck="false"></textarea>
           </div>
+        </section>
+        <section id="section-soundboard" class="content-section">
+          <div class="section-header">
+            <h2 class="section-title" data-i18n="sb_title">Soundboard</h2>
+            <p class="section-desc" data-i18n="sb_desc">Play sounds into Discord or a game with a hotkey. Your friends hear your voice and the sounds through a virtual microphone.</p>
+          </div>
+          <div id="sb-root"></div>
         </section>
       </main>
       </div>

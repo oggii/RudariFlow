@@ -5,6 +5,51 @@ All notable changes to RudariFlow are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.14.0] - 2026-10-02 - Soundboard, Free GPU hotkey and a Clear button
+
+Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
+
+### Added
+- **Soundboard** (new tab, can pop out into its own window): sounds on
+  hotkeys for Discord and games, like Soundpad. Turn on "Virtual
+  microphone" and RudariFlow sends your microphone plus the sounds to the
+  free VB-Audio Virtual Cable, which your voice app uses as its microphone
+  ("CABLE Output"); you hear the sounds on your headphones at your own
+  volume, never your own voice. Add AAC, FLAC, M4A, MP3, OGG, OPUS, WAV or
+  WMA files (up to 30 minutes each; copies are kept in RudariFlow's data
+  folder), sort them into categories, search, and give each a hotkey: a
+  key (the numpad and F-keys also alone), a combination or a mouse side
+  button. A new sound replaces the playing one, or plays over it; the same
+  hotkey stops it, and a Stop all hotkey stops everything. Sound hotkeys
+  are taken from other apps only while the virtual microphone is on. The
+  pop-out window can stay on top and remembers its size and position.
+- **Free GPU hotkey:** a fourth hotkey (Settings → Recording, off by
+  default, a key combination or a mouse side button) unloads Whisper and
+  stops the AI model, so a game gets the graphics card's memory: about
+  5.6 GB with Large v3 Turbo q8 and Gemma 4 E4B on an RTX 5080. The pill
+  says "GPU freed". Press it again to load both ("Loading models…", then
+  "Models loaded"). A dictation, a file or a summary also loads what it
+  needs; the first dictation after a free waits for the AI model (a few
+  seconds) instead of being pasted without AI cleanup. A press during a
+  dictation frees the GPU once the text is pasted.
+- **Clear in the Files tab:** empties the tab for the next file: the
+  transcript, the speaker names, the summary and the file line go, and
+  the audio file stays where it is. Not while a file, a summary or an
+  export is running.
+- **The AI model for other programs:** while the AI is ready, RudariFlow
+  writes `llm-endpoint.json` to its data folder (address, key and a third
+  llama-server slot of their own), so the Twitch Live Translate caption
+  service translates with the model that is already loaded instead of
+  loading a second one. The dictation slot and its prompt cache are not
+  shared. Costs about 100 MB of video memory. Free GPU, turning the AI off
+  or quitting takes the file away.
+
+### Fixed
+- Ogg Vorbis files now open in the Files tab on PCs whose Media Foundation
+  cannot read them (RudariFlow decodes them itself).
+
 ## [0.12.0] - 2026-09-25 - Speakers, exports and a resizable window
 
 Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.

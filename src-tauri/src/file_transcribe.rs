@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::audio::{quiet_cut, speech_spans};
 use crate::speakers::{assign, Turn};
-use crate::whisper_engine::{Segment, WhisperEngine};
+use crate::whisper_engine::{FileRun, Segment, WhisperEngine};
 
 /// A block ends once this much audio is in it...
 const BLOCK_SECS: f32 = 60.0;
@@ -67,20 +67,19 @@ pub struct Progress<'a> {
     pub segments: &'a [Segment],
 }
 
-/// Transcribe `audio` (16 kHz mono) with the loaded model. `dictionary` (the
-/// dictionary's Whisper prompt) goes into every block, `spelling` fixes
-/// every segment. Returns the segments and the language used;
-/// `Err(CANCELLED)` once `cancel` is set.
+/// Transcribe `audio` (16 kHz mono) with `run` (see
+/// `WhisperEngine::start_file`). `dictionary` (the dictionary's Whisper
+/// prompt) goes into every block, `spelling` fixes every segment. Returns the
+/// segments and the language used; `Err(CANCELLED)` once `cancel` is set.
 pub fn transcribe(
     engine: &WhisperEngine,
     audio: &[f32],
-    language: &str,
+    mut run: FileRun,
     dictionary: &str,
     spelling: impl Fn(&str) -> String,
     cancel: &AtomicBool,
     mut progress: impl FnMut(Progress),
 ) -> Result<(Vec<Segment>, String), String> {
-    let mut run = engine.start_file(language)?;
     let total_ms = audio.len() as u64 / 16;
     let mut segments: Vec<Segment> = Vec::new();
     let mut start = 0;

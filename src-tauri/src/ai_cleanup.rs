@@ -381,12 +381,18 @@ fn speed_of(json: &serde_json::Value) -> Option<Speed> {
     (valid(prompt) && valid(gen)).then_some(Speed { prompt_ms_per_token: prompt, gen_ms_per_token: gen })
 }
 
-/// llama-server runs two slots: dictations, edits and the warm-up share
+/// llama-server runs three slots: dictations, edits and the warm-up share
 /// the first, which keeps their system prompt cached; file summaries use the
 /// second, so a dictation never waits behind one (a summary part takes
-/// seconds, a dictation's time limit is about 3 s).
+/// seconds, a dictation's time limit is about 3 s); the third is
+/// `SHARED_SLOT`, for other programs on this PC.
 pub const DICTATION_SLOT: i32 = 0;
 pub const LONG_SLOT: i32 = 1;
+
+/// For other programs on this PC (the Twitch caption service), published in
+/// `llm-endpoint.json`. RudariFlow never sends to it, so their prompts never
+/// push the dictation prompt out of slot 0's cache.
+pub const SHARED_SLOT: i32 = 2;
 
 /// Ask the server for the edited text in the dictation slot. Non-streaming;
 /// `timeout` covers the whole request.

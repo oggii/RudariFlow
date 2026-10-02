@@ -13,7 +13,9 @@ use crate::replacements::{apply_replacements, protect, restore, with_variables, 
 use crate::settings::Settings;
 use crate::startup_log;
 
-/// How long a dictation waits for a model that is still loading.
+/// How long a dictation waits for a model that is still loading; after the
+/// Free GPU hotkey released it, `LlmServer::wait_ready` makes it at least
+/// `llm_server::RELEASED_WAIT`.
 const WAIT_FOR_MODEL: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]

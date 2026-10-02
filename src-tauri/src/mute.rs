@@ -2,8 +2,9 @@
 //!
 //! Mutes every audio session on every active playback device, except sessions
 //! that belong to RudariFlow itself (the webview plays the start/stop sounds
-//! from a child process) and sessions the user had already muted. `restore`
-//! unmutes exactly the sessions that were muted here.
+//! from a child process; the soundboard's streams run in RudariFlow's own
+//! process) and sessions the user had already muted. `restore` unmutes
+//! exactly the sessions that were muted here.
 //!
 //! COM work runs on one dedicated thread, so the hotkey path never waits on
 //! the audio stack and the session objects never cross threads.

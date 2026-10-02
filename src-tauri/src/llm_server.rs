@@ -134,6 +134,34 @@ const LIST_DEVICES_RETRY: Duration = Duration::from_millis(1500);
 const IDLE_TOUCH: Duration = Duration::from_secs(10 * 60);
 const PRIME_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// A request waits at least this long for a server that the Free GPU hotkey
+/// released: the first dictation after a free gets its AI cleanup a few
+/// seconds late instead of losing it (llama-server needs 4 to 7 s on an
+/// RTX 5080 from a warm disk).
+pub const RELEASED_WAIT: Duration = Duration::from_secs(20);
+
+/// The error of a start or a wait that `stop` or `release` ended.
+pub const STOPPED: &str = "The AI model was stopped";
+
+/// llama-server slots: ai_cleanup::DICTATION_SLOT, LONG_SLOT and SHARED_SLOT,
+/// 8192 tokens each. Every slot after the first costs about 100 MB of video
+/// memory.
+const SLOTS: u32 = 3;
+const SLOT_CONTEXT: u32 = 8192;
+
+/// Where other programs find the ready server: `publish_endpoint`.
+pub const ENDPOINT_FILE: &str = "llm-endpoint.json";
+
+/// How long a request waits for a loading server: `wait`, but at least
+/// `RELEASED_WAIT` after a release.
+fn wait_budget(wait: Duration, released: bool) -> Duration {
+    if released {
+        wait.max(RELEASED_WAIT)
+    } else {
+        wait
+    }
+}
+
 pub struct LlmServer {
     llama_dir: PathBuf,
     log_path: PathBuf,
@@ -160,6 +188,8 @@ pub struct LlmServer {
     /// A start just failed with the drafter: `ensure_running` tries again
     /// without it right away.
     draft_crashed: AtomicBool,
+    /// Set by `release` (Free GPU hotkey) until a start succeeds.
+    released: AtomicBool,
     on_status: StatusCallback,
     #[cfg(windows)]
     job: Option<job::Job>,
@@ -167,6 +197,8 @@ pub struct LlmServer {
 
 impl LlmServer {
     pub fn new(llama_dir: PathBuf, log_path: PathBuf, on_status: StatusCallback) -> Self {
+        // A hard kill leaves the file of a server that no longer exists.
+        let _ = std::fs::remove_file(log_path.with_file_name(ENDPOINT_FILE));
         Self {
             llama_dir,
             log_path,
@@ -181,6 +213,7 @@ impl LlmServer {
             speed: Mutex::new(None),
             draft_off: AtomicBool::new(false),
             draft_crashed: AtomicBool::new(false),
+            released: AtomicBool::new(false),
             on_status,
             #[cfg(windows)]
             job: job::Job::new(),
@@ -200,12 +233,45 @@ impl LlmServer {
     }
 
     fn set_status(&self, status: ServerStatus) {
+        // Only a ready server is published. Anything else - loading, stopped,
+        // Free GPU, crashed - takes the file away, changed state or not.
+        if !matches!(status, ServerStatus::Ready { .. }) {
+            self.withdraw_endpoint();
+        }
         let mut current = lock(&self.status);
         if *current != status {
             *current = status.clone();
             drop(current);
             (self.on_status)(&status);
         }
+    }
+
+    fn endpoint_file(&self) -> PathBuf {
+        self.log_path.with_file_name(ENDPOINT_FILE)
+    }
+
+    /// Tell other programs on this PC (the Twitch caption service) where the
+    /// ready server is and which slot is theirs. Written through a temp file
+    /// and a rename, so a reader never sees half of it.
+    fn publish_endpoint(&self, endpoint: &Endpoint, model: &Path) {
+        let pid = lock(&self.running).as_ref().map(|r| r.child.id());
+        let body = serde_json::json!({
+            "version": 1,
+            "baseUrl": endpoint.base_url,
+            "apiKey": endpoint.api_key,
+            "slot": crate::ai_cleanup::SHARED_SLOT,
+            "model": model.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+            "pid": pid,
+        });
+        let path = self.endpoint_file();
+        let tmp = path.with_extension("json.tmp");
+        if let Err(e) = std::fs::write(&tmp, body.to_string()).and_then(|_| std::fs::rename(&tmp, &path)) {
+            startup_log::log(&format!("[ai] could not publish {}: {}", ENDPOINT_FILE, e));
+        }
+    }
+
+    fn withdraw_endpoint(&self) {
+        let _ = std::fs::remove_file(self.endpoint_file());
     }
 
     /// The endpoint if a server for `model` is running and ready. Notices a
@@ -376,7 +442,13 @@ impl LlmServer {
             for _ in 0..25 {
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 if this.reap_if_exited() {
-                    this.warm(model, gpu_backend);
+                    // The Free GPU hotkey released the AI in the meantime:
+                    // do not undo it with a background restart. An explicit
+                    // retry (the AI tab, ai_restart) still goes through
+                    // `warm`/`start_ai` directly, unguarded.
+                    if !this.released() {
+                        this.warm(model, gpu_backend);
+                    }
                     return;
                 }
             }
@@ -393,33 +465,69 @@ impl LlmServer {
         })
     }
 
+    /// Counts `stop` and `release`: a start asked for at one generation ends
+    /// with `STOPPED` once it moves (`ensure_running_since`).
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
     /// Start the server for `model` unless it already runs, and return once
     /// it is ready. Serialised with other starts. `gpu_backend` is Whisper's
-    /// setting; the server runs on the GPU Whisper would use.
+    /// setting; the server runs on the GPU Whisper would use. A `stop` or
+    /// `release` from the call on ends it with `STOPPED`.
     pub async fn ensure_running(&self, model: &Path, gpu_backend: Option<&str>) -> Result<Endpoint, String> {
+        self.ensure_running_since(self.generation(), model, gpu_backend).await
+    }
+
+    /// `ensure_running` for a start asked for at `generation`: a `stop` or
+    /// `release` since then ends it with `STOPPED`, also one that comes while
+    /// it waits for another start or before it begins. The Free GPU hotkey's
+    /// Load reads the generation before it lets the next press run, so that
+    /// press's release always stops the Load's start.
+    pub async fn ensure_running_since(
+        &self,
+        generation: u64,
+        model: &Path,
+        gpu_backend: Option<&str>,
+    ) -> Result<Endpoint, String> {
         let _start = self.start_lock.lock().await;
+        // A release while this start waited (behind a summary's start, say)
+        // must stop it, not be undone by it.
+        if self.generation.load(Ordering::SeqCst) != generation {
+            return Err(STOPPED.to_string());
+        }
         if let Some(endpoint) = self.ready_endpoint_now(model) {
             return Ok(endpoint);
         }
         if let Some(error) = self.gave_up() {
             return Err(error);
         }
-        let generation = self.generation.load(Ordering::SeqCst);
         self.draft_crashed.store(false, Ordering::SeqCst);
-        let mut result = self.start(model, gpu_backend).await;
+        let mut result = self.start(generation, model, gpu_backend).await;
         let stopped = self.generation.load(Ordering::SeqCst) != generation;
         if result.is_err() && self.draft_crashed.swap(false, Ordering::SeqCst) && !stopped {
             self.kill();
             startup_log::log("[ai] starting again without the MTP drafter");
-            result = self.start(model, gpu_backend).await;
+            result = self.start(generation, model, gpu_backend).await;
         }
         match result {
             Ok(endpoint) => {
                 self.failures.store(0, Ordering::SeqCst);
+                // Re-read now, not the `stopped` local above (stale after the
+                // draft-crash retry's second start): a release() that has
+                // finished since this start began already put `released`
+                // back to true (its second store, after `stop()` bumps the
+                // generation), and that must win over this start.
+                if self.generation.load(Ordering::SeqCst) == generation {
+                    self.released.store(false, Ordering::SeqCst);
+                }
                 Ok(endpoint)
             }
             Err(_) if self.generation.load(Ordering::SeqCst) != generation => {
-                Err("The AI model was stopped".to_string())
+                // No server runs now. The stop reported Stopped, but this
+                // start may have reported Loading after it.
+                self.set_status(ServerStatus::Stopped);
+                Err(STOPPED.to_string())
             }
             Err(error) => {
                 self.kill();
@@ -448,13 +556,15 @@ impl LlmServer {
     }
 
     /// The endpoint once the server for `model` is ready, starting it in the
-    /// background if needed. Gives up after `wait`; the start continues.
+    /// background if needed. Gives up after `wait` (at least `RELEASED_WAIT`
+    /// after a release); the start continues.
     pub async fn wait_ready(
         self: &Arc<Self>,
         model: &Path,
         gpu_backend: Option<String>,
         wait: Duration,
     ) -> Result<Endpoint, String> {
+        let wait = wait_budget(wait, self.released());
         if let Some(endpoint) = self.ready_endpoint_now(model) {
             self.mark_used();
             return Ok(endpoint);
@@ -463,12 +573,25 @@ impl LlmServer {
             return Err(error);
         }
         self.warm(model.to_path_buf(), gpu_backend);
+        // The generation this wait's own start began at: a release() that
+        // stops it after this point (a Free GPU press, most likely) must end
+        // the wait at once, not after the full budget. A release from
+        // *before* this point is the reason this wait's own start exists
+        // (e.g. the first dictation after a free) and must still be waited
+        // for, so only a generation change from here on counts, and only
+        // when it is a release (`released()`) rather than some other stop
+        // (settings, battery, an explicit restart), which keeps waiting as
+        // before.
+        let generation = self.generation.load(Ordering::SeqCst);
         let begun = Instant::now();
         loop {
             tokio::time::sleep(Duration::from_millis(50)).await;
             if let Some(endpoint) = self.ready_endpoint_now(model) {
                 self.mark_used();
                 return Ok(endpoint);
+            }
+            if self.generation.load(Ordering::SeqCst) != generation && self.released() {
+                return Err(STOPPED.to_string());
             }
             // Once the start had time to begin, a failed and finished start
             // ends the wait early.
@@ -483,7 +606,8 @@ impl LlmServer {
         }
     }
 
-    async fn start(&self, model: &Path, gpu_backend: Option<&str>) -> Result<Endpoint, String> {
+    /// A start that `ensure_running` began at `generation`.
+    async fn start(&self, generation: u64, model: &Path, gpu_backend: Option<&str>) -> Result<Endpoint, String> {
         self.kill();
         if !self.is_installed() {
             return Err(format!("llama-server not found in {}", self.llama_dir.display()));
@@ -517,15 +641,16 @@ impl LlmServer {
         let log = File::create(&self.log_path).map_err(|e| format!("llm-server.log: {}", e))?;
         let log_err = log.try_clone().map_err(|e| e.to_string())?;
         let port_arg = port.to_string();
+        let context_arg = (SLOTS * SLOT_CONTEXT).to_string();
+        let slots_arg = SLOTS.to_string();
 
         let mut cmd = self.server_command();
         cmd.arg("-m")
             .arg(model)
             .args(["--host", "127.0.0.1", "--port", &port_arg, "--api-key", &api_key])
             .args(["-dev", device.as_ref().map_or("none", |d| d.id.as_str())])
-            // Two slots of 8192 tokens (ai_cleanup::DICTATION_SLOT and
-            // LONG_SLOT); the second costs about 100 MB of video memory.
-            .args(["--fit", "on", "-c", "16384", "-np", "2", "--reasoning-budget", "0", "--no-webui"])
+            // SLOTS slots of SLOT_CONTEXT tokens each (see SLOTS).
+            .args(["--fit", "on", "-c", &context_arg, "-np", &slots_arg, "--reasoning-budget", "0", "--no-webui"])
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err));
@@ -567,6 +692,13 @@ impl LlmServer {
             model: model.to_path_buf(),
             draft: draft.clone(),
         });
+        // A stop or release since this start began found `running` empty and
+        // could not end this server (a later one ends it itself): end it here.
+        if self.generation.load(Ordering::SeqCst) != generation {
+            self.kill();
+            startup_log::log("[ai] llama-server ended: the AI was stopped while it started");
+            return Err(STOPPED.to_string());
+        }
 
         if let Err(e) = self.wait_healthy(&endpoint).await {
             // Only a crash counts against the drafter: not a stop (AI turned
@@ -590,11 +722,19 @@ impl LlmServer {
                 return Err("The AI model stopped during its warm-up; see llm-server.log".to_string());
             }
         }
+        // A stop or release during the warm-up ended the server, and its
+        // request failed: not ready.
+        if self.generation.load(Ordering::SeqCst) != generation {
+            self.kill();
+            startup_log::log("[ai] llama-server ended: the AI was stopped during its warm-up");
+            return Err(STOPPED.to_string());
+        }
         startup_log::log(&format!(
             "[ai] llama-server ready on {} after {} ms",
             label,
             started.elapsed().as_millis()
         ));
+        self.publish_endpoint(&endpoint, model);
         self.set_status(ServerStatus::Ready { device: label });
         Ok(endpoint)
     }
@@ -713,6 +853,23 @@ impl LlmServer {
         self.kill();
         self.failures.store(0, Ordering::SeqCst);
         self.set_status(ServerStatus::Stopped);
+    }
+
+    /// Free the GPU (Free GPU hotkey): stop the server like `stop`, and keep
+    /// it released until a request starts it again. Background starts
+    /// (`warm_ai` in main.rs) leave it off, and the request that brings it
+    /// back waits up to `RELEASED_WAIT` for it.
+    pub fn release(&self) {
+        // Set before `stop` reports Stopped (the AI tab reads it then), and
+        // again after it, in case a start finished in between.
+        self.released.store(true, Ordering::SeqCst);
+        self.stop();
+        self.released.store(true, Ordering::SeqCst);
+    }
+
+    /// Released and not started since.
+    pub fn released(&self) -> bool {
+        self.released.load(Ordering::SeqCst)
     }
 }
 
@@ -904,5 +1061,250 @@ Available devices:
         let json = serde_json::to_string(&ServerStatus::Ready { device: "RX 6800".into() }).unwrap();
         assert_eq!(json, r#"{"state":"ready","device":"RX 6800"}"#);
         assert_eq!(serde_json::to_string(&ServerStatus::Loading).unwrap(), r#"{"state":"loading"}"#);
+    }
+
+    #[test]
+    fn a_released_server_is_waited_for_longer() {
+        let three = Duration::from_secs(3);
+        assert_eq!(wait_budget(three, false), three);
+        assert_eq!(wait_budget(three, true), RELEASED_WAIT);
+        let summary = Duration::from_secs(120);
+        assert_eq!(wait_budget(summary, true), summary, "a longer wait stays");
+    }
+
+    #[test]
+    fn a_release_lasts_until_a_start_succeeds() {
+        let dir = std::env::temp_dir().join("rudariflow_release");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        std::fs::write(&model, b"not a model").unwrap();
+        // No llama-server in this folder: every start fails.
+        let llm = Arc::new(LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {})));
+        assert!(!llm.released());
+        llm.release();
+        assert!(llm.released());
+        assert_eq!(llm.status(), ServerStatus::Stopped);
+        llm.stop();
+        assert!(llm.released(), "a stop (settings, battery) keeps it");
+        let started = Instant::now();
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(llm.wait_ready(&model, None, Duration::from_secs(3)));
+        assert!(result.unwrap_err().contains("llama-server not found"));
+        assert!(started.elapsed() < Duration::from_secs(3), "a failed start ends the longer wait early");
+        assert!(llm.released(), "only a start that succeeds ends it");
+    }
+
+    /// A Free GPU press that lands while a caller is still in `wait_ready`
+    /// (e.g. summarize_text's own wait, before it ever reaches an endpoint)
+    /// must end that wait at once, not after its full budget: the loop must
+    /// notice a release, not just a `Failed` status.
+    #[test]
+    fn a_release_during_the_wait_ends_it_at_once() {
+        let dir = std::env::temp_dir().join("rudariflow_release_during_wait");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        std::fs::write(&model, b"not a model").unwrap();
+        // No llama-server in this folder: the start `wait_ready` kicks off
+        // fails almost at once ("llama-server not found"), but that alone
+        // does not bump the generation (only stop()/release() do), and the
+        // *existing* Failed-status check only looks once 300 ms have
+        // passed. That leaves a clean multi-hundred-ms window in which
+        // wait_ready is genuinely still polling, so a release() landing
+        // there proves the *new* check on its own, well before the Failed
+        // check or the wait budget could otherwise end it.
+        let llm = Arc::new(LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {})));
+        assert!(!llm.released());
+
+        // A real multi-thread runtime: the spawned wait_ready task must run
+        // concurrently with this thread's sleep + release() below, not only
+        // once this thread later blocks on it.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let waiter = {
+            let llm = llm.clone();
+            let model = model.clone();
+            rt.spawn(async move {
+                let started = Instant::now();
+                let result = llm.wait_ready(&model, None, Duration::from_secs(5)).await;
+                (result, started.elapsed())
+            })
+        };
+        // Long past wait_ready's first 50 ms tick (so it is truly in its
+        // polling loop), short of the existing Failed check's 300 ms gate.
+        std::thread::sleep(Duration::from_millis(100));
+        llm.release();
+        let (result, elapsed) = rt.block_on(waiter).unwrap();
+        assert_eq!(result, Err("The AI model was stopped".to_string()));
+        assert!(elapsed < Duration::from_millis(300), "should have ended at once on the release, took {elapsed:?}");
+        assert!(llm.released());
+    }
+
+    /// A Free GPU press while a start waits for another one (a Load behind a
+    /// summary's start): once the lock is free, that start must not begin,
+    /// or it would load the AI again right after "GPU freed".
+    #[test]
+    fn a_release_while_a_start_waits_for_the_lock_stops_it() {
+        use std::future::Future;
+        let dir = std::env::temp_dir().join("rudariflow_release_while_waiting_for_the_lock");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        std::fs::write(&model, b"not a model").unwrap();
+        // No llama-server in this folder: a start that goes ahead fails with
+        // "llama-server not found" and counts a failure.
+        let llm = LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {}));
+        // Another start holds the lock.
+        let other = llm.start_lock.try_lock().unwrap();
+        let mut start = std::pin::pin!(llm.ensure_running(&model, None));
+        // Polled once instead of spawned: it is certain to wait for the lock
+        // when the release comes.
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(start.as_mut().poll(&mut cx).is_pending(), "it waits for the lock");
+        llm.release();
+        drop(other);
+        let result = tokio::runtime::Runtime::new().unwrap().block_on(start);
+        assert_eq!(result, Err(STOPPED.to_string()));
+        assert_eq!(llm.failures.load(Ordering::SeqCst), 0, "not a failed start");
+        assert_eq!(llm.status(), ServerStatus::Stopped);
+        assert!(llm.released());
+    }
+
+    /// The Free GPU hotkey's Load reads the generation while it still holds
+    /// its mutex. A press that frees the GPU as soon as the Load lets go must
+    /// stop the AI start even when its release lands before that start reads
+    /// the generation itself (seen live: the release came first).
+    #[test]
+    fn a_release_after_the_start_was_asked_for_stops_it() {
+        let dir = std::env::temp_dir().join("rudariflow_release_after_the_ask");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        std::fs::write(&model, b"not a model").unwrap();
+        // No llama-server in this folder: a start that goes ahead fails with
+        // "llama-server not found" and counts a failure.
+        let llm = LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {}));
+        let asked = llm.generation();
+        llm.release();
+        let result = tokio::runtime::Runtime::new().unwrap().block_on(llm.ensure_running_since(asked, &model, None));
+        assert_eq!(result, Err(STOPPED.to_string()));
+        assert_eq!(llm.failures.load(Ordering::SeqCst), 0, "not a failed start");
+        assert_eq!(llm.status(), ServerStatus::Stopped);
+        assert!(llm.released());
+    }
+
+    #[test]
+    fn request_failed_does_not_warm_a_released_server() {
+        let dir = std::env::temp_dir().join("rudariflow_release_no_warm");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        std::fs::write(&model, b"not a model").unwrap();
+        // No llama-server in this folder: a background restart, if one were
+        // attempted, would fail fast and is easy to tell apart from the reap.
+        let llm = Arc::new(LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {})));
+
+        // Stand-in for a crashed llama-server: a process that exits on its
+        // own almost immediately, put into `running` directly so this does
+        // not need a real llama-server.exe to go through `start()`.
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "exit", "0"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        no_window(&mut cmd);
+        let child = cmd.spawn().expect("spawn cmd.exe");
+        *lock(&llm.running) = Some(Running {
+            child,
+            endpoint: Endpoint { base_url: String::new(), api_key: String::new(), on_cpu: true },
+            model: model.clone(),
+            draft: None,
+        });
+        // As if the Free GPU hotkey had already released the AI. Set
+        // directly rather than via `release()`, so `release()`'s own `stop()`
+        // does not reap our fake process itself before the watchdog does.
+        llm.released.store(true, Ordering::SeqCst);
+
+        llm.request_failed(model, None);
+        // Well over one 200 ms watchdog poll: enough time for it to reap the
+        // exited process and, if the guard were missing, also attempt and
+        // fail a background restart before we check.
+        std::thread::sleep(Duration::from_millis(1000));
+
+        assert!(lock(&llm.running).is_none(), "no start was attempted");
+        assert!(llm.released(), "still released: warm() must not have run");
+        // The reap itself always runs (it is not what is under test) and
+        // records exactly one failure; a second would mean warm()'s
+        // background start was attempted despite the release.
+        assert_eq!(llm.failures.load(Ordering::SeqCst), 1, "only the reap's failure, no start attempt");
+        match llm.status() {
+            ServerStatus::Failed { error } => assert!(error.contains("stopped unexpectedly"), "got: {error}"),
+            other => panic!("expected Failed from the reap, got {other:?}"),
+        }
+    }
+
+    fn temp_server(name: &str) -> (LlmServer, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("rf-endpoint-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let llm = LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {}));
+        (llm, dir)
+    }
+
+    fn published(dir: &Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(dir.join(ENDPOINT_FILE)).unwrap()).unwrap()
+    }
+
+    fn endpoint() -> Endpoint {
+        Endpoint { base_url: "http://127.0.0.1:5555".into(), api_key: "k".into(), on_cpu: false }
+    }
+
+    #[test]
+    fn publishes_the_shared_slot_and_withdraws_it_on_stop() {
+        let (llm, dir) = temp_server("stop");
+        llm.publish_endpoint(&endpoint(), Path::new("C:/m/gemma-4-E4B-it-Q4_K_M.gguf"));
+        let json = published(&dir);
+        assert_eq!(json["version"], 1);
+        assert_eq!(json["baseUrl"], "http://127.0.0.1:5555");
+        assert_eq!(json["apiKey"], "k");
+        assert_eq!(json["slot"], crate::ai_cleanup::SHARED_SLOT);
+        assert_eq!(json["model"], "gemma-4-E4B-it-Q4_K_M");
+        assert!(!dir.join("llm-endpoint.json.tmp").exists(), "written through a temp file");
+        llm.stop();
+        assert!(!dir.join(ENDPOINT_FILE).exists());
+    }
+
+    #[test]
+    fn free_gpu_withdraws_the_endpoint() {
+        let (llm, dir) = temp_server("release");
+        llm.publish_endpoint(&endpoint(), Path::new("m.gguf"));
+        llm.release();
+        assert!(!dir.join(ENDPOINT_FILE).exists());
+    }
+
+    #[test]
+    fn loading_and_failing_withdraw_the_endpoint() {
+        let (llm, dir) = temp_server("states");
+        for status in [ServerStatus::Loading, ServerStatus::Failed { error: "x".into() }] {
+            llm.publish_endpoint(&endpoint(), Path::new("m.gguf"));
+            llm.set_status(status);
+            assert!(!dir.join(ENDPOINT_FILE).exists());
+        }
+    }
+
+    #[test]
+    fn a_leftover_from_a_hard_kill_is_removed_at_startup() {
+        let (_, dir) = temp_server("startup");
+        std::fs::write(dir.join(ENDPOINT_FILE), "{}").unwrap();
+        let _llm = LlmServer::new(dir.join("llama"), dir.join("llm-server.log"), Box::new(|_| {}));
+        assert!(!dir.join(ENDPOINT_FILE).exists());
+    }
+
+    #[test]
+    fn every_slot_keeps_8192_tokens_and_the_shared_one_exists() {
+        use crate::ai_cleanup::{DICTATION_SLOT, LONG_SLOT, SHARED_SLOT};
+        assert_eq!(SLOT_CONTEXT, 8192);
+        assert_eq!(SLOTS, 3);
+        let slots = [DICTATION_SLOT, LONG_SLOT, SHARED_SLOT];
+        assert!(slots.iter().all(|s| (0..SLOTS as i32).contains(s)));
+        assert_eq!(slots.iter().collect::<std::collections::HashSet<_>>().len(), 3);
     }
 }

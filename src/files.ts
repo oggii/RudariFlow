@@ -14,6 +14,8 @@ export interface FilesHost {
   saveSettings(patch: { fileSpeakers?: string }): Promise<void>;
   /** Show the Files section (a file dropped on another tab). */
   showSection(): void;
+  /** False while another tab takes files dropped on the window (the Soundboard). */
+  acceptsDrops(): boolean;
 }
 
 interface Segment {
@@ -71,6 +73,7 @@ const speakersSelect = document.getElementById("file-speakers") as HTMLSelectEle
 const speakersHint = document.getElementById("file-speakers-hint")!;
 const speakersRow = document.getElementById("file-speakers-row")!;
 const speakerChips = document.getElementById("file-speaker-chips")!;
+const clearBtn = document.getElementById("file-clear") as HTMLButtonElement;
 
 let host: FilesHost;
 let running = false;
@@ -95,6 +98,14 @@ let cancelRequested = false;
 /** This run separates speakers: Whisper fills the progress bar to 80 %,
  *  the separation the rest. */
 let speakersOn = false;
+
+/** Exports running, from the save dialog until the file is written. */
+let exporting = 0;
+
+/** Clear is off while a file is transcribed, summarised or exported. */
+function updateClear() {
+  clearBtn.disabled = running || summarizing || exporting > 0;
+}
 
 /// "4:05" or "1:02:03", like the backend's `clock`.
 function clock(ms: number): string {
@@ -121,6 +132,7 @@ function errorText(e: unknown): string {
     no_speech: "files_err_no_speech",
     cancelled: "files_cancelled",
     no_ai_model: "files_err_no_ai_model",
+    gpu_freed: "files_err_gpu_freed",
   };
   return key[code] ? t(key[code]) : `${t("files_err_failed")}: ${code}`;
 }
@@ -144,7 +156,10 @@ async function shownText(times: boolean): Promise<string> {
 
 async function showText() {
   if (!segments.length) return;
-  textArea.value = await shownText(timesToggle.checked);
+  const shown = segments;
+  const text = await shownText(timesToggle.checked);
+  // Cleared, or another file started, while the text was formatted.
+  if (segments === shown) textArea.value = text;
 }
 
 function defaultName(i: number): string {
@@ -242,6 +257,7 @@ async function transcribe(path: string) {
   textArea.value = "";
   textArea.readOnly = false;
   setButtons(false);
+  updateClear();
   setProgress(0);
   setStatus(t("files_reading"));
   speakersOn = false;
@@ -290,6 +306,7 @@ async function transcribe(path: string) {
   } finally {
     running = false;
     cancelBtn.classList.add("hidden");
+    updateClear();
   }
 }
 
@@ -341,17 +358,18 @@ function setSummaryCollapsed(collapsed: boolean) {
 }
 
 async function summarize() {
-  const text = segments.length ? await shownText(false) : textArea.value;
-  if (!text.trim()) return;
   // A summary still running for an earlier file must not land in this one.
   const run = ++summaryRun;
   summarizing = true;
   summarizeBtn.disabled = true;
-  summaryBox.classList.remove("hidden");
-  setSummaryCollapsed(false);
-  summaryEl.textContent = t("files_summarizing");
-  summaryEl.dataset.tone = "";
+  updateClear();
   try {
+    const text = segments.length ? await shownText(false) : textArea.value;
+    if (!text.trim()) return;
+    summaryBox.classList.remove("hidden");
+    setSummaryCollapsed(false);
+    summaryEl.textContent = t("files_summarizing");
+    summaryEl.dataset.tone = "";
     const summary = await invoke<string>("summarize_text", { text });
     if (run === summaryRun) summaryEl.textContent = summary;
   } catch (e) {
@@ -364,6 +382,7 @@ async function summarize() {
       summarizing = false;
       summarizeBtn.disabled = running;
     }
+    updateClear();
   }
 }
 
@@ -386,28 +405,36 @@ function exportMeta(): string {
 
 async function exportAs(kind: ExportKind) {
   setExportMenu(false);
-  const base = fileName.replace(/\.[^.]+$/, "") || "transcript";
-  const path = await save({
-    defaultPath: `${base}.${kind}`,
-    filters: [{ name: t(`files_filter_${kind}`), extensions: [kind] }],
-  });
-  if (!path) return;
-  const summaryReady = !summarizing && !summaryBox.classList.contains("hidden") && summaryEl.dataset.tone !== "error";
-  const doc = {
-    title: fileName,
-    meta: exportMeta(),
-    segments,
-    names,
-    times: timesToggle.checked,
-    summary: summaryReady && summaryEl.textContent ? summaryEl.textContent : null,
-    summaryTitle: t("files_summary"),
-    transcriptTitle: t("files_transcript"),
-  };
+  // Clear waits until the file is written; the save dialog counts too.
+  exporting++;
+  updateClear();
   try {
-    await invoke("export_file", { kind, path, doc });
-    setStatus(t("files_exported").replace("{name}", path.split(/[\\/]/).pop() ?? path), "ok");
-  } catch (e) {
-    setStatus(`${t("files_err_failed")}: ${e}`, "error");
+    const base = fileName.replace(/\.[^.]+$/, "") || "transcript";
+    const path = await save({
+      defaultPath: `${base}.${kind}`,
+      filters: [{ name: t(`files_filter_${kind}`), extensions: [kind] }],
+    });
+    if (!path) return;
+    const summaryReady = !summarizing && !summaryBox.classList.contains("hidden") && summaryEl.dataset.tone !== "error";
+    const doc = {
+      title: fileName,
+      meta: exportMeta(),
+      segments,
+      names,
+      times: timesToggle.checked,
+      summary: summaryReady && summaryEl.textContent ? summaryEl.textContent : null,
+      summaryTitle: t("files_summary"),
+      transcriptTitle: t("files_transcript"),
+    };
+    try {
+      await invoke("export_file", { kind, path, doc });
+      setStatus(t("files_exported").replace("{name}", path.split(/[\\/]/).pop() ?? path), "ok");
+    } catch (e) {
+      setStatus(`${t("files_err_failed")}: ${e}`, "error");
+    }
+  } finally {
+    exporting--;
+    updateClear();
   }
 }
 
@@ -415,6 +442,36 @@ async function copy(text: string, button: HTMLButtonElement, label: string) {
   await invoke("copy_text", { text });
   button.textContent = t("pc_check_copied");
   setTimeout(() => (button.textContent = t(label)), 1500);
+}
+
+/** Back to the empty tab: the transcript, speaker names, summary and file
+ *  line go, and the page lets go of the texts. The audio file is not
+ *  touched; the Language, Speakers and Timestamps choices stay. */
+function clearFile() {
+  if (running || summarizing || exporting > 0) return;
+  summaryRun++;
+  transcript = null;
+  transcribedAt = null;
+  fileName = "";
+  segments = [];
+  // A new array: a rename still open writes into the old one and is dropped.
+  names = [];
+  renderChips();
+  setExportMenu(false);
+  summaryBox.classList.add("hidden");
+  setSummaryCollapsed(false);
+  summaryEl.textContent = "";
+  summaryEl.dataset.tone = "";
+  textArea.value = "";
+  textArea.readOnly = false;
+  setButtons(false);
+  nameEl.textContent = "";
+  setStatus("");
+  setProgress(0);
+  job.classList.add("hidden");
+  result.classList.add("hidden");
+  // The Clear button went with the file line.
+  chooseBtn.focus();
 }
 
 export function renderFiles() {
@@ -469,6 +526,7 @@ export function initFiles(h: FilesHost) {
     }
   });
   summarizeBtn.addEventListener("click", summarize);
+  clearBtn.addEventListener("click", clearFile);
   listen<FileProgress>("file-progress", (e) => onProgress(e.payload));
   listen<DownloadProgress>("speaker-model-progress", (e) => {
     speakersHint.textContent = t("files_speakers_downloading").replace("{percent}", String(Math.round(e.payload.percent)));
@@ -479,6 +537,10 @@ export function initFiles(h: FilesHost) {
   });
   // A file dropped anywhere on the window is transcribed.
   getCurrentWebview().onDragDropEvent((event) => {
+    if (!host.acceptsDrops()) {
+      drop.classList.remove("dragging");
+      return;
+    }
     const p = event.payload;
     if (p.type === "over" || p.type === "enter") {
       drop.classList.add("dragging");

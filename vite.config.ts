@@ -5,12 +5,13 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  // Multi-page: include overlay.html
+  // Multi-page: the overlay pill and the soundboard pop-out
   build: {
     rollupOptions: {
       input: {
         main: "index.html",
         overlay: "src/overlay.html",
+        soundboard: "soundboard.html",
       },
     },
   },

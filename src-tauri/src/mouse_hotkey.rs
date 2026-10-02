@@ -1,4 +1,4 @@
-//! Mouse side buttons as global hotkeys (dictation, paste last, rewrite last).
+//! Mouse side buttons as global hotkeys (dictation, paste last, rewrite last, free GPU, soundboard).
 //!
 //! `RegisterHotKey` (used by tauri-plugin-global-shortcut) only accepts
 //! keyboard keys, so side buttons go through a low-level mouse hook
@@ -57,8 +57,9 @@ pub fn parse(hotkey: &str) -> Option<MouseBinding> {
 /// Handler invoked with `true` on press and `false` on release.
 pub type Handler = Box<dyn Fn(bool) + Send + Sync + 'static>;
 
-/// Most bindings at once (three hotkeys use them today).
-const SLOTS: usize = 8;
+/// Most bindings at once. Two buttons with 16 modifier sets make 32
+/// different bindings; the soundboard's hotkeys may use all of them.
+const SLOTS: usize = 64;
 
 /// A binding as the hook compares it: the button (1 = XBUTTON1, 2 =
 /// XBUTTON2) and the modifier bits. 0 is an empty slot.
@@ -414,5 +415,20 @@ mod tests {
         let ctrl = mods_to_bits(Modifiers { ctrl: true, ..Default::default() });
         assert_eq!(find_slot(&slots, 2, ctrl), None);
         assert_eq!(find_slot(&[0; 8], 1, 0), None);
+    }
+
+    #[test]
+    fn every_side_button_binding_fits() {
+        // Two buttons with any of 16 modifier sets: 32 bindings, and
+        // soundboard hotkeys may use all of them.
+        let mut codes = std::collections::HashSet::new();
+        for button in [MouseButton::Mouse4, MouseButton::Mouse5] {
+            for bits in 0..16u8 {
+                let modifiers = Modifiers { ctrl: bits & 1 != 0, shift: bits & 2 != 0, alt: bits & 4 != 0, win: bits & 8 != 0 };
+                codes.insert(encode(MouseBinding { button, modifiers }));
+            }
+        }
+        assert_eq!(codes.len(), 32);
+        assert!(SLOTS >= codes.len(), "{} slots", SLOTS);
     }
 }

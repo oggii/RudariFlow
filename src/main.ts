@@ -9,6 +9,8 @@ import { initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
 import { initDictionary, renderDictionary } from "./dictionary";
 import { initFiles, renderFiles } from "./files";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
+import { hotkeyLabel, startCapture } from "./hotkey-capture";
+import { mountBoard } from "./soundboard/board";
 
 interface Settings {
   microphone: string;
@@ -29,6 +31,7 @@ interface Settings {
   pasteLastHotkey: string;
   whisperFlashAttn?: string;
   rewriteLastHotkey: string;
+  freeGpuHotkey: string;
   muteAudio: boolean;
   aiCleanup: boolean;
   aiModel: string;
@@ -105,6 +108,9 @@ const pcCheckCopy = document.getElementById("pc-check-copy") as HTMLButtonElemen
 const rewriteLastBtn = document.getElementById("rewrite-last-btn") as HTMLButtonElement;
 const rewriteLastText = document.getElementById("rewrite-last-text")!;
 const rewriteLastClear = document.getElementById("rewrite-last-clear") as HTMLButtonElement;
+const freeGpuBtn = document.getElementById("free-gpu-btn") as HTMLButtonElement;
+const freeGpuText = document.getElementById("free-gpu-text")!;
+const freeGpuClear = document.getElementById("free-gpu-clear") as HTMLButtonElement;
 const sendCommandSelect = document.getElementById("send-command-select") as HTMLSelectElement;
 const muteAudioToggle = document.getElementById("mute-audio-toggle") as HTMLInputElement;
 const replacementList = document.getElementById("replacement-list")!;
@@ -115,6 +121,9 @@ const historyList = document.getElementById("history-list")!;
 const historyEmpty = document.getElementById("history-empty")!;
 const historyCount = document.getElementById("history-count")!;
 const historyClear = document.getElementById("history-clear") as HTMLButtonElement;
+const soundboardSection = document.getElementById("section-soundboard")!;
+// The Soundboard tab; the same component runs in the pop-out window.
+const soundboard = mountBoard(document.getElementById("sb-root")!, { popOut: false });
 
 // Section navigation
 const navItems = document.querySelectorAll(".nav-item");
@@ -124,6 +133,7 @@ function showSection(target: string) {
   navItems.forEach((n) => n.classList.toggle("active", n.getAttribute("data-section") === target));
   sections.forEach((s) => s.classList.remove("active"));
   document.getElementById(`section-${target}`)?.classList.add("active");
+  soundboard.setActive(target === "soundboard");
 }
 
 navItems.forEach((item) => {
@@ -211,6 +221,7 @@ async function loadSettings() {
   groqKey.value = currentSettings.groqApiKey;
   renderDictionary();
   renderFiles();
+  void soundboard.refresh();
 
   // Recording mode
   setRecordingMode(currentSettings.recordingMode);
@@ -421,6 +432,7 @@ uiLanguageSelect.addEventListener("change", async () => {
   await renderAiSettings();
   renderDictionary();
   renderFiles();
+  void soundboard.refresh();
 });
 
 sendCommandSelect.addEventListener("change", () => saveSettings());
@@ -517,20 +529,12 @@ listen<DownloadProgress>("download-progress", (event) => {
   progressFill.style.width = `${percent}%`;
 });
 
-// Hotkey capture. "dictation" starts/stops recording, "pasteLast" pastes the
-// last transcript again, "rewriteLast" selects it and records an edit. Each
-// takes a key combination or a mouse side button (with or without modifiers).
-type HotkeyTarget = "dictation" | "pasteLast" | "rewriteLast";
-let capturing: HotkeyTarget | null = null;
-
-function hotkeyLabel(combo: string): string {
-  if (!combo) return t("hotkey_none");
-  const isMac = navigator.userAgent.includes("Mac");
-  return combo
-    .replace("CmdOrCtrl", isMac ? "Cmd" : "Ctrl")
-    .replace("Mouse4", t("hotkey_mouse4"))
-    .replace("Mouse5", t("hotkey_mouse5"));
-}
+// Hotkeys. "dictation" starts/stops recording, "pasteLast" pastes the last
+// transcript again, "rewriteLast" selects it and records an edit, "freeGpu"
+// unloads the models or loads them again. Each takes a key combination or a
+// mouse side button (with or without modifiers); the capture itself is in
+// hotkey-capture.ts, shared with the Soundboard.
+type HotkeyTarget = "dictation" | "pasteLast" | "rewriteLast" | "freeGpu";
 
 function renderHotkeys() {
   hotkeyText.textContent = hotkeyLabel(currentSettings.hotkey);
@@ -538,126 +542,33 @@ function renderHotkeys() {
   pasteLastClear.classList.toggle("hidden", !currentSettings.pasteLastHotkey);
   rewriteLastText.textContent = hotkeyLabel(currentSettings.rewriteLastHotkey);
   rewriteLastClear.classList.toggle("hidden", !currentSettings.rewriteLastHotkey);
+  freeGpuText.textContent = hotkeyLabel(currentSettings.freeGpuHotkey);
+  freeGpuClear.classList.toggle("hidden", !currentSettings.freeGpuHotkey);
 }
 
 function captureElements(target: HotkeyTarget) {
   if (target === "dictation") return { btn: hotkeyBtn, text: hotkeyText };
   if (target === "pasteLast") return { btn: pasteLastBtn, text: pasteLastText };
-  return { btn: rewriteLastBtn, text: rewriteLastText };
-}
-
-function modifierTokens(e: KeyboardEvent | MouseEvent): string[] {
-  const mods: string[] = [];
-  if (e.ctrlKey) mods.push("CmdOrCtrl");
-  if (e.altKey) mods.push("Alt");
-  if (e.shiftKey) mods.push("Shift");
-  if (e.metaKey) mods.push("Super");
-  return mods;
-}
-
-/// Mouse side buttons: MouseEvent.button 3 = back (XBUTTON1), 4 = forward
-/// (XBUTTON2). They work alone or with modifiers.
-function mouseEventToCombo(e: MouseEvent): string | null {
-  const button = e.button === 3 ? "Mouse4" : e.button === 4 ? "Mouse5" : null;
-  return button ? [...modifierTokens(e), button].join("+") : null;
-}
-
-function keyEventToCombo(e: KeyboardEvent): string | null {
-  const mods = modifierTokens(e);
-  // Ignore lone modifier keys
-  const k = e.key;
-  if (["Control", "Shift", "Alt", "Meta", "OS"].includes(k)) return null;
-  if (mods.length === 0) return null;
-  // Normalize key name to Tauri shortcut format
-  let key = k;
-  if (key === " ") key = "Space";
-  else if (/^[a-z]$/i.test(key)) key = key.toUpperCase();
-  // Digits and punctuation: e.key changes with Shift ("!" instead of "1")
-  // and with the layout (umlauts), so use the physical code (Digit1, Minus).
-  else if (key.length === 1) key = e.code;
-  // Function keys, arrows, etc. already match (F1, ArrowLeft, ...)
-  return [...mods, key].join("+");
-}
-
-function startCapture(target: HotkeyTarget) {
-  if (capturing) return;
-  capturing = target;
-  // Release the global hotkeys so pressing a current chord reaches this window.
-  invoke("set_hotkey_paused", { paused: true }).catch(console.error);
-  const { btn, text } = captureElements(target);
-  btn.classList.add("capturing");
-  text.textContent = t("hotkey_press_keys");
-  window.addEventListener("keydown", onCaptureKey, true);
-  // Click outside cancels
-  setTimeout(() => window.addEventListener("mousedown", onOutsideClick, true), 0);
-}
-
-function stopCapture() {
-  if (capturing) captureElements(capturing).btn.classList.remove("capturing");
-  capturing = null;
-  window.removeEventListener("keydown", onCaptureKey, true);
-  window.removeEventListener("mousedown", onOutsideClick, true);
-  invoke("set_hotkey_paused", { paused: false }).catch(console.error);
-  renderHotkeys();
-}
-
-async function onCaptureKey(e: KeyboardEvent) {
-  e.preventDefault();
-  e.stopPropagation();
-  if (e.key === "Escape") {
-    stopCapture();
-    return;
-  }
-  const combo = keyEventToCombo(e);
-  if (!combo) return; // wait for a non-modifier key
-  await applyCapturedCombo(combo);
-}
-
-async function applyCapturedCombo(combo: string) {
-  const target = capturing;
-  if (!target) return;
-  window.removeEventListener("keydown", onCaptureKey, true);
-  window.removeEventListener("mousedown", onOutsideClick, true);
-  try {
-    await setHotkey(target, combo);
-    stopCapture();
-  } catch (err) {
-    const reason = String(err);
-    captureElements(target).text.textContent = reason.includes("Windows shortcut")
-      ? t("hotkey_reserved").replace("{combo}", hotkeyLabel(combo))
-      : t(reason.includes("already used") ? "hotkey_taken" : "hotkey_invalid");
-    console.error("change_hotkey failed:", err);
-    setTimeout(stopCapture, 2500);
-  }
+  if (target === "rewriteLast") return { btn: rewriteLastBtn, text: rewriteLastText };
+  return { btn: freeGpuBtn, text: freeGpuText };
 }
 
 async function setHotkey(target: HotkeyTarget, combo: string) {
   await invoke("change_hotkey", { target, newHotkey: combo });
   if (target === "dictation") currentSettings.hotkey = combo;
   else if (target === "pasteLast") currentSettings.pasteLastHotkey = combo;
-  else currentSettings.rewriteLastHotkey = combo;
+  else if (target === "rewriteLast") currentSettings.rewriteLastHotkey = combo;
+  else currentSettings.freeGpuHotkey = combo;
 }
 
-function onOutsideClick(e: MouseEvent) {
-  if (!capturing) return;
-  const combo = mouseEventToCombo(e);
-  if (combo) {
-    e.preventDefault();
-    e.stopPropagation();
-    applyCapturedCombo(combo);
-    return;
-  }
-  if (!captureElements(capturing).btn.contains(e.target as Node)) stopCapture();
+function capture(target: HotkeyTarget) {
+  const { btn, text } = captureElements(target);
+  startCapture({ button: btn, text, apply: (combo) => setHotkey(target, combo), render: renderHotkeys });
 }
 
-// Side buttons would otherwise trigger history navigation in the webview.
-window.addEventListener("mouseup", (e) => {
-  if (e.button === 3 || e.button === 4) e.preventDefault();
-});
-
-hotkeyBtn.addEventListener("click", () => startCapture("dictation"));
-pasteLastBtn.addEventListener("click", () => startCapture("pasteLast"));
-rewriteLastBtn.addEventListener("click", () => startCapture("rewriteLast"));
+hotkeyBtn.addEventListener("click", () => capture("dictation"));
+pasteLastBtn.addEventListener("click", () => capture("pasteLast"));
+rewriteLastBtn.addEventListener("click", () => capture("rewriteLast"));
 rewriteLastClear.addEventListener("click", async () => {
   try {
     await setHotkey("rewriteLast", "");
@@ -671,6 +582,15 @@ pasteLastClear.addEventListener("click", async () => {
     await setHotkey("pasteLast", "");
   } catch (err) {
     console.error("clearing paste-last hotkey failed:", err);
+  }
+  renderHotkeys();
+});
+freeGpuBtn.addEventListener("click", () => capture("freeGpu"));
+freeGpuClear.addEventListener("click", async () => {
+  try {
+    await setHotkey("freeGpu", "");
+  } catch (err) {
+    console.error("clearing free-GPU hotkey failed:", err);
   }
   renderHotkeys();
 });
@@ -920,6 +840,7 @@ initFiles({
     await invoke("save_settings", { settings: currentSettings });
   },
   showSection: () => showSection("files"),
+  acceptsDrops: () => !soundboardSection.classList.contains("active"),
 });
 
 // Initialize
