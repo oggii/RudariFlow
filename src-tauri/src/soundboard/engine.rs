@@ -242,15 +242,46 @@ impl Boosts {
     }
 }
 
-/// Raise the calling audio thread: MMCSS "Pro Audio", else time-critical
-/// priority. Returns the `Boosts` code. System calls only, no allocation.
+/// The MMCSS registration of an audio thread; ended when dropped (cpal
+/// drops a stream's data callback on the stream's own thread).
 #[cfg(windows)]
-fn boost_this_thread() -> u8 {
+struct MmcssGuard(windows_sys::Win32::Foundation::HANDLE);
+
+// SAFETY: the handle is only passed to AvRevertMmThreadCharacteristics.
+#[cfg(windows)]
+unsafe impl Send for MmcssGuard {}
+
+#[cfg(windows)]
+impl Drop for MmcssGuard {
+    fn drop(&mut self) {
+        // SAFETY: a handle AvSetMmThreadCharacteristicsW returned, reverted once.
+        unsafe {
+            windows_sys::Win32::System::Threading::AvRevertMmThreadCharacteristics(self.0);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+struct MmcssGuard;
+
+/// Kept in a stream's callback: whether its thread was raised, and the MMCSS
+/// registration to end with the stream.
+#[derive(Default)]
+struct Booster {
+    done: bool,
+    guard: Option<MmcssGuard>,
+}
+
+/// Raise the calling audio thread: MMCSS "Pro Audio", else time-critical
+/// priority. Returns the `Boosts` code and the MMCSS registration (if any).
+/// System calls only, no allocation.
+#[cfg(windows)]
+fn boost_this_thread() -> (u8, Option<MmcssGuard>) {
     use windows_sys::Win32::System::Threading::{
         AvSetMmThreadCharacteristicsW, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
     };
     const PRO_AUDIO: [u16; 10] = {
-        let text = b"Pro Audio\0";
+        let text = b"Pro Audio ";
         let mut wide = [0u16; 10];
         let mut i = 0;
         while i < text.len() {
@@ -261,29 +292,31 @@ fn boost_this_thread() -> u8 {
     };
     let mut task = 0u32;
     // SAFETY: a NUL-terminated UTF-16 name and a valid out pointer; the
-    // pseudo handle of the current thread needs no closing. The MMCSS
-    // registration ends with the thread.
+    // pseudo handle of the current thread needs no closing.
     unsafe {
-        if !AvSetMmThreadCharacteristicsW(PRO_AUDIO.as_ptr(), &mut task).is_null() {
-            return 1;
+        let handle = AvSetMmThreadCharacteristicsW(PRO_AUDIO.as_ptr(), &mut task);
+        if !handle.is_null() {
+            return (1, Some(MmcssGuard(handle)));
         }
         if SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != 0 {
-            return 2;
+            return (2, None);
         }
     }
-    3
+    (3, None)
 }
 
 #[cfg(not(windows))]
-fn boost_this_thread() -> u8 {
-    3
+fn boost_this_thread() -> (u8, Option<MmcssGuard>) {
+    (3, None)
 }
 
 /// In a stream's callback: raise its thread on the first call.
-fn boost_once(boosted: &mut bool, boosts: &Boosts, which: usize) {
-    if !*boosted {
-        *boosted = true;
-        boosts.0[which].store(boost_this_thread(), Ordering::Relaxed);
+fn boost_once(booster: &mut Booster, boosts: &Boosts, which: usize) {
+    if !booster.done {
+        booster.done = true;
+        let (code, guard) = boost_this_thread();
+        booster.guard = guard;
+        boosts.0[which].store(code, Ordering::Relaxed);
     }
 }
 
@@ -533,7 +566,7 @@ fn open_streams(
     // The cable: the microphone and the sounds at "Others hear".
     let (m, d) = (mixer.clone(), drift.clone());
     let mut last_read: Option<Instant> = None;
-    let (b, mut boosted) = (boosts.clone(), false);
+    let (b, mut boosted) = (boosts.clone(), Booster::default());
     let cable_stream = cable
         .build_output_stream(
             &cable_config,
@@ -555,7 +588,7 @@ fn open_streams(
 
     // The headphones: the sounds at "You hear", never the user's voice.
     let m = mixer.clone();
-    let (b, mut boosted) = (boosts.clone(), false);
+    let (b, mut boosted) = (boosts.clone(), Booster::default());
     let headphones_stream = headphones
         .build_output_stream(
             &headphones_config,
@@ -575,7 +608,7 @@ fn open_streams(
     let mut frames = Vec::with_capacity(8_192);
     let mut last_push: Option<Instant> = None;
     let d = drift.clone();
-    let (b, mut boosted) = (boosts.clone(), false);
+    let (b, mut boosted) = (boosts.clone(), Booster::default());
     let mic_stream = mic
         .build_input_stream(
             &mic_config,
@@ -1165,9 +1198,11 @@ mod tests {
         // On a thread of its own, as a stream's callback runs.
         std::thread::scope(|s| {
             s.spawn(|| {
-                let mut boosted = false;
+                let mut boosted = Booster::default();
                 boost_once(&mut boosted, &boosts, Boosts::CABLE);
-                assert!(boosted);
+                assert!(boosted.done);
+                #[cfg(windows)]
+                assert_eq!(boosted.guard.is_some(), boosts.get()[Boosts::CABLE] == 1);
             });
         });
         let cable = boosts.get()[Boosts::CABLE];
