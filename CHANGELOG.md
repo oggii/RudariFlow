@@ -15,6 +15,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   loading a second one. The dictation slot and its prompt cache are not
   shared. Costs about 100 MB of video memory. Free GPU, turning the AI off
   or quitting takes the file away.
+- **Soundboard** (new tab, can pop out into its own window): sounds on
+  hotkeys for Discord and games, like Soundpad. Turn on "Virtual
+  microphone" and RudariFlow sends your microphone plus the sounds to the
+  free VB-Audio Virtual Cable, which your voice app uses as its microphone
+  ("CABLE Output"); you hear the sounds on your headphones at your own
+  volume, never your own voice. Add AAC, FLAC, M4A, MP3, OGG, OPUS, WAV or
+  WMA files (up to 30 minutes each; copies are kept in RudariFlow's data
+  folder), sort them into categories, search, and give each a hotkey: a
+  key (the numpad and F-keys also alone), a combination or a mouse side
+  button. A new sound replaces the playing one, or plays over it; the same
+  hotkey stops it, and a Stop all hotkey stops everything. Sound hotkeys
+  are taken from other apps only while the virtual microphone is on. The
+  pop-out window can stay on top and remembers its size and position.
+
+### Fixed
+- Ogg Vorbis files now open in the Files tab on PCs whose Media Foundation
+  cannot read them (RudariFlow decodes them itself).
 
 ## [0.13.0] - 2026-09-25 - Free GPU hotkey and a Clear button
 
