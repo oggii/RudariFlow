@@ -187,15 +187,19 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     if (!options.popOut && s.board.window.poppedOut) return [popped()];
     listBox = el("div", "sb-list");
     fillList(listBox, s);
-    const parts = [top(s), devicesBox(s), ...hints(s), toolbar(), chips(s)];
+    // Two groups: settings (left in a wide main window) and the sound library (right).
+    const settings = el("div", "sb-col sb-col-settings");
+    settings.append(top(s), devicesBox(s), ...hints(s));
+    const library = el("div", "sb-col sb-col-library");
+    library.append(toolbar(), chips(s));
     if (notice.text) {
       const line = el("p", "sb-notice", notice.text);
       line.dataset.tone = notice.tone;
       line.setAttribute("role", "status");
-      parts.push(line);
+      library.append(line);
     }
-    parts.push(listBox);
-    return parts;
+    library.append(listBox);
+    return [settings, library];
   }
 
   function row(label: string, hint: string, ...controls: HTMLElement[]): HTMLElement {
