@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-10-02 - Sound hotkeys on/off, loops, two columns
+
+Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
+
 ### Added
 - **Sound hotkeys on/off** (Soundboard): a "Sound hotkeys" switch and a
   hotkey to flip it, so a sound is not played by accident. Off, the
@@ -20,6 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Stop all, or a new sound replacing it); its progress bar starts over
   with every round. Switched off while the sound plays, the round that
   plays is the last.
+- **Two columns** (Soundboard tab): on a wide window the settings sit on
+  the left and the sounds (add, search, categories, the list) on the
+  right; narrow windows and the pop-out keep one column.
+
+### Fixed
+- **Echo and a beep on your voice after a sound** (virtual microphone):
+  when the microphone or the cable stalled for a moment, the voice's
+  buffer drained the backlog by dropping a frame in every hundred: up to
+  about 16 s of 100–180 ms delay and a 480 Hz pattern on the voice.
+  The backlog is now skipped at once with a short crossfade, and clock
+  drift is followed by a slight, inaudible speed change; the voice's
+  extra delay is about 15 ms.
+- The soundboard's audio threads run as Windows "Pro Audio" threads;
+  the audio library's own priority boost silently failed, so they ran at
+  normal priority and could be held up by a busy PC.
 
 ## [0.14.0] - 2026-10-02 - Soundboard, Free GPU hotkey and a Clear button
 
