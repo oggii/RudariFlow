@@ -1368,25 +1368,60 @@ fn change_hotkey(
 #[tauri::command]
 fn set_hotkey_paused(
     app: tauri::AppHandle,
-    state: State<AppState>,
+    window: tauri::WebviewWindow,
     paused: bool,
 ) -> Result<(), String> {
-    // Two windows (main, soundboard pop-out) can each hold a capture: count
-    // them, so one finishing never re-registers the hotkeys under the other.
-    // Every capture sends exactly one true and one false (hotkey-capture.ts).
-    if paused {
-        if HOTKEY_PAUSES.fetch_add(1, Ordering::SeqCst) > 0 {
-            return Ok(());
-        }
-    } else {
-        let left = HOTKEY_PAUSES
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_sub(1)))
-            .unwrap_or(0)
-            .saturating_sub(1);
-        if left > 0 {
-            return Ok(());
-        }
+    // Two windows (main, soundboard pop-out) can each hold a capture. The
+    // pause is held per window label, so one finishing never re-registers
+    // the hotkeys under the other, and a window that goes away mid-capture
+    // is released in release_hotkey_pause (Destroyed), never wedging it.
+    let mut holders = HOTKEY_PAUSE_HOLDERS.lock().unwrap();
+    let change = if paused { holders.hold(window.label()) } else { holders.release(window.label()) };
+    if !change {
+        return Ok(());
     }
+    apply_hotkey_pause(&app, paused)
+}
+
+/// A window is gone: it no longer holds a pause.
+fn release_hotkey_pause(app: &AppHandle, label: &str) {
+    let mut holders = HOTKEY_PAUSE_HOLDERS.lock().unwrap();
+    if holders.release(label) {
+        let _ = apply_hotkey_pause(app, false);
+    }
+}
+
+/// Which windows hold the hotkey pause (a hotkey capture in progress).
+/// hold/release are idempotent per label and return true when the pause
+/// starts (first holder) or ends (last holder gone).
+struct PauseHolders {
+    labels: Vec<String>,
+}
+
+impl PauseHolders {
+    const fn new() -> Self {
+        PauseHolders { labels: Vec::new() }
+    }
+    fn hold(&mut self, label: &str) -> bool {
+        if self.labels.iter().any(|l| l == label) {
+            return false;
+        }
+        self.labels.push(label.to_string());
+        self.labels.len() == 1
+    }
+    fn release(&mut self, label: &str) -> bool {
+        let before = self.labels.len();
+        self.labels.retain(|l| l != label);
+        before > 0 && self.labels.is_empty()
+    }
+}
+
+static HOTKEY_PAUSE_HOLDERS: Mutex<PauseHolders> = Mutex::new(PauseHolders::new());
+
+/// Unregister (paused) or register again the global hotkeys. The caller holds
+/// the HOTKEY_PAUSE_HOLDERS lock, so pause and resume never interleave.
+fn apply_hotkey_pause(app: &AppHandle, paused: bool) -> Result<(), String> {
+    let state = app.state::<AppState>();
     let all = hotkeys(&state.settings.lock().unwrap());
     let mut result = Ok(());
     for (action, hotkey) in all {
@@ -1408,7 +1443,7 @@ fn set_hotkey_paused(
         }
     }
     HOTKEYS_PAUSED.store(paused, Ordering::SeqCst);
-    spawn_board_hotkey_sync(&app);
+    spawn_board_hotkey_sync(app);
     result
 }
 
@@ -1784,23 +1819,31 @@ async fn soundboard_engine_stats(state: State<'_, AppState>) -> Result<engine::E
 /// Windows.
 #[tauri::command]
 async fn soundboard_pop_out(app: AppHandle, state: State<'_, AppState>, focus: bool) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("soundboard") {
+    let show_existing = |app: &AppHandle| {
+        let window = app.get_webview_window("soundboard")?;
         let _ = window.show();
         let _ = window.unminimize();
         if focus {
             let _ = window.set_focus();
         }
-    } else {
+        Some(())
+    };
+    if show_existing(&app).is_none() {
         let on_top = state.soundboard.board().window.always_on_top;
-        WebviewWindowBuilder::new(&app, "soundboard", WebviewUrl::App("soundboard.html".into()))
+        let built = WebviewWindowBuilder::new(&app, "soundboard", WebviewUrl::App("soundboard.html".into()))
             .title("RudariFlow Soundboard")
             .inner_size(460.0, 680.0)
             .min_inner_size(380.0, 420.0)
             .resizable(true)
             .always_on_top(on_top)
             .focused(focus)
-            .build()
-            .map_err(|e| e.to_string())?;
+            .build();
+        if let Err(e) = built {
+            // A concurrent call built it first: the label exists, which is fine.
+            if show_existing(&app).is_none() {
+                return Err(e.to_string());
+            }
+        }
     }
     state.soundboard.set_window(Some(true), None);
     Ok(())
@@ -1922,8 +1965,6 @@ struct BoardHotkeys {
 static BOARD_HOTKEYS: Mutex<BoardHotkeys> = Mutex::new(BoardHotkeys { registered: Vec::new(), last: None });
 /// A hotkey is being captured in the UI: the board's hotkeys stay released.
 static HOTKEYS_PAUSED: AtomicBool = AtomicBool::new(false);
-/// Open hotkey captures (set_hotkey_paused true minus false), across windows.
-static HOTKEY_PAUSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Make the registered board hotkeys what the board wants: its stop-all
 /// and sound hotkeys while it is on and no hotkey is being captured, none
@@ -2254,6 +2295,15 @@ fn main() {
             // The pop-out closed (its X or Bring back): the board goes back
             // to its tab, and the window's size and position are saved now,
             // not only at a clean exit.
+            // A window destroyed mid-capture no longer holds the hotkey pause.
+            if matches!(window.label(), "main" | "soundboard") {
+                if let WindowEvent::Destroyed = event {
+                    // Off the event loop: re-registering a hotkey goes through it.
+                    let app = window.app_handle().clone();
+                    let label = window.label().to_string();
+                    std::thread::spawn(move || release_hotkey_pause(&app, &label));
+                }
+            }
             if window.label() == "soundboard" {
                 if let WindowEvent::Destroyed = event {
                     let app = window.app_handle();
@@ -2493,6 +2543,27 @@ fn main() {
 mod tests {
     use super::*;
     use rudariflow_lib::soundboard::library::Sound;
+
+    #[test]
+    fn hotkey_pause_holders_are_per_window() {
+        let mut h = PauseHolders::new();
+        // Idempotent per label: a second hold by the same window changes nothing.
+        assert!(h.hold("main"));
+        assert!(!h.hold("main"));
+        // Two windows overlapping: only the first starts, only the last ends.
+        assert!(!h.hold("soundboard"));
+        assert!(!h.release("main"));
+        assert!(!h.release("main"));
+        assert!(h.release("soundboard"));
+        // A stray release with nobody holding is harmless and ends nothing.
+        assert!(!h.release("soundboard"));
+        assert!(!h.release("main"));
+        // A destroyed holder releases; the pause is not wedged afterwards.
+        assert!(h.hold("soundboard"));
+        assert!(h.release("soundboard"));
+        assert!(h.hold("main"));
+        assert!(!h.hold("main"));
+    }
 
     #[test]
     fn free_gpu_is_the_fourth_hotkey() {
