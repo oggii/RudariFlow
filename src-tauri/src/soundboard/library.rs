@@ -119,8 +119,16 @@ impl Board {
     /// and the damaged file is kept as `soundboard.json.bad`.
     pub fn load(dir: &Path) -> Board {
         let path = dir.join(FILE);
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return Board::default();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Board::default(),
+            Err(e) => {
+                // Unreadable (bad bytes, locked, no permission): keep a copy so
+                // the next save cannot overwrite the user's library.
+                startup_log::log(&format!("[soundboard] {} is unreadable ({}); copied to {}.bad", FILE, e, FILE));
+                let _ = std::fs::copy(&path, dir.join(format!("{}.bad", FILE)));
+                return Board::default();
+            }
         };
         match serde_json::from_str::<Board>(&text) {
             Ok(mut board) => {
@@ -337,6 +345,15 @@ mod tests {
         assert_eq!(Board::load(&dir), Board::default());
         assert_eq!(std::fs::read_to_string(dir.join("soundboard.json.bad")).unwrap(), "{ not json");
         assert!(!dir.join(FILE).exists());
+    }
+
+    #[test]
+    fn an_unreadable_file_is_copied_aside_before_anything_can_overwrite_it() {
+        let dir = temp("unreadable");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(FILE), [0xffu8, 0xfe, 0x00]).unwrap();
+        assert_eq!(Board::load(&dir), Board::default());
+        assert_eq!(std::fs::read(dir.join("soundboard.json.bad")).unwrap(), vec![0xffu8, 0xfe, 0x00]);
     }
 
     #[test]

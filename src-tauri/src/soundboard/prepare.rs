@@ -100,6 +100,15 @@ fn disk(e: std::io::Error) -> String {
     format!("disk: {}", e)
 }
 
+/// The copied original of `sound`: `sounds/<plain file name>` only. `file`
+/// comes from a hand-editable JSON, so anything else (separators, `..`,
+/// absolute paths) is None and never touched.
+fn original_path(dir: &Path, sound: &Sound) -> Option<PathBuf> {
+    let name = sound.file.strip_prefix("sounds/")?;
+    let plain = !name.is_empty() && name != "." && name != ".." && Path::new(name).file_name() == Some(std::ffi::OsStr::new(name));
+    plain.then(|| dir.join("sounds").join(name))
+}
+
 /// The playback copy of `sound`, made again from the original when only
 /// the copy is gone. "missing" when both are.
 pub fn ensure_cache(dir: &Path, sound: &Sound) -> Result<PathBuf, String> {
@@ -107,10 +116,10 @@ pub fn ensure_cache(dir: &Path, sound: &Sound) -> Result<PathBuf, String> {
     if cache.exists() {
         return Ok(cache);
     }
-    let original = dir.join(&sound.file);
-    if !original.exists() {
-        return Err("missing".to_string());
-    }
+    let original = match original_path(dir, sound) {
+        Some(p) if p.exists() => p,
+        _ => return Err("missing".to_string()),
+    };
     std::fs::create_dir_all(dir.join("cache")).map_err(disk)?;
     write_cache(&original, &cache, MAX_SECS)?;
     Ok(cache)
@@ -118,12 +127,14 @@ pub fn ensure_cache(dir: &Path, sound: &Sound) -> Result<PathBuf, String> {
 
 /// Both files of `sound` were deleted by hand.
 pub fn is_missing(dir: &Path, sound: &Sound) -> bool {
-    !cache_path(dir, &sound.id).exists() && !dir.join(&sound.file).exists()
+    !cache_path(dir, &sound.id).exists() && !original_path(dir, sound).is_some_and(|p| p.exists())
 }
 
 /// Delete both files of `sound`.
 pub fn remove_files(dir: &Path, sound: &Sound) {
-    let _ = std::fs::remove_file(dir.join(&sound.file));
+    if let Some(original) = original_path(dir, sound) {
+        let _ = std::fs::remove_file(original);
+    }
     let _ = std::fs::remove_file(cache_path(dir, &sound.id));
 }
 
@@ -204,5 +215,28 @@ mod tests {
         assert!(is_missing(&dir, &sound));
         assert_eq!(ensure_cache(&dir, &sound).unwrap_err(), "missing");
         assert_eq!(left_over(&dir), 0);
+    }
+
+    #[test]
+    fn a_file_name_that_leaves_the_sounds_folder_is_missing_and_never_deleted() {
+        let dir = temp("escape");
+        std::fs::create_dir_all(dir.join("sounds")).unwrap();
+        let outside = dir.join("outside.txt");
+        std::fs::write(&outside, "keep").unwrap();
+        for file in ["..\\outside.txt", "sounds/../outside.txt", "sounds/..\\outside.txt", "../outside.txt"] {
+            let sound = Sound {
+                id: "s-x".into(),
+                name: "x".into(),
+                file: file.into(),
+                category: String::new(),
+                hotkey: String::new(),
+                volume: 1.0,
+                duration_ms: 0,
+            };
+            assert!(is_missing(&dir, &sound), "{}", file);
+            assert_eq!(ensure_cache(&dir, &sound).unwrap_err(), "missing");
+            remove_files(&dir, &sound);
+            assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep", "{}", file);
+        }
     }
 }
