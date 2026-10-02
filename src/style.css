@@ -1530,11 +1530,20 @@ kbd {
   background: var(--accent);
   transition: width 100ms linear;
 }
+.sb-progress-fill.no-slide {
+  transition: none;
+}
 .sb-side {
   grid-area: side;
   display: flex;
   align-items: center;
   gap: 6px;
+}
+/* Loop on: the accent, also on a playing row's tinted background. */
+.sb-loop[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 .sb-length {
   font-size: 12px;

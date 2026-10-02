@@ -29,6 +29,8 @@ const PLAY_ICON = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3.5 2.2
 const STOP_ICON = '<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1" fill="currentColor"/></svg>';
 const X_ICON =
   '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+const LOOP_ICON =
+  '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M1.8 5.6V5a2 2 0 0 1 2-2h5.7M8.2 1.5L9.7 3 8.2 4.5M10.2 6.4V7a2 2 0 0 1-2 2H2.5M3.8 7.5L2.3 9l1.5 1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const PEN_ICON =
   '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 9.5l.6-2.3 5-5 1.7 1.7-5 5z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></svg>';
 
@@ -508,7 +510,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     if (missing) main.append(el("span", "sb-note", t("sb_missing")));
 
     const side = el("div", "sb-side");
-    side.append(el("span", "sb-length", clock(sound.durationMs)), deleteButton(sound));
+    side.append(loopButton(sound), el("span", "sb-length", clock(sound.durationMs)), deleteButton(sound));
 
     const controls = el("div", "sb-controls");
     const cat = el("select", "sb-category");
@@ -530,6 +532,17 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     );
     r.append(play, main, side, controls);
     return r;
+  }
+
+  /** Loop on/off: a looping sound repeats until it is stopped. */
+  function loopButton(sound: Sound): HTMLElement {
+    const b = iconButton(LOOP_ICON, `${t("sb_loop")}: ${sound.name}`, `${sound.id}-loop`, () => {
+      void api.setSoundLoop(sound.id, !sound.loop).catch(fail);
+    });
+    b.classList.add("sb-loop");
+    b.title = t("sb_loop_hint");
+    b.setAttribute("aria-pressed", String(sound.loop));
+    return b;
   }
 
   function deleteButton(sound: Sound): HTMLElement {
@@ -559,7 +572,14 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       const voice = byId.get(r.dataset.id ?? "");
       r.classList.toggle("playing", voice !== undefined);
       const fill = r.querySelector<HTMLElement>(".sb-progress-fill");
-      if (fill) fill.style.width = voice && voice.durationMs > 0 ? `${Math.min(100, (voice.posMs / voice.durationMs) * 100)}%` : "0%";
+      if (fill) {
+        const width = voice && voice.durationMs > 0 ? Math.min(100, (voice.posMs / voice.durationMs) * 100) : 0;
+        // A looping sound starts its next round: jump back rather than slide.
+        const back = width < Number(fill.dataset.width ?? 0);
+        fill.classList.toggle("no-slide", back);
+        fill.dataset.width = String(width);
+        fill.style.width = `${width}%`;
+      }
       const play = r.querySelector<HTMLButtonElement>(".sb-play");
       const icon = voice ? "stop" : "play";
       if (play && play.dataset.icon !== icon) {
