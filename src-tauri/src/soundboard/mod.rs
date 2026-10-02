@@ -148,12 +148,20 @@ impl Soundboard {
     /// reason in the status.
     pub fn turn_on(&self, recording_mic: &str) -> Result<(), Problem> {
         let _life = lock(&self.lifecycle);
-        self.turn_on_locked(recording_mic)
+        self.turn_on_locked(recording_mic, true)
+    }
+
+    /// `turn_on` for the app start with the switch saved on. A failure shows
+    /// in the status but keeps the saved switch on, so the next start tries
+    /// again (a cable that is not connected yet must not turn it off for good).
+    pub fn turn_on_at_start(&self, recording_mic: &str) -> Result<(), Problem> {
+        let _life = lock(&self.lifecycle);
+        self.turn_on_locked(recording_mic, false)
     }
 
     /// `turn_on` with `lifecycle` held. The engine slot is only locked to
     /// store the result, never while the devices open.
-    fn turn_on_locked(&self, recording_mic: &str) -> Result<(), Problem> {
+    fn turn_on_locked(&self, recording_mic: &str, save_failure: bool) -> Result<(), Problem> {
         if lock(&self.engine).is_some() {
             return Ok(());
         }
@@ -193,7 +201,9 @@ impl Soundboard {
             }
             Err(problem) => {
                 startup_log::log(&format!("[soundboard] not on: {:?}", problem));
-                self.save_enabled(false);
+                if save_failure {
+                    self.save_enabled(false);
+                }
                 self.set_status(Status::Error { problem: problem.clone() });
                 Err(problem)
             }
@@ -301,7 +311,7 @@ impl Soundboard {
         let _life = lock(&self.lifecycle);
         if self.is_on() {
             self.stop_engine();
-            let _ = self.turn_on_locked(recording_mic);
+            let _ = self.turn_on_locked(recording_mic, true);
         } else if matches!(self.status(), Status::Error { .. }) {
             // A new choice clears the old error.
             self.set_status(Status::Off);
@@ -608,6 +618,27 @@ mod tests {
         assert_eq!(sb.status(), Status::Off);
         assert_eq!(serde_json::to_string(&Status::Off).unwrap(), r#"{"state":"off"}"#);
         assert_eq!(serde_json::to_string(&Status::On { cable: "C".into() }).unwrap(), r#"{"state":"on","cable":"C"}"#);
+    }
+
+    #[test]
+    fn a_failed_turn_on_at_start_keeps_the_saved_switch_on() {
+        let (sb, rx, app_dir) = board("atstart");
+        let devices = Devices { cable: "No Such Cable (RudariFlow test)".into(), ..Devices::default() };
+        sb.set_devices(devices, "default");
+        sb.update(|b| {
+            b.enabled = true;
+            Ok(())
+        })
+        .unwrap();
+        let problem = sb.turn_on_at_start("default").unwrap_err();
+        assert_eq!(sb.status(), Status::Error { problem });
+        assert!(!sb.is_on());
+        assert!(sb.board().enabled, "retried at the next start");
+        assert!(Board::load(&app_dir.join("soundboard")).enabled, "and saved so");
+        assert!(drain(&rx).iter().any(|e| e.starts_with("status:Error")));
+        // The switch itself still saves a failure as off.
+        sb.turn_on("default").unwrap_err();
+        assert!(!sb.board().enabled);
     }
 
     #[test]

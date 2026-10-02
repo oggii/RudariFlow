@@ -2457,7 +2457,7 @@ fn main() {
                 tauri::async_runtime::spawn_blocking(move || {
                     let state = handle.state::<AppState>();
                     let mic = state.settings.lock().unwrap().microphone.clone();
-                    let _ = state.soundboard.turn_on(&mic);
+                    let _ = state.soundboard.turn_on_at_start(&mic);
                 });
             }
 
