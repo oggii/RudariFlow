@@ -6,7 +6,7 @@
 //! memory, so no audio callback touches a file.
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read, Seek};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -265,14 +265,14 @@ impl Engine {
     }
 
     /// Start playing a prepared WAV (the first 200 ms are read before it
-    /// starts; the rest on a reader thread).
+    /// starts; the rest on a reader thread), `looping` until it is stopped.
     /// "engine_stopped" once the engine has ended (a device was lost).
-    pub fn start_voice(&self, sound_id: &str, volume: f32, wav: &Path) -> Result<(), String> {
+    pub fn start_voice(&self, sound_id: &str, volume: f32, wav: &Path, looping: bool) -> Result<(), String> {
         const STOPPED: &str = "engine_stopped";
         if self.ended.load(Ordering::Acquire) {
             return Err(STOPPED.to_string());
         }
-        let (shared, frames) = spawn_reader(wav)?;
+        let (shared, frames) = spawn_reader(wav, looping)?;
         let mut mixer = lock(&self.mixer);
         // Checked again under the lock the engine thread sets it under.
         if self.ended.load(Ordering::Acquire) {
@@ -485,9 +485,10 @@ fn open_streams(
 }
 
 /// Open a prepared WAV (48 kHz stereo 16-bit), read its first 200 ms and
-/// keep reading ahead on a thread of its own. Returns the shared buffer and
-/// the sound's length in frames.
-pub fn spawn_reader(wav: &Path) -> Result<(Arc<VoiceShared>, u64), String> {
+/// keep reading ahead on a thread of its own; `looping`, it goes on from
+/// the start at each end of the file until the voice ends or the loop is
+/// switched off. Returns the shared buffer and the sound's length in frames.
+pub fn spawn_reader(wav: &Path, looping: bool) -> Result<(Arc<VoiceShared>, u64), String> {
     let mut reader = hound::WavReader::open(wav).map_err(|e| e.to_string())?;
     let spec = reader.spec();
     if spec.channels != 2 || spec.sample_rate != SOURCE_RATE || spec.bits_per_sample != 16 {
@@ -495,8 +496,9 @@ pub fn spawn_reader(wav: &Path) -> Result<(Arc<VoiceShared>, u64), String> {
     }
     let frames = reader.duration() as u64;
     let shared = Arc::new(VoiceShared::default());
+    shared.looping.store(looping, Ordering::Relaxed);
     let mut chunk = Vec::with_capacity(FIRST);
-    let finished = read_frames(&mut reader, FIRST, &mut chunk)?;
+    let finished = read_chunk(&mut reader, FIRST, &mut chunk, &shared.looping)?;
     {
         let mut buffer = lock(&shared.buffer);
         buffer.push(&chunk);
@@ -514,9 +516,34 @@ pub fn spawn_reader(wav: &Path) -> Result<(Arc<VoiceShared>, u64), String> {
     Ok((shared, frames))
 }
 
-/// Read up to `n` frames into `out`; true at the end of the file.
-fn read_frames<R: std::io::Read>(reader: &mut hound::WavReader<R>, n: usize, out: &mut Vec<[f32; 2]>) -> Result<bool, String> {
+/// Read up to `n` frames into `out`. At the end of the file a looping
+/// sound goes on from its first frame, in the same chunk (a sound shorter
+/// than a chunk repeats in it); true at the end of a sound that does not
+/// loop (any more).
+fn read_chunk<R: Read + Seek>(
+    reader: &mut hound::WavReader<R>,
+    n: usize,
+    out: &mut Vec<[f32; 2]>,
+    looping: &AtomicBool,
+) -> Result<bool, String> {
     out.clear();
+    loop {
+        if !read_frames(reader, n, out)? {
+            return Ok(false);
+        }
+        // A file without frames would go round forever.
+        if !looping.load(Ordering::Relaxed) || reader.duration() == 0 {
+            return Ok(true);
+        }
+        reader.seek(0).map_err(|e| e.to_string())?;
+        if out.len() >= n {
+            return Ok(false);
+        }
+    }
+}
+
+/// Add frames to `out` until it holds `n`; true at the end of the file.
+fn read_frames<R: Read>(reader: &mut hound::WavReader<R>, n: usize, out: &mut Vec<[f32; 2]>) -> Result<bool, String> {
     let mut samples = reader.samples::<i16>();
     while out.len() < n {
         let (Some(l), Some(r)) = (samples.next(), samples.next()) else {
@@ -528,12 +555,13 @@ fn read_frames<R: std::io::Read>(reader: &mut hound::WavReader<R>, n: usize, out
     Ok(false)
 }
 
-/// Keep about a second ahead of the slower output until the file ends or
-/// the voice is over.
+/// Keep about a second ahead of the slower output until the file ends (a
+/// looping sound: the end of the file once the loop is off) or the voice
+/// is over.
 fn read_ahead(mut reader: hound::WavReader<BufReader<File>>, shared: Arc<VoiceShared>) {
     // Whichever way this thread ends (the end of the file, a read error, the
     // voice or the engine stopping, a panic), the buffer is finished, so the
-    // voice can end.
+    // voice can end. A looping sound is never finished while it loops.
     struct Finish(Arc<VoiceShared>);
     impl Drop for Finish {
         fn drop(&mut self) {
@@ -553,11 +581,12 @@ fn read_ahead(mut reader: hound::WavReader<BufReader<File>>, shared: Arc<VoiceSh
             std::thread::sleep(Duration::from_millis(20));
             continue;
         }
-        match read_frames(&mut reader, CHUNK, &mut chunk) {
+        match read_chunk(&mut reader, CHUNK, &mut chunk, &shared.looping) {
             Ok(finished) => {
                 let mut buffer = lock(&shared.buffer);
                 buffer.push(&chunk);
                 if finished {
+                    buffer.finish();
                     return;
                 }
             }
@@ -708,7 +737,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let wav = dir.join("long.wav");
         write_wav(&wav, 144_000);
-        let (shared, frames) = spawn_reader(&wav).unwrap();
+        let (shared, frames) = spawn_reader(&wav, false).unwrap();
         assert_eq!(frames, 144_000);
         assert!(lock(&shared.buffer).end() >= FIRST as u64, "the first part is read before it starts");
         let mut mixer = Mixer::new(false, 1.0, 1.0);
@@ -745,7 +774,7 @@ mod tests {
             }
             assert!((f[0] - v).abs() < 1e-6 && (f[1] + v).abs() < 1e-6, "frame {}: {:?}", k, f);
         }
-        assert!(spawn_reader(&dir.join("missing.wav")).is_err());
+        assert!(spawn_reader(&dir.join("missing.wav"), false).is_err());
     }
 
     #[test]
@@ -820,14 +849,14 @@ mod tests {
         // no new one starts.
         let (lost_tx, lost_rx) = mpsc::channel();
         let engine = engine_without_devices(Box::new(move |p| lost_tx.send(p).unwrap()));
-        engine.start_voice("s-a", 1.0, &wav).unwrap();
+        engine.start_voice("s-a", 1.0, &wav, false).unwrap();
         let playing = engine.with_mixer(|m| m.playing().len());
         assert_eq!(playing, 1);
         engine.control.send(Control::Lost(Problem::new("lost", "cable", "CABLE", "gone"))).unwrap();
         let problem = lost_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(problem, Problem::new("lost", "cable", "CABLE", "gone"));
         assert!(engine.with_mixer(|m| m.is_idle()), "the voices end with the engine");
-        assert_eq!(engine.start_voice("s-b", 1.0, &wav), Err("engine_stopped".to_string()));
+        assert_eq!(engine.start_voice("s-b", 1.0, &wav, true), Err("engine_stopped".to_string()));
         assert!(engine.with_mixer(|m| m.is_idle()));
         assert!(lost_rx.recv_timeout(Duration::from_millis(200)).is_err(), "on_lost runs once");
         engine.stop();
@@ -836,7 +865,7 @@ mod tests {
         let engine = engine_without_devices(Box::new(|_| panic!("not lost")));
         engine.control.send(Control::Stop).unwrap();
         wait_until("the engine thread ends", || engine.ended.load(Ordering::Relaxed));
-        assert_eq!(engine.start_voice("s-c", 1.0, &wav), Err("engine_stopped".to_string()));
+        assert_eq!(engine.start_voice("s-c", 1.0, &wav, false), Err("engine_stopped".to_string()));
         engine.stop();
     }
 
@@ -849,7 +878,7 @@ mod tests {
         write_wav(&wav, 240_000);
 
         // The voice is over: its reader stops and finishes the buffer.
-        let (shared, frames) = spawn_reader(&wav).unwrap();
+        let (shared, frames) = spawn_reader(&wav, false).unwrap();
         assert_eq!(frames, 240_000);
         assert!(!lock(&shared.buffer).is_finished(), "5 s do not fit in the first chunk");
         shared.done.store(true, Ordering::Relaxed);
@@ -857,7 +886,7 @@ mod tests {
         assert!(lock(&shared.buffer).end() < frames, "it stopped before the end of the file");
 
         // The engine ends: Mixer::clear marks every voice done.
-        let (shared, frames) = spawn_reader(&wav).unwrap();
+        let (shared, frames) = spawn_reader(&wav, false).unwrap();
         let mut mixer = Mixer::new(false, 1.0, 1.0);
         mixer.start("s-long", 1.0, frames, shared.clone());
         assert!(!lock(&shared.buffer).is_finished());
@@ -865,10 +894,146 @@ mod tests {
         wait_until("the reader finishes after clear", || lock(&shared.buffer).is_finished());
 
         // Dropping the mixer does the same.
-        let (shared, frames) = spawn_reader(&wav).unwrap();
+        let (shared, frames) = spawn_reader(&wav, false).unwrap();
         let mut mixer = Mixer::new(false, 1.0, 1.0);
         mixer.start("s-long", 1.0, frames, shared.clone());
         drop(mixer);
         wait_until("the reader finishes after the mixer is dropped", || lock(&shared.buffer).is_finished());
+    }
+
+    /// `frames` frames of [16 k, -16 k]: every frame of the file differs.
+    fn write_ramp(path: &Path, frames: u32) {
+        let spec = hound::WavSpec { channels: 2, sample_rate: 48_000, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for k in 0..frames {
+            writer.write_sample((k * 16) as i16).unwrap();
+            writer.write_sample(-((k * 16) as i16)).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    /// Frame `k` of the ramp of `len` frames, looping, after the fade-in.
+    fn ramp_frame(k: usize, len: usize) -> f32 {
+        let mut v = ((k % len) * 16) as f32 / 32768.0;
+        let fade_in = (SOURCE_RATE * FADE_IN_MS / 1000) as usize;
+        if k < fade_in {
+            v *= k as f32 / fade_in as f32;
+        }
+        v
+    }
+
+    /// Render both outputs 10 ms at a time, as the devices would, waiting
+    /// for the reader; the cable's frames are added to `got`. Stops after
+    /// `frames` frames or when the voice ended.
+    fn play_for(mixer: &mut Mixer, shared: &VoiceShared, frames: usize, got: &mut Vec<f32>) {
+        let mut out = vec![0f32; 960];
+        let until = got.len() / 2 + frames;
+        while got.len() / 2 < until && !mixer.is_idle() {
+            let want = shared.slowest() + 480;
+            wait_until("the reader keeps up", || {
+                let buffer = lock(&shared.buffer);
+                buffer.end() >= want || buffer.is_finished()
+            });
+            out.fill(0.0);
+            mixer.render(Output::Cable, &mut out, 2, 48_000);
+            got.extend_from_slice(&out);
+            out.fill(0.0);
+            mixer.render(Output::Headphones, &mut out, 2, 48_000);
+        }
+    }
+
+    #[test]
+    fn a_short_looping_sound_repeats_without_a_gap_until_its_loop_is_off() {
+        let dir = std::env::temp_dir().join("rudariflow_sb_loop");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("short.wav");
+        // 1100 frames (about 23 ms): shorter than a chunk and the first read.
+        const LEN: usize = 1_100;
+        write_ramp(&wav, LEN as u32);
+        let (shared, frames) = spawn_reader(&wav, true).unwrap();
+        assert_eq!(frames, LEN as u64);
+        assert!(lock(&shared.buffer).end() >= FIRST as u64, "the first read goes round the sound");
+        let mut mixer = Mixer::new(false, 1.0, 1.0);
+        mixer.start("s-short", 1.0, frames, shared.clone());
+        let mut got = Vec::new();
+        // 3 s: far more than the read-ahead, so the buffer is trimmed as it plays.
+        play_for(&mut mixer, &shared, 144_000, &mut got);
+        assert_eq!(got.len() / 2, 144_000, "it never ended");
+        assert!(!lock(&shared.buffer).is_finished(), "never finished while it loops");
+        let most = lock(&shared.buffer).len();
+        assert!(most as u64 <= AHEAD + (CHUNK + FIRST) as u64, "{} frames held", most);
+        // Frame N + k is frame k: no gap and no jump at any seam.
+        for (k, f) in got.chunks(2).enumerate() {
+            let v = ramp_frame(k, LEN);
+            assert!((f[0] - v).abs() < 1e-6 && (f[1] + v).abs() < 1e-6, "frame {}: {:?} vs {}", k, f, v);
+        }
+        let progress = mixer.playing()[0].clone();
+        // 144000 frames played: 1000 into round 131.
+        assert_eq!((progress.duration_ms, progress.pos_ms), (22, 20), "the progress wraps per round");
+
+        // The loop is switched off: the round that plays is the last.
+        let played = got.len() / 2;
+        mixer.set_sound_loop("s-short", false);
+        play_for(&mut mixer, &shared, 96_000, &mut got);
+        assert!(mixer.is_idle(), "it ended");
+        let end = played.div_ceil(LEN) * LEN;
+        assert!(end > played, "switched off within a round");
+        for (k, f) in got.chunks(2).enumerate().skip(played) {
+            let v = if k < end { ramp_frame(k, LEN) } else { 0.0 };
+            assert!((f[0] - v).abs() < 1e-6, "frame {}: {:?} vs {}", k, f, v);
+        }
+        wait_until("its reader finishes at the next end of the file", || lock(&shared.buffer).is_finished());
+    }
+
+    #[test]
+    fn a_looping_reader_stops_when_its_voice_or_the_engine_ends() {
+        let dir = std::env::temp_dir().join("rudariflow_sb_loop_exit");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("short.wav");
+        write_ramp(&wav, 2_000);
+
+        // Nothing plays it: the reader fills a second ahead and waits there.
+        let (shared, _) = spawn_reader(&wav, true).unwrap();
+        wait_until("the reader reads ahead", || lock(&shared.buffer).end() >= AHEAD);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!lock(&shared.buffer).is_finished());
+        assert!(lock(&shared.buffer).end() < AHEAD + CHUNK as u64 + 2_000, "it waits a second ahead");
+        shared.done.store(true, Ordering::Relaxed);
+        wait_until("the reader finishes after done", || lock(&shared.buffer).is_finished());
+
+        // Stopped, it fades out and ends, and its reader with it.
+        let (shared, frames) = spawn_reader(&wav, true).unwrap();
+        let mut mixer = Mixer::new(false, 1.0, 1.0);
+        mixer.start("s-short", 1.0, frames, shared.clone());
+        let mut got = Vec::new();
+        play_for(&mut mixer, &shared, 9_600, &mut got);
+        assert!(mixer.stop_sound("s-short"));
+        play_for(&mut mixer, &shared, 4_800, &mut got);
+        assert!(mixer.is_idle());
+        wait_until("the reader finishes after stop", || lock(&shared.buffer).is_finished());
+
+        // The engine ends (Mixer::clear), or the mixer is dropped.
+        for drop_it in [false, true] {
+            let (shared, frames) = spawn_reader(&wav, true).unwrap();
+            let mut mixer = Mixer::new(false, 1.0, 1.0);
+            mixer.start("s-short", 1.0, frames, shared.clone());
+            if drop_it {
+                drop(mixer);
+            } else {
+                mixer.clear();
+            }
+            wait_until("the reader finishes after the engine ends", || lock(&shared.buffer).is_finished());
+        }
+
+        // A sound read in its first chunk starts no reader; looping, it does
+        // and finishes once its loop is off.
+        let (shared, _) = spawn_reader(&wav, false).unwrap();
+        assert!(lock(&shared.buffer).is_finished());
+        let (shared, _) = spawn_reader(&wav, true).unwrap();
+        shared.looping.store(false, Ordering::Relaxed);
+        wait_until("the reader finishes at the end of the file", || lock(&shared.buffer).is_finished());
+        assert_eq!(lock(&shared.buffer).end() % 2_000, 0, "at the end of a round");
     }
 }

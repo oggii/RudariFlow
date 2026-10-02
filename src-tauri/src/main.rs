@@ -1829,6 +1829,12 @@ async fn soundboard_set_toggle_hotkey(state: State<'_, AppState>, hotkey: String
     state.soundboard.set_toggle_hotkey(&hotkey)
 }
 
+/// Loop a sound until it is stopped (JS: `{ id, looping }`).
+#[tauri::command]
+async fn soundboard_set_sound_loop(state: State<'_, AppState>, id: String, looping: bool) -> Result<(), String> {
+    state.soundboard.set_sound_loop(&id, looping)
+}
+
 /// Play a sound, or stop it while it plays; true when it started.
 #[tauri::command]
 async fn soundboard_play(state: State<'_, AppState>, id: String) -> Result<bool, String> {
@@ -2343,6 +2349,7 @@ fn main() {
             soundboard_rename,
             soundboard_set_category,
             soundboard_set_sound_volume,
+            soundboard_set_sound_loop,
             soundboard_set_hotkey,
             soundboard_set_stop_hotkey,
             soundboard_set_sound_hotkeys,
@@ -2675,6 +2682,7 @@ mod tests {
                 hotkey: hotkey.to_string(),
                 volume: 1.0,
                 duration_ms: 1000,
+                looping: false,
             });
         }
         board

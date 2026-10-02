@@ -359,6 +359,7 @@ impl Soundboard {
                         hotkey: String::new(),
                         volume: 1.0,
                         duration_ms: prepared.duration_ms,
+                        looping: false,
                     };
                     let kept = sound.clone();
                     self.update(|b| {
@@ -399,6 +400,16 @@ impl Soundboard {
         let volume = volume.clamp(0.0, 1.0);
         self.update(|b| b.set_sound_volume(id, volume))?;
         self.with_mixer(|m| m.set_sound_volume(id, volume));
+        Ok(())
+    }
+
+    /// Loop the sound until it is stopped. Applies to it while it plays,
+    /// too: switched off, the round that plays is the last; switched on,
+    /// from the end of the round its reader is in, unless the reader
+    /// already reached the end of the file (the last second of the sound).
+    pub fn set_sound_loop(&self, id: &str, looping: bool) -> Result<(), String> {
+        self.update(|b| b.set_sound_loop(id, looping))?;
+        self.with_mixer(|m| m.set_sound_loop(id, looping));
         Ok(())
     }
 
@@ -489,7 +500,9 @@ impl Soundboard {
         if engine.with_mixer(|m| m.stop_sound(id)) {
             return Ok(false);
         }
-        match engine.start_voice(id, sound.volume, &wav) {
+        // The loop switch as it is now, not as when the press came in.
+        let looping = lock(&self.board).sound(id).is_some_and(|s| s.looping);
+        match engine.start_voice(id, sound.volume, &wav, looping) {
             Ok(()) => Ok(true),
             // The engine ended (a device was lost); the lost event follows.
             Err(e) if e == "engine_stopped" => Err("off".into()),
@@ -712,6 +725,23 @@ mod tests {
         sb.set_hotkeys_taken(vec!["stopSounds".into()]);
         assert_eq!(drain(&rx), ["changed"]);
         assert_eq!(sb.state().hotkeys_taken, vec!["stopSounds".to_string()]);
+    }
+
+    #[test]
+    fn a_sound_is_set_to_loop_and_saved() {
+        let (sb, rx, app_dir) = board("loop");
+        let id = sb.add(&[fixture("tone.wav")])[0].id.clone().unwrap();
+        assert!(!sb.board().sound(&id).unwrap().looping, "a new sound does not loop");
+        drain(&rx);
+        sb.set_sound_loop(&id, true).unwrap();
+        assert_eq!(drain(&rx), ["changed"]);
+        assert!(sb.board().sound(&id).unwrap().looping);
+        assert!(Board::load(&app_dir.join("soundboard")).sound(&id).unwrap().looping, "saved");
+        sb.set_sound_loop(&id, false).unwrap();
+        assert!(!Board::load(&app_dir.join("soundboard")).sound(&id).unwrap().looping);
+        assert_eq!(drain(&rx), ["changed"]);
+        assert_eq!(sb.set_sound_loop("s-none", true), Err("no_sound".to_string()));
+        assert!(drain(&rx).is_empty(), "no change event for an unknown sound");
     }
 
     #[test]

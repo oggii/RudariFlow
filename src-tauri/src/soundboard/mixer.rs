@@ -84,6 +84,10 @@ pub struct VoiceShared {
     pub played: [AtomicU64; 2],
     /// The voice is over: its reader thread stops.
     pub done: AtomicBool,
+    /// The sound loops: at the end of the file its reader goes on from the
+    /// start, so the frames stay continuous. Read at each end of the file,
+    /// so switching it while the sound plays applies from the next end on.
+    pub looping: AtomicBool,
 }
 
 impl VoiceShared {
@@ -99,7 +103,7 @@ impl VoiceShared {
 pub struct PlayingVoice {
     /// The sound's id.
     pub id: String,
-    /// Where the cable output is.
+    /// Where the cable output is; in a looping sound, within the current round.
     pub pos_ms: u64,
     pub duration_ms: u64,
 }
@@ -113,13 +117,15 @@ struct Track {
     fade: Option<(u32, u32)>,
     /// Frames rendered so far, for the fade-in.
     age: u32,
+    /// The round (of a looping sound) the last frame played was in.
+    round: u64,
     done: bool,
 }
 
 struct Voice {
     sound_id: String,
     volume: f32,
-    /// The sound's length in frames.
+    /// The sound's length in frames (one round of a looping sound).
     frames: u64,
     shared: Arc<VoiceShared>,
     out: [Track; 2],
@@ -187,6 +193,14 @@ impl Mixer {
         }
     }
 
+    /// Applies to the voices of `sound_id` that play now, from the end of
+    /// the round their reader is in (a reader that already ended stays so).
+    pub fn set_sound_loop(&mut self, sound_id: &str, looping: bool) {
+        for voice in self.voices.iter_mut().filter(|v| v.sound_id == sound_id) {
+            voice.shared.looping.store(looping, Ordering::Relaxed);
+        }
+    }
+
     /// The sounds that play (not fading out), with the cable's position.
     pub fn playing(&self) -> Vec<PlayingVoice> {
         let ms = |frames: u64| frames * 1000 / SOURCE_RATE as u64;
@@ -195,7 +209,7 @@ impl Mixer {
             .filter(|v| !v.stopping)
             .map(|v| PlayingVoice {
                 id: v.sound_id.clone(),
-                pos_ms: ms((v.out[0].pos as u64).min(v.frames)),
+                pos_ms: ms(round_position(v.out[0].pos as u64, v.frames)),
                 duration_ms: ms(v.frames),
             })
             .collect()
@@ -234,10 +248,14 @@ impl Mixer {
                 track.fade = Some((fade_len, fade_len));
             }
             let gain = voice.volume * bus;
+            let looping = voice.shared.looping.load(Ordering::Relaxed);
             let buffer = lock(&voice.shared.buffer);
             for i in 0..frames {
                 let at = track.pos as u64;
-                if at >= voice.frames {
+                // A looping sound's frames go on past its length, round after
+                // round. Not looping (or no longer), it ends at the end of
+                // the round it plays, even when its reader read further.
+                if !looping && at >= voice.frames && (voice.frames == 0 || at / voice.frames > track.round) {
                     track.done = true;
                     break;
                 }
@@ -268,6 +286,7 @@ impl Mixer {
                     i,
                     [(a[0] + (b[0] - a[0]) * frac) * g, (a[1] + (b[1] - a[1]) * frac) * g],
                 );
+                track.round = at / voice.frames.max(1);
                 track.pos += step;
             }
             drop(buffer);
@@ -286,6 +305,21 @@ impl Mixer {
 impl Drop for Mixer {
     fn drop(&mut self) {
         self.clear();
+    }
+}
+
+/// A position as the progress shows it: within the sound's length, and in
+/// a looping sound within the current round (the end of a round shows full).
+fn round_position(pos: u64, frames: u64) -> u64 {
+    if pos > frames && frames > 0 {
+        let within = pos % frames;
+        if within == 0 {
+            frames
+        } else {
+            within
+        }
+    } else {
+        pos.min(frames)
     }
 }
 
@@ -489,6 +523,87 @@ mod tests {
         m.start("a", 1.0, 48_000, sound(48_000, 0.1));
         render(&mut m, Output::Cable, 24_000, 48_000);
         assert_eq!(m.playing(), vec![PlayingVoice { id: "a".into(), pos_ms: 500, duration_ms: 1000 }]);
+    }
+
+    /// A looping sound of `frames` frames whose reader delivered `rounds`
+    /// rounds of [k / frames, -k / frames] and finished there.
+    fn looped(frames: usize, rounds: usize) -> Arc<VoiceShared> {
+        let shared = Arc::new(VoiceShared::default());
+        shared.looping.store(true, Ordering::Relaxed);
+        {
+            let mut buffer = lock(&shared.buffer);
+            let round: Vec<[f32; 2]> = (0..frames).map(|k| [k as f32 / frames as f32, -(k as f32) / frames as f32]).collect();
+            for _ in 0..rounds {
+                buffer.push(&round);
+            }
+            buffer.finish();
+        }
+        shared
+    }
+
+    #[test]
+    fn a_looping_sound_plays_on_past_its_length_and_the_progress_wraps() {
+        let mut m = Mixer::new(false, 1.0, 1.0);
+        // 0.1 s, three rounds read.
+        let a = looped(4_800, 3);
+        m.start("a", 1.0, 4_800, a.clone());
+        let out = render(&mut m, Output::Cable, 6_000, 48_000);
+        // Round two goes on at frame 0 right after the last frame of round one.
+        assert!(close(out[2 * 4_799], 4_799.0 / 4_800.0), "{}", out[2 * 4_799]);
+        assert!(close(out[2 * 4_800], 0.0) && close(out[2 * 4_801], 1.0 / 4_800.0));
+        assert!(close(out[2 * 5_999], 1_199.0 / 4_800.0));
+        // 6000 frames played of a 4800-frame sound: 1200 frames (25 ms) into round two.
+        assert_eq!(m.playing(), vec![PlayingVoice { id: "a".into(), pos_ms: 25, duration_ms: 100 }]);
+        render(&mut m, Output::Cable, 3_600, 48_000);
+        assert_eq!(m.playing()[0].pos_ms, 100, "the end of a round shows full");
+        render(&mut m, Output::Headphones, 9_600, 48_000);
+        assert!(!m.is_idle(), "it plays on while the reader delivers");
+        // The reader finished after round three: there it ends.
+        render(&mut m, Output::Cable, 6_000, 48_000);
+        render(&mut m, Output::Headphones, 6_000, 48_000);
+        assert!(m.is_idle());
+        assert_eq!(a.played[0].load(Ordering::Relaxed), 14_400);
+    }
+
+    #[test]
+    fn a_loop_switched_off_ends_at_the_end_of_the_round() {
+        let mut m = Mixer::new(false, 1.0, 1.0);
+        // The reader is rounds ahead of the outputs.
+        let a = looped(4_800, 5);
+        m.start("a", 1.0, 4_800, a.clone());
+        render(&mut m, Output::Cable, 6_000, 48_000);
+        render(&mut m, Output::Headphones, 4_800, 48_000);
+        m.set_sound_loop("a", false);
+        let out = render(&mut m, Output::Cable, 6_000, 48_000);
+        // 3600 frames are left of round two, then silence.
+        assert!(close(out[2 * 3_599], 4_799.0 / 4_800.0) && out[2 * 3_600..].iter().all(|&s| s == 0.0));
+        assert_eq!(a.played[0].load(Ordering::Relaxed), 9_600);
+        // The headphones were at the very end of round one: that is where they end.
+        assert!(render(&mut m, Output::Headphones, 100, 48_000).iter().all(|&s| s == 0.0));
+        assert!(m.is_idle());
+    }
+
+    #[test]
+    fn the_loop_switch_reaches_the_voices_of_that_sound() {
+        let mut m = Mixer::new(true, 1.0, 1.0);
+        let (a, b) = (sound(480, 0.5), sound(480, 0.5));
+        m.start("a", 1.0, 480, a.clone());
+        m.start("b", 1.0, 480, b.clone());
+        m.set_sound_loop("a", true);
+        assert!(a.looping.load(Ordering::Relaxed) && !b.looping.load(Ordering::Relaxed));
+        m.set_sound_loop("a", false);
+        assert!(!a.looping.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn positions_wrap_per_round() {
+        assert_eq!(round_position(0, 100), 0);
+        assert_eq!(round_position(40, 100), 40);
+        assert_eq!(round_position(100, 100), 100);
+        assert_eq!(round_position(101, 100), 1);
+        assert_eq!(round_position(200, 100), 100);
+        assert_eq!(round_position(250, 100), 50);
+        assert_eq!(round_position(5, 0), 0);
     }
 
     #[test]

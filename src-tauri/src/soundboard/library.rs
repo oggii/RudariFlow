@@ -106,6 +106,10 @@ pub struct Sound {
     pub volume: f32,
     #[serde(default)]
     pub duration_ms: u64,
+    /// Plays again from the start, without a gap, until it is stopped.
+    /// Saved as "loop"; files from before it load as false.
+    #[serde(default, rename = "loop")]
+    pub looping: bool,
 }
 
 impl Default for Board {
@@ -231,6 +235,11 @@ impl Board {
         Ok(())
     }
 
+    pub fn set_sound_loop(&mut self, id: &str, looping: bool) -> Result<(), String> {
+        self.sound_mut(id)?.looping = looping;
+        Ok(())
+    }
+
     /// A new category; returns its id.
     pub fn add_category(&mut self, name: &str) -> Result<String, String> {
         let name = clean_name(name)?;
@@ -325,6 +334,7 @@ mod tests {
             hotkey: String::new(),
             volume: 1.0,
             duration_ms: 1000,
+            looping: false,
         }
     }
 
@@ -355,6 +365,7 @@ mod tests {
         assert!(board.sound_hotkeys);
         assert_eq!(board.toggle_hotkey, "");
         assert_eq!((board.stop_hotkey.as_str(), board.sounds[0].hotkey.as_str()), ("F14", "Numpad1"));
+        assert!(!board.sounds[0].looping, "a sound from before the loop switch does not loop");
     }
 
     #[test]
@@ -373,7 +384,9 @@ mod tests {
         s.category = memes;
         s.hotkey = "Numpad1".into();
         s.volume = 0.5;
+        s.looping = true;
         board.add_sound(s);
+        board.add_sound(sound("s-ba9876543210", "drums"));
         board.save(&dir).unwrap();
         assert!(!dir.join("soundboard.json.tmp").exists(), "written through a temp file");
         assert_eq!(Board::load(&dir), board);
@@ -381,6 +394,7 @@ mod tests {
         for key in ["\"othersVolume\"", "\"meVolume\"", "\"stopHotkey\"", "\"poppedOut\"", "\"alwaysOnTop\"", "\"durationMs\"", "\"soundHotkeys\"", "\"toggleHotkey\""] {
             assert!(json.contains(key), "{} in {}", key, json);
         }
+        assert!(json.contains("\"loop\": true") && json.contains("\"loop\": false"), "{}", json);
     }
 
     #[test]
@@ -475,6 +489,9 @@ mod tests {
         assert_eq!(board.set_sound_volume("s-2", 1.5), Ok(()));
         assert_eq!(board.sound("s-2").unwrap().volume, 1.0);
         assert_eq!(board.set_sound_hotkey("s-2", "F13"), Ok(()));
+        assert_eq!(board.set_sound_loop("s-2", true), Ok(()));
+        assert!(board.sound("s-2").unwrap().looping);
+        assert_eq!(board.set_sound_loop("s-9", true), Err("no_sound".into()));
         assert_eq!(board.remove_sound("s-1").unwrap().name, "horn");
         assert!(board.remove_sound("s-1").is_none());
         assert_eq!(board.sounds.len(), 1);
