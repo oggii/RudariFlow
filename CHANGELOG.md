@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Sound hotkeys on/off** (Soundboard): a "Sound hotkeys" switch and a
+  hotkey to flip it, so a sound is not played by accident. Off, the
+  sounds keep their hotkeys but pressing them does nothing, and the keys
+  work normally in other apps again; the Stop all hotkey, the toggle
+  hotkey and clicking a sound keep working. The hotkey shows "Sound
+  hotkeys off" / "Sound hotkeys on" in the pill; the sounds' hotkeys look
+  dimmed while off.
+
 ## [0.14.0] - 2026-10-02 - Soundboard, Free GPU hotkey and a Clear button
 
 Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
