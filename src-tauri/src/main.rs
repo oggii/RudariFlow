@@ -188,6 +188,8 @@ enum HotkeyAction {
     FreeGpu,
     /// Stop every soundboard sound (registered while the board is on).
     StopSounds,
+    /// Turn the sounds' hotkeys off or on again (registered while the board is on).
+    ToggleSoundHotkeys,
     /// Play or stop a soundboard sound, by id (registered while the board is on).
     Sound(String),
 }
@@ -204,7 +206,8 @@ impl HotkeyAction {
     }
 
     /// The name the UI knows this hotkey by: "dictation", "pasteLast",
-    /// "rewriteLast", "freeGpu", "stopSounds", or the sound's id.
+    /// "rewriteLast", "freeGpu", "stopSounds", "toggleSoundHotkeys", or the
+    /// sound's id.
     fn target(&self) -> String {
         match self {
             Self::Dictation => "dictation".to_string(),
@@ -212,6 +215,7 @@ impl HotkeyAction {
             Self::RewriteLast => "rewriteLast".to_string(),
             Self::FreeGpu => "freeGpu".to_string(),
             Self::StopSounds => "stopSounds".to_string(),
+            Self::ToggleSoundHotkeys => "toggleSoundHotkeys".to_string(),
             Self::Sound(id) => id.clone(),
         }
     }
@@ -227,12 +231,29 @@ fn hotkeys(s: &Settings) -> [(HotkeyAction, String); 4] {
     ]
 }
 
-/// The stop-all and sound hotkeys that are set.
+/// The stop-all, toggle and sound hotkeys that are set, also the sounds'
+/// while their hotkeys are switched off (they keep their keys): what the
+/// conflict check compares with.
 fn board_hotkeys(board: &Board) -> Vec<(HotkeyAction, String)> {
-    std::iter::once((HotkeyAction::StopSounds, board.stop_hotkey.clone()))
-        .chain(board.sounds.iter().map(|s| (HotkeyAction::Sound(s.id.clone()), s.hotkey.clone())))
-        .filter(|(_, hotkey)| !hotkey.is_empty())
-        .collect()
+    board_hotkeys_with(board, true)
+}
+
+/// The board hotkeys to register while the board is on: stop all and the
+/// toggle always, the sounds' only while their hotkeys are switched on.
+fn active_board_hotkeys(board: &Board) -> Vec<(HotkeyAction, String)> {
+    board_hotkeys_with(board, board.sound_hotkeys)
+}
+
+fn board_hotkeys_with(board: &Board, sounds: bool) -> Vec<(HotkeyAction, String)> {
+    let sounds = board.sounds.iter().filter(|_| sounds);
+    [
+        (HotkeyAction::StopSounds, board.stop_hotkey.clone()),
+        (HotkeyAction::ToggleSoundHotkeys, board.toggle_hotkey.clone()),
+    ]
+    .into_iter()
+    .chain(sounds.map(|s| (HotkeyAction::Sound(s.id.clone()), s.hotkey.clone())))
+    .filter(|(_, hotkey)| !hotkey.is_empty())
+    .collect()
 }
 
 /// Every hotkey: the app's four and the soundboard's.
@@ -289,7 +310,7 @@ fn owner_label(action: &HotkeyAction, board: &Board) -> String {
     }
 }
 
-/// Whether `hotkey` may become a sound's or stop all's: not a Windows
+/// Whether `hotkey` may become a sound's, stop all's or the toggle's: not a Windows
 /// shortcut, a key or side button the hotkey code knows, and no other
 /// hotkey's. Empty (off) is always fine. A key alone is allowed only for
 /// the numpad and F1-F24 (the settings UI offers that only for the
@@ -1353,7 +1374,7 @@ fn change_hotkey(
         HotkeyAction::RewriteLast => settings.rewrite_last_hotkey = new_hotkey,
         HotkeyAction::FreeGpu => settings.free_gpu_hotkey = new_hotkey,
         // `from_target` names only the app's four.
-        HotkeyAction::StopSounds | HotkeyAction::Sound(_) => {}
+        HotkeyAction::StopSounds | HotkeyAction::ToggleSoundHotkeys | HotkeyAction::Sound(_) => {}
     }
     settings.save(&state.app_dir)?;
     drop(settings);
@@ -1465,6 +1486,8 @@ fn on_hotkey_event(handle: &AppHandle, action: &HotkeyAction, pressed: bool) {
         HotkeyAction::FreeGpu => {}
         HotkeyAction::StopSounds if pressed => on_stop_sounds_hotkey(handle),
         HotkeyAction::StopSounds => {}
+        HotkeyAction::ToggleSoundHotkeys if pressed => on_toggle_sound_hotkeys_hotkey(handle),
+        HotkeyAction::ToggleSoundHotkeys => {}
         HotkeyAction::Sound(id) if pressed => on_sound_hotkey(handle, id),
         HotkeyAction::Sound(_) => {}
     }
@@ -1485,6 +1508,20 @@ fn on_sound_hotkey(handle: &AppHandle, id: &str) {
 fn on_stop_sounds_hotkey(handle: &AppHandle) {
     let handle = handle.clone();
     tauri::async_runtime::spawn_blocking(move || handle.state::<AppState>().soundboard.stop_all());
+}
+
+/// The toggle hotkey: turn the sounds' hotkeys off, or on again. The change
+/// event registers or releases them (`sync_board_hotkeys`); the pill says
+/// which. Off the hotkey's thread, like the sound hotkeys.
+fn on_toggle_sound_hotkeys_hotkey(handle: &AppHandle) {
+    let handle = handle.clone();
+    tauri::async_runtime::spawn_blocking(move || match handle.state::<AppState>().soundboard.toggle_sound_hotkeys() {
+        Ok(on) => {
+            startup_log::log(&format!("[soundboard] sound hotkeys {}", if on { "on" } else { "off" }));
+            pill_notice(&handle, "soundboard-notice", if on { "hotkeys-on" } else { "hotkeys-off" });
+        }
+        Err(e) => startup_log::log(&format!("[soundboard] sound hotkeys not switched: {}", e)),
+    });
 }
 
 /// Whether the rewrite hotkey is held (push-to-talk): a release that comes
@@ -1573,12 +1610,17 @@ enum FreeGpuResult {
     Overtaken,
 }
 
-/// A Free GPU notice in the pill ("freed", "loading", "loaded", "failed"),
-/// but not during a dictation: the pill shows its recording then.
+/// A Free GPU notice in the pill ("freed", "loading", "loaded", "failed").
 fn gpu_notice(handle: &AppHandle, kind: &str) {
+    pill_notice(handle, "gpu-notice", kind);
+}
+
+/// A short notice in the pill (`event` with `kind`, which the overlay puts
+/// in words), but not during a dictation: the pill shows its recording then.
+fn pill_notice(handle: &AppHandle, event: &str, kind: &str) {
     let state = handle.state::<AppState>();
     if state.recorder.get_state() == RecordingState::Ready {
-        state.recorder.notice(handle, "gpu-notice", kind);
+        state.recorder.notice(handle, event, kind);
     }
 }
 
@@ -1770,6 +1812,23 @@ async fn soundboard_set_stop_hotkey(state: State<'_, AppState>, hotkey: String) 
     state.soundboard.set_stop_hotkey(&hotkey)
 }
 
+/// Turn the sounds' hotkeys on or off; they keep their keys, and stop all
+/// and the toggle stay registered. The board's hotkeys follow from the
+/// change event.
+#[tauri::command]
+async fn soundboard_set_sound_hotkeys(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    state.soundboard.set_sound_hotkeys(enabled)
+}
+
+/// The hotkey that turns the sounds' hotkeys on and off ("" = none).
+#[tauri::command]
+async fn soundboard_set_toggle_hotkey(state: State<'_, AppState>, hotkey: String) -> Result<(), String> {
+    let board = state.soundboard.board();
+    let all = all_hotkeys(&state.settings.lock().unwrap(), &board);
+    check_board_hotkey(&all, &board, &HotkeyAction::ToggleSoundHotkeys, &hotkey)?;
+    state.soundboard.set_toggle_hotkey(&hotkey)
+}
+
 /// Play a sound, or stop it while it plays; true when it started.
 #[tauri::command]
 async fn soundboard_play(state: State<'_, AppState>, id: String) -> Result<bool, String> {
@@ -1948,7 +2007,10 @@ fn hotkey_is_registered(app: &AppHandle, hotkey: &str) -> bool {
 struct SyncInputs {
     on: bool,
     paused: bool,
-    /// The board hotkeys to register: none while off or paused.
+    /// The sounds' hotkeys are switched on.
+    sound_hotkeys: bool,
+    /// The board hotkeys to register: none while off or paused, no sound's
+    /// while the sounds' hotkeys are switched off.
     wanted: Vec<(HotkeyAction, String)>,
     /// The app's own four, which a board key never takes over.
     app: Vec<(HotkeyAction, String)>,
@@ -1958,12 +2020,13 @@ fn sync_inputs(on: bool, paused: bool, board: &Board, settings: &Settings) -> Sy
     SyncInputs {
         on,
         paused,
-        wanted: if on && !paused { board_hotkeys(board) } else { Vec::new() },
+        sound_hotkeys: board.sound_hotkeys,
+        wanted: if on && !paused { active_board_hotkeys(board) } else { Vec::new() },
         app: hotkeys(settings).to_vec(),
     }
 }
 
-/// The stop-all and sound hotkeys registered now, with their actions, and
+/// The stop-all, toggle and sound hotkeys registered now, with their actions, and
 /// the inputs of the last completed sync.
 struct BoardHotkeys {
     registered: Vec<(String, HotkeyAction)>,
@@ -1974,8 +2037,9 @@ static BOARD_HOTKEYS: Mutex<BoardHotkeys> = Mutex::new(BoardHotkeys { registered
 /// A hotkey is being captured in the UI: the board's hotkeys stay released.
 static HOTKEYS_PAUSED: AtomicBool = AtomicBool::new(false);
 
-/// Make the registered board hotkeys what the board wants: its stop-all
-/// and sound hotkeys while it is on and no hotkey is being captured, none
+/// Make the registered board hotkeys what the board wants: its stop-all and
+/// toggle hotkeys, and the sounds' while switched on, while it is on and no
+/// hotkey is being captured, none
 /// otherwise. Keys another program or an app hotkey owns are reported to
 /// the board ("Taken by another program"). Never on the main thread:
 /// registering waits for it.
@@ -2281,6 +2345,8 @@ fn main() {
             soundboard_set_sound_volume,
             soundboard_set_hotkey,
             soundboard_set_stop_hotkey,
+            soundboard_set_sound_hotkeys,
+            soundboard_set_toggle_hotkey,
             soundboard_play,
             soundboard_stop_all,
             soundboard_category_add,
@@ -2711,6 +2777,77 @@ mod tests {
         assert_ne!(sync_inputs(true, false, &board, &moved), before, "an app hotkey changed");
         board.sounds[0].hotkey = "F15".to_string();
         assert_ne!(sync_inputs(true, false, &board, &s), before, "a sound's hotkey changed");
+    }
+
+    #[test]
+    fn the_toggle_hotkey_joins_the_conflict_check() {
+        let mut board = board_with("F14", &[("s-a", "airhorn", "F13")]);
+        board.toggle_hotkey = "F15".to_string();
+        let all = all_hotkeys(&Settings::default(), &board);
+        let toggle = HotkeyAction::ToggleSoundHotkeys;
+        assert_eq!(toggle.target(), "toggleSoundHotkeys");
+        assert!(HotkeyAction::from_target("toggleSoundHotkeys").is_err(), "not one of the app's four");
+        assert_eq!(owner_label(&toggle, &board), "toggleSoundHotkeys");
+        assert_eq!(taken_by(&all, &HotkeyAction::Sound("s-a".into()), "f15"), Some(toggle.clone()));
+        assert_eq!(taken_by(&all, &HotkeyAction::FreeGpu, "F15"), Some(toggle.clone()), "an app hotkey cannot take it");
+        assert_eq!(
+            check_board_hotkey(&all, &board, &HotkeyAction::StopSounds, "F15"),
+            Err("'F15' is already used by toggleSoundHotkeys".to_string())
+        );
+        assert_eq!(check_board_hotkey(&all, &board, &toggle, "F13"), Err("'F13' is already used by sound:airhorn".to_string()));
+        assert_eq!(check_board_hotkey(&all, &board, &toggle, "F14"), Err("'F14' is already used by stopSounds".to_string()));
+        assert_eq!(check_board_hotkey(&all, &board, &toggle, "Alt+Shift+V"), Err("'Alt+Shift+V' is already used by pasteLast".to_string()));
+        assert_eq!(check_board_hotkey(&all, &board, &toggle, "F15"), Ok(()), "its own");
+        assert!(check_board_hotkey(&all, &board, &toggle, "CmdOrCtrl+V").unwrap_err().contains("Windows shortcut"));
+        // While the sound hotkeys are off, the sounds still own their keys.
+        board.sound_hotkeys = false;
+        let all = all_hotkeys(&Settings::default(), &board);
+        assert_eq!(check_board_hotkey(&all, &board, &toggle, "F13"), Err("'F13' is already used by sound:airhorn".to_string()));
+        assert_eq!(taken_by(&all, &HotkeyAction::Sound("s-b".into()), "F15"), Some(toggle));
+    }
+
+    #[test]
+    fn the_toggle_hotkey_follows_the_key_alone_rule() {
+        let board = board_with("", &[]);
+        let all = all_hotkeys(&Settings::default(), &board);
+        let toggle = HotkeyAction::ToggleSoundHotkeys;
+        for alone in ["A", "Space", "Enter", "Digit1", "NumpadEnter", "NumpadEqual"] {
+            let err = check_board_hotkey(&all, &board, &toggle, alone).unwrap_err();
+            assert!(err.contains("is a key alone"), "{}: {}", alone, err);
+        }
+        for ok in ["F1", "F24", "Numpad0", "NumpadMultiply", "Ctrl+NumpadEnter", "Ctrl+Alt+S", "Mouse5", "Ctrl+Mouse4"] {
+            assert_eq!(check_board_hotkey(&all, &board, &toggle, ok), Ok(()), "{}", ok);
+        }
+    }
+
+    #[test]
+    fn sound_hotkeys_are_registered_only_while_switched_on() {
+        let s = Settings::default();
+        let mut board = board_with("F14", &[("s-a", "airhorn", "F13"), ("s-b", "drums", "")]);
+        board.toggle_hotkey = "F15".to_string();
+        let stop_and_toggle = vec![
+            (HotkeyAction::StopSounds, "F14".to_string()),
+            (HotkeyAction::ToggleSoundHotkeys, "F15".to_string()),
+        ];
+        let mut every = stop_and_toggle.clone();
+        every.push((HotkeyAction::Sound("s-a".into()), "F13".to_string()));
+        assert_eq!(board_hotkeys(&board), every, "every set board hotkey");
+        assert_eq!(active_board_hotkeys(&board), every);
+        let on = sync_inputs(true, false, &board, &s);
+        assert_eq!(on.wanted, every);
+        board.sound_hotkeys = false;
+        assert_eq!(active_board_hotkeys(&board), stop_and_toggle, "stop all and the toggle stay");
+        assert_eq!(board_hotkeys(&board), every, "the conflict check still sees the sounds' keys");
+        let off = sync_inputs(true, false, &board, &s);
+        assert_eq!(off.wanted, stop_and_toggle);
+        assert_ne!(off, on, "a flip syncs again");
+        assert!(sync_inputs(false, false, &board, &s).wanted.is_empty(), "virtual microphone off: none");
+        assert!(sync_inputs(true, true, &board, &s).wanted.is_empty(), "capturing a hotkey: none");
+        // A board without sound keys still syncs on a flip (the memo has the switch).
+        let mut bare = board_with("F14", &[]);
+        let before = sync_inputs(true, false, &bare, &s);
+        bare.sound_hotkeys = false;
+        assert_ne!(sync_inputs(true, false, &bare, &s), before);
     }
 
     #[test]

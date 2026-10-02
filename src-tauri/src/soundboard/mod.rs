@@ -53,7 +53,8 @@ pub struct BoardState {
     pub playing: Vec<PlayingVoice>,
     /// Sounds whose files were deleted by hand.
     pub missing: Vec<String>,
-    /// Sound ids, and "stopSounds", whose hotkey another program owns.
+    /// Sound ids, "stopSounds" and "toggleSoundHotkeys", whose hotkey another
+    /// program owns.
     pub hotkeys_taken: Vec<String>,
 }
 
@@ -413,7 +414,34 @@ impl Soundboard {
         })
     }
 
-    /// The hotkeys another program owns (sound ids, "stopSounds"); the views
+    /// Turn the sounds' hotkeys on or off (they stay assigned); main.rs
+    /// registers or releases them from the change event.
+    pub fn set_sound_hotkeys(&self, enabled: bool) -> Result<(), String> {
+        self.update(|b| {
+            b.sound_hotkeys = enabled;
+            Ok(())
+        })
+    }
+
+    /// The toggle hotkey: flip the sounds' hotkeys; true when they are on now.
+    pub fn toggle_sound_hotkeys(&self) -> Result<bool, String> {
+        self.update(|b| {
+            b.sound_hotkeys = !b.sound_hotkeys;
+            Ok(b.sound_hotkeys)
+        })
+    }
+
+    /// The hotkey that turns the sounds' hotkeys on and off ("" = none);
+    /// saved as given, main.rs checks it.
+    pub fn set_toggle_hotkey(&self, hotkey: &str) -> Result<(), String> {
+        self.update(|b| {
+            b.toggle_hotkey = hotkey.to_string();
+            Ok(())
+        })
+    }
+
+    /// The hotkeys another program owns (sound ids, "stopSounds",
+    /// "toggleSoundHotkeys"); the views
     /// hear about it only when the list changes.
     pub fn set_hotkeys_taken(&self, taken: Vec<String>) {
         let changed = {
@@ -684,5 +712,26 @@ mod tests {
         sb.set_hotkeys_taken(vec!["stopSounds".into()]);
         assert_eq!(drain(&rx), ["changed"]);
         assert_eq!(sb.state().hotkeys_taken, vec!["stopSounds".to_string()]);
+    }
+
+    #[test]
+    fn sound_hotkeys_are_switched_and_their_toggle_saved() {
+        let (sb, rx, app_dir) = board("toggle");
+        assert!(sb.board().sound_hotkeys, "on by default");
+        drain(&rx);
+        sb.set_toggle_hotkey("F15").unwrap();
+        assert_eq!(drain(&rx), ["changed"]);
+        sb.set_sound_hotkeys(false).unwrap();
+        assert_eq!(drain(&rx), ["changed"]);
+        let saved = Board::load(&app_dir.join("soundboard"));
+        assert_eq!((saved.sound_hotkeys, saved.toggle_hotkey.as_str()), (false, "F15"));
+        // The toggle hotkey flips the switch and says where it is now.
+        assert_eq!(sb.toggle_sound_hotkeys(), Ok(true));
+        assert!(Board::load(&app_dir.join("soundboard")).sound_hotkeys);
+        assert_eq!(sb.toggle_sound_hotkeys(), Ok(false));
+        assert!(!sb.board().sound_hotkeys);
+        assert_eq!(drain(&rx), ["changed", "changed"]);
+        sb.set_toggle_hotkey("").unwrap();
+        assert_eq!(Board::load(&app_dir.join("soundboard")).toggle_hotkey, "");
     }
 }

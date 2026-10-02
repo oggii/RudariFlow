@@ -22,6 +22,10 @@ fn me_default() -> f32 {
     0.7
 }
 
+fn yes() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Board {
@@ -44,6 +48,13 @@ pub struct Board {
     /// Stops every sound; empty = off.
     #[serde(default)]
     pub stop_hotkey: String,
+    /// The sounds' hotkeys are registered (while on). Off, they stay
+    /// assigned but do nothing; stop all and the toggle keep working.
+    #[serde(default = "yes")]
+    pub sound_hotkeys: bool,
+    /// Turns `sound_hotkeys` on and off; empty = off.
+    #[serde(default)]
+    pub toggle_hotkey: String,
     #[serde(default)]
     pub window: WindowPrefs,
     #[serde(default)]
@@ -107,6 +118,8 @@ impl Default for Board {
             layer: false,
             devices: Devices::default(),
             stop_hotkey: String::new(),
+            sound_hotkeys: true,
+            toggle_hotkey: String::new(),
             window: WindowPrefs::default(),
             categories: Vec::new(),
             sounds: Vec::new(),
@@ -324,6 +337,24 @@ mod tests {
         assert_eq!((board.others_volume, board.me_volume), (1.0, 0.7));
         assert_eq!(board.devices, Devices::default());
         assert!(board.stop_hotkey.is_empty() && board.sounds.is_empty() && board.categories.is_empty());
+        assert!(board.sound_hotkeys, "sound hotkeys are on");
+        assert!(board.toggle_hotkey.is_empty(), "no hotkey turns them off");
+    }
+
+    #[test]
+    fn a_file_from_before_the_sound_hotkeys_switch_keeps_them_on() {
+        let dir = temp("before_toggle");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(FILE),
+            r#"{"version": 1, "enabled": true, "stopHotkey": "F14",
+                "sounds": [{"id": "s-0123456789ab", "name": "a", "file": "sounds/s-0123456789ab.wav", "hotkey": "Numpad1"}]}"#,
+        )
+        .unwrap();
+        let board = Board::load(&dir);
+        assert!(board.sound_hotkeys);
+        assert_eq!(board.toggle_hotkey, "");
+        assert_eq!((board.stop_hotkey.as_str(), board.sounds[0].hotkey.as_str()), ("F14", "Numpad1"));
     }
 
     #[test]
@@ -335,6 +366,8 @@ mod tests {
         board.stop_hotkey = "F14".into();
         board.devices.cable = "Speakers (VB-Audio Virtual Cable)".into();
         board.window.always_on_top = true;
+        board.sound_hotkeys = false;
+        board.toggle_hotkey = "F15".into();
         let memes = board.add_category("Memes").unwrap();
         let mut s = sound("s-0123456789ab", "airhorn");
         s.category = memes;
@@ -345,7 +378,7 @@ mod tests {
         assert!(!dir.join("soundboard.json.tmp").exists(), "written through a temp file");
         assert_eq!(Board::load(&dir), board);
         let json = std::fs::read_to_string(dir.join(FILE)).unwrap();
-        for key in ["\"othersVolume\"", "\"meVolume\"", "\"stopHotkey\"", "\"poppedOut\"", "\"alwaysOnTop\"", "\"durationMs\""] {
+        for key in ["\"othersVolume\"", "\"meVolume\"", "\"stopHotkey\"", "\"poppedOut\"", "\"alwaysOnTop\"", "\"durationMs\"", "\"soundHotkeys\"", "\"toggleHotkey\""] {
             assert!(json.contains(key), "{} in {}", key, json);
         }
     }
