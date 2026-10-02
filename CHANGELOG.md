@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   hotkey and clicking a sound keep working. The hotkey shows "Sound
   hotkeys off" / "Sound hotkeys on" in the pill; the sounds' hotkeys look
   dimmed while off.
+- **Loop a sound** (Soundboard): a loop button on each sound makes it
+  repeat without a gap until it is stopped (its hotkey or button again,
+  Stop all, or a new sound replacing it); its progress bar starts over
+  with every round. Switched off while the sound plays, the round that
+  plays is the last.
 
 ## [0.14.0] - 2026-10-02 - Soundboard, Free GPU hotkey and a Clear button
 
