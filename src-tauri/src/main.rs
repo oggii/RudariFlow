@@ -1366,7 +1366,7 @@ fn change_hotkey(
 /// new chord; a registered chord never reaches the webview as a keydown.
 /// The soundboard's hotkeys follow off the main thread.
 #[tauri::command]
-fn set_hotkey_paused(
+async fn set_hotkey_paused(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     paused: bool,
@@ -1375,12 +1375,20 @@ fn set_hotkey_paused(
     // pause is held per window label, so one finishing never re-registers
     // the hotkeys under the other, and a window that goes away mid-capture
     // is released in release_hotkey_pause (Destroyed), never wedging it.
-    let mut holders = HOTKEY_PAUSE_HOLDERS.lock().unwrap();
-    let change = if paused { holders.hold(window.label()) } else { holders.release(window.label()) };
-    if !change {
-        return Ok(());
-    }
-    apply_hotkey_pause(&app, paused)
+    // Async + spawn_blocking: HOTKEY_PAUSE_HOLDERS is held while the hotkeys
+    // are (un)registered, which can wait on the main thread, so nothing that
+    // takes the lock may ever run on the main thread (a sync command would).
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut holders = HOTKEY_PAUSE_HOLDERS.lock().unwrap();
+        let change = if paused { holders.hold(&label) } else { holders.release(&label) };
+        if !change {
+            return Ok(());
+        }
+        apply_hotkey_pause(&app, paused)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// A window is gone: it no longer holds a pause.
