@@ -1498,7 +1498,13 @@ fn on_hotkey_event(handle: &AppHandle, action: &HotkeyAction, pressed: bool) {
 fn on_sound_hotkey(handle: &AppHandle, id: &str) {
     let (handle, id) = (handle.clone(), id.to_string());
     tauri::async_runtime::spawn_blocking(move || {
-        if let Err(e) = handle.state::<AppState>().soundboard.play(&id) {
+        let soundboard = &handle.state::<AppState>().soundboard;
+        // A press that raced the switch going off (its key is released
+        // after the change event): nothing. Clicks go through `play` directly.
+        if !soundboard.sound_hotkeys_on() {
+            return;
+        }
+        if let Err(e) = soundboard.play(&id) {
             startup_log::log(&format!("[soundboard] {} not played: {}", id, e));
         }
     });
@@ -2032,8 +2038,8 @@ fn sync_inputs(on: bool, paused: bool, board: &Board, settings: &Settings) -> Sy
     }
 }
 
-/// The stop-all, toggle and sound hotkeys registered now, with their actions, and
-/// the inputs of the last completed sync.
+/// The stop-all, toggle and sound hotkeys registered now, with their
+/// actions, and the inputs of the last completed sync.
 struct BoardHotkeys {
     registered: Vec<(String, HotkeyAction)>,
     last: Option<SyncInputs>,
@@ -2043,12 +2049,11 @@ static BOARD_HOTKEYS: Mutex<BoardHotkeys> = Mutex::new(BoardHotkeys { registered
 /// A hotkey is being captured in the UI: the board's hotkeys stay released.
 static HOTKEYS_PAUSED: AtomicBool = AtomicBool::new(false);
 
-/// Make the registered board hotkeys what the board wants: its stop-all and
-/// toggle hotkeys, and the sounds' while switched on, while it is on and no
-/// hotkey is being captured, none
-/// otherwise. Keys another program or an app hotkey owns are reported to
-/// the board ("Taken by another program"). Never on the main thread:
-/// registering waits for it.
+/// Make the registered board hotkeys what the board wants: while it is on
+/// and no hotkey is being captured, its stop-all and toggle hotkeys and,
+/// while they are switched on, the sounds'; none otherwise. Keys another
+/// program or an app hotkey owns are reported to the board ("Taken by
+/// another program"). Never on the main thread: registering waits for it.
 fn sync_board_hotkeys(app: &AppHandle) {
     let state = app.state::<AppState>();
     let mut sync = BOARD_HOTKEYS.lock().unwrap_or_else(|p| p.into_inner());

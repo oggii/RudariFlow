@@ -435,6 +435,11 @@ impl Soundboard {
         })
     }
 
+    /// The sounds' hotkeys are switched on (without copying the board).
+    pub fn sound_hotkeys_on(&self) -> bool {
+        lock(&self.board).sound_hotkeys
+    }
+
     /// The toggle hotkey: flip the sounds' hotkeys; true when they are on now.
     pub fn toggle_sound_hotkeys(&self) -> Result<bool, String> {
         self.update(|b| {
@@ -749,11 +754,13 @@ mod tests {
     fn sound_hotkeys_are_switched_and_their_toggle_saved() {
         let (sb, rx, app_dir) = board("toggle");
         assert!(sb.board().sound_hotkeys, "on by default");
+        assert!(sb.sound_hotkeys_on());
         drain(&rx);
         sb.set_toggle_hotkey("F15").unwrap();
         assert_eq!(drain(&rx), ["changed"]);
         sb.set_sound_hotkeys(false).unwrap();
         assert_eq!(drain(&rx), ["changed"]);
+        assert!(!sb.sound_hotkeys_on(), "a hotkey press that races the switch sees it off");
         let saved = Board::load(&app_dir.join("soundboard"));
         assert_eq!((saved.sound_hotkeys, saved.toggle_hotkey.as_str()), (false, "F15"));
         // The toggle hotkey flips the switch and says where it is now.
