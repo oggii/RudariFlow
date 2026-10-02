@@ -396,7 +396,7 @@ mod tests {
         };
         let sounds = [
             snd("s-0123456789ab", "c-aaaaaaaaaaaa"),
-            snd(r"....x", ""),
+            snd(r"..\..\x", ""),
             snd("s-0123456789AB", ""),
             snd("s-0123456789a", ""),
             snd("c-0123456789ab", ""),
