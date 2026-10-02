@@ -150,6 +150,12 @@ impl Board {
         self.me_volume = self.me_volume.clamp(0.0, 1.0);
         // No pop-out window exists when the app starts.
         self.window.popped_out = false;
+        // Ids become file names (cache_path), so a hand-edited one must not
+        // reach outside the folders: only what new_id makes is kept.
+        let mut seen = std::collections::HashSet::new();
+        self.categories.retain(|c| valid_id(&c.id, "c") && seen.insert(c.id.clone()));
+        seen.clear();
+        self.sounds.retain(|s| valid_id(&s.id, "s") && seen.insert(s.id.clone()));
         let categories: Vec<String> = self.categories.iter().map(|c| c.id.clone()).collect();
         for sound in &mut self.sounds {
             sound.volume = sound.volume.clamp(0.0, 1.0);
@@ -265,6 +271,13 @@ fn clean_name(name: &str) -> Result<String, String> {
 }
 
 /// A new id: `prefix` and 12 random hex digits ("s-3fa2c9d01b7e").
+/// `prefix-` and 12 lowercase hex digits, as `new_id` makes them.
+fn valid_id(id: &str, prefix: &str) -> bool {
+    id.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|hex| hex.len() == 12 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+}
+
 pub fn new_id(prefix: &str) -> String {
     let mut bytes = [0u8; 6];
     if getrandom::fill(&mut bytes).is_err() {
@@ -323,7 +336,7 @@ mod tests {
         board.devices.cable = "Speakers (VB-Audio Virtual Cable)".into();
         board.window.always_on_top = true;
         let memes = board.add_category("Memes").unwrap();
-        let mut s = sound("s-1", "airhorn");
+        let mut s = sound("s-0123456789ab", "airhorn");
         s.category = memes;
         s.hotkey = "Numpad1".into();
         s.volume = 0.5;
@@ -363,7 +376,7 @@ mod tests {
         std::fs::write(
             dir.join(FILE),
             r#"{"othersVolume": 3, "meVolume": -1, "window": {"poppedOut": true},
-                "sounds": [{"id": "s-1", "name": "a", "file": "sounds/s-1.wav", "category": "c-gone", "volume": 2}]}"#,
+                "sounds": [{"id": "s-0123456789ab", "name": "a", "file": "sounds/s-0123456789ab.wav", "category": "c-ffffffffffff", "volume": 2}]}"#,
         )
         .unwrap();
         let board = Board::load(&dir);
@@ -372,6 +385,46 @@ mod tests {
         assert_eq!(board.sounds[0].category, "", "a category that is gone");
         assert_eq!(board.sounds[0].volume, 1.0);
         assert_eq!(board.version, 1);
+    }
+
+    #[test]
+    fn ids_that_new_id_could_not_make_are_dropped_at_load() {
+        let dir = temp("ids");
+        std::fs::create_dir_all(&dir).unwrap();
+        let snd = |id: &str, cat: &str| {
+            format!(r#"{{"id": {:?}, "name": "n", "file": "f", "category": {:?}}}"#, id, cat)
+        };
+        let sounds = [
+            snd("s-0123456789ab", "c-aaaaaaaaaaaa"),
+            snd(r"....x", ""),
+            snd("s-0123456789AB", ""),
+            snd("s-0123456789a", ""),
+            snd("c-0123456789ab", ""),
+            snd("s-0123456789ab", ""),
+            snd("s-bbbbbbbbbbbb", "c-../../y"),
+            snd("s-cccccccccccc", "c-dddddddddddd"),
+        ]
+        .join(",");
+        std::fs::write(
+            dir.join(FILE),
+            format!(
+                r#"{{"categories": [{{"id": "c-aaaaaaaaaaaa", "name": "A"}}, {{"id": "c-../../y", "name": "B"}},
+                   {{"id": "c-aaaaaaaaaaaa", "name": "dup"}}, {{"id": "c-dddddddddddd", "name": "D"}}, {{"id": "x", "name": "E"}}],
+                   "sounds": [{}]}}"#,
+                sounds
+            ),
+        )
+        .unwrap();
+        let board = Board::load(&dir);
+        let cats: Vec<&str> = board.categories.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(cats, ["c-aaaaaaaaaaaa", "c-dddddddddddd"], "bad and duplicate categories go, the first stays");
+        assert_eq!(board.categories[0].name, "A");
+        let ids: Vec<&str> = board.sounds.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["s-0123456789ab", "s-bbbbbbbbbbbb", "s-cccccccccccc"]);
+        assert_eq!(board.sounds[0].category, "c-aaaaaaaaaaaa");
+        assert_eq!(board.sounds[1].category, "", "its category was dropped");
+        assert_eq!(board.sounds[2].category, "c-dddddddddddd");
+        assert!(valid_id(&new_id("s"), "s") && valid_id(&new_id("c"), "c"));
     }
 
     #[test]
