@@ -147,14 +147,19 @@ fn decode_ogg_opus(
     }
     progress(total, total);
     out.drain(..(pre_skip * per_frame).min(out.len()));
+    // The +60 s above only stops a runaway stream early; the limit is exact.
+    if (out.len() / per_frame) as u64 > max_secs * rate as u64 {
+        return Err(too_long(max_secs));
+    }
     Ok(out)
 }
 
 /// Ogg Vorbis, decoded by lewton straight from the raw packets (no Ogg
 /// container support is asked of Media Foundation, which does not have
 /// any). Mixed to `target_channels` (1: mono; 2: stereo, mono on both
-/// sides) and resampled to `rate` with rubato when the file's own rate
-/// differs — unlike libopus, lewton neither resamples nor mixes for us.
+/// sides) and resampled to `rate` with rubato as the packets come, so the
+/// memory used stays near the size of the result. Unlike libopus, lewton
+/// neither resamples nor mixes for us.
 fn decode_ogg_vorbis(
     path: &Path,
     rate: u32,
@@ -179,15 +184,16 @@ fn decode_ogg_vorbis(
     };
     let serial = head.stream_serial();
     let channels = (ident.audio_channels as usize).max(1);
-    let source_rate = ident.audio_sample_rate;
+    let target_channels = target_channels.clamp(1, 2);
     let _comment = reader.read_packet().map_err(bad)?.ok_or("the file is empty")?;
     let setup_packet = reader.read_packet().map_err(bad)?.ok_or("the file is empty")?;
     let setup = read_header_setup(&setup_packet.data, ident.audio_channels, (ident.blocksize_0, ident.blocksize_1))
         .map_err(|e| format!("Vorbis: {:?}", e))?;
 
-    let max_samples = (max_secs as usize + 60) * source_rate as usize * channels;
+    // Early abort for a runaway stream; the exact limit is checked at the end.
+    let abort_frames = (max_secs + 60) * rate as u64;
+    let mut stream = StreamResampler::new(target_channels, ident.audio_sample_rate, rate)?;
     let mut pwr = PreviousWindowRight::new();
-    let mut out: Vec<f32> = Vec::new();
     let mut packets = 0u32;
     while let Some(packet) = reader.read_packet().map_err(bad)? {
         if packet.stream_serial() != serial {
@@ -196,9 +202,9 @@ fn decode_ogg_vorbis(
         // A damaged packet is skipped instead of failing the whole file,
         // as for Opus above.
         if let Ok(decoded) = read_audio_packet_generic::<InterleavedSamples<f32>>(&ident, &setup, &packet.data, &mut pwr) {
-            out.extend_from_slice(&decoded.samples);
+            stream.push(&vorbis_to_target(&decoded.samples, channels, target_channels))?;
         }
-        if out.len() > max_samples {
+        if stream.frames_out() as u64 > abort_frames {
             return Err(too_long(max_secs));
         }
         packets += 1;
@@ -208,9 +214,11 @@ fn decode_ogg_vorbis(
         }
     }
     progress(total, total);
-
-    let mixed = if target_channels <= 1 { mix_down(&out, channels) } else { to_stereo(out, channels) };
-    Ok(if source_rate == rate { mixed } else { resample_interleaved(&mixed, target_channels.max(1), source_rate, rate) })
+    let out = stream.finish()?;
+    if (out.len() / target_channels) as u64 > max_secs * rate as u64 {
+        return Err(too_long(max_secs));
+    }
+    Ok(out)
 }
 
 /// Mono from interleaved `channels`.
@@ -240,68 +248,129 @@ fn resample_stereo(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
     left.into_iter().zip(right).flat_map(|(l, r)| [l, r]).collect()
 }
 
-/// Interleaved `channels`-channel resample with rubato's windowed-sinc
-/// resampler (used for Vorbis, which — unlike libopus — does not resample
-/// for us). `channels` is 1 or 2 here.
-fn resample_interleaved(samples: &[f32], channels: usize, from: u32, to: u32) -> Vec<f32> {
-    if from == to || samples.is_empty() || channels == 0 {
-        return samples.to_vec();
+/// Interleaved audio resampled as it arrives, so a long file never exists
+/// twice in memory: rubato's windowed-sinc resampler (used for Vorbis,
+/// which, unlike libopus, does not resample for us) behind `push`, with
+/// only the finished output kept. Without a rate change it just collects.
+struct StreamResampler {
+    resampler: Option<rubato::SincFixedIn<f32>>,
+    channels: usize,
+    ratio: f64,
+    /// Input not yet a whole chunk, one Vec per channel.
+    pending: Vec<Vec<f32>>,
+    /// Output frames still to drop: the filter's group delay.
+    skip: usize,
+    frames_in: u64,
+    out: Vec<f32>,
+}
+
+impl StreamResampler {
+    fn new(channels: usize, from: u32, to: u32) -> Result<Self, String> {
+        use rubato::Resampler;
+        let ratio = to as f64 / from as f64;
+        let resampler = if from == to {
+            None
+        } else {
+            let params = rubato::SincInterpolationParameters {
+                sinc_len: 128,
+                f_cutoff: 0.925,
+                oversampling_factor: 128,
+                interpolation: rubato::SincInterpolationType::Linear,
+                window: rubato::WindowFunction::BlackmanHarris2,
+            };
+            let r = rubato::SincFixedIn::<f32>::new(ratio, 2.0, params, 4096, channels)
+                .map_err(|e| format!("cannot resample the audio: {}", e))?;
+            Some(r)
+        };
+        let skip = resampler.as_ref().map(|r| r.output_delay()).unwrap_or(0);
+        Ok(StreamResampler { resampler, channels, ratio, pending: vec![Vec::new(); channels], skip, frames_in: 0, out: Vec::new() })
     }
-    let frames = samples.len() / channels;
-    let mut planar: Vec<Vec<f32>> = vec![Vec::with_capacity(frames); channels];
-    for frame in samples.chunks_exact(channels) {
-        for (c, &s) in frame.iter().enumerate() {
-            planar[c].push(s);
-        }
+
+    /// Output frames so far.
+    fn frames_out(&self) -> usize {
+        self.out.len() / self.channels
     }
-    use rubato::Resampler;
-    let ratio = to as f64 / from as f64;
-    let params = rubato::SincInterpolationParameters {
-        sinc_len: 128,
-        f_cutoff: 0.925,
-        oversampling_factor: 128,
-        interpolation: rubato::SincInterpolationType::Linear,
-        window: rubato::WindowFunction::BlackmanHarris2,
-    };
-    // A whole file at once: no real-time deadline, so a chunk size that
-    // covers short soundboard sounds in one call is fine; longer files
-    // (Files-tab transcription) just take a few more chunks.
-    let chunk_size = 4096.min(frames.max(1));
-    let mut resampler = match rubato::SincFixedIn::<f32>::new(ratio, 2.0, params, chunk_size, channels) {
-        Ok(r) => r,
-        Err(_) => return samples.to_vec(),
-    };
-    let delay = resampler.output_delay();
-    let mut out_planar: Vec<Vec<f32>> = vec![Vec::new(); channels];
-    let mut pos = 0;
-    while pos < frames {
-        let need = resampler.input_frames_next();
-        let end = (pos + need).min(frames);
-        let chunk: Vec<&[f32]> = planar.iter().map(|c| &c[pos..end]).collect();
-        let result =
-            if end - pos == need { resampler.process(&chunk, None) } else { resampler.process_partial(Some(&chunk), None) };
-        if let Ok(result) = result {
-            for (o, r) in out_planar.iter_mut().zip(result) {
-                o.extend(r);
+
+    fn append(&mut self, planar: Vec<Vec<f32>>) {
+        let n = planar.first().map(|c| c.len()).unwrap_or(0);
+        let drop = self.skip.min(n);
+        self.skip -= drop;
+        for i in drop..n {
+            for chan in &planar {
+                self.out.push(chan[i]);
             }
         }
-        pos = end;
     }
-    // Flush the filter's group delay: one more call with no input.
-    if let Ok(result) = resampler.process_partial::<Vec<f32>>(None, None) {
-        for (o, r) in out_planar.iter_mut().zip(result) {
-            o.extend(r);
+
+    /// Add interleaved frames.
+    fn push(&mut self, samples: &[f32]) -> Result<(), String> {
+        use rubato::Resampler;
+        self.frames_in += (samples.len() / self.channels) as u64;
+        if self.resampler.is_none() {
+            self.out.extend_from_slice(samples);
+            return Ok(());
+        }
+        for frame in samples.chunks_exact(self.channels) {
+            for (c, &s) in frame.iter().enumerate() {
+                self.pending[c].push(s);
+            }
+        }
+        loop {
+            let resampler = self.resampler.as_mut().expect("checked above");
+            let need = resampler.input_frames_next();
+            if self.pending[0].len() < need {
+                return Ok(());
+            }
+            let chunk: Vec<Vec<f32>> = self.pending.iter_mut().map(|c| c.drain(..need).collect()).collect();
+            let result = resampler.process(&chunk, None).map_err(|e| format!("cannot resample the audio: {}", e))?;
+            self.append(result);
         }
     }
-    let target_frames = (frames as f64 * ratio).round() as usize;
-    for chan in out_planar.iter_mut() {
-        chan.drain(..delay.min(chan.len()));
-        chan.resize(target_frames, 0.0);
+
+    /// The end of the input: flush what is left and return all output,
+    /// exactly `round(input frames * ratio)` frames long.
+    fn finish(mut self) -> Result<Vec<f32>, String> {
+        use rubato::Resampler;
+        if self.resampler.is_some() {
+            let rest = std::mem::take(&mut self.pending);
+            let resampler = self.resampler.as_mut().expect("checked above");
+            if !rest[0].is_empty() {
+                let result = resampler
+                    .process_partial(Some(&rest[..]), None)
+                    .map_err(|e| format!("cannot resample the audio: {}", e))?;
+                self.append(result);
+            }
+            // The filter's delay line.
+            let resampler = self.resampler.as_mut().expect("checked above");
+            let result = resampler
+                .process_partial::<Vec<f32>>(None, None)
+                .map_err(|e| format!("cannot resample the audio: {}", e))?;
+            self.append(result);
+            let target = (self.frames_in as f64 * self.ratio).round() as usize * self.channels;
+            self.out.resize(target, 0.0);
+        }
+        Ok(self.out)
     }
-    let mut out = Vec::with_capacity(target_frames * channels);
-    for i in 0..target_frames {
-        for chan in &out_planar {
-            out.push(chan[i]);
+}
+
+/// Interleaved Vorbis frames of `channels` as `target` channels (1 or 2).
+/// Vorbis orders channels as its spec does: 3 are left, centre, right; 4
+/// are front left, front right and two rear; 5 and more start with left,
+/// centre, right. Only the front left and right are played.
+fn vorbis_to_target(samples: &[f32], channels: usize, target: usize) -> Vec<f32> {
+    let channels = channels.max(1);
+    let (l, r) = match channels {
+        1 => (0, 0),
+        2 | 4 => (0, 1),
+        _ => (0, 2),
+    };
+    let mut out = Vec::with_capacity(samples.len() / channels * target);
+    for f in samples.chunks_exact(channels) {
+        let (left, right) = (f[l], f[r]);
+        if target <= 1 {
+            out.push((left + right) / 2.0);
+        } else {
+            out.extend_from_slice(&[left, right]);
         }
     }
     out
@@ -438,6 +507,10 @@ mod imp {
             }
         }
         progress(total_ms, total_ms);
+        // The +60 s above only stops a runaway stream early; the limit is exact.
+        if (out.len() / channels) as u64 > max_secs * rate as u64 {
+            return Err(super::too_long(max_secs));
+        }
         Ok((out, rate, channels))
     }
 }
@@ -546,5 +619,59 @@ mod tests {
         // 440 Hz: 704 zero crossings in 0.8 s, independent of the sample rate.
         let crossings = window.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
         assert!((690..=718).contains(&crossings), "{} zero crossings", crossings);
+    }
+
+    // The limit is exact for Ogg too (the +60 s is only an early abort).
+    #[cfg(windows)]
+    #[test]
+    fn an_ogg_over_the_limit_is_refused() {
+        assert_eq!(decode_48k_stereo(&fixture("tone.ogg"), 0), Err(too_long(0)));
+        assert_eq!(decode_48k_stereo(&fixture("tone.opus"), 0), Err(too_long(0)));
+    }
+
+    // FLAC in Ogg is neither Opus nor Vorbis: both Ogg decoders step aside and
+    // Media Foundation gets the file. It may refuse it (it has no Ogg
+    // container support on many PCs), but with its own error, never one of
+    // ours.
+    #[cfg(windows)]
+    #[test]
+    fn an_ogg_that_is_neither_opus_nor_vorbis_falls_through_to_media_foundation() {
+        let path = fixture("flac-in-ogg.ogg");
+        assert_eq!(decode_ogg_opus(&path, 48_000, opus::Channels::Stereo, 60, |_, _| {}), Err(NOT_OPUS.to_string()));
+        assert_eq!(decode_ogg_vorbis(&path, 48_000, 2, 60, |_, _| {}), Err(NOT_VORBIS.to_string()));
+        match decode_48k_stereo(&path, 60) {
+            Ok(samples) => assert!(!samples.is_empty()),
+            Err(e) => assert!(e.starts_with("cannot open the file") || e.starts_with("cannot decode"), "{}", e),
+        }
+    }
+
+    #[test]
+    fn vorbis_channels_are_taken_in_vorbis_order() {
+        // 3: left, centre, right.
+        assert_eq!(vorbis_to_target(&[0.1, 0.2, 0.3], 3, 2), vec![0.1, 0.3]);
+        // 4: front left, front right, rear left, rear right.
+        assert_eq!(vorbis_to_target(&[0.1, 0.2, 0.3, 0.4], 4, 2), vec![0.1, 0.2]);
+        // 6: left, centre, right, rear left, rear right, LFE.
+        assert_eq!(vorbis_to_target(&[0.1, 0.9, 0.3, 0.4, 0.5, 0.6], 6, 2), vec![0.1, 0.3]);
+        assert_eq!(vorbis_to_target(&[0.1, 0.2], 1, 2), vec![0.1, 0.1, 0.2, 0.2]);
+        assert_eq!(vorbis_to_target(&[0.2, 0.4], 2, 1), vec![0.3]);
+    }
+
+    #[test]
+    fn the_stream_resampler_gives_the_exact_length_whatever_the_chunks() {
+        let mut stream = StreamResampler::new(1, 24_000, 48_000).unwrap();
+        let mut sent = 0;
+        for size in [1usize, 777, 5_000, 4_096, 3] {
+            stream.push(&vec![0.5; size]).unwrap();
+            sent += size;
+        }
+        stream.push(&vec![0.5; 24_000 - sent]).unwrap();
+        let out = stream.finish().unwrap();
+        assert_eq!(out.len(), 48_000);
+        assert!(out[2_000..46_000].iter().all(|s| (s - 0.5).abs() < 0.02));
+        // Same rate: samples pass through untouched.
+        let mut same = StreamResampler::new(2, 48_000, 48_000).unwrap();
+        same.push(&[0.1, 0.2, 0.3, 0.4]).unwrap();
+        assert_eq!(same.finish().unwrap(), vec![0.1, 0.2, 0.3, 0.4]);
     }
 }
