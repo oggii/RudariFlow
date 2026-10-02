@@ -11,12 +11,12 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 
-use super::drift::{mic_frames, DriftBuffer, DriftStats, Resampler};
+use super::drift::{mic_frames, DriftBuffer, DriftStats};
 use super::library::Devices;
 use super::mixer::{Mixer, Output, PlayingVoice, VoiceShared, NO_END, SOURCE_RATE};
 use crate::audio::lock;
@@ -231,7 +231,7 @@ impl Engine {
     /// Open the devices and start the streams on a thread of their own.
     pub fn start(generation: u64, devices: EngineDevices, mixer: Mixer, callbacks: Callbacks) -> Result<Engine, Problem> {
         let mixer = Arc::new(Mutex::new(mixer));
-        let drift = Arc::new(Mutex::new(DriftBuffer::new(SOURCE_RATE)));
+        let drift = Arc::new(Mutex::new(DriftBuffer::new(SOURCE_RATE, SOURCE_RATE)));
         let (control, control_rx) = mpsc::channel::<Control>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<EngineInfo, Problem>>();
         let (stopped_tx, stopped) = mpsc::channel::<()>();
@@ -399,6 +399,14 @@ fn on_error(kind: &'static str, name: &str, control: &Sender<Control>) -> impl F
     }
 }
 
+/// The ms since `last` (0 the first time), and now becomes `last`.
+fn since(last: &mut Option<Instant>) -> f32 {
+    let now = Instant::now();
+    let gap = last.map_or(0.0, |t| now.duration_since(t).as_secs_f32() * 1000.0);
+    *last = Some(now);
+    gap
+}
+
 fn clip(data: &mut [f32]) {
     for s in data {
         *s = s.clamp(-1.0, 1.0);
@@ -424,16 +432,21 @@ fn open_streams(
     let (cable_rate, cable_channels) = (cable_config.sample_rate.0, cable_config.channels as usize);
     let (headphones_rate, headphones_channels) = (headphones_config.sample_rate.0, headphones_config.channels as usize);
     let mic_channels = mic_config.channels as usize;
-    *lock(drift) = DriftBuffer::new(cable_rate);
+    *lock(drift) = DriftBuffer::new(mic_config.sample_rate.0, cable_rate);
 
     // The cable: the microphone and the sounds at "Others hear".
     let (m, d) = (mixer.clone(), drift.clone());
+    let mut last_read: Option<Instant> = None;
     let cable_stream = cable
         .build_output_stream(
             &cable_config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 data.fill(0.0);
-                lock(&d).read_into(data, cable_channels);
+                let gap = since(&mut last_read);
+                let mut drift = lock(&d);
+                drift.note_read_gap(gap);
+                drift.read_into(data, cable_channels);
+                drop(drift);
                 lock(&m).render(Output::Cable, data, cable_channels, cable_rate);
                 clip(data);
             },
@@ -457,19 +470,21 @@ fn open_streams(
         )
         .map_err(|e| open_failed("headphones", &devices.headphones, e))?;
 
-    // The microphone: stereo at the cable's rate, into the drift buffer.
-    let mut resampler = Resampler::new(mic_config.sample_rate.0, cable_rate);
-    let (mut frames, mut converted) = (Vec::with_capacity(8_192), Vec::with_capacity(8_192));
+    // The microphone: stereo, into the drift buffer (which converts it to
+    // the cable's rate).
+    let mut frames = Vec::with_capacity(8_192);
+    let mut last_push: Option<Instant> = None;
     let d = drift.clone();
     let mic_stream = mic
         .build_input_stream(
             &mic_config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 frames.clear();
-                converted.clear();
                 mic_frames(data, mic_channels, &mut frames);
-                resampler.process(&frames, &mut converted);
-                lock(&d).push(&converted);
+                let gap = since(&mut last_push);
+                let mut drift = lock(&d);
+                drift.note_push_gap(gap);
+                drift.push(&frames);
             },
             on_error("microphone", &devices.microphone, control),
             None,
@@ -916,7 +931,6 @@ pub fn capture_levels(device: &str, ms: u64, loopback: bool) -> Result<Levels, S
 mod tests {
     use super::*;
     use crate::soundboard::mixer::FADE_IN_MS;
-    use std::time::Instant;
 
     fn list() -> DeviceList {
         DeviceList {
@@ -1090,7 +1104,7 @@ mod tests {
             headphones_rate: 48_000,
             headphones_channels: 2,
         };
-        let drift = Arc::new(Mutex::new(DriftBuffer::new(48_000)));
+        let drift = Arc::new(Mutex::new(DriftBuffer::new(48_000, 48_000)));
         Engine { generation: 1, control, stopped, mixer, drift, ended, info }
     }
 
