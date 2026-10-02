@@ -57,9 +57,11 @@ pub struct DriftBuffer {
 impl DriftBuffer {
     /// A buffer for a cable running at `rate`.
     pub fn new(rate: u32) -> DriftBuffer {
+        // Room for twice the cap: a push past it after a stall must not reallocate
+        // in the microphone callback before the excess is dropped.
         let frames_in = |ms: u32| (rate as u64 * ms as u64 / 1000) as usize;
         DriftBuffer {
-            frames: VecDeque::with_capacity(frames_in(CAP_MS)),
+            frames: VecDeque::with_capacity(2 * frames_in(CAP_MS)),
             rate,
             target: frames_in(TARGET_MS),
             high: frames_in(TARGET_MS + HIGH_MS),
@@ -105,7 +107,7 @@ impl DriftBuffer {
                 self.avg = None;
                 break;
             };
-            self.since_fix += 1;
+            self.since_fix = self.since_fix.saturating_add(1);
             let now = fix != Fix::None && self.since_fix >= SPREAD;
             if now {
                 self.since_fix = 0;
@@ -246,6 +248,27 @@ mod tests {
         assert!(slow.max_fill_ms <= (TARGET_MS + HIGH_MS + 10) as f32 + 1.0, "{:?}", slow);
         assert!((12_000..=14_500).contains(&slow.inserted), "{:?}", slow);
         assert_eq!(slow.dropped, 0);
+    }
+
+    #[test]
+    fn a_push_past_the_cap_does_not_reallocate() {
+        let mut buf = DriftBuffer::new(48_000);
+        let before = buf.frames.capacity();
+        assert!(before >= 2 * buf.cap);
+        buf.push(&vec![[0.0, 0.0]; buf.cap]);
+        buf.push(&vec![[0.0, 0.0]; buf.cap]);
+        assert_eq!(buf.frames.len(), buf.cap);
+        assert_eq!(buf.frames.capacity(), before);
+    }
+
+    #[test]
+    fn the_fix_counter_saturates() {
+        let mut buf = DriftBuffer::new(48_000);
+        buf.push(&[[0.1, 0.1]; 2000]);
+        buf.since_fix = u32::MAX;
+        let mut out = [0.0f32; 8];
+        buf.read_into(&mut out, 2);
+        assert!(buf.since_fix > 0);
     }
 
     #[test]
