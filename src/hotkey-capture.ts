@@ -21,6 +21,20 @@ export interface CaptureTarget {
 }
 
 let capturing: CaptureTarget | null = null;
+/** The backend runs set_hotkey_paused on a blocking thread, so calls must be
+ * sent one after the other or a quick pause/unpause could land reversed. */
+let pauseChain: Promise<unknown> = Promise.resolve();
+/** The delayed stop after a failed apply; a newer capture must not inherit it. */
+let failTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Queue a pause change behind the earlier ones; a failure does not break the chain. */
+export function setPaused(paused: boolean): Promise<unknown> {
+  pauseChain = pauseChain
+    .then(() => invoke("set_hotkey_paused", { paused }))
+    .catch(console.error);
+  return pauseChain;
+}
+
 
 /** Keys a soundboard hotkey may use alone. */
 // NumpadEnter and NumpadEqual are left out: the hotkey crate maps them to Enter and E.
@@ -96,9 +110,10 @@ function ownerName(target: string, name?: string): string {
 /** Listen for a hotkey for `target`. False when another capture runs. */
 export function startCapture(target: CaptureTarget): boolean {
   if (capturing) return false;
+  clearTimeout(failTimer);
   capturing = target;
   // Release the global hotkeys so pressing a current one reaches this window.
-  invoke("set_hotkey_paused", { paused: true }).catch(console.error);
+  void setPaused(true);
   target.button.classList.add("capturing");
   target.text.textContent = t("hotkey_press_keys");
   window.addEventListener("keydown", onKey, true);
@@ -112,12 +127,13 @@ export function startCapture(target: CaptureTarget): boolean {
 }
 
 function stopCapture() {
+  clearTimeout(failTimer);
   const target = capturing;
   capturing = null;
   window.removeEventListener("keydown", onKey, true);
   window.removeEventListener("mousedown", onMouse, true);
   window.removeEventListener("blur", onBlur);
-  invoke("set_hotkey_paused", { paused: false }).catch(console.error);
+  void setPaused(false);
   if (!target) return;
   target.button.classList.remove("capturing");
   target.render();
@@ -150,7 +166,7 @@ async function apply(combo: string) {
   } catch (err) {
     target.text.textContent = hotkeyError(err, combo);
     console.error("setting the hotkey failed:", err);
-    setTimeout(stopCapture, 2500);
+    failTimer = setTimeout(stopCapture, 2500);
   }
 }
 
