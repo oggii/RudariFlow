@@ -3,5 +3,6 @@
 //! headphones. See docs/superpowers/specs/2026-09-29-soundboard-design.md.
 
 pub mod library;
+pub mod mixer;
 
 pub mod prepare;
