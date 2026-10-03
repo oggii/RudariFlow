@@ -100,19 +100,29 @@ fn is_rule(line: &str) -> bool {
     line.len() >= 3 && line.chars().all(|c| matches!(c, '-' | '*' | '_' | '='))
 }
 
-/// What models write for an empty section: a short line that is, or
-/// starts with, "none", "no decisions", "keine", … or only punctuation.
+/// What models write for an empty section: a short line (6 words at most)
+/// that is only punctuation, or is or starts with "none", "nothing", "n/a"
+/// or "nichts", or starts with "no", "kein" or "keine" and then is bare or
+/// has a section word next ("No decisions were made", "Keine Aufgaben"),
+/// optionally after one adjective ("No explicit decisions", "Keine
+/// konkreten Aufgaben"). "Kein Release vor Montag" is a real item.
 fn is_nothing(text: &str) -> bool {
-    const NOTHING: [&str; 12] = [
-        "none", "nothing", "n/a", "no decisions", "no decision", "no action", "no tasks", "no next steps",
-        "no to-dos", "keine", "kein", "nichts",
+    const NOTHING: [&str; 4] = ["none", "nothing", "n/a", "nichts"];
+    const SECTION_WORDS: [&str; 17] = [
+        "decision", "decisions", "entscheidung", "entscheidungen", "beschluss", "beschlüsse", "beschluesse",
+        "action", "actions", "aufgabe", "aufgaben", "task", "tasks", "punkte", "schritte", "next", "to-dos",
     ];
     let plain = unmark(text);
     if plain.split_whitespace().count() > 6 {
         return false;
     }
     let t = plain.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
-    t.is_empty() || NOTHING.iter().any(|p| t == *p || t.strip_prefix(p).is_some_and(|r| r.starts_with(' ')))
+    if t.is_empty() || NOTHING.iter().any(|p| t == *p || t.strip_prefix(p).is_some_and(|r| r.starts_with(' '))) {
+        return true;
+    }
+    let words: Vec<&str> = t.split_whitespace().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric())).collect();
+    matches!(words[0], "no" | "kein" | "keine")
+        && (words.len() == 1 || words[1..].iter().take(2).any(|w| SECTION_WORDS.contains(w) || *w == "todos"))
 }
 
 /// A list line: its text (`None` for a placeholder), whether a checkbox
@@ -336,5 +346,18 @@ mod tests {
         assert_eq!(notes.decisions, ["Ship it"]);
         assert_eq!(parse("Intro.\n## Summary\nThe call.").summary, "The call.");
         assert_eq!(parse("Intro.\n## Summary\nNone.\n## Decisions\n- A").summary, "");
+    }
+
+    #[test]
+    fn no_and_kein_are_placeholders_only_before_a_section_word() {
+        let kept = parse("## Decisions\n- No meeting on Friday\n- Kein Release vor Montag\n- Keine Beta-Phase\n## Action items\n- -5 degrees is the limit\n-5 degrees is the limit");
+        assert_eq!(kept.decisions, ["No meeting on Friday", "Kein Release vor Montag", "Keine Beta-Phase"]);
+        assert_eq!(kept.action_items.len(), 1);
+        assert_eq!(kept.action_items[0].text, "-5 degrees is the limit", "stays whole as an item");
+        let empty = parse(
+            "## Decisions\n- No actions\n- No todos\n- No explicit decisions were made.\n- Keine konkreten Aufgaben.\n- Kein\n- No\n- No next steps\n## Action items\n- Keine Entscheidungen",
+        );
+        assert!(empty.decisions.is_empty(), "{:?}", empty.decisions);
+        assert!(empty.action_items.is_empty());
     }
 }
