@@ -496,11 +496,12 @@ impl WhisperEngine {
         Ok(FileRun { state: new_state(&loaded.ctx)?, language: language.to_string(), priority, load: engine.loads })
     }
 
-    /// Whether `run` was started with the model that is loaded now. A
-    /// meeting's run that is not lets go of it: the run's state keeps its
-    /// model in memory.
-    pub fn is_current(&self, run: &FileRun) -> bool {
-        is_current(&self.lock(), run)
+    /// Whether a model is loaded, and whether `run` was started with it,
+    /// in one look (so the two agree). A meeting's run that was not lets go
+    /// of it: the run's state keeps its model in memory.
+    pub fn loaded_for(&self, run: Option<&FileRun>) -> (bool, bool) {
+        let engine = self.lock();
+        (engine.loaded.is_some(), run.is_some_and(|run| is_current(&engine, run)))
     }
 
     /// `start_file` for a file the user started, after `ensure_loaded` of
@@ -747,6 +748,7 @@ mod tests {
     fn a_meeting_needs_a_loaded_model() {
         let engine = WhisperEngine::new();
         assert_eq!(engine.start_meeting("auto").err().as_deref(), Some(NO_MODEL));
+        assert_eq!(engine.loaded_for(None), (false, false));
     }
 
     #[test]

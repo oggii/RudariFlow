@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::capture::Written;
 use super::lines::{next_piece, PIECE_MAX_SECS, PIECE_MIN_SECS};
@@ -15,10 +16,18 @@ use crate::file_transcribe;
 use crate::startup_log;
 use crate::whisper_engine::{FileRun, Segment, WhisperEngine, NO_MODEL};
 
-/// Not transcribing: no model is loaded.
+/// Not transcribing now: no model is loaded, or Whisper found no GPU memory
+/// for the meeting's run. Nothing was taken; the worker catches up later.
 pub const PAUSED: &str = "paused";
 /// The end of a track's text that goes into the next prompt.
 const TAIL: usize = 20;
+/// A stretch of a meeting's track with less sound than this in it (a lone
+/// click, a short blip) does not go to Whisper, which makes "Vielen Dank."
+/// of it. The Files tab keeps every stretch.
+const MIN_SPEECH_MS: u64 = 300;
+/// After the meeting's run could not be made (the GPU's memory is full: a
+/// game, say), Whisper is tried again this much later.
+const RUN_RETRY: Duration = Duration::from_secs(5);
 
 /// A meeting's audio as the worker reads it.
 pub trait Source {
@@ -29,14 +38,20 @@ pub trait Source {
 
 /// Whisper as the worker uses it.
 pub trait Transcriber {
-    /// Whether a model is loaded; false lets go of the run's memory too.
+    /// Whether Whisper can run now. Asked at every step, even with no piece
+    /// due: a run whose model was unloaded lets go of its memory here.
     fn ready(&mut self) -> bool;
     /// The segments of `audio`, which starts at sample `offset` of its
-    /// track; `before` is the end of that track's text. `NO_MODEL` (or
-    /// `PAUSED`): the model was unloaded meanwhile.
+    /// track; `before` is the end of that track's text. `NO_MODEL` or
+    /// `PAUSED`: Whisper can't run now (nothing was taken).
     fn transcribe(&mut self, audio: &[f32], offset: u64, before: &[Segment]) -> Result<Vec<Segment>, String>;
     /// The language code in use ("auto" until detected).
     fn language(&self) -> String;
+}
+
+/// Whether a transcription error means "not now" rather than a bad piece.
+fn paused(error: &str) -> bool {
+    error == NO_MODEL || error == PAUSED
 }
 
 /// What one step transcribed.
@@ -53,6 +68,8 @@ pub struct Worker {
     /// Samples transcribed, per track.
     done: [u64; 2],
     tail: [Vec<Segment>; 2],
+    /// Where a track did not read while recording: tried once more.
+    unread: [Option<u64>; 2],
 }
 
 impl Worker {
@@ -67,7 +84,11 @@ impl Worker {
                 .map(|l| Segment { start_ms: l.start_ms, end_ms: l.end_ms, text: l.text.clone(), speaker: None })
                 .collect()
         };
-        Worker { done: [you_done_ms * per_ms, others_done_ms * per_ms], tail: [tail(Track::You), tail(Track::Others)] }
+        Worker {
+            done: [you_done_ms * per_ms, others_done_ms * per_ms],
+            tail: [tail(Track::You), tail(Track::Others)],
+            unread: [None; 2],
+        }
     }
 
     pub fn done(&self, track: Track) -> u64 {
@@ -76,10 +97,14 @@ impl Worker {
 
     /// Transcribe the next piece if one is ready; `last` (the recording
     /// ended) takes what is left. `Ok(None)`: nothing to do now.
-    /// `Err(PAUSED)`: no model; nothing was taken. Any other error skips
-    /// the piece (it is logged by the caller), so stepping until `Ok(None)`
-    /// comes to an end.
+    /// `Err(PAUSED)`: Whisper can't run now; nothing was taken (or read).
+    /// Any other error skips the piece (it is logged by the caller), so
+    /// stepping until `Ok(None)` comes to an end. A piece Whisper fails on
+    /// is tried once more first (from a fresh state), and a track that
+    /// does not read while recording once more at the next step.
     pub fn step(&mut self, source: &dyn Source, whisper: &mut dyn Transcriber, last: bool) -> Result<Option<Piece>, String> {
+        // Every step: a run whose model was freed lets go of it at once.
+        let ready = whisper.ready();
         let min = (PIECE_MIN_SECS * RATE as f32) as u64;
         let max = (PIECE_MAX_SECS * RATE as f32) as u64;
         let mut tracks = [Track::You, Track::Others];
@@ -92,11 +117,23 @@ impl Worker {
             if available <= from || (!last && available - from < min) {
                 continue;
             }
+            if !ready {
+                return Err(PAUSED.to_string());
+            }
             let to = available.min(from + max);
             let pending = match source.read(track, from, to) {
-                Ok(pending) => pending,
+                Ok(pending) => {
+                    self.unread[i] = None;
+                    pending
+                }
+                Err(e) if !last && self.unread[i] != Some(from) => {
+                    startup_log::log(&format!("[meeting] the {:?} track did not read, once more next time: {}", track, e));
+                    self.unread[i] = Some(from);
+                    continue;
+                }
                 Err(e) => {
-                    // A stretch that does not read is left out, not tried forever.
+                    // Left out, not tried forever.
+                    self.unread[i] = None;
                     self.done[i] = to;
                     return Err(e);
                 }
@@ -104,12 +141,15 @@ impl Worker {
             let Some(len) = next_piece(&pending, last && to == available) else {
                 continue;
             };
-            if !whisper.ready() {
-                return Err(PAUSED.to_string());
+            let audio = &pending[..len];
+            let mut result = whisper.transcribe(audio, from, &self.tail[i]);
+            if result.as_ref().is_err_and(|e| !paused(e)) {
+                // Once more: a passing failure loses nothing.
+                result = whisper.transcribe(audio, from, &self.tail[i]);
             }
-            let segments = match whisper.transcribe(&pending[..len], from, &self.tail[i]) {
+            let segments = match result {
                 Ok(segments) => segments,
-                Err(e) if e == NO_MODEL || e == PAUSED => return Err(PAUSED.to_string()),
+                Err(e) if paused(&e) => return Err(PAUSED.to_string()),
                 Err(e) => {
                     self.done[i] = from + len as u64;
                     return Err(e);
@@ -167,20 +207,43 @@ pub struct Whisper {
     language: String,
     dictionary: String,
     spelling: Box<dyn Fn(&str) -> String + Send>,
+    /// The run could not be made: not tried again before then.
+    no_run_until: Option<Instant>,
 }
 
 impl Whisper {
     pub fn new(engine: Arc<WhisperEngine>, language: &str, dictionary: String, spelling: Box<dyn Fn(&str) -> String + Send>) -> Whisper {
-        Whisper { engine, run: None, language: language.to_string(), dictionary, spelling }
+        Whisper { engine, run: None, language: language.to_string(), dictionary, spelling, no_run_until: None }
+    }
+
+    /// A run with the loaded model. Without one (a state needs GPU memory
+    /// the model does not hold yet): `PAUSED`, tried again in `RUN_RETRY`.
+    fn start_run(&mut self) -> Result<FileRun, String> {
+        match self.engine.start_meeting(&self.language) {
+            Ok(run) => {
+                self.no_run_until = None;
+                Ok(run)
+            }
+            Err(e) if e == NO_MODEL => Err(e),
+            Err(e) => {
+                startup_log::log(&format!(
+                    "[meeting] no Whisper run for the meeting ({}): paused, tried again in {} s",
+                    e,
+                    RUN_RETRY.as_secs()
+                ));
+                self.no_run_until = Some(Instant::now() + RUN_RETRY);
+                Err(PAUSED.to_string())
+            }
+        }
     }
 }
 
 impl Transcriber for Whisper {
     fn ready(&mut self) -> bool {
-        let loaded = self.engine.is_loaded();
+        let (loaded, current) = self.engine.loaded_for(self.run.as_ref());
         // Free GPU, battery or another model: the run would keep the old
         // model in memory.
-        if self.run.as_ref().is_some_and(|run| !self.engine.is_current(run)) {
+        if self.run.is_some() && !current {
             self.run = None;
             startup_log::log(if loaded {
                 "[meeting] another Whisper model was loaded: the meeting goes on with it"
@@ -188,20 +251,33 @@ impl Transcriber for Whisper {
                 "[meeting] Whisper unloaded: transcription paused"
             });
         }
-        loaded
+        loaded && self.no_run_until.is_none_or(|at| Instant::now() >= at)
     }
 
     fn transcribe(&mut self, audio: &[f32], offset: u64, before: &[Segment]) -> Result<Vec<Segment>, String> {
+        let spans = file_transcribe::stretches(audio, MIN_SPEECH_MS);
+        if spans.is_empty() {
+            return Ok(Vec::new());
+        }
         // A second time only when another model was loaded meanwhile.
         for _ in 0..2 {
             if self.run.is_none() {
-                self.run = Some(self.engine.start_meeting(&self.language)?);
+                self.run = Some(self.start_run()?);
             }
             let run = self.run.as_mut().expect("started above");
-            let found =
-                file_transcribe::transcribe_stretch(&self.engine, run, audio, offset as usize, &self.dictionary, before, &*self.spelling);
+            let found = file_transcribe::transcribe_stretch(
+                &self.engine,
+                run,
+                audio,
+                &spans,
+                offset as usize,
+                &self.dictionary,
+                before,
+                &*self.spelling,
+            );
             self.language = run.language.clone();
             match found {
+                Ok(segments) => return Ok(segments),
                 // The run's model is gone (`file_block`), and so is the run.
                 Err(e) if e == NO_MODEL => {
                     self.run = None;
@@ -209,7 +285,13 @@ impl Transcriber for Whisper {
                         return Err(e);
                     }
                 }
-                found => return found,
+                Err(e) => {
+                    // The next try starts from a fresh state, as a
+                    // dictation does after a failure.
+                    self.run = None;
+                    startup_log::log(&format!("[meeting] Whisper failed on a piece: {}", e));
+                    return Err(e);
+                }
             }
         }
         Err(NO_MODEL.to_string())
@@ -231,11 +313,12 @@ mod tests {
         available: [Cell<u64>; 2],
         /// Reading fails (a damaged or vanished file).
         broken: Cell<bool>,
+        reads: Cell<usize>,
     }
 
     impl Fake {
         fn new(you: Vec<f32>, others: Vec<f32>) -> Fake {
-            Fake { audio: [you, others], available: [Cell::new(0), Cell::new(0)], broken: Cell::new(false) }
+            Fake { audio: [you, others], available: [Cell::new(0), Cell::new(0)], broken: Cell::new(false), reads: Cell::new(0) }
         }
 
         fn up_to(&self, you_secs: f32, others_secs: f32) {
@@ -250,6 +333,7 @@ mod tests {
         }
 
         fn read(&self, track: Track, from: u64, to: u64) -> Result<Vec<f32>, String> {
+            self.reads.set(self.reads.get() + 1);
             if self.broken.get() {
                 return Err("you.wav: access denied".to_string());
             }
@@ -262,24 +346,41 @@ mod tests {
     struct Whisperer {
         unloaded: bool,
         fail: bool,
+        /// Calls that fail before it works.
+        hiccups: usize,
         /// Unloaded between `ready` and the run (Free GPU pressed then).
         released_meanwhile: bool,
+        /// No GPU memory for a run.
+        no_memory: bool,
+        /// Holds a run, as `Whisper` does, until it is unloaded.
+        held: bool,
         calls: Vec<(u64, usize, Vec<String>)>,
     }
 
     impl Transcriber for Whisperer {
         fn ready(&mut self) -> bool {
+            if self.unloaded {
+                self.held = false;
+            }
             !self.unloaded
         }
 
         fn transcribe(&mut self, audio: &[f32], offset: u64, before: &[Segment]) -> Result<Vec<Segment>, String> {
             self.calls.push((offset, audio.len(), before.iter().map(|s| s.text.clone()).collect()));
+            if self.no_memory {
+                return Err(PAUSED.to_string());
+            }
             if self.fail {
+                return Err("whisper full() failed".to_string());
+            }
+            if self.hiccups > 0 {
+                self.hiccups -= 1;
                 return Err("whisper full() failed".to_string());
             }
             if self.released_meanwhile {
                 return Err(NO_MODEL.to_string());
             }
+            self.held = true;
             let start_ms = offset / 16;
             Ok(vec![Segment { start_ms, end_ms: start_ms + 1_000, text: format!("at {}", start_ms), speaker: None }])
         }
@@ -349,6 +450,7 @@ mod tests {
         assert_eq!(worker.step(&source, &mut whisper, false), Err(PAUSED.to_string()));
         assert_eq!(worker.done(Track::You), 0, "nothing taken");
         assert!(whisper.calls.is_empty());
+        assert_eq!(source.reads.get(), 0, "nothing read");
         whisper.unloaded = false;
         assert!(worker.step(&source, &mut whisper, false).unwrap().is_some());
         assert!(worker.done(Track::You) > 0);
@@ -361,7 +463,120 @@ mod tests {
         let mut worker = Worker::new(0, 0, &[]);
         source.up_to(40.0, 0.0);
         assert_eq!(worker.step(&source, &mut whisper, false), Err("whisper full() failed".to_string()));
+        assert_eq!(whisper.calls.len(), 2, "tried once more");
         assert!(worker.done(Track::You) >= 15 * 16_000, "not tried forever");
+    }
+
+    #[test]
+    fn a_piece_whisper_fails_on_once_loses_nothing() {
+        let source = Fake::new(talk(40.0, &[]), Vec::new());
+        let mut whisper = Whisperer { hiccups: 1, ..Default::default() };
+        let mut worker = Worker::new(0, 0, &[]);
+        source.up_to(40.0, 0.0);
+        let piece = worker.step(&source, &mut whisper, false).unwrap().unwrap();
+        assert_eq!(piece.lines[0].start_ms, 0);
+        assert_eq!(whisper.calls.iter().map(|c| c.0).collect::<Vec<_>>(), [0, 0], "the same piece twice");
+    }
+
+    #[test]
+    fn no_gpu_memory_for_a_run_pauses_like_no_model() {
+        let source = Fake::new(talk(40.0, &[]), Vec::new());
+        let mut whisper = Whisperer { no_memory: true, ..Default::default() };
+        let mut worker = Worker::new(0, 0, &[]);
+        source.up_to(40.0, 0.0);
+        assert_eq!(worker.step(&source, &mut whisper, false), Err(PAUSED.to_string()));
+        assert_eq!(worker.done(Track::You), 0, "nothing skipped");
+        assert_eq!(whisper.calls.len(), 1, "no second try while paused");
+        whisper.no_memory = false;
+        assert_eq!(worker.step(&source, &mut whisper, false).unwrap().unwrap().lines[0].start_ms, 0);
+    }
+
+    #[test]
+    fn a_freed_model_is_let_go_of_before_the_next_piece_is_due() {
+        let source = Fake::new(talk(40.0, &[17.0]), Vec::new());
+        let mut whisper = Whisperer::default();
+        let mut worker = Worker::new(0, 0, &[]);
+        source.up_to(25.0, 0.0);
+        worker.step(&source, &mut whisper, false).unwrap().unwrap();
+        assert!(whisper.held);
+        // Free GPU, with under 15 s to transcribe.
+        whisper.unloaded = true;
+        source.up_to(26.0, 0.0);
+        let reads = source.reads.get();
+        assert_eq!(worker.step(&source, &mut whisper, false), Ok(None));
+        assert!(!whisper.held, "the run let go of the model at once");
+        source.up_to(40.0, 0.0);
+        assert_eq!(worker.step(&source, &mut whisper, false), Err(PAUSED.to_string()));
+        assert_eq!(source.reads.get(), reads, "nothing read while paused");
+    }
+
+    #[test]
+    fn a_track_further_behind_without_a_piece_does_not_hold_up_the_other() {
+        let source = Fake::new(talk(20.0, &[]), talk(60.0, &[]));
+        let mut whisper = Whisperer::default();
+        // Under 15 s, then 20 s without a pause: no piece of "You" yet.
+        for you_secs in [10.0, 20.0] {
+            let mut worker = Worker::new(0, 20_000, &[]);
+            source.up_to(you_secs, 60.0);
+            let piece = worker.step(&source, &mut whisper, false).unwrap().unwrap();
+            assert_eq!(piece.track, Track::Others, "{} s", you_secs);
+            assert_eq!(worker.done(Track::You), 0);
+        }
+        assert!(whisper.calls.iter().all(|c| c.0 == 20_000 * 16));
+    }
+
+    #[test]
+    fn a_backlog_comes_in_pieces_that_join_up() {
+        let source = Fake::new(talk(120.0, &[20.0, 45.0, 70.0, 95.0]), Vec::new());
+        let mut whisper = Whisperer::default();
+        let mut worker = Worker::new(0, 0, &[]);
+        source.up_to(120.0, 0.0);
+        let mut done = Vec::new();
+        for last in [false, true] {
+            while let Some(piece) = worker.step(&source, &mut whisper, last).unwrap() {
+                done.push(piece.done_ms);
+            }
+        }
+        assert!(whisper.calls.len() >= 5, "{:?}", done);
+        let mut at = 0;
+        for (offset, len, _) in &whisper.calls {
+            assert_eq!(*offset, at, "each piece starts where the last one ended");
+            assert!(*len <= 30 * 16_000);
+            at = offset + *len as u64;
+        }
+        assert_eq!(at, 120 * 16_000);
+        assert_eq!(done.last(), Some(&120_000));
+    }
+
+    #[test]
+    fn a_track_that_does_not_read_while_recording_is_tried_once_more() {
+        let source = Fake::new(talk(60.0, &[]), Vec::new());
+        let mut whisper = Whisperer::default();
+        let mut worker = Worker::new(0, 0, &[]);
+        source.up_to(40.0, 0.0);
+        source.broken.set(true);
+        assert_eq!(worker.step(&source, &mut whisper, false), Ok(None), "once more next time");
+        assert_eq!(worker.done(Track::You), 0);
+        source.broken.set(false);
+        assert_eq!(worker.step(&source, &mut whisper, false).unwrap().unwrap().lines[0].start_ms, 0, "nothing lost");
+        // Twice at the same place: left out.
+        source.up_to(60.0, 0.0);
+        source.broken.set(true);
+        let at = worker.done(Track::You);
+        assert_eq!(worker.step(&source, &mut whisper, false), Ok(None));
+        assert_eq!(worker.step(&source, &mut whisper, false), Err("you.wav: access denied".to_string()));
+        assert_eq!(worker.done(Track::You), at + 30 * 16_000, "not tried forever");
+    }
+
+    #[test]
+    fn a_lone_click_never_reaches_whisper() {
+        // No model loaded: anything that goes to Whisper fails with NO_MODEL.
+        let mut whisper = Whisper::new(Arc::new(WhisperEngine::new()), "auto", String::new(), Box::new(|s: &str| s.to_string()));
+        let mut click = vec![0.0; 20 * 16_000];
+        click[5 * 16_000..5 * 16_000 + 320].iter_mut().for_each(|s| *s = 0.5);
+        assert_eq!(whisper.transcribe(&click, 0, &[]), Ok(Vec::new()), "no Whisper, no run");
+        assert_eq!(whisper.transcribe(&talk(20.0, &[]), 0, &[]).err().as_deref(), Some(NO_MODEL), "speech goes to Whisper");
+        assert!(!whisper.ready());
     }
 
     #[test]

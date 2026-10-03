@@ -5,7 +5,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::audio::{quiet_cut, speech_spans};
+use crate::audio::{loud_ms, quiet_cut, speech_spans};
 use crate::speakers::{assign, Turn};
 use crate::whisper_engine::{FileRun, Segment, WhisperEngine};
 
@@ -87,7 +87,8 @@ pub fn transcribe(
         if cancel.load(Ordering::SeqCst) {
             return Err(CANCELLED.to_string());
         }
-        let new = transcribe_stretch(engine, &mut run, &audio[start..end], start, dictionary, &segments, &spelling)?;
+        let block = &audio[start..end];
+        let new = transcribe_stretch(engine, &mut run, block, &stretches(block, 0), start, dictionary, &segments, &spelling)?;
         progress(Progress { done_ms: end as u64 / 16, total_ms, segments: &new });
         segments.extend(new);
         start = end;
@@ -95,22 +96,35 @@ pub fn transcribe(
     Ok((segments, run.language))
 }
 
-/// Whisper on one stretch of a recording (16 kHz mono) that starts at
-/// sample `offset`: silences of `SKIP_PAUSE_SECS` and more are left out,
-/// each stretch of speech gets the dictionary and the end of the text
-/// before it (`before`, then what this call found) in its prompt, and
-/// `spelling` fixes every segment. A file's block or a meeting's piece.
+/// The stretches of speech in `audio` (16 kHz mono) that go to Whisper:
+/// silences of `SKIP_PAUSE_SECS` and more split them off, and one with less
+/// than `min_speech_ms` of sound in it (a lone click or blip) is left out.
+/// A file keeps every stretch (0).
+pub fn stretches(audio: &[f32], min_speech_ms: u64) -> Vec<(usize, usize)> {
+    speech_spans(audio, 16_000, SKIP_PAUSE_SECS)
+        .into_iter()
+        .filter(|&(from, to)| min_speech_ms == 0 || loud_ms(&audio[from..to], 16_000) >= min_speech_ms)
+        .collect()
+}
+
+/// Whisper on the `spans` (`stretches`) of a stretch of a recording (16
+/// kHz mono) that starts at sample `offset`: each gets the dictionary and
+/// the end of the text before it (`before`, then what this call found) in
+/// its prompt, and `spelling` fixes every segment. A file's block or a
+/// meeting's piece.
+#[allow(clippy::too_many_arguments)]
 pub fn transcribe_stretch(
     engine: &WhisperEngine,
     run: &mut FileRun,
     audio: &[f32],
+    spans: &[(usize, usize)],
     offset: usize,
     dictionary: &str,
     before: &[Segment],
     spelling: &dyn Fn(&str) -> String,
 ) -> Result<Vec<Segment>, String> {
     let mut new: Vec<Segment> = Vec::new();
-    for (from, to) in speech_spans(audio, 16_000, SKIP_PAUSE_SECS) {
+    for &(from, to) in spans {
         let prompt = block_prompt(dictionary, before.iter().chain(&new));
         let mut found = engine.file_block(run, &audio[from..to], (offset + from) as u64 / 16, &prompt)?;
         for segment in &mut found {
@@ -349,6 +363,28 @@ mod tests {
         // Short files are one block.
         assert_eq!(block_ends(&audio[..10 * sr]), vec![10 * sr]);
         assert_eq!(block_ends(&[]), vec![0]);
+    }
+
+    /// `secs` of silence with `sounds` (start s, length ms) of sound in it.
+    fn sounds(secs: f32, sounds: &[(f32, usize)]) -> Vec<f32> {
+        let mut audio = vec![0.0_f32; (secs * 16_000.0) as usize];
+        for &(at, ms) in sounds {
+            let at = (at * 16_000.0) as usize;
+            audio[at..at + ms * 16].iter_mut().for_each(|s| *s = 0.3);
+        }
+        audio
+    }
+
+    #[test]
+    fn a_meeting_leaves_out_a_lone_click_a_file_keeps_it() {
+        // Speech (1.5 s), a click (20 ms), a blip (200 ms), a short "ja" (400 ms).
+        let audio = sounds(20.0, &[(1.0, 1_500), (6.0, 20), (10.0, 200), (15.0, 400)]);
+        let file = stretches(&audio, 0);
+        assert_eq!(file, speech_spans(&audio, 16_000, SKIP_PAUSE_SECS), "the Files tab as before");
+        assert_eq!(file.len(), 4);
+        let meeting = stretches(&audio, 300);
+        assert_eq!(meeting, vec![file[0], file[3]], "the click and the blip are no stretch");
+        assert!(stretches(&sounds(5.0, &[(1.0, 20)]), 300).is_empty());
     }
 
     #[test]
