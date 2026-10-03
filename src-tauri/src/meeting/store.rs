@@ -255,32 +255,49 @@ fn remove_audio(path: &Path) -> bool {
     }
 }
 
+/// Whether a meeting's audio is due for deletion: it ended (finished or
+/// interrupted) `KEEP_AUDIO_MS` or longer ago and still has it.
+fn audio_due(m: &Meeting, now_ms: u64) -> bool {
+    matches!(m.state, State::Finished | State::Interrupted) && !m.audio_deleted && m.ended_at() + KEEP_AUDIO_MS <= now_ms
+}
+
+/// The meetings whose audio is due for deletion (`delete_audio_if_old`).
+pub fn old_audio(root: &Path, now_ms: u64) -> Vec<String> {
+    list(root).into_iter().filter(|m| audio_due(m, now_ms)).map(|m| m.id).collect()
+}
+
+/// Delete the audio of meeting `id` if it is (still) due, looked at anew
+/// from its file. Returns whether it lost its audio. The caller serialises
+/// it with other saves of that meeting.
+pub fn delete_audio_if_old(root: &Path, id: &str, now_ms: u64) -> bool {
+    let Ok(mut m) = load(root, id) else { return false };
+    if !audio_due(&m, now_ms) {
+        return false;
+    }
+    let mut all_gone = true;
+    for track in [Track::You, Track::Others] {
+        if !remove_audio(&m.dir(root).join(track.wav())) {
+            all_gone = false;
+        }
+    }
+    if !all_gone {
+        // Retried at the next run.
+        return false;
+    }
+    m.audio_deleted = true;
+    match m.save(root) {
+        Ok(()) => true,
+        Err(e) => {
+            startup_log::log(&format!("[meeting] {}: audio deleted, not saved: {}", m.id, e));
+            false
+        }
+    }
+}
+
 /// Delete the audio of meetings that ended `KEEP_AUDIO_MS` or longer ago.
 /// Returns how many lost their audio.
 pub fn delete_old_audio(root: &Path, now_ms: u64) -> usize {
-    let mut deleted = 0;
-    for mut m in list(root) {
-        let ended = matches!(m.state, State::Finished | State::Interrupted);
-        if !ended || m.audio_deleted || m.ended_at() + KEEP_AUDIO_MS > now_ms {
-            continue;
-        }
-        let mut all_gone = true;
-        for track in [Track::You, Track::Others] {
-            if !remove_audio(&m.dir(root).join(track.wav())) {
-                all_gone = false;
-            }
-        }
-        if !all_gone {
-            // Retried at the next run.
-            continue;
-        }
-        m.audio_deleted = true;
-        match m.save(root) {
-            Ok(()) => deleted += 1,
-            Err(e) => startup_log::log(&format!("[meeting] {}: audio deleted, not saved: {}", m.id, e)),
-        }
-    }
-    deleted
+    old_audio(root, now_ms).iter().filter(|id| delete_audio_if_old(root, id, now_ms)).count()
 }
 
 /// At start: a meeting still recording or finishing was cut off by a quit

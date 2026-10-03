@@ -53,6 +53,8 @@ pub trait Transcriber {
     fn model(&self) -> String {
         String::new()
     }
+    /// Done for now: let go of what a run holds (its GPU memory).
+    fn release(&mut self) {}
 }
 
 /// Whether a transcription error means "not now" rather than a bad piece.
@@ -336,6 +338,10 @@ impl Transcriber for Whisper {
 
     fn model(&self) -> String {
         self.model.clone()
+    }
+
+    fn release(&mut self) {
+        self.run = None;
     }
 }
 

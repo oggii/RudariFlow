@@ -364,8 +364,7 @@ pub async fn condense(
             notes.push(answer.text.trim().to_string());
             requests += 1;
         }
-        material = notes.join("
-");
+        material = notes.join("\n");
     }
     Ok((material, requests))
 }

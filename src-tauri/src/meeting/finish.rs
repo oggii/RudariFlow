@@ -54,10 +54,11 @@ pub fn apply_piece(meeting: &mut Meeting, piece: Piece) {
 /// (or is not needed: the audio is gone, or all of it is transcribed).
 /// `speakers` separates the Others track (an error such as "no_model" is
 /// kept as the reason), `notes` writes the notes from the transcript and
-/// the language code. Unloaded models while the rest is transcribed (the
-/// Free GPU hotkey), or no Whisper for audio not transcribed yet, leave the
-/// meeting interrupted, for Finish later, rather than finished with a part
-/// missing.
+/// the language code. `whisper` lets go of its run right after the
+/// transcription (`Transcriber::release`), before the speakers and the
+/// notes. Unloaded models while the rest is transcribed (the Free GPU
+/// hotkey), or no Whisper for audio not transcribed yet, leave the meeting
+/// interrupted, for Finish later, rather than finished with a part missing.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     root: &Path,
@@ -73,32 +74,22 @@ pub fn run(
     let id = lock(meeting).id.clone();
     let audio = !lock(meeting).audio_deleted;
     on_step(Step::Transcribing);
-    if audio {
-        match whisper {
-            Some(whisper) => loop {
-                match worker.step(source, whisper, true) {
-                    Ok(Some(piece)) => {
-                        let mut m = lock(meeting);
-                        apply_piece(&mut m, piece);
-                        save(root, &m);
-                        on_lines(&m);
-                    }
-                    Ok(None) => break,
-                    Err(e) if e == PAUSED => {
-                        startup_log::log(&format!("[meeting] {}: Whisper was unloaded while finishing; Finish goes on later", id));
-                        interrupt(root, meeting);
-                        return;
-                    }
-                    Err(e) => startup_log::log(&format!("[meeting] {}: a piece was skipped: {}", id, e)),
-                }
-            },
-            None if left(source, &worker) => {
-                startup_log::log(&format!("[meeting] {}: no Whisper for the rest; Finish goes on later", id));
-                interrupt(root, meeting);
-                return;
-            }
-            None => {}
+    let complete = match whisper {
+        Some(whisper) => {
+            let complete = !audio || transcribe_rest(&id, root, meeting, &mut worker, whisper, source, on_lines);
+            // Its memory goes now, not after the speakers and the notes.
+            whisper.release();
+            complete
         }
+        None if audio && left(source, &worker) => {
+            startup_log::log(&format!("[meeting] {}: no Whisper for the rest; Finish goes on later", id));
+            false
+        }
+        None => true,
+    };
+    if !complete {
+        interrupt(root, meeting);
+        return;
     }
 
     on_step(Step::Speakers);
@@ -142,6 +133,35 @@ pub fn run(
     save(root, &m);
 }
 
+/// Transcribe what is left of both tracks. False when Whisper was unloaded
+/// meanwhile (the Free GPU hotkey) or found no GPU memory: Finish later.
+fn transcribe_rest(
+    id: &str,
+    root: &Path,
+    meeting: &Mutex<Meeting>,
+    worker: &mut Worker,
+    whisper: &mut dyn Transcriber,
+    source: &dyn Source,
+    on_lines: &mut dyn FnMut(&Meeting),
+) -> bool {
+    loop {
+        match worker.step(source, whisper, true) {
+            Ok(Some(piece)) => {
+                let mut m = lock(meeting);
+                apply_piece(&mut m, piece);
+                save(root, &m);
+                on_lines(&m);
+            }
+            Ok(None) => return true,
+            Err(e) if e == PAUSED => {
+                startup_log::log(&format!("[meeting] {}: Whisper was unloaded while finishing; Finish goes on later", id));
+                return false;
+            }
+            Err(e) => startup_log::log(&format!("[meeting] {}: a piece was skipped: {}", id, e)),
+        }
+    }
+}
+
 /// Whether some audio of either track is not transcribed yet.
 pub fn left(source: &dyn Source, worker: &Worker) -> bool {
     [Track::You, Track::Others].into_iter().any(|t| source.available(t) > worker.done(t))
@@ -166,11 +186,16 @@ mod tests {
     use crate::meeting::wav::TrackFile;
     use crate::meeting::worker::Tracks;
     use crate::whisper_engine::Segment;
+    use std::cell::RefCell;
     use std::path::PathBuf;
+    use std::rc::Rc;
 
     /// One segment per call, said by "you" or "others" by the audio level.
+    /// `log` has its transcriptions and releases, in order.
+    #[derive(Default)]
     struct Fake {
         unloaded: bool,
+        log: Rc<RefCell<Vec<&'static str>>>,
     }
 
     impl Transcriber for Fake {
@@ -179,6 +204,7 @@ mod tests {
         }
 
         fn transcribe(&mut self, audio: &[f32], offset: u64, _: &[Segment]) -> Result<Vec<Segment>, String> {
+            self.log.borrow_mut().push("transcribe");
             let who = if audio[0] > 0.35 { "Others talk" } else { "You talk" };
             let start_ms = offset / 16;
             Ok(vec![Segment { start_ms, end_ms: start_ms + audio.len() as u64 / 16, text: who.to_string(), speaker: None }])
@@ -186,6 +212,10 @@ mod tests {
 
         fn language(&self) -> String {
             "en".to_string()
+        }
+
+        fn release(&mut self) {
+            self.log.borrow_mut().push("release");
         }
     }
 
@@ -213,7 +243,9 @@ mod tests {
             let m = meeting.lock().unwrap();
             Worker::new(m.you_done_ms, m.others_done_ms, &m.lines)
         };
-        let mut whisper = Fake { unloaded: false };
+        let mut whisper = Fake::default();
+        let log = whisper.log.clone();
+        let (speakers_log, notes_log) = (log.clone(), log.clone());
         let mut steps = Vec::new();
         let mut redraws = 0;
         let mut heard = 0;
@@ -224,10 +256,12 @@ mod tests {
             Some(&mut whisper),
             &source,
             |audio| {
+                speakers_log.borrow_mut().push("speakers");
                 heard = audio.len();
                 Ok(vec![Turn { start_ms: 0, end_ms: 20_000, speaker: 4 }])
             },
             |transcript, language| {
+                notes_log.borrow_mut().push("notes");
                 assert!(transcript.contains("Speaker 1: Others talk"), "{}", transcript);
                 assert!(transcript.starts_with("[0:00] You: Live line."), "{}", transcript);
                 assert_eq!(language, "en", "detected while finishing");
@@ -237,6 +271,7 @@ mod tests {
             &mut |_| redraws += 1,
         );
         assert_eq!(steps, [Step::Transcribing, Step::Speakers, Step::Notes]);
+        assert_eq!(*log.borrow(), ["transcribe", "transcribe", "release", "speakers", "notes"], "the run let go before the speakers");
         assert_eq!(heard, 20 * 16_000, "the whole Others track");
         assert_eq!(redraws, 3, "two pieces and the speakers");
         let saved = store::load(&root, "m-00000000000a").unwrap();
@@ -259,7 +294,7 @@ mod tests {
             &root,
             &meeting,
             worker,
-            Some(&mut Fake { unloaded: false }),
+            Some(&mut Fake::default()),
             &source,
             |_| Err("no_model".to_string()),
             |_, _| Err("ai_off".to_string()),
@@ -279,11 +314,12 @@ mod tests {
         let (root, meeting) = recorded("freed");
         let source = Tracks::saved(meeting.lock().unwrap().dir(&root));
         let mut steps = Vec::new();
+        let mut whisper = Fake { unloaded: true, ..Default::default() };
         run(
             &root,
             &meeting,
             Worker::new(1_000, 0, &[]),
-            Some(&mut Fake { unloaded: true }),
+            Some(&mut whisper),
             &source,
             |_| panic!("no speakers before the transcript is done"),
             |_, _| panic!("no notes either"),
@@ -291,6 +327,7 @@ mod tests {
             &mut |_| {},
         );
         assert_eq!(steps, [Step::Transcribing]);
+        assert_eq!(*whisper.log.borrow(), ["release"], "let go of on the way out too");
         assert_eq!(store::load(&root, "m-00000000000a").unwrap().state, State::Interrupted);
     }
 

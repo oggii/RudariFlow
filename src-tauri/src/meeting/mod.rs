@@ -257,13 +257,19 @@ impl Meetings {
         meetings
     }
 
-    /// The audio of meetings that ended 30 days ago. Under `open`'s lock:
-    /// what it changes (finished and interrupted meetings) nobody else saves
-    /// meanwhile; meetings in `open` are recording or finishing on disk and
-    /// not touched.
+    /// The audio of meetings that ended 30 days ago. The candidates are
+    /// found without a lock (that loads every meeting); each is looked at
+    /// anew and changed under `open`'s lock, so nobody else saves it
+    /// meanwhile, and a meeting in `open` is left alone.
     fn delete_old_audio(&self) {
-        let _open = lock(&self.open);
-        let deleted = store::delete_old_audio(&self.root, store::now_ms());
+        let now = store::now_ms();
+        let mut deleted = 0;
+        for id in store::old_audio(&self.root, now) {
+            let open = lock(&self.open);
+            if !open.contains_key(&id) && store::delete_audio_if_old(&self.root, &id, now) {
+                deleted += 1;
+            }
+        }
         if deleted > 0 {
             startup_log::log(&format!("[meeting] audio of {} meetings deleted (30 days)", deleted));
         }
@@ -293,13 +299,29 @@ impl Meetings {
         self.emit(Event::Status(status));
     }
 
-    /// The bar of meeting `id`, if it is the one that records.
+    /// Send the status as it is now (after a change made under the locks).
+    fn send_status(&self) {
+        let status = self.status();
+        self.emit(Event::Status(status));
+    }
+
+    /// The bar of meeting `id`, if it is the one that records; sent only
+    /// when it changed.
     fn change_recording(&self, id: &str, change: impl FnOnce(&mut Recording)) {
-        self.change_status(|s| {
-            if let Some(r) = s.recording.as_mut().filter(|r| r.id == id) {
-                change(r);
+        let changed = {
+            let mut status = lock(&self.status);
+            match status.recording.as_mut().filter(|r| r.id == id) {
+                Some(r) => {
+                    let before = r.clone();
+                    change(r);
+                    (*r != before).then(|| status.clone())
+                }
+                None => None,
             }
-        });
+        };
+        if let Some(status) = changed {
+            self.emit(Event::Status(status));
+        }
     }
 
     fn warning(&self, id: &str, warning: Warning, on: bool) {
@@ -354,12 +376,16 @@ impl Meetings {
     /// free), or why a file could not be created. Not on the main thread
     /// (see `change_status`).
     pub fn start(&self, title: Option<String>, config: Config) -> Result<String, String> {
-        let recording = {
+        let id = {
             let mut live = lock(&self.recording);
-            self.begin(&mut live, title, config)?
+            let recording = self.begin(&mut live, title, config)?;
+            let id = recording.id.clone();
+            // With `recording` held (lock order: recording, then status), so
+            // the bar and `is_recording` never disagree; sent after.
+            lock(&self.status).recording = Some(recording);
+            id
         };
-        let id = recording.id.clone();
-        self.change_status(|s| s.recording = Some(recording));
+        self.send_status();
         self.emit(Event::Changed);
         // ▶ would play into the loopback, so into this meeting (a ▶ that
         // starts meanwhile stops itself, see `play`).
@@ -458,21 +484,23 @@ impl Meetings {
     fn stop_if(&self, only: Option<&str>) -> Result<(), String> {
         let live = {
             let mut live = lock(&self.recording);
-            if only.is_some_and(|id| live.as_ref().is_none_or(|l| l.id != id)) {
+            if !stops(live.as_ref().map(|l| l.id.as_str()), only) {
                 return Err("not_recording".to_string());
             }
-            live.take().ok_or_else(|| "not_recording".to_string())?
+            let live = live.take().ok_or_else(|| "not_recording".to_string())?;
+            // "Finishing…" at once, with `recording` held (see `start`); the
+            // devices close meanwhile.
+            let mut status = lock(&self.status);
+            if status.recording.as_ref().is_some_and(|r| r.id == live.id) {
+                status.recording = None;
+            }
+            status.finishing.retain(|f| f.id != live.id);
+            status.finishing.push(Finishing { id: live.id.clone(), step: Step::Transcribing });
+            live
         };
+        self.send_status();
         let Live { id, meeting, capture, stop, worker, config } = live;
         stop.store(true, SeqCst);
-        // "Finishing…" at once; the devices close meanwhile.
-        self.change_status(|s| {
-            if s.recording.as_ref().is_some_and(|r| r.id == id) {
-                s.recording = None;
-            }
-            s.finishing.retain(|f| f.id != id);
-            s.finishing.push(Finishing { id: id.clone(), step: Step::Transcribing });
-        });
         let samples = capture.stop();
         let dir = {
             let mut m = lock(&meeting);
@@ -544,6 +572,8 @@ impl Meetings {
             let m = lock(&meeting);
             (m.id.clone(), !m.audio_deleted)
         };
+        // A Free GPU press from here on keeps the GPU free (`notes_allowed`).
+        let ai_freed = self.llm.released();
         // Stop loads Whisper, also after the Free GPU hotkey, when there is
         // audio left to transcribe.
         let loaded = audio
@@ -553,6 +583,8 @@ impl Meetings {
                 .ensure_loaded(&config.model_path, &config.gpu_backend)
                 .inspect_err(|e| startup_log::log(&format!("[meeting] {}: Whisper did not load: {}", id, e)))
                 .is_ok();
+        // After that load: a release from now on is a press.
+        let whisper_freed = self.engine.released();
         let app_dir = self.app_dir.clone();
         let separate = |audio: &[f32]| -> Result<Vec<Turn>, String> {
             if !speakers::models_ready(&app_dir) {
@@ -563,7 +595,16 @@ impl Meetings {
             }
             speakers::separate(audio, SpeakerCount::Auto, &app_dir, &mut |_, _| {})
         };
-        let notes = |transcript: &str, language: &str| self.notes_now(&config.ai_model, &config.gpu_backend, transcript, language);
+        let notes = |transcript: &str, language: &str| {
+            // Freed during the end steps: the AI is not started again.
+            if !notes_allowed(ai_freed, self.llm.released()) || !notes_allowed(whisper_freed, self.engine.released()) {
+                return Err("gpu_freed".to_string());
+            }
+            self.notes_now(&config.ai_model, &config.gpu_backend, transcript, language)
+        };
+        // The run let go of Whisper right after the transcription; the
+        // speakers come next.
+        let mut transcribed = false;
         finish::run(
             &self.root,
             &meeting,
@@ -572,18 +613,31 @@ impl Meetings {
             &source,
             separate,
             notes,
-            &mut |step| self.set_step(&id, step),
+            &mut |step| {
+                if step == Step::Speakers && !transcribed {
+                    transcribed = true;
+                    self.unload_whisper(&config, &id);
+                }
+                self.set_step(&id, step)
+            },
             &mut |m| self.emit_lines(m),
         );
         drop(whisper);
-        // With the cloud engine the local model is not kept, unless another
-        // meeting still transcribes with it.
-        if config.unload_after && !self.whisper_in_use(&id) {
-            self.engine.invalidate();
+        if !transcribed {
+            // Interrupted: also right after the transcription.
+            self.unload_whisper(&config, &id);
         }
         let state = lock(&meeting).state;
         startup_log::log(&format!("[meeting] {} end steps done: {:?}", id, state));
         self.end_step(&id);
+    }
+
+    /// With the cloud engine the local model is not kept, unless another
+    /// meeting still transcribes with it.
+    fn unload_whisper(&self, config: &Config, id: &str) {
+        if config.unload_after && !self.whisper_in_use(id) {
+            self.engine.invalidate();
+        }
     }
 
     /// Whether a meeting other than `id` records or transcribes its rest.
@@ -672,9 +726,7 @@ impl Meetings {
             m.title = title.clone();
             Ok(())
         })?;
-        if lock(&self.status).recording.as_ref().is_some_and(|r| r.id == id) {
-            self.change_recording(id, |r| r.title = title);
-        }
+        self.change_recording(id, |r| r.title = title);
         Ok(())
     }
 
@@ -803,20 +855,7 @@ impl Meetings {
             if let Err(e) = &written {
                 startup_log::log(&format!("[meeting] {}: no notes: {}", id, e));
             }
-            let saved = {
-                let _open = lock(&this.open);
-                store::load(&this.root, &id).and_then(|mut m| {
-                    match written {
-                        Ok(n) => {
-                            m.notes = Some(n);
-                            m.notes_error = None;
-                        }
-                        Err(e) => m.notes_error = Some(e),
-                    }
-                    m.save(&this.root)
-                })
-            };
-            if let Err(e) = saved {
+            if let Err(e) = this.put_notes(&id, written) {
                 startup_log::log(&format!("[meeting] {}: notes not saved: {}", id, e));
             }
             this.end_notes(&id);
@@ -826,6 +865,22 @@ impl Meetings {
             return Err(e.to_string());
         }
         Ok(())
+    }
+
+    /// Put the notes "Write notes" wrote (or why there are none) into the
+    /// meeting as it is on disk now, under `open`'s lock: edits made while
+    /// they were written stay, and so do earlier notes when there are none.
+    fn put_notes(&self, id: &str, written: Result<Notes, String>) -> Result<(), String> {
+        let _open = lock(&self.open);
+        let mut m = store::load(&self.root, id)?;
+        match written {
+            Ok(n) => {
+                m.notes = Some(n);
+                m.notes_error = None;
+            }
+            Err(e) => m.notes_error = Some(e),
+        }
+        m.save(&self.root)
     }
 
     fn end_notes(&self, id: &str) {
@@ -911,7 +966,13 @@ impl Meetings {
     /// thread.
     pub fn shutdown(&self) {
         self.stop_playing();
-        let Some(live) = lock(&self.recording).take() else { return };
+        let live = {
+            let mut live = lock(&self.recording);
+            let Some(live) = live.take() else { return };
+            // Not sent (see above).
+            lock(&self.status).recording = None;
+            live
+        };
         let Live { id, meeting, capture, stop, worker, .. } = live;
         stop.store(true, SeqCst);
         let samples = capture.stop();
@@ -934,6 +995,19 @@ impl Meetings {
     }
 }
 
+/// Whether a stop asked for `only` (or any meeting, `None`) stops the
+/// meeting that records, `recording`.
+fn stops(recording: Option<&str>, only: Option<&str>) -> bool {
+    recording.is_some_and(|id| only.is_none_or(|only| only == id))
+}
+
+/// Whether the notes may start the AI: not after a Free GPU press during
+/// the end steps (not released at their start, released now). Freed before
+/// them, Stop loads the models.
+fn notes_allowed(released_at_start: bool, released_now: bool) -> bool {
+    released_at_start || !released_now
+}
+
 fn save(root: &Path, meeting: &Meeting) {
     if let Err(e) = meeting.save(root) {
         startup_log::log(&format!("[meeting] {} not saved: {}", meeting.id, e));
@@ -943,7 +1017,9 @@ fn save(root: &Path, meeting: &Meeting) {
 /// The live transcription while a meeting records. Whisper loads first if
 /// it is not loaded (not yet, or the battery watcher unloaded it), but not
 /// after the Free GPU hotkey: then the transcript waits for the next
-/// dictation, the hotkey again, or Stop (Ruling 6).
+/// dictation, the hotkey again, or Stop (Ruling 6). A panic ends the live
+/// transcription with the bar saying "paused"; Stop transcribes the rest
+/// from the saved lines on.
 #[allow(clippy::too_many_arguments)]
 fn transcribe_live(
     this: Weak<Meetings>,
@@ -955,39 +1031,49 @@ fn transcribe_live(
     (engine, model, backend): (Arc<WhisperEngine>, PathBuf, String),
     mut paused: bool,
 ) -> (Worker, Whisper) {
-    if !engine.released() {
-        if let Err(e) = engine.ensure_loaded(&model, &backend) {
-            startup_log::log(&format!("[meeting] Whisper did not load: {}", e));
-        }
-    }
-    drop(engine);
     let mut worker = Worker::new(0, 0, &[]);
-    while !stop.load(SeqCst) {
-        let Some(meetings) = this.upgrade() else { break };
-        match worker.step(&source, &mut whisper, false) {
-            Ok(Some(piece)) => {
-                if paused {
-                    paused = false;
-                    meetings.set_paused(&id, false);
-                }
-                let mut m = lock(&meeting);
-                finish::apply_piece(&mut m, piece);
-                save(&meetings.root, &m);
-                meetings.emit_lines(&m);
-                // Catching up: the next piece at once.
-                continue;
+    let live = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        if !engine.released() {
+            if let Err(e) = engine.ensure_loaded(&model, &backend) {
+                startup_log::log(&format!("[meeting] Whisper did not load: {}", e));
             }
-            Ok(None) => {}
-            Err(e) if e == PAUSED => {
-                if !paused {
-                    paused = true;
-                    meetings.set_paused(&id, true);
-                }
-            }
-            Err(e) => startup_log::log(&format!("[meeting] {}: a piece was skipped: {}", id, e)),
         }
-        drop(meetings);
-        std::thread::sleep(TICK);
+        while !stop.load(SeqCst) {
+            let Some(meetings) = this.upgrade() else { break };
+            match worker.step(&source, &mut whisper, false) {
+                Ok(Some(piece)) => {
+                    if paused {
+                        paused = false;
+                        meetings.set_paused(&id, false);
+                    }
+                    let mut m = lock(&meeting);
+                    finish::apply_piece(&mut m, piece);
+                    save(&meetings.root, &m);
+                    meetings.emit_lines(&m);
+                    // Catching up: the next piece at once.
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) if e == PAUSED => {
+                    if !paused {
+                        paused = true;
+                        meetings.set_paused(&id, true);
+                    }
+                }
+                Err(e) => startup_log::log(&format!("[meeting] {}: a piece was skipped: {}", id, e)),
+            }
+            drop(meetings);
+            std::thread::sleep(TICK);
+        }
+    }));
+    if live.is_err() {
+        startup_log::log(&format!("[meeting] {}: the live transcription stopped with a panic; Stop transcribes the rest", id));
+        if let Some(meetings) = this.upgrade() {
+            meetings.set_paused(&id, true);
+        }
+        whisper.release();
+        let m = lock(&meeting);
+        worker = Worker::new(m.you_done_ms, m.others_done_ms, &m.lines);
     }
     (worker, whisper)
 }
@@ -1202,18 +1288,85 @@ mod tests {
 
     #[test]
     fn warnings_and_pauses_go_to_the_meeting_they_are_for() {
-        let (_, meetings, _) = setup("bar");
+        let (_, meetings, events) = setup("bar");
         meetings.status.lock().unwrap().recording =
             Some(Recording { id: "m-000000000001".into(), title: "Call".into(), started_at: 0, warnings: vec![], paused: false });
+        let sent = || events.lock().unwrap().iter().filter(|e| matches!(e, Event::Status(_))).count();
         // A meeting that stopped while the next one started.
         meetings.warning("m-000000000002", Warning::MicLost, true);
         meetings.set_paused("m-000000000002", true);
+        meetings.rename("m-000000000002", "Old").unwrap_err();
+        assert_eq!(sent(), 0, "nothing for a meeting that no longer records");
         meetings.warning("m-000000000001", Warning::NoPcSound, true);
+        meetings.warning("m-000000000001", Warning::PcLost, true);
         meetings.warning("m-000000000001", Warning::PcLost, true);
         meetings.warning("m-000000000001", Warning::NoPcSound, false);
         meetings.set_paused("m-000000000001", true);
+        meetings.set_paused("m-000000000001", true);
         let r = meetings.status().recording.unwrap();
         assert_eq!((r.warnings, r.paused), (vec![Warning::PcLost], true));
+        assert_eq!(sent(), 4, "only changes are sent");
+    }
+
+    #[test]
+    fn a_stop_for_another_meeting_stops_nothing() {
+        assert!(stops(Some("m-000000000001"), None));
+        assert!(stops(Some("m-000000000001"), Some("m-000000000001")));
+        assert!(!stops(Some("m-000000000001"), Some("m-000000000002")), "the 4-hour limit of a meeting already stopped");
+        assert!(!stops(None, None));
+        assert!(!stops(None, Some("m-000000000001")));
+        let (_, meetings, _) = setup("stop_if");
+        assert_eq!(meetings.stop_if(Some("m-000000000002")), Err("not_recording".into()));
+    }
+
+    #[test]
+    fn a_free_gpu_press_during_the_end_steps_keeps_the_ai_off() {
+        assert!(notes_allowed(false, false), "nothing freed");
+        assert!(notes_allowed(true, true), "freed before Stop: Stop loads the models");
+        assert!(notes_allowed(true, false), "loaded again meanwhile");
+        assert!(!notes_allowed(false, true), "pressed during the end steps: it stays free");
+    }
+
+    #[test]
+    fn notes_written_meanwhile_keep_the_edits() {
+        let (app_dir, meetings, _) = setup("put_notes");
+        let root = store::root(&app_dir);
+        saved(&app_dir, "m-000000000001", State::Finished);
+        // While the AI writes: an edit, and the 30-day cleanup.
+        meetings.rename_speaker("m-000000000001", 0, "Anna").unwrap();
+        meetings.set_action_done("m-000000000001", 0, true).unwrap();
+        let mut m = store::load(&root, "m-000000000001").unwrap();
+        m.audio_deleted = true;
+        m.save(&root).unwrap();
+        meetings.put_notes("m-000000000001", Err("gpu_freed".into())).unwrap();
+        let m = meetings.get("m-000000000001").unwrap().meeting;
+        assert_eq!(m.notes_error.as_deref(), Some("gpu_freed"));
+        assert!(m.notes.as_ref().unwrap().action_items[0].done, "earlier notes stay, ticked");
+        let new = Notes { summary: "New.".into(), decisions: vec!["Ship".into()], action_items: vec![] };
+        meetings.put_notes("m-000000000001", Ok(new.clone())).unwrap();
+        let m = meetings.get("m-000000000001").unwrap().meeting;
+        assert_eq!((m.notes, m.notes_error), (Some(new), None));
+        assert_eq!(m.speaker_names, ["Anna"]);
+        assert!(m.audio_deleted);
+        assert_eq!(meetings.put_notes("m-0000000000ff", Err("empty".into())), Err("no_meeting".into()));
+    }
+
+    #[test]
+    fn the_cleanup_leaves_open_meetings_alone() {
+        let (app_dir, meetings, _) = setup("cleanup");
+        let root = store::root(&app_dir);
+        // Both ended in 1970.
+        let old = saved(&app_dir, "m-000000000001", State::Finished);
+        let open = saved(&app_dir, "m-000000000002", State::Finished);
+        for m in [&old, &open] {
+            std::fs::write(m.dir(&root).join(YOU_WAV), b"x").unwrap();
+        }
+        meetings.open.lock().unwrap().insert(open.id.clone(), Arc::new(Mutex::new(open.clone())));
+        meetings.delete_old_audio();
+        assert!(store::load(&root, &old.id).unwrap().audio_deleted);
+        assert!(!old.dir(&root).join(YOU_WAV).exists());
+        assert!(!store::load(&root, &open.id).unwrap().audio_deleted, "in memory: not touched");
+        assert!(open.dir(&root).join(YOU_WAV).exists());
     }
 
     #[test]
