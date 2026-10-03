@@ -31,6 +31,7 @@ pub mod speakers;
 pub mod export;
 pub mod pdf;
 pub mod soundboard;
+pub mod meeting;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
