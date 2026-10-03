@@ -220,7 +220,7 @@ impl Capture {
             }
         }
         drop(closed_tx);
-        let devices = Devices { slots, stops: device_stops.clone(), closed };
+        let devices = Devices { slots, stops: CloseDevices(device_stops.clone()), closed };
         let (s, w, max) = (stop.clone(), written.clone(), setup.max_samples);
         let thread = std::thread::Builder::new()
             .name("rf-meeting-capture".into())
@@ -490,10 +490,30 @@ impl Alerts {
 /// The writer's side of the device threads.
 struct Devices {
     slots: [Slot; 2],
-    /// Tells a device thread to close its stream and end.
-    stops: [Arc<AtomicBool>; 2],
+    stops: CloseDevices,
     /// Disconnected once every device thread has ended.
     closed: Receiver<()>,
+}
+
+/// The flags that tell the device threads to close their streams and end.
+/// Set when dropped: when the writer ends, also by a panic, no device stays
+/// open.
+struct CloseDevices([Arc<AtomicBool>; 2]);
+
+impl CloseDevices {
+    fn close(&self, track: Track) {
+        self.0[track.index()].store(true, SeqCst);
+    }
+
+    fn close_all(&self) {
+        TRACKS.into_iter().for_each(|track| self.close(track));
+    }
+}
+
+impl Drop for CloseDevices {
+    fn drop(&mut self) {
+        self.close_all();
+    }
 }
 
 fn write(
@@ -516,7 +536,7 @@ fn write(
         if stopping {
             // The streams close first, so the last callbacks' audio is in
             // the final write.
-            devices.stops.iter().for_each(|s| s.store(true, SeqCst));
+            devices.stops.close_all();
             if let Err(RecvTimeoutError::Timeout) = devices.closed.recv_timeout(CLOSE_WAIT) {
                 startup_log::log("[meeting] a device did not close its stream; left behind");
             }
@@ -547,7 +567,7 @@ fn write(
                 }
                 if let Err(e) = feed.write(expected, max, &zeros) {
                     startup_log::log(&format!("[meeting] writing the {:?} track failed, it ends here: {}", track, e));
-                    devices.stops[i].store(true, SeqCst);
+                    devices.stops.close(track);
                 }
                 written.set(track, feed.sink.file.samples());
             }
@@ -683,8 +703,10 @@ enum End {
 fn device_thread(track: Track, want: Want, slot: Slot, stop: Arc<AtomicBool>, _closed: Sender<()>) {
     let host = cpal::default_host();
     let mut failing = false;
+    // Set when the old stream's close counts toward the next open's time.
+    let mut opening_since: Option<Instant> = None;
     while !stop.load(SeqCst) {
-        *lock(&slot) = Device::Opening(Instant::now());
+        *lock(&slot) = Device::Opening(opening_since.take().unwrap_or_else(Instant::now));
         let opened = open(&host, track, &want);
         if stop.load(SeqCst) {
             // Stopped while it opened (perhaps long ago): closed at once.
@@ -702,7 +724,14 @@ fn device_thread(track: Track, want: Want, slot: Slot, stop: Arc<AtomicBool>, _c
                         startup_log::log(&format!("[meeting] {:?} track: {} {}", track, opened.device, why));
                         *lock(&slot) = Device::Down;
                     }
-                    End::Moved => startup_log::log(&format!("[meeting] {} is no longer the default output", opened.device)),
+                    End::Moved => {
+                        startup_log::log(&format!("[meeting] {} is no longer the default output", opened.device));
+                        // From now on the track waits for the new stream: a
+                        // close that hangs is a lost device after 6 s.
+                        let now = Instant::now();
+                        *lock(&slot) = Device::Opening(now);
+                        opening_since = Some(now);
+                    }
                     End::Stop => {}
                 }
                 // Closing joins the stream's thread and may hang on a wedged
@@ -993,6 +1022,20 @@ mod tests {
         assert!(!alerts.step(&at(999_999)).1);
         assert!(alerts.step(&at(1_000_000)).1);
         assert!(!alerts.step(&at(1_000_000)).1);
+    }
+
+    #[test]
+    fn the_devices_close_when_the_writer_ends_even_by_a_panic() {
+        let stops: [Arc<AtomicBool>; 2] = std::array::from_fn(|_| Arc::new(AtomicBool::new(false)));
+        let close = CloseDevices(stops.clone());
+        close.close(Track::Others);
+        assert_eq!(stops.each_ref().map(|s| s.load(SeqCst)), [false, true], "one track's file failed");
+        let writer = std::thread::spawn(move || {
+            let _close = close;
+            panic!("a bug in the writer");
+        });
+        assert!(writer.join().is_err());
+        assert!(stops.iter().all(|s| s.load(SeqCst)));
     }
 
     #[test]

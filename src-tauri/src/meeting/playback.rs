@@ -6,11 +6,11 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed, Ordering::SeqCst};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -30,6 +30,15 @@ const CHUNK: usize = RATE as usize / 4;
 const CLOSE_WAIT: Duration = Duration::from_secs(3);
 /// Once all is queued and taken, the output still plays what it holds.
 const TAIL: Duration = Duration::from_millis(50);
+/// An output without a callback for this long while there is audio to
+/// play has stalled: playback ends.
+const STALL: Duration = Duration::from_secs(3);
+
+/// Whether the output stalled: no callback for `quiet` with `queued`
+/// samples waiting (an output with nothing queued may idle).
+fn stalled(quiet: Duration, queued: usize) -> bool {
+    queued > 0 && quiet >= STALL
+}
 
 /// Two tracks played together (the shorter one ends in silence).
 pub fn mix(a: &[f32], b: &[f32]) -> Vec<f32> {
@@ -161,7 +170,8 @@ fn play(
     let queue = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(rate as usize * 2)));
     let q = queue.clone();
     let failed = Arc::new(AtomicBool::new(false));
-    let f = failed.clone();
+    let calls = Arc::new(AtomicU64::new(0));
+    let (f, c) = (failed.clone(), calls.clone());
     let mut boost: Option<Option<MmcssGuard>> = None;
     let stream = dev.build_output_stream(
         &config.config(),
@@ -170,6 +180,7 @@ fn play(
             if boost.is_none() {
                 boost = Some(boost_this_thread().1);
             }
+            c.fetch_add(1, Relaxed);
             let mut q = lock(&q);
             for frame in data.chunks_exact_mut(channels) {
                 frame.fill(q.pop_front().unwrap_or(0.0));
@@ -190,14 +201,26 @@ fn play(
     let mut resampler = Resampler::new(RATE, rate);
     let mut out = Vec::new();
     let mut input_done = false;
+    let (mut seen_calls, mut last_call) = (0, Instant::now());
     while !stop.load(SeqCst) {
-        if failed.load(SeqCst) {
-            startup_log::log("[meeting] the playback's output was lost");
-            drop(stream);
-            ended();
-            return;
+        let now = Instant::now();
+        let count = calls.load(Relaxed);
+        if count != seen_calls {
+            (seen_calls, last_call) = (count, now);
         }
         let queued = lock(&queue).len();
+        let lost = failed.load(SeqCst) || stalled(now - last_call, queued);
+        if lost || (input_done && queued == 0) {
+            if lost {
+                startup_log::log("[meeting] the playback's output was lost");
+            } else {
+                std::thread::sleep(TAIL);
+            }
+            // ▶ ends before the close, which may hang on a wedged device.
+            ended();
+            drop(stream);
+            return;
+        }
         if !input_done && queued < rate as usize {
             match source(CHUNK) {
                 Some(chunk) => {
@@ -208,12 +231,6 @@ fn play(
                 None => input_done = true,
             }
             continue;
-        }
-        if input_done && queued == 0 {
-            std::thread::sleep(TAIL);
-            drop(stream);
-            ended();
-            return;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -243,6 +260,13 @@ mod tests {
         assert_eq!(chunk.len(), 8_000);
         assert!(chunk.iter().all(|s| (s - 0.75).abs() < 1e-3), "{}", chunk[0]);
         assert_eq!(source(16_000), None);
+    }
+
+    #[test]
+    fn an_output_that_stops_calling_back_with_audio_waiting_has_stalled() {
+        assert!(!stalled(Duration::from_millis(2_900), 16_000));
+        assert!(stalled(STALL, 16_000));
+        assert!(!stalled(Duration::from_secs(60), 0), "nothing to play: it may idle");
     }
 
     #[test]
