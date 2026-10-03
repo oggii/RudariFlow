@@ -1,18 +1,20 @@
 //! ▶ in a meeting: both tracks mixed, from a paragraph on, on Windows'
 //! default output (in the live checks on the test override's device). A
-//! reader thread keeps about a second ready; the callback only copies.
+//! reader thread keeps about a second ready; the callback only copies. The
+//! thread also opens and closes the stream: neither may hang the caller
+//! (a wedged USB device can hang both for good).
 
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use super::capture::Resampler;
+use super::capture::{Resampler, OPEN_TIMEOUT};
 use super::store::{OTHERS_WAV, YOU_WAV};
 use super::wav::{self, RATE};
 use crate::audio::lock;
@@ -24,6 +26,10 @@ pub type Source = Box<dyn FnMut(usize) -> Option<Vec<f32>> + Send>;
 
 /// A quarter second per read.
 const CHUNK: usize = RATE as usize / 4;
+/// Stop waits this long for the stream to close; a wedged one is left behind.
+const CLOSE_WAIT: Duration = Duration::from_secs(3);
+/// Once all is queued and taken, the output still plays what it holds.
+const TAIL: Duration = Duration::from_millis(50);
 
 /// Two tracks played together (the shorter one ends in silence).
 pub fn mix(a: &[f32], b: &[f32]) -> Vec<f32> {
@@ -63,6 +69,8 @@ pub fn samples_source(samples: Vec<f32>) -> Source {
 
 pub struct Player {
     stop: Arc<AtomicBool>,
+    /// Disconnected once the thread has closed the stream and ended.
+    closed: mpsc::Receiver<()>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -73,18 +81,25 @@ impl Player {
     pub fn start(source: Source, device: Option<String>, ended: Box<dyn FnOnce() + Send>) -> Result<Player, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let (opened, wait) = mpsc::channel();
+        let (closed_tx, closed) = mpsc::channel::<()>();
         let s = stop.clone();
         let thread = std::thread::Builder::new()
             .name("rf-meeting-play".into())
-            .spawn(move || play(source, device, s, opened, ended))
+            .spawn(move || {
+                let _closed = closed_tx;
+                play(source, device, s, opened, ended)
+            })
             .map_err(|e| e.to_string())?;
-        match wait.recv() {
-            Ok(Ok(())) => Ok(Player { stop, thread: Some(thread) }),
-            Ok(Err(e)) => {
-                let _ = thread.join();
-                Err(e)
+        match wait.recv_timeout(OPEN_TIMEOUT) {
+            Ok(Ok(())) => Ok(Player { stop, closed, thread: Some(thread) }),
+            // The thread ends by itself.
+            Ok(Err(e)) => Err(e),
+            Err(RecvTimeoutError::Timeout) => {
+                // A stream that opens later closes at once.
+                stop.store(true, SeqCst);
+                Err("the output did not answer".to_string())
             }
-            Err(_) => Err("playback stopped".to_string()),
+            Err(RecvTimeoutError::Disconnected) => Err("playback stopped".to_string()),
         }
     }
 
@@ -96,10 +111,14 @@ impl Player {
         self.halt();
     }
 
+    /// Stop and wait for the stream to close, up to `CLOSE_WAIT`.
     fn halt(&mut self) {
         self.stop.store(true, SeqCst);
+        let _ = self.closed.recv_timeout(CLOSE_WAIT);
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            if t.is_finished() {
+                let _ = t.join();
+            }
         }
     }
 }
@@ -191,6 +210,7 @@ fn play(
             continue;
         }
         if input_done && queued == 0 {
+            std::thread::sleep(TAIL);
             drop(stream);
             ended();
             return;
