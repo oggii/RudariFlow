@@ -9,3 +9,4 @@ pub mod notes;
 pub mod playback;
 pub mod store;
 pub mod wav;
+pub mod worker;

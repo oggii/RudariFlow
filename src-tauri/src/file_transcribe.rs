@@ -87,21 +87,38 @@ pub fn transcribe(
         if cancel.load(Ordering::SeqCst) {
             return Err(CANCELLED.to_string());
         }
-        let block = &audio[start..end];
-        let mut new = Vec::new();
-        for (from, to) in speech_spans(block, 16_000, SKIP_PAUSE_SECS) {
-            let prompt = block_prompt(dictionary, segments.iter().chain(&new));
-            let mut found = engine.file_block(&mut run, &block[from..to], (start + from) as u64 / 16, &prompt)?;
-            for segment in &mut found {
-                segment.text = spelling(&segment.text);
-            }
-            new.extend(found);
-        }
+        let new = transcribe_stretch(engine, &mut run, &audio[start..end], start, dictionary, &segments, &spelling)?;
         progress(Progress { done_ms: end as u64 / 16, total_ms, segments: &new });
         segments.extend(new);
         start = end;
     }
     Ok((segments, run.language))
+}
+
+/// Whisper on one stretch of a recording (16 kHz mono) that starts at
+/// sample `offset`: silences of `SKIP_PAUSE_SECS` and more are left out,
+/// each stretch of speech gets the dictionary and the end of the text
+/// before it (`before`, then what this call found) in its prompt, and
+/// `spelling` fixes every segment. A file's block or a meeting's piece.
+pub fn transcribe_stretch(
+    engine: &WhisperEngine,
+    run: &mut FileRun,
+    audio: &[f32],
+    offset: usize,
+    dictionary: &str,
+    before: &[Segment],
+    spelling: &dyn Fn(&str) -> String,
+) -> Result<Vec<Segment>, String> {
+    let mut new: Vec<Segment> = Vec::new();
+    for (from, to) in speech_spans(audio, 16_000, SKIP_PAUSE_SECS) {
+        let prompt = block_prompt(dictionary, before.iter().chain(&new));
+        let mut found = engine.file_block(run, &audio[from..to], (offset + from) as u64 / 16, &prompt)?;
+        for segment in &mut found {
+            segment.text = spelling(&segment.text);
+        }
+        new.extend(found);
+    }
+    Ok(new)
 }
 
 /// Whisper's prompt for the next stretch: the dictionary, then the end of
