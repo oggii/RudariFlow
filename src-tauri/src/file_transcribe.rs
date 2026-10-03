@@ -377,14 +377,15 @@ mod tests {
 
     #[test]
     fn a_meeting_leaves_out_a_lone_click_a_file_keeps_it() {
-        // Speech (1.5 s), a click (20 ms), a blip (200 ms), a short "ja" (400 ms).
-        let audio = sounds(20.0, &[(1.0, 1_500), (6.0, 20), (10.0, 200), (15.0, 400)]);
+        // Speech (1.5 s), clicks (20 ms, 50 ms), a short "Ja." (250 ms).
+        let audio = sounds(20.0, &[(1.0, 1_500), (6.0, 20), (10.0, 50), (15.0, 250)]);
         let file = stretches(&audio, 0);
         assert_eq!(file, speech_spans(&audio, 16_000, SKIP_PAUSE_SECS), "the Files tab as before");
         assert_eq!(file.len(), 4);
-        let meeting = stretches(&audio, 300);
-        assert_eq!(meeting, vec![file[0], file[3]], "the click and the blip are no stretch");
-        assert!(stretches(&sounds(5.0, &[(1.0, 20)]), 300).is_empty());
+        let meeting = stretches(&audio, 200);
+        assert_eq!(meeting, vec![file[0], file[3]], "the clicks are no stretch, the short answer is");
+        assert!(stretches(&sounds(5.0, &[(1.0, 50)]), 200).is_empty());
+        assert_eq!(stretches(&sounds(5.0, &[(1.0, 200)]), 200).len(), 1, "200 ms of sound is enough");
     }
 
     #[test]

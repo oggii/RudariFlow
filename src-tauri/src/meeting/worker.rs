@@ -22,9 +22,10 @@ pub const PAUSED: &str = "paused";
 /// The end of a track's text that goes into the next prompt.
 const TAIL: usize = 20;
 /// A stretch of a meeting's track with less sound than this in it (a lone
-/// click, a short blip) does not go to Whisper, which makes "Vielen Dank."
-/// of it. The Files tab keeps every stretch.
-const MIN_SPEECH_MS: u64 = 300;
+/// click, 20–50 ms) does not go to Whisper, which makes "Vielen Dank." of
+/// it. A short answer on its own ("Ja.", "OK") has more. The Files tab
+/// keeps every stretch.
+const MIN_SPEECH_MS: u64 = 200;
 /// After the meeting's run could not be made (the GPU's memory is full: a
 /// game, say), Whisper is tried again this much later.
 const RUN_RETRY: Duration = Duration::from_secs(5);
@@ -572,9 +573,16 @@ mod tests {
     fn a_lone_click_never_reaches_whisper() {
         // No model loaded: anything that goes to Whisper fails with NO_MODEL.
         let mut whisper = Whisper::new(Arc::new(WhisperEngine::new()), "auto", String::new(), Box::new(|s: &str| s.to_string()));
-        let mut click = vec![0.0; 20 * 16_000];
-        click[5 * 16_000..5 * 16_000 + 320].iter_mut().for_each(|s| *s = 0.5);
-        assert_eq!(whisper.transcribe(&click, 0, &[]), Ok(Vec::new()), "no Whisper, no run");
+        // `ms` of sound at 5 s in 20 s of silence.
+        let alone = |ms: usize| {
+            let mut audio = vec![0.0; 20 * 16_000];
+            audio[5 * 16_000..5 * 16_000 + ms * 16].iter_mut().for_each(|s| *s = 0.5);
+            audio
+        };
+        for click_ms in [20, 50] {
+            assert_eq!(whisper.transcribe(&alone(click_ms), 0, &[]), Ok(Vec::new()), "{} ms: no Whisper, no run", click_ms);
+        }
+        assert_eq!(whisper.transcribe(&alone(250), 0, &[]).err().as_deref(), Some(NO_MODEL), "a short \"Ja.\" goes to Whisper");
         assert_eq!(whisper.transcribe(&talk(20.0, &[]), 0, &[]).err().as_deref(), Some(NO_MODEL), "speech goes to Whisper");
         assert!(!whisper.ready());
     }
