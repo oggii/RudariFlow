@@ -272,7 +272,7 @@ pub fn chunks(text: &str, max: usize) -> Vec<String> {
     out
 }
 
-fn written_in(language: Option<&str>) -> String {
+pub(crate) fn written_in(language: Option<&str>) -> String {
     match language {
         Some(language) => format!("Write in {}, the language of the transcript.", language),
         None => "Write in the language of the transcript.".to_string(),

@@ -3,5 +3,7 @@
 //! with the others told apart and AI notes after Stop. See
 //! docs/superpowers/specs/2026-10-03-meeting-mode-design.md.
 
+pub mod lines;
+pub mod notes;
 pub mod store;
 pub mod wav;
