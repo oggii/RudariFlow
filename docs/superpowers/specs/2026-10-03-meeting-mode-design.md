@@ -22,7 +22,7 @@ Not in version 1: a follow-up email draft, noticing calls by itself, live labels
   - A red bar: "● Recording 12:34" and **Stop**.
   - The floating pill shows a small red dot while a meeting records (also when the window is hidden).
   - A one-line reminder under the bar, dismissable for good: "Let the others know you're recording." (Recording a conversation without the others' consent is illegal in Switzerland and many other places.)
-  - A hint when no headphones are likely in use is not attempted; instead the reminder area mentions once: "Headphones keep your microphone from picking up the others."
+  - The reminder also says once: "Headphones keep your microphone from picking up the others." (RudariFlow can't tell headphones from speakers.)
   - **Live transcript:** paragraphs, each with its time (from the meeting start) and **You** or **Others**. It follows new text; scrolling up stops the following and shows **Jump to live**. Copy all, or select and copy.
 - **After Stop:** "Finishing…" with the step ("Transcribing the last minute", "Telling the speakers apart", "Writing the notes"), then:
   - **Notes** at the top: **Summary**, **Decisions**, **Action items** (a checklist; the ticks are saved), each with a copy button. A section with nothing in it says "None mentioned."
