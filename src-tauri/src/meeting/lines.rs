@@ -60,9 +60,33 @@ fn is_pause(audio: &[f32], at: usize) -> bool {
     (window.iter().map(|s| s * s).sum::<f32>() / window.len() as f32).sqrt() < PAUSE_RMS
 }
 
-/// The words of a line in lower case, without punctuation.
+/// The words of a line for the echo comparison: lower case, apostrophes
+/// removed ("don't" → "dont"), ß → "ss" and ä/ö/ü → a/o/u (for comparing
+/// only), split at punctuation. A hyphenated word counts as its parts and
+/// as the joined word ("Release-Notes" → release, notes, releasenotes).
+/// Single letters are ignored.
 fn words(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect()
+    let mut folded = String::with_capacity(text.len());
+    for c in text.chars().flat_map(char::to_lowercase) {
+        match c {
+            '\'' | '’' | 'ʼ' => {}
+            'ß' => folded.push_str("ss"),
+            'ä' => folded.push('a'),
+            'ö' => folded.push('o'),
+            'ü' => folded.push('u'),
+            c => folded.push(c),
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    for token in folded.split_whitespace() {
+        let parts: Vec<&str> = token.split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).collect();
+        out.extend(parts.iter().map(|p| p.to_string()));
+        if parts.len() > 1 && token.contains(['-', '\u{2010}', '\u{2011}']) {
+            out.push(parts.concat());
+        }
+    }
+    out.retain(|w| w.chars().count() >= 2);
+    out
 }
 
 fn same_moment(a: &Line, b: &Line) -> bool {
@@ -165,7 +189,12 @@ pub fn paragraphs(lines: &[Line]) -> Vec<ParagraphView> {
         .collect()
 }
 
-/// The first paragraph of `new` that the view showing `old` has to redraw.
+/// The first paragraph of `new` that the view showing `old` has to redraw:
+/// the length of the common start. This includes a tail that shrank (`new`
+/// is shorter than `old`, e.g. after an echo was dropped): the result is
+/// then `new.len()` and nothing is "changed" in `new`, so a caller that
+/// sends `new[n..]` must also compare the lengths to cut the view's old
+/// tail.
 pub fn changed_from(old: &[ParagraphView], new: &[ParagraphView]) -> usize {
     old.iter().zip(new).take_while(|(a, b)| a == b).count()
 }
@@ -333,5 +362,42 @@ mod tests {
             transcript(&lines, &names),
             "[0:00] You: Welcome.\n\n[1:05] Speaker 2: Thanks for having me.\n\n[1:10] Anna: Hi.\n\n[1:20] Others: Bye."
         );
+    }
+
+    #[test]
+    fn words_are_compared_without_case_accents_apostrophes_and_hyphens() {
+        assert_eq!(
+            words("Don’t miss the Release-Notes, STRAẞE für Müller – Öl & ä!"),
+            ["dont", "miss", "the", "release", "notes", "releasenotes", "strasse", "fur", "muller", "ol"]
+        );
+        assert_eq!(words("it's e-mail"), ["its", "mail", "email"], "single letters are ignored");
+        let others = line(0.0, 4.0, Track::Others, "Don't forget the Release-Notes für Müller, Grüße!");
+        let you = line(0.5, 4.0, Track::You, "dont forget the release notes fur muller grusse");
+        assert!(is_echo(&you, &[others, you.clone()]));
+    }
+
+    #[test]
+    fn the_echo_slack_is_one_second_either_way() {
+        let others = line(10.0, 14.0, Track::Others, "We ship version ten on Friday");
+        let near = line(14.9, 17.0, Track::You, "We ship version ten on Friday");
+        let far = line(15.1, 17.0, Track::You, "We ship version ten on Friday");
+        assert!(is_echo(&near, &[others.clone(), near.clone()]), "0.9 s after the end");
+        assert!(!is_echo(&far, &[others, far.clone()]), "1.1 s after the end");
+        // The You line ends before the Others line starts.
+        let others = line(6.0, 9.0, Track::Others, "We ship version ten on Friday");
+        let near = line(1.0, 5.1, Track::You, "We ship version ten on Friday");
+        let far = line(1.0, 4.9, Track::You, "We ship version ten on Friday");
+        assert!(is_echo(&near, &[others.clone(), near.clone()]), "0.9 s before the start");
+        assert!(!is_echo(&far, &[others, far.clone()]), "1.1 s before the start");
+    }
+
+    #[test]
+    fn a_gap_shorter_than_300_ms_is_not_a_pause() {
+        let mut audio = sound(40.0);
+        let at = (17.0 * RATE) as usize;
+        audio[at..at + 1_600].iter_mut().for_each(|s| *s = 0.0); // 100 ms of silence
+        assert_eq!(next_piece(&audio[..20 * 16_000], false), None, "a breath is no pause");
+        audio[at..at + 8_000].iter_mut().for_each(|s| *s = 0.0); // 500 ms
+        assert!(next_piece(&audio[..20 * 16_000], false).is_some());
     }
 }
