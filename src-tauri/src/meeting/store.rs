@@ -164,6 +164,8 @@ impl Meeting {
         self.started_at + self.length_ms
     }
 
+    /// Callers serialise saves of the same meeting (one owner); the temp
+    /// name is fixed.
     pub fn save(&self, root: &Path) -> Result<(), String> {
         let dir = self.dir(root);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -185,10 +187,10 @@ pub fn new_id() -> String {
     crate::soundboard::library::new_id("m")
 }
 
-/// Only ids `new_id` makes name a folder: a command's id never reaches
-/// outside `meetings\`.
+/// Only ids `new_id` makes (lowercase hex) name a folder: a command's id
+/// never reaches outside `meetings\`.
 pub fn valid_id(id: &str) -> bool {
-    id.len() == 14 && id.starts_with("m-") && id[2..].bytes().all(|b| b.is_ascii_hexdigit())
+    id.len() == 14 && id.starts_with("m-") && id[2..].bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 pub fn load(root: &Path, id: &str) -> Result<Meeting, String> {
@@ -196,7 +198,11 @@ pub fn load(root: &Path, id: &str) -> Result<Meeting, String> {
         return Err("no_meeting".to_string());
     }
     let text = std::fs::read_to_string(root.join(id).join(FILE)).map_err(|_| "no_meeting".to_string())?;
-    serde_json::from_str(&text).map_err(|e| format!("{} is damaged: {}", FILE, e))
+    let mut m: Meeting = serde_json::from_str(&text).map_err(|e| format!("{} is damaged: {}", FILE, e))?;
+    // The folder names the meeting: a copied or edited file cannot make
+    // save, cleanup or recovery act on another folder.
+    m.id = id.to_string();
+    Ok(m)
 }
 
 /// Every meeting, newest first. A damaged `meeting.json` is skipped (and
@@ -236,6 +242,19 @@ pub fn delete(root: &Path, id: &str) -> Result<(), String> {
     std::fs::remove_dir_all(root.join(id)).map_err(|e| e.to_string())
 }
 
+/// Remove an audio file; a file that is already gone counts as removed.
+/// Anything else (a lock, no permission) is logged and returns false.
+fn remove_audio(path: &Path) -> bool {
+    match std::fs::remove_file(path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => {
+            startup_log::log(&format!("[meeting] {} not deleted: {}", path.display(), e));
+            false
+        }
+    }
+}
+
 /// Delete the audio of meetings that ended `KEEP_AUDIO_MS` or longer ago.
 /// Returns how many lost their audio.
 pub fn delete_old_audio(root: &Path, now_ms: u64) -> usize {
@@ -245,8 +264,15 @@ pub fn delete_old_audio(root: &Path, now_ms: u64) -> usize {
         if !ended || m.audio_deleted || m.ended_at() + KEEP_AUDIO_MS > now_ms {
             continue;
         }
+        let mut all_gone = true;
         for track in [Track::You, Track::Others] {
-            let _ = std::fs::remove_file(m.dir(root).join(track.wav()));
+            if !remove_audio(&m.dir(root).join(track.wav())) {
+                all_gone = false;
+            }
+        }
+        if !all_gone {
+            // Retried at the next run.
+            continue;
         }
         m.audio_deleted = true;
         match m.save(root) {
@@ -259,7 +285,8 @@ pub fn delete_old_audio(root: &Path, now_ms: u64) -> usize {
 
 /// At start: a meeting still recording or finishing was cut off by a quit
 /// or a crash. Its WAV headers are repaired, its length taken from the
-/// audio, and it becomes interrupted. Returns the ids.
+/// audio, and it becomes interrupted. Returns the ids. Only at app start,
+/// before any meeting records.
 pub fn recover(root: &Path) -> Vec<String> {
     let mut recovered = Vec::new();
     for mut m in list(root) {
@@ -398,7 +425,7 @@ mod tests {
         let (a, b) = (new_id(), new_id());
         assert_ne!(a, b);
         assert!(valid_id(&a) && valid_id(&b), "{} {}", a, b);
-        for bad in ["", "m-", "m-0123456789aZ", "m-0123456789abc", "..\\x", "m-../../../../x", "s-0123456789ab"] {
+        for bad in ["", "m-", "m-0123456789AB", "m-0123456789aB", "m-0123456789aZ", "m-0123456789abc", "..\\x", "m-../../../../x", "s-0123456789ab"] {
             assert!(!valid_id(bad), "{}", bad);
         }
         let root = temp("ids");
@@ -432,6 +459,9 @@ mod tests {
         assert!(matches(&m, "  BUDGET "));
         assert!(matches(&m, "prodega"));
         assert!(!matches(&m, "holiday"));
+        m.lines.push(line(2_000, Track::You, "Die Übergabe ist morgen."));
+        assert!(matches(&m, "übergabe"));
+        assert!(matches(&m, "ÜBERGABE"));
     }
 
     #[test]
@@ -462,6 +492,40 @@ mod tests {
             assert_eq!(loaded.lines, m.lines, "the text stays");
         }
         assert_eq!(delete_old_audio(&root, now), 0, "once");
+    }
+
+    #[test]
+    fn a_file_already_gone_counts_as_deleted() {
+        let root = temp("gone");
+        let day = 24 * 3600 * 1000;
+        let mut m = meeting("m-000000000001", 0);
+        m.state = State::Finished;
+        m.save(&root).unwrap();
+        // No wav files at all: nothing to remove, so the flag is set.
+        assert_eq!(delete_old_audio(&root, 40 * day), 1);
+        assert!(load(&root, &m.id).unwrap().audio_deleted);
+        assert!(remove_audio(&root.join("nope.wav")));
+        // A directory cannot be removed as a file: not counted as deleted.
+        std::fs::create_dir_all(root.join("dir.wav")).unwrap();
+        assert!(!remove_audio(&root.join("dir.wav")));
+    }
+
+    #[test]
+    fn the_folder_names_the_meeting_not_the_file() {
+        let root = temp("folder_id");
+        let a = meeting("m-00000000000a", 1_000);
+        a.save(&root).unwrap();
+        let mut forged = meeting("..\\x", 1_000);
+        forged.title = "Forged".into();
+        std::fs::create_dir_all(root.join("m-00000000000b")).unwrap();
+        std::fs::write(root.join("m-00000000000b").join(FILE), serde_json::to_string(&forged).unwrap()).unwrap();
+        assert_eq!(load(&root, "m-00000000000b").unwrap().id, "m-00000000000b");
+        let mut copy = load(&root, "m-00000000000a").unwrap();
+        copy.id = "m-00000000000b".into();
+        std::fs::write(root.join("m-00000000000a").join(FILE), serde_json::to_string(&copy).unwrap()).unwrap();
+        assert_eq!(load(&root, "m-00000000000a").unwrap().id, "m-00000000000a", "not another meeting's id");
+        let ids: Vec<String> = list(&root).into_iter().map(|m| m.id).collect();
+        assert!(ids.iter().all(|id| valid_id(id)), "{:?}", ids);
     }
 
     #[test]

@@ -87,6 +87,8 @@ pub fn repair(path: &Path) -> Result<u64, String> {
 
 /// Samples `from..to` of a track (fewer at its end; none past it).
 pub fn read_range(path: &Path, from: u64, to: u64) -> Result<Vec<f32>, String> {
+    // Clamp to what the file holds before allocating anything.
+    let to = to.min(sample_count(path));
     if to <= from {
         return Ok(Vec::new());
     }
@@ -158,6 +160,8 @@ mod tests {
         assert_eq!(read_range(&path, 900, 5_000).unwrap().len(), 100, "clipped at the end");
         assert!(read_range(&path, 2_000, 3_000).unwrap().is_empty(), "past the end");
         assert!(read_range(&path, 10, 10).unwrap().is_empty());
+        assert_eq!(read_range(&path, 900, u64::MAX).unwrap().len(), 100, "an absurd end is clamped");
+        assert!(read_range(&path, u64::MAX - 1, u64::MAX).unwrap().is_empty());
         track.append(&audio).unwrap();
         assert_eq!(read_range(&path, 900, 1_100).unwrap().len(), 200, "the new part");
     }
