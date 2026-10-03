@@ -472,6 +472,15 @@ pub struct FileRun {
     priority: Priority,
     /// The model it was started with (`EngineState::loads`).
     load: u64,
+    /// That model's file.
+    model: PathBuf,
+}
+
+impl FileRun {
+    /// The file of the model this run transcribes with.
+    pub fn model_path(&self) -> &Path {
+        &self.model
+    }
 }
 
 /// Shortest stretch whose detected language is kept for the rest of a file.
@@ -493,7 +502,13 @@ impl WhisperEngine {
     fn start_run(&self, language: &str, priority: Priority) -> Result<FileRun, String> {
         let engine = self.lock();
         let loaded = engine.loaded.as_ref().ok_or_else(|| NO_MODEL.to_string())?;
-        Ok(FileRun { state: new_state(&loaded.ctx)?, language: language.to_string(), priority, load: engine.loads })
+        Ok(FileRun {
+            state: new_state(&loaded.ctx)?,
+            language: language.to_string(),
+            priority,
+            load: engine.loads,
+            model: loaded.model_path.clone(),
+        })
     }
 
     /// Whether a model is loaded, and whether `run` was started with it,

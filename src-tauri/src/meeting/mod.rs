@@ -2,11 +2,1243 @@
 //! microphone ("You") and what the PC plays ("Others"), transcribed live,
 //! with the others told apart and AI notes after Stop. See
 //! docs/superpowers/specs/2026-10-03-meeting-mode-design.md.
+//!
+//! `Meetings` holds the meeting that records, the ones whose end steps
+//! run, and the player, and reports every change as an `Event`. The Tauri
+//! commands, the tray items and the hotkey are in main.rs.
+//!
+//! Saving: `meeting.json` is written through a temp file of a fixed name,
+//! so two saves of one meeting must never run at once. A meeting in `open`
+//! (it records or runs its end steps) is saved only under its own mutex.
+//! Any other meeting is loaded, changed and saved only while `open`'s lock
+//! is held: the edits, Finish's first save, the notes of "Write notes",
+//! Delete and the daily audio cleanup. A meeting goes into `open` and out
+//! of it under that lock too, after its last save.
 
 pub mod capture;
+pub mod finish;
 pub mod lines;
 pub mod notes;
 pub mod playback;
 pub mod store;
 pub mod wav;
 pub mod worker;
+
+use std::collections::{HashMap, HashSet};
+use std::panic::AssertUnwindSafe;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
+use std::sync::{Arc, Mutex, Weak};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+
+use self::capture::{Capture, Report, Setup, Warning};
+use self::finish::Step;
+use self::lines::ParagraphView;
+use self::playback::Player;
+use self::store::{Meeting, Notes, State, Summary, OTHERS_WAV, YOU_WAV};
+use self::worker::{Tracks, Transcriber, Whisper, Worker, PAUSED};
+use crate::audio::lock;
+use crate::llm_server::{LlmServer, STOPPED};
+use crate::replacements::Moment;
+use crate::speakers::{self, SpeakerCount, Turn};
+use crate::startup_log;
+use crate::whisper_engine::WhisperEngine;
+use crate::{ai_cleanup, dictionary, file_transcribe, whisper_engine};
+
+/// Starting needs this much free space; an hour is about 230 MB of audio.
+pub const MIN_FREE_BYTES: u64 = 1 << 30;
+/// A meeting stops itself after 4 hours.
+pub const MAX_MS: u64 = 4 * 3600 * 1000;
+const TICK: Duration = Duration::from_millis(500);
+/// Old audio is looked for a minute after the start (not in its busiest
+/// moment: it loads every meeting), then once a day.
+const CLEANUP_AFTER: Duration = Duration::from_secs(60);
+const CLEANUP_EVERY: Duration = Duration::from_secs(24 * 3600);
+/// Quit waits this long for the live transcription to end (a piece may be
+/// running); then it is left behind.
+const QUIT_WAIT: Duration = Duration::from_secs(2);
+const PER_MS: u64 = wav::RATE as u64 / 1000;
+
+/// The meeting that records, as the bar shows it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Recording {
+    pub id: String,
+    pub title: String,
+    pub started_at: u64,
+    pub warnings: Vec<Warning>,
+    /// The models are unloaded (Free GPU, battery): the transcript waits.
+    pub paused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Finishing {
+    pub id: String,
+    pub step: Step,
+}
+
+/// "meeting-status": what records and what finishes (also a meeting whose
+/// notes "Write notes" writes, at `Step::Notes`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Status {
+    pub recording: Option<Recording>,
+    pub finishing: Vec<Finishing>,
+}
+
+/// A meeting with its paragraphs, as the tab shows it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingView {
+    pub meeting: Meeting,
+    pub paragraphs: Vec<ParagraphView>,
+}
+
+/// `meeting_state`: the status and the meeting that records, if any.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Current {
+    pub status: Status,
+    pub meeting: Option<MeetingView>,
+}
+
+/// "meeting-lines": the paragraphs from `from` on are new or changed; the
+/// view keeps its first `from` paragraphs and puts these after them (a view
+/// that had more drops the rest: an echo was taken out).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinesChanged {
+    pub id: String,
+    pub from: usize,
+    pub paragraphs: Vec<ParagraphView>,
+}
+
+/// "meeting-playing": what ▶ plays; `None` when it stopped or ended.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Playing {
+    pub id: String,
+    pub from_ms: u64,
+}
+
+/// What the views need to hear about; main.rs turns them into events.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    Status(Status),
+    Lines(LinesChanged),
+    /// A meeting was added, changed or deleted ("meetings-changed").
+    Changed,
+    Playing(Option<Playing>),
+    /// The meeting stopped itself at 4 hours (a notice in the pill).
+    Limit,
+}
+
+/// What a meeting is recorded and transcribed with: the settings at Start.
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub microphone: String,
+    pub whisper_model: String,
+    pub model_path: PathBuf,
+    pub gpu_backend: String,
+    /// Whisper language code or "auto".
+    pub language: String,
+    /// The dictionary's Whisper prompt.
+    pub dictionary: String,
+    /// The dictionary's terms, for the spelling of every line.
+    pub terms: Vec<String>,
+    pub swiss_spelling: bool,
+    /// The AI model for the notes, or why there are none ("ai_off",
+    /// "no_ai_model").
+    pub ai_model: Result<PathBuf, String>,
+    /// German default titles.
+    pub german: bool,
+    /// The engine is not "local": Whisper is unloaded again afterwards.
+    pub unload_after: bool,
+}
+
+impl Config {
+    fn spelling(&self) -> Box<dyn Fn(&str) -> String + Send> {
+        let (terms, swiss) = (self.terms.clone(), self.swiss_spelling);
+        Box::new(move |text: &str| {
+            let text = dictionary::apply_spelling(&file_transcribe::tidy_segment(text), &terms);
+            if swiss {
+                dictionary::swiss_spelling(&text)
+            } else {
+                text
+            }
+        })
+    }
+
+    fn whisper(&self, engine: &Arc<WhisperEngine>, language: &str) -> Whisper {
+        Whisper::new(engine.clone(), language, self.dictionary.clone(), self.spelling())
+    }
+}
+
+/// The meeting that records.
+struct Live {
+    id: String,
+    meeting: Arc<Mutex<Meeting>>,
+    capture: Capture,
+    stop: Arc<AtomicBool>,
+    worker: JoinHandle<(Worker, Whisper)>,
+    config: Config,
+}
+
+type Open = HashMap<String, Arc<Mutex<Meeting>>>;
+
+pub struct Meetings {
+    /// `<app data>\meetings`.
+    root: PathBuf,
+    app_dir: PathBuf,
+    engine: Arc<WhisperEngine>,
+    llm: Arc<LlmServer>,
+    recording: Mutex<Option<Live>>,
+    /// Meetings in memory while they record or run their end steps: edits
+    /// go through these, so a step that saves later does not undo them. Its
+    /// lock also guards the saves of the other meetings (see above).
+    open: Mutex<Open>,
+    /// Meetings whose notes "Write notes" is writing.
+    writing: Mutex<HashSet<String>>,
+    /// The paragraphs each view has, for "meeting-lines".
+    shown: Mutex<HashMap<String, Vec<ParagraphView>>>,
+    status: Mutex<Status>,
+    /// What plays: the meeting's id ("" for the test command) and the player.
+    player: Mutex<Option<(String, Player)>>,
+    /// Players started so far: the end of one that was replaced is not
+    /// reported as the end of the new one.
+    plays: AtomicU64,
+    events: Box<dyn Fn(Event) + Send + Sync>,
+    this: Weak<Meetings>,
+}
+
+impl Meetings {
+    /// The meetings in `<app_dir>\meetings`. Meetings a quit or crash cut
+    /// off become interrupted now; old audio is deleted soon after and once
+    /// a day.
+    pub fn new(
+        app_dir: &Path,
+        engine: Arc<WhisperEngine>,
+        llm: Arc<LlmServer>,
+        events: Box<dyn Fn(Event) + Send + Sync>,
+    ) -> Arc<Meetings> {
+        let root = store::root(app_dir);
+        // Before anything records or saves.
+        for id in store::recover(&root) {
+            startup_log::log(&format!("[meeting] {} was cut off: interrupted", id));
+        }
+        let meetings = Arc::new_cyclic(|this| Meetings {
+            root,
+            app_dir: app_dir.to_path_buf(),
+            engine,
+            llm,
+            recording: Mutex::new(None),
+            open: Mutex::new(HashMap::new()),
+            writing: Mutex::new(HashSet::new()),
+            shown: Mutex::new(HashMap::new()),
+            status: Mutex::new(Status::default()),
+            player: Mutex::new(None),
+            plays: AtomicU64::new(0),
+            events,
+            this: this.clone(),
+        });
+        let this = Arc::downgrade(&meetings);
+        let _ = std::thread::Builder::new().name("rf-meeting-cleanup".into()).spawn(move || {
+            std::thread::sleep(CLEANUP_AFTER);
+            while let Some(meetings) = this.upgrade() {
+                meetings.delete_old_audio();
+                drop(meetings);
+                std::thread::sleep(CLEANUP_EVERY);
+            }
+        });
+        meetings
+    }
+
+    /// The audio of meetings that ended 30 days ago. Under `open`'s lock:
+    /// what it changes (finished and interrupted meetings) nobody else saves
+    /// meanwhile; meetings in `open` are recording or finishing on disk and
+    /// not touched.
+    fn delete_old_audio(&self) {
+        let _open = lock(&self.open);
+        let deleted = store::delete_old_audio(&self.root, store::now_ms());
+        if deleted > 0 {
+            startup_log::log(&format!("[meeting] audio of {} meetings deleted (30 days)", deleted));
+        }
+    }
+
+    pub fn status(&self) -> Status {
+        lock(&self.status).clone()
+    }
+
+    pub fn is_recording(&self) -> bool {
+        lock(&self.recording).is_some()
+    }
+
+    fn emit(&self, event: Event) {
+        (self.events)(event);
+    }
+
+    /// Change the status and send it. Never while `recording` is locked:
+    /// main.rs updates the tray from it through the main thread, which may
+    /// be waiting for that lock (`is_recording`).
+    fn change_status(&self, change: impl FnOnce(&mut Status)) {
+        let status = {
+            let mut status = lock(&self.status);
+            change(&mut status);
+            status.clone()
+        };
+        self.emit(Event::Status(status));
+    }
+
+    /// The bar of meeting `id`, if it is the one that records.
+    fn change_recording(&self, id: &str, change: impl FnOnce(&mut Recording)) {
+        self.change_status(|s| {
+            if let Some(r) = s.recording.as_mut().filter(|r| r.id == id) {
+                change(r);
+            }
+        });
+    }
+
+    fn warning(&self, id: &str, warning: Warning, on: bool) {
+        self.change_recording(id, |r| {
+            r.warnings.retain(|w| *w != warning);
+            if on {
+                r.warnings.push(warning);
+            }
+        });
+    }
+
+    fn set_paused(&self, id: &str, paused: bool) {
+        self.change_recording(id, |r| r.paused = paused);
+    }
+
+    fn set_step(&self, id: &str, step: Step) {
+        self.change_status(|s| {
+            s.finishing.retain(|f| f.id != id);
+            s.finishing.push(Finishing { id: id.to_string(), step });
+        });
+    }
+
+    /// The end steps of `id` are over (finished or interrupted).
+    fn end_step(&self, id: &str) {
+        lock(&self.open).remove(id);
+        lock(&self.shown).remove(id);
+        self.change_status(|s| s.finishing.retain(|f| f.id != id));
+        self.emit(Event::Changed);
+    }
+
+    /// Under `open`'s lock: whether `id` records, runs its end steps or gets
+    /// its notes written.
+    fn busy(&self, open: &Open, id: &str) -> bool {
+        open.contains_key(id) || lock(&self.writing).contains(id)
+    }
+
+    /// Send the paragraphs that changed since the last time.
+    fn emit_lines(&self, meeting: &Meeting) {
+        let paragraphs = lines::paragraphs(&meeting.lines);
+        let mut shown = lock(&self.shown);
+        let old = shown.entry(meeting.id.clone()).or_default();
+        let from = lines::changed_from(old, &paragraphs);
+        if from == old.len() && from == paragraphs.len() {
+            return;
+        }
+        self.emit(Event::Lines(LinesChanged { id: meeting.id.clone(), from, paragraphs: paragraphs[from..].to_vec() }));
+        *old = paragraphs;
+    }
+
+    /// Start recording a meeting; returns its id. Errors: "already_recording",
+    /// "no_model" (no Whisper model downloaded), "disk_full" (under 1 GB
+    /// free), or why a file could not be created. Not on the main thread
+    /// (see `change_status`).
+    pub fn start(&self, title: Option<String>, config: Config) -> Result<String, String> {
+        let recording = {
+            let mut live = lock(&self.recording);
+            self.begin(&mut live, title, config)?
+        };
+        let id = recording.id.clone();
+        self.change_status(|s| s.recording = Some(recording));
+        self.emit(Event::Changed);
+        // ▶ would play into the loopback, so into this meeting (a ▶ that
+        // starts meanwhile stops itself, see `play`).
+        self.stop_playing();
+        startup_log::log(&format!("[meeting] {} started", id));
+        Ok(id)
+    }
+
+    /// `start` while `recording` is locked: the files, the capture and the
+    /// live transcription. Returns the bar's entry.
+    fn begin(&self, live: &mut Option<Live>, title: Option<String>, config: Config) -> Result<Recording, String> {
+        if live.is_some() {
+            return Err("already_recording".to_string());
+        }
+        if !config.model_path.exists() {
+            return Err("no_model".to_string());
+        }
+        std::fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;
+        if free_bytes(&self.root).is_some_and(|free| free < MIN_FREE_BYTES) {
+            return Err("disk_full".to_string());
+        }
+        let (now, local) = (store::now_ms(), Moment::now());
+        let title = title
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| store::default_title(config.german, &local));
+        let id = store::new_id();
+        let meeting =
+            Meeting::new(&id, &title, now, store::utc_offset_min(&local, now), &config.whisper_model, &config.language);
+        meeting.save(&self.root)?;
+        let dir = meeting.dir(&self.root);
+        let (this, warned) = (self.this.clone(), id.clone());
+        let report: Report = Box::new(move |warning, on| {
+            if let Some(m) = this.upgrade() {
+                m.warning(&warned, warning, on);
+            }
+        });
+        let (this, limited) = (self.this.clone(), id.clone());
+        let on_limit = Box::new(move || {
+            if let Some(m) = this.upgrade() {
+                // Not on the capture thread: stopping joins it.
+                std::thread::spawn(move || {
+                    if lock(&m.status).recording.as_ref().is_some_and(|r| r.id == limited) {
+                        m.emit(Event::Limit);
+                        let _ = m.stop_if(Some(&limited));
+                    }
+                });
+            }
+        });
+        let setup = Setup {
+            microphone: config.microphone.clone(),
+            loopback: capture::loopback_override(),
+            you: dir.join(YOU_WAV),
+            others: dir.join(OTHERS_WAV),
+            max_samples: MAX_MS * PER_MS,
+        };
+        let capture = match Capture::start(setup, report, on_limit) {
+            Ok(capture) => capture,
+            Err(e) => {
+                let _ = store::delete(&self.root, &id);
+                return Err(e);
+            }
+        };
+        // After the Free GPU hotkey the transcript waits (Ruling 6).
+        let paused = self.engine.released();
+        let meeting = Arc::new(Mutex::new(meeting));
+        let stop = Arc::new(AtomicBool::new(false));
+        let whisper = config.whisper(&self.engine, &config.language);
+        let source = Tracks::recording(dir, capture.written.clone());
+        let load = (self.engine.clone(), config.model_path.clone(), config.gpu_backend.clone());
+        let (this, m, s, live_id) = (self.this.clone(), meeting.clone(), stop.clone(), id.clone());
+        let worker = std::thread::Builder::new()
+            .name("rf-meeting-worker".into())
+            .spawn(move || transcribe_live(this, live_id, m, source, whisper, s, load, paused));
+        let worker = match worker {
+            Ok(worker) => worker,
+            Err(e) => {
+                capture.stop();
+                let _ = store::delete(&self.root, &id);
+                return Err(e.to_string());
+            }
+        };
+        lock(&self.open).insert(id.clone(), meeting.clone());
+        *live = Some(Live { id: id.clone(), meeting, capture, stop, worker, config });
+        Ok(Recording { id, title, started_at: now, warnings: Vec::new(), paused })
+    }
+
+    /// Stop recording; the end steps run in the background ("meeting-status"
+    /// shows them). Error "not_recording". Not on the main thread: the
+    /// devices take up to 3 s to close.
+    pub fn stop(&self) -> Result<(), String> {
+        self.stop_if(None)
+    }
+
+    /// `stop`, with `only`: only that meeting (the 4-hour limit).
+    fn stop_if(&self, only: Option<&str>) -> Result<(), String> {
+        let live = {
+            let mut live = lock(&self.recording);
+            if only.is_some_and(|id| live.as_ref().is_none_or(|l| l.id != id)) {
+                return Err("not_recording".to_string());
+            }
+            live.take().ok_or_else(|| "not_recording".to_string())?
+        };
+        let Live { id, meeting, capture, stop, worker, config } = live;
+        stop.store(true, SeqCst);
+        // "Finishing…" at once; the devices close meanwhile.
+        self.change_status(|s| {
+            if s.recording.as_ref().is_some_and(|r| r.id == id) {
+                s.recording = None;
+            }
+            s.finishing.retain(|f| f.id != id);
+            s.finishing.push(Finishing { id: id.clone(), step: Step::Transcribing });
+        });
+        let samples = capture.stop();
+        let dir = {
+            let mut m = lock(&meeting);
+            m.length_ms = samples / PER_MS;
+            m.state = State::Finishing;
+            save(&self.root, &m);
+            m.dir(&self.root)
+        };
+        startup_log::log(&format!("[meeting] {} stopped after {} s", id, samples / wav::RATE as u64));
+        self.emit(Event::Changed);
+        let Some(this) = self.this.upgrade() else {
+            self.interrupt(&id, &meeting);
+            return Err("shutting down".to_string());
+        };
+        let m = meeting.clone();
+        // The live transcription ends after the piece it may be running,
+        // which can wait for a block of a file: joined on the end steps'
+        // thread, not here.
+        let spawned = std::thread::Builder::new().name("rf-meeting-finish".into()).spawn(move || {
+            let (worker, whisper) = match worker.join() {
+                Ok(both) => both,
+                Err(_) => {
+                    startup_log::log("[meeting] the live transcription stopped with a panic; the end steps go on from the saved lines");
+                    let m = lock(&m);
+                    (Worker::new(m.you_done_ms, m.others_done_ms, &m.lines), config.whisper(&this.engine, &m.language))
+                }
+            };
+            this.end_steps_guarded(m, worker, whisper, Tracks::saved(dir), config)
+        });
+        if let Err(e) = spawned {
+            self.interrupt(&id, &meeting);
+            return Err(e.to_string());
+        }
+        Ok(())
+    }
+
+    /// The end steps of an open meeting could not start: interrupted, for
+    /// Finish later.
+    fn interrupt(&self, id: &str, meeting: &Mutex<Meeting>) {
+        {
+            let mut m = lock(meeting);
+            m.state = State::Interrupted;
+            save(&self.root, &m);
+        }
+        self.end_step(id);
+    }
+
+    /// `end_steps`; a panic in them leaves the meeting interrupted (Finish
+    /// later) rather than busy until the next start.
+    fn end_steps_guarded(&self, meeting: Arc<Mutex<Meeting>>, worker: Worker, whisper: Whisper, source: Tracks, config: Config) {
+        let id = lock(&meeting).id.clone();
+        let m = meeting.clone();
+        let steps = std::panic::catch_unwind(AssertUnwindSafe(|| self.end_steps(m, worker, whisper, source, config)));
+        if steps.is_err() {
+            startup_log::log(&format!("[meeting] {}: the end steps stopped with a panic", id));
+            let finished = lock(&meeting).state == State::Finished;
+            if finished {
+                self.end_step(&id);
+            } else {
+                self.interrupt(&id, &meeting);
+            }
+        }
+    }
+
+    /// The end steps of `meeting` (see `finish::run`) with the real Whisper,
+    /// speaker models and AI.
+    fn end_steps(&self, meeting: Arc<Mutex<Meeting>>, worker: Worker, mut whisper: Whisper, source: Tracks, config: Config) {
+        let (id, audio) = {
+            let m = lock(&meeting);
+            (m.id.clone(), !m.audio_deleted)
+        };
+        // Stop loads Whisper, also after the Free GPU hotkey, when there is
+        // audio left to transcribe.
+        let loaded = audio
+            && finish::left(&source, &worker)
+            && self
+                .engine
+                .ensure_loaded(&config.model_path, &config.gpu_backend)
+                .inspect_err(|e| startup_log::log(&format!("[meeting] {}: Whisper did not load: {}", id, e)))
+                .is_ok();
+        let app_dir = self.app_dir.clone();
+        let separate = |audio: &[f32]| -> Result<Vec<Turn>, String> {
+            if !speakers::models_ready(&app_dir) {
+                return Err("no_model".to_string());
+            }
+            if !speakers::runtime_available() {
+                return Err("no_runtime".to_string());
+            }
+            speakers::separate(audio, SpeakerCount::Auto, &app_dir, &mut |_, _| {})
+        };
+        let notes = |transcript: &str, language: &str| self.notes_now(&config.ai_model, &config.gpu_backend, transcript, language);
+        finish::run(
+            &self.root,
+            &meeting,
+            worker,
+            if loaded { Some(&mut whisper as &mut dyn Transcriber) } else { None },
+            &source,
+            separate,
+            notes,
+            &mut |step| self.set_step(&id, step),
+            &mut |m| self.emit_lines(m),
+        );
+        drop(whisper);
+        // With the cloud engine the local model is not kept, unless another
+        // meeting still transcribes with it.
+        if config.unload_after && !self.whisper_in_use(&id) {
+            self.engine.invalidate();
+        }
+        let state = lock(&meeting).state;
+        startup_log::log(&format!("[meeting] {} end steps done: {:?}", id, state));
+        self.end_step(&id);
+    }
+
+    /// Whether a meeting other than `id` records or transcribes its rest.
+    fn whisper_in_use(&self, id: &str) -> bool {
+        self.is_recording() || lock(&self.status).finishing.iter().any(|f| f.id != id && f.step == Step::Transcribing)
+    }
+
+    /// Notes by the AI, waited for. "gpu_freed" when the Free GPU hotkey
+    /// stopped the AI (as in the Files tab's summary).
+    fn notes_now(&self, model: &Result<PathBuf, String>, gpu_backend: &str, transcript: &str, language: &str) -> Result<Notes, String> {
+        let model = model.clone()?;
+        let language = whisper_engine::language_name(language).or_else(|| ai_cleanup::detect_language(transcript));
+        let freed = |e: String| if self.llm.released() { "gpu_freed".to_string() } else { e };
+        tauri::async_runtime::block_on(async {
+            let endpoint = self
+                .llm
+                .wait_ready(&model, Some(gpu_backend.to_string()), Duration::from_secs(120))
+                .await
+                .map_err(|e| if e == STOPPED { freed(e) } else { e })?;
+            notes::write(&endpoint, transcript, language.as_deref()).await.map_err(freed)
+        })
+    }
+
+    /// The status and the meeting that records, with its lines so far.
+    pub fn state(&self) -> Current {
+        let status = self.status();
+        let meeting = status.recording.as_ref().and_then(|r| self.get(&r.id).ok());
+        Current { status, meeting }
+    }
+
+    fn open_meeting(&self, id: &str) -> Option<Arc<Mutex<Meeting>>> {
+        lock(&self.open).get(id).cloned()
+    }
+
+    fn load(&self, id: &str) -> Result<Meeting, String> {
+        match self.open_meeting(id) {
+            Some(m) => Ok(lock(&m).clone()),
+            None => store::load(&self.root, id),
+        }
+    }
+
+    pub fn get(&self, id: &str) -> Result<MeetingView, String> {
+        let meeting = self.load(id)?;
+        let paragraphs = lines::paragraphs(&meeting.lines);
+        Ok(MeetingView { meeting, paragraphs })
+    }
+
+    /// The library, newest first; `query` filters by title and transcript.
+    pub fn list(&self, query: &str) -> Vec<Summary> {
+        let open = lock(&self.open).clone();
+        store::list(&self.root)
+            .into_iter()
+            .map(|m| open.get(&m.id).map_or(m, |o| lock(o).clone()))
+            .filter(|m| store::matches(m, query))
+            .map(|m| Summary::from(&m))
+            .collect()
+    }
+
+    /// Change a meeting and save it, in memory while it records or finishes.
+    fn edit(&self, id: &str, change: impl FnOnce(&mut Meeting) -> Result<(), String>) -> Result<(), String> {
+        {
+            let open = lock(&self.open);
+            match open.get(id) {
+                Some(meeting) => {
+                    let mut m = lock(meeting);
+                    change(&mut m)?;
+                    m.save(&self.root)?;
+                }
+                None => {
+                    let mut m = store::load(&self.root, id)?;
+                    change(&mut m)?;
+                    m.save(&self.root)?;
+                }
+            }
+        }
+        self.emit(Event::Changed);
+        Ok(())
+    }
+
+    pub fn rename(&self, id: &str, title: &str) -> Result<(), String> {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return Err("empty_name".to_string());
+        }
+        self.edit(id, |m| {
+            m.title = title.clone();
+            Ok(())
+        })?;
+        if lock(&self.status).recording.as_ref().is_some_and(|r| r.id == id) {
+            self.change_recording(id, |r| r.title = title);
+        }
+        Ok(())
+    }
+
+    /// Name Speaker `speaker + 1` of the others in this meeting ("" =
+    /// "Speaker n" again). "You" has no number and keeps its name.
+    pub fn rename_speaker(&self, id: &str, speaker: u8, name: &str) -> Result<(), String> {
+        let name = name.trim().to_string();
+        self.edit(id, |m| {
+            let at = speaker as usize;
+            if m.speaker_names.len() <= at {
+                m.speaker_names.resize(at + 1, String::new());
+            }
+            m.speaker_names[at] = name;
+            Ok(())
+        })
+    }
+
+    pub fn set_action_done(&self, id: &str, index: usize, done: bool) -> Result<(), String> {
+        self.edit(id, |m| {
+            let item = m.notes.as_mut().and_then(|n| n.action_items.get_mut(index)).ok_or_else(|| "no_item".to_string())?;
+            item.done = done;
+            Ok(())
+        })
+    }
+
+    /// Delete a meeting with its audio; not while it records, finishes or
+    /// gets its notes ("busy").
+    pub fn delete(&self, id: &str) -> Result<(), String> {
+        if self.busy(&lock(&self.open), id) {
+            return Err("busy".to_string());
+        }
+        // Not under `open`'s lock: a wedged output takes up to 3 s.
+        self.stop_playing_meeting(id);
+        {
+            let open = lock(&self.open);
+            if self.busy(&open, id) {
+                return Err("busy".to_string());
+            }
+            if !store::valid_id(id) || !self.root.join(id).is_dir() {
+                return Err("no_meeting".to_string());
+            }
+            store::delete(&self.root, id)?;
+        }
+        lock(&self.shown).remove(id);
+        self.emit(Event::Changed);
+        startup_log::log(&format!("[meeting] {} deleted", id));
+        Ok(())
+    }
+
+    /// Run the end steps of an interrupted meeting on its saved audio,
+    /// transcribing what its lines do not cover yet. Errors: "busy",
+    /// "no_meeting", "not_interrupted", "no_audio" (deleted after 30 days:
+    /// "Write notes" still works), "no_model" (Whisper is needed and not
+    /// downloaded).
+    pub fn finish(&self, id: &str, config: Config) -> Result<(), String> {
+        let (meeting, worker, source, language) = {
+            let mut open = lock(&self.open);
+            if self.busy(&open, id) {
+                return Err("busy".to_string());
+            }
+            let mut m = store::load(&self.root, id)?;
+            if m.state != State::Interrupted {
+                return Err("not_interrupted".to_string());
+            }
+            if m.audio_deleted {
+                return Err("no_audio".to_string());
+            }
+            let worker = Worker::new(m.you_done_ms, m.others_done_ms, &m.lines);
+            let source = Tracks::saved(m.dir(&self.root));
+            if finish::left(&source, &worker) && !config.model_path.exists() {
+                return Err("no_model".to_string());
+            }
+            m.state = State::Finishing;
+            m.save(&self.root)?;
+            let language = if m.language.is_empty() { config.language.clone() } else { m.language.clone() };
+            let meeting = Arc::new(Mutex::new(m));
+            open.insert(id.to_string(), meeting.clone());
+            (meeting, worker, source, language)
+        };
+        self.set_step(id, Step::Transcribing);
+        self.emit(Event::Changed);
+        let whisper = config.whisper(&self.engine, &language);
+        let Some(this) = self.this.upgrade() else {
+            self.interrupt(id, &meeting);
+            return Err("shutting down".to_string());
+        };
+        let m = meeting.clone();
+        let spawned = std::thread::Builder::new()
+            .name("rf-meeting-finish".into())
+            .spawn(move || this.end_steps_guarded(m, worker, whisper, source, config));
+        if let Err(e) = spawned {
+            self.interrupt(id, &meeting);
+            return Err(e.to_string());
+        }
+        startup_log::log(&format!("[meeting] {}: Finish", id));
+        Ok(())
+    }
+
+    /// Write the notes again or for the first time (the "Write notes"
+    /// button), with `model` even when AI cleanup is off. The meeting stays
+    /// on disk meanwhile (edits go there); the notes are put into it then.
+    pub fn write_notes(&self, id: &str, model: PathBuf, gpu_backend: String) -> Result<(), String> {
+        let (transcript, language) = {
+            let open = lock(&self.open);
+            if self.busy(&open, id) {
+                return Err("busy".to_string());
+            }
+            let m = store::load(&self.root, id)?;
+            lock(&self.writing).insert(id.to_string());
+            (lines::transcript(&m.lines, &m.speaker_names), m.language.clone())
+        };
+        self.set_step(id, Step::Notes);
+        let Some(this) = self.this.upgrade() else {
+            self.end_notes(id);
+            return Err("shutting down".to_string());
+        };
+        let notes_id = id.to_string();
+        let spawned = std::thread::Builder::new().name("rf-meeting-notes".into()).spawn(move || {
+            let id = notes_id;
+            let written = if transcript.trim().is_empty() {
+                Err("empty".to_string())
+            } else {
+                std::panic::catch_unwind(AssertUnwindSafe(|| this.notes_now(&Ok(model), &gpu_backend, &transcript, &language)))
+                    .unwrap_or_else(|_| Err("the notes stopped with a panic".to_string()))
+            };
+            if let Err(e) = &written {
+                startup_log::log(&format!("[meeting] {}: no notes: {}", id, e));
+            }
+            let saved = {
+                let _open = lock(&this.open);
+                store::load(&this.root, &id).and_then(|mut m| {
+                    match written {
+                        Ok(n) => {
+                            m.notes = Some(n);
+                            m.notes_error = None;
+                        }
+                        Err(e) => m.notes_error = Some(e),
+                    }
+                    m.save(&this.root)
+                })
+            };
+            if let Err(e) = saved {
+                startup_log::log(&format!("[meeting] {}: notes not saved: {}", id, e));
+            }
+            this.end_notes(&id);
+        });
+        if let Err(e) = spawned {
+            self.end_notes(id);
+            return Err(e.to_string());
+        }
+        Ok(())
+    }
+
+    fn end_notes(&self, id: &str) {
+        lock(&self.writing).remove(id);
+        self.change_status(|s| s.finishing.retain(|f| f.id != id));
+        self.emit(Event::Changed);
+    }
+
+    /// ▶: play the meeting from `from_ms`, both tracks mixed, on Windows'
+    /// default output (the test override's device in the live checks).
+    /// Error "recording" while any meeting records: the loopback would
+    /// record it into that meeting (Ruling 13).
+    pub fn play(&self, id: &str, from_ms: u64) -> Result<(), String> {
+        if self.is_recording() {
+            return Err("recording".to_string());
+        }
+        let m = self.load(id)?;
+        if m.audio_deleted {
+            return Err("no_audio".to_string());
+        }
+        self.stop_playing();
+        let source = playback::meeting_source(&m.dir(&self.root), from_ms);
+        // Before the start: a short rest may end at once.
+        self.emit(Event::Playing(Some(Playing { id: id.to_string(), from_ms })));
+        if let Err(e) = self.start_player(id, source, capture::loopback_override()) {
+            self.emit(Event::Playing(None));
+            return Err(e);
+        }
+        // A meeting that started meanwhile found no player yet.
+        if self.is_recording() {
+            self.stop_playing();
+            return Err("recording".to_string());
+        }
+        Ok(())
+    }
+
+    /// Test only: play 16 kHz mono samples on the test override's device,
+    /// never on a real output. Error "no_test_device" without one. Allowed
+    /// while a meeting records: that is what the live checks record.
+    pub fn test_play(&self, samples: Vec<f32>) -> Result<(), String> {
+        let device = capture::loopback_override().ok_or_else(|| "no_test_device".to_string())?;
+        self.stop_playing();
+        self.start_player("", playback::samples_source(samples), Some(device))
+    }
+
+    fn start_player(&self, id: &str, source: playback::Source, device: Option<String>) -> Result<(), String> {
+        let this = self.this.clone();
+        let nth = self.plays.fetch_add(1, SeqCst) + 1;
+        // On the player's own thread: only the event (dropping the player
+        // there would make the thread join itself).
+        let ended = Box::new(move || {
+            if let Some(m) = this.upgrade().filter(|m| m.plays.load(SeqCst) == nth) {
+                m.emit(Event::Playing(None));
+            }
+        });
+        let player = Player::start(source, device, ended)?;
+        *lock(&self.player) = Some((id.to_string(), player));
+        Ok(())
+    }
+
+    pub fn stop_playing(&self) {
+        let player = lock(&self.player).take();
+        if let Some((_, player)) = player {
+            let was_playing = !player.is_finished();
+            player.stop();
+            if was_playing {
+                self.emit(Event::Playing(None));
+            }
+        }
+    }
+
+    fn stop_playing_meeting(&self, id: &str) {
+        let plays = lock(&self.player).as_ref().is_some_and(|(playing, _)| playing == id);
+        if plays {
+            self.stop_playing();
+        }
+    }
+
+    /// Quit (on the main thread): a meeting that records stops at once and
+    /// becomes interrupted; Finish runs its end steps later (Ruling 3).
+    /// Meetings finishing stay "finishing" on disk and are recovered at the
+    /// next start. No status is sent: main.rs would wait for the main
+    /// thread.
+    pub fn shutdown(&self) {
+        self.stop_playing();
+        let Some(live) = lock(&self.recording).take() else { return };
+        let Live { id, meeting, capture, stop, worker, .. } = live;
+        stop.store(true, SeqCst);
+        let samples = capture.stop();
+        {
+            let mut m = lock(&meeting);
+            m.length_ms = samples / PER_MS;
+            m.state = State::Interrupted;
+            save(&self.root, &m);
+        }
+        startup_log::log(&format!("[meeting] {} interrupted by quit", id));
+        // Not joined for long: a piece may be running, and wait for a block
+        // of a file. Its save keeps the state (same lock, same meeting).
+        let until = Instant::now() + QUIT_WAIT;
+        while !worker.is_finished() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if worker.is_finished() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn save(root: &Path, meeting: &Meeting) {
+    if let Err(e) = meeting.save(root) {
+        startup_log::log(&format!("[meeting] {} not saved: {}", meeting.id, e));
+    }
+}
+
+/// The live transcription while a meeting records. Whisper loads first if
+/// it is not loaded (not yet, or the battery watcher unloaded it), but not
+/// after the Free GPU hotkey: then the transcript waits for the next
+/// dictation, the hotkey again, or Stop (Ruling 6).
+#[allow(clippy::too_many_arguments)]
+fn transcribe_live(
+    this: Weak<Meetings>,
+    id: String,
+    meeting: Arc<Mutex<Meeting>>,
+    source: Tracks,
+    mut whisper: Whisper,
+    stop: Arc<AtomicBool>,
+    (engine, model, backend): (Arc<WhisperEngine>, PathBuf, String),
+    mut paused: bool,
+) -> (Worker, Whisper) {
+    if !engine.released() {
+        if let Err(e) = engine.ensure_loaded(&model, &backend) {
+            startup_log::log(&format!("[meeting] Whisper did not load: {}", e));
+        }
+    }
+    drop(engine);
+    let mut worker = Worker::new(0, 0, &[]);
+    while !stop.load(SeqCst) {
+        let Some(meetings) = this.upgrade() else { break };
+        match worker.step(&source, &mut whisper, false) {
+            Ok(Some(piece)) => {
+                if paused {
+                    paused = false;
+                    meetings.set_paused(&id, false);
+                }
+                let mut m = lock(&meeting);
+                finish::apply_piece(&mut m, piece);
+                save(&meetings.root, &m);
+                meetings.emit_lines(&m);
+                // Catching up: the next piece at once.
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) if e == PAUSED => {
+                if !paused {
+                    paused = true;
+                    meetings.set_paused(&id, true);
+                }
+            }
+            Err(e) => startup_log::log(&format!("[meeting] {}: a piece was skipped: {}", id, e)),
+        }
+        drop(meetings);
+        std::thread::sleep(TICK);
+    }
+    (worker, whisper)
+}
+
+/// Free bytes on the drive of `path`; `None` when Windows does not say.
+#[cfg(windows)]
+pub fn free_bytes(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut free = 0u64;
+    // SAFETY: a NUL-terminated path and a valid out pointer; the other two
+    // outputs may be null.
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) };
+    (ok != 0).then_some(free)
+}
+
+#[cfg(not(windows))]
+pub fn free_bytes(_path: &Path) -> Option<u64> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meeting::store::{ActionItem, Line, Track};
+    use crate::meeting::wav::TrackFile;
+
+    fn setup(name: &str) -> (PathBuf, Arc<Meetings>, Arc<Mutex<Vec<Event>>>) {
+        let app_dir = std::env::temp_dir().join(format!("rudariflow_meetings_{}", name));
+        let _ = std::fs::remove_dir_all(&app_dir);
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let seen = events.clone();
+        let llm = Arc::new(LlmServer::new(app_dir.join("llama"), app_dir.join("llm-server.log"), Box::new(|_| {})));
+        let meetings = Meetings::new(&app_dir, Arc::new(WhisperEngine::new()), llm, Box::new(move |e| seen.lock().unwrap().push(e)));
+        (app_dir, meetings, events)
+    }
+
+    fn config(app_dir: &Path) -> Config {
+        Config {
+            microphone: "default".into(),
+            whisper_model: "small".into(),
+            model_path: app_dir.join("ggml-small.bin"),
+            gpu_backend: "cpu".into(),
+            language: "auto".into(),
+            dictionary: String::new(),
+            terms: Vec::new(),
+            swiss_spelling: false,
+            ai_model: Err("ai_off".into()),
+            german: false,
+            unload_after: false,
+        }
+    }
+
+    fn saved(app_dir: &Path, id: &str, state: State) -> Meeting {
+        let mut m = Meeting::new(id, "Weekly", 1_000, 0, "small", "en");
+        m.state = state;
+        m.lines.push(Line { start_ms: 0, end_ms: 2_000, track: Track::Others, speaker: Some(0), text: "Hello there.".into() });
+        m.notes = Some(Notes { summary: "Hi.".into(), decisions: vec![], action_items: vec![ActionItem { text: "Call back".into(), done: false }] });
+        m.save(&store::root(app_dir)).unwrap();
+        m
+    }
+
+    #[test]
+    fn a_meeting_cut_off_last_time_is_interrupted_at_start() {
+        let app_dir = std::env::temp_dir().join("rudariflow_meetings_recover");
+        let _ = std::fs::remove_dir_all(&app_dir);
+        saved(&app_dir, "m-000000000001", State::Recording);
+        let llm = Arc::new(LlmServer::new(app_dir.join("llama"), app_dir.join("llm-server.log"), Box::new(|_| {})));
+        let meetings = Meetings::new(&app_dir, Arc::new(WhisperEngine::new()), llm, Box::new(|_| {}));
+        assert_eq!(meetings.get("m-000000000001").unwrap().meeting.state, State::Interrupted);
+        assert_eq!(meetings.status(), Status::default());
+    }
+
+    #[test]
+    fn meetings_are_renamed_ticked_and_deleted() {
+        let (app_dir, meetings, events) = setup("edit");
+        saved(&app_dir, "m-000000000001", State::Finished);
+        meetings.rename("m-000000000001", "  Budget  ").unwrap();
+        assert_eq!(meetings.rename("m-000000000001", " "), Err("empty_name".into()));
+        meetings.rename_speaker("m-000000000001", 2, "Anna").unwrap();
+        meetings.set_action_done("m-000000000001", 0, true).unwrap();
+        assert_eq!(meetings.set_action_done("m-000000000001", 5, true), Err("no_item".into()));
+        let view = meetings.get("m-000000000001").unwrap();
+        assert_eq!(view.meeting.title, "Budget");
+        assert_eq!(view.meeting.speaker_names, ["", "", "Anna"]);
+        assert!(view.meeting.notes.unwrap().action_items[0].done);
+        assert_eq!(view.paragraphs.len(), 1);
+        assert_eq!(view.paragraphs[0].speaker, Some(0));
+        assert_eq!(events.lock().unwrap().iter().filter(|e| **e == Event::Changed).count(), 3);
+        meetings.delete("m-000000000001").unwrap();
+        assert_eq!(meetings.get("m-000000000001").err().as_deref(), Some("no_meeting"));
+        assert_eq!(meetings.rename("m-000000000001", "x"), Err("no_meeting".into()));
+    }
+
+    #[test]
+    fn the_library_searches_titles_and_transcripts() {
+        let (app_dir, meetings, _) = setup("list");
+        saved(&app_dir, "m-000000000001", State::Finished);
+        let mut other = saved(&app_dir, "m-000000000002", State::Interrupted);
+        other.title = "Holiday plans".into();
+        other.started_at = 5_000;
+        other.save(&store::root(&app_dir)).unwrap();
+        let all: Vec<String> = meetings.list("").into_iter().map(|s| s.id).collect();
+        assert_eq!(all, ["m-000000000002", "m-000000000001"], "newest first");
+        assert_eq!(meetings.list("holiday").len(), 1);
+        assert_eq!(meetings.list("HELLO THERE").len(), 2, "transcript text");
+        assert!(meetings.list("nothing like it").is_empty());
+        assert_eq!(meetings.list("")[0].state, State::Interrupted);
+    }
+
+    #[test]
+    fn start_stop_and_finish_refuse_what_cannot_be_done() {
+        let (app_dir, meetings, _) = setup("refuse");
+        assert_eq!(meetings.start(None, config(&app_dir)), Err("no_model".into()), "no Whisper model downloaded");
+        assert!(!meetings.is_recording());
+        assert_eq!(meetings.stop(), Err("not_recording".into()));
+        saved(&app_dir, "m-000000000001", State::Finished);
+        assert_eq!(meetings.finish("m-000000000001", config(&app_dir)), Err("not_interrupted".into()));
+        assert_eq!(meetings.finish("m-0000000000ff", config(&app_dir)), Err("no_meeting".into()));
+        let mut gone = saved(&app_dir, "m-000000000002", State::Finished);
+        gone.audio_deleted = true;
+        gone.save(&store::root(&app_dir)).unwrap();
+        assert_eq!(meetings.play("m-000000000002", 0), Err("no_audio".into()));
+        assert_eq!(meetings.test_play(vec![0.0; 10]), Err("no_test_device".into()), "never on a real output");
+        assert_eq!(meetings.state().meeting, None);
+    }
+
+    /// Waits until no end steps and no notes run.
+    fn settled(meetings: &Meetings) {
+        let until = Instant::now() + Duration::from_secs(20);
+        while !meetings.status().finishing.is_empty() {
+            assert!(Instant::now() < until, "still busy: {:?}", meetings.status());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn finish_runs_the_end_steps_of_an_interrupted_meeting() {
+        let (app_dir, meetings, events) = setup("finish");
+        let root = store::root(&app_dir);
+        // All its audio transcribed (none on disk): no Whisper needed.
+        saved(&app_dir, "m-000000000001", State::Interrupted);
+        let mut gone = saved(&app_dir, "m-000000000002", State::Interrupted);
+        gone.audio_deleted = true;
+        gone.save(&root).unwrap();
+        assert_eq!(meetings.finish("m-000000000002", config(&app_dir)), Err("no_audio".into()), "Write notes still works");
+        let left = saved(&app_dir, "m-000000000003", State::Interrupted);
+        let mut track = TrackFile::create(&left.dir(&root).join(YOU_WAV)).unwrap();
+        track.append(&[0.1; 16_000]).unwrap();
+        track.finish().unwrap();
+        assert_eq!(meetings.finish("m-000000000003", config(&app_dir)), Err("no_model".into()), "a second to transcribe");
+        assert_eq!(store::load(&root, "m-000000000003").unwrap().state, State::Interrupted);
+        meetings.finish("m-000000000001", config(&app_dir)).unwrap();
+        settled(&meetings);
+        let done = meetings.get("m-000000000001").unwrap().meeting;
+        assert_eq!(done.state, State::Finished);
+        assert_eq!(done.speakers_error.as_deref(), Some("no_model"), "no speaker models here");
+        assert_eq!(done.notes_error.as_deref(), Some("ai_off"));
+        assert_eq!(done.notes.unwrap().summary, "Hi.", "earlier notes stay");
+        assert_eq!(meetings.finish("m-000000000001", config(&app_dir)), Err("not_interrupted".into()));
+        let mut steps: Vec<Step> = Vec::new();
+        for e in events.lock().unwrap().iter() {
+            if let Event::Status(s) = e {
+                if let Some(f) = s.finishing.iter().find(|f| f.id == "m-000000000001") {
+                    if steps.last() != Some(&f.step) {
+                        steps.push(f.step);
+                    }
+                }
+            }
+        }
+        assert_eq!(steps, [Step::Transcribing, Step::Speakers, Step::Notes]);
+        assert!(meetings.open.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_meeting_in_memory_is_edited_there_and_is_busy() {
+        let (app_dir, meetings, _) = setup("open");
+        let m = saved(&app_dir, "m-000000000001", State::Finishing);
+        let open = Arc::new(Mutex::new(m));
+        meetings.open.lock().unwrap().insert("m-000000000001".into(), open.clone());
+        meetings.rename("m-000000000001", "Live call").unwrap();
+        assert_eq!(open.lock().unwrap().title, "Live call", "in memory");
+        assert_eq!(store::load(&store::root(&app_dir), "m-000000000001").unwrap().title, "Live call", "and saved");
+        open.lock().unwrap().lines.clear();
+        assert!(meetings.get("m-000000000001").unwrap().meeting.lines.is_empty(), "shown from memory");
+        assert_eq!(meetings.list("live call").len(), 1);
+        assert_eq!(meetings.delete("m-000000000001"), Err("busy".into()));
+        assert_eq!(meetings.finish("m-000000000001", config(&app_dir)), Err("busy".into()));
+        assert_eq!(meetings.write_notes("m-000000000001", app_dir.join("ai.gguf"), "cpu".into()), Err("busy".into()));
+        assert_eq!(meetings.delete("m-0000000000ff"), Err("no_meeting".into()));
+        assert_eq!(meetings.delete("..\\..\\x"), Err("no_meeting".into()));
+    }
+
+    #[test]
+    fn write_notes_without_words_says_so() {
+        let (app_dir, meetings, events) = setup("notes");
+        let mut m = saved(&app_dir, "m-000000000001", State::Finished);
+        m.lines.clear();
+        m.save(&store::root(&app_dir)).unwrap();
+        meetings.write_notes("m-000000000001", app_dir.join("ai.gguf"), "cpu".into()).unwrap();
+        settled(&meetings);
+        let m = meetings.get("m-000000000001").unwrap().meeting;
+        assert_eq!(m.notes_error.as_deref(), Some("empty"));
+        assert_eq!(m.notes.unwrap().summary, "Hi.", "earlier notes stay");
+        assert!(meetings.writing.lock().unwrap().is_empty());
+        assert!(events.lock().unwrap().contains(&Event::Changed));
+        assert_eq!(meetings.write_notes("m-0000000000ff", app_dir.join("ai.gguf"), "cpu".into()), Err("no_meeting".into()));
+        assert!(meetings.writing.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn warnings_and_pauses_go_to_the_meeting_they_are_for() {
+        let (_, meetings, _) = setup("bar");
+        meetings.status.lock().unwrap().recording =
+            Some(Recording { id: "m-000000000001".into(), title: "Call".into(), started_at: 0, warnings: vec![], paused: false });
+        // A meeting that stopped while the next one started.
+        meetings.warning("m-000000000002", Warning::MicLost, true);
+        meetings.set_paused("m-000000000002", true);
+        meetings.warning("m-000000000001", Warning::NoPcSound, true);
+        meetings.warning("m-000000000001", Warning::PcLost, true);
+        meetings.warning("m-000000000001", Warning::NoPcSound, false);
+        meetings.set_paused("m-000000000001", true);
+        let r = meetings.status().recording.unwrap();
+        assert_eq!((r.warnings, r.paused), (vec![Warning::PcLost], true));
+    }
+
+    #[test]
+    fn only_changed_paragraphs_are_sent() {
+        let (_, meetings, events) = setup("lines");
+        let mut m = Meeting::new("m-000000000001", "Call", 0, 0, "small", "en");
+        m.lines.push(Line { start_ms: 0, end_ms: 1_000, track: Track::You, speaker: None, text: "One.".into() });
+        meetings.emit_lines(&m);
+        meetings.emit_lines(&m);
+        m.lines.push(Line { start_ms: 5_000, end_ms: 6_000, track: Track::Others, speaker: None, text: "Two.".into() });
+        meetings.emit_lines(&m);
+        let sent: Vec<(usize, usize)> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| if let Event::Lines(l) = e { Some((l.from, l.paragraphs.len())) } else { None })
+            .collect();
+        assert_eq!(sent, [(0, 1), (1, 1)], "nothing new, nothing sent");
+    }
+
+    #[test]
+    fn the_drive_has_free_space() {
+        let free = free_bytes(&std::env::temp_dir());
+        #[cfg(windows)]
+        assert!(free.is_some_and(|b| b > 0), "{:?}", free);
+        let _ = free;
+    }
+}

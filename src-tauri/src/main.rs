@@ -712,7 +712,6 @@ fn summary_wait_error(llm: &LlmServer, error: String) -> String {
 /// the Free GPU hotkey stopped the AI.
 #[tauri::command]
 async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<String, String> {
-    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
     let settings = state.settings.lock().unwrap().clone();
     let model = ai_models::find(&settings.ai_model).ok_or("no_ai_model")?;
     let model_path = ai_models::model_path(&state.app_dir, model);
@@ -727,34 +726,11 @@ async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String
         .await
         .map_err(|e| summary_wait_error(&state.llm, e))?;
     let started = std::time::Instant::now();
-    let mut material = text.trim().to_string();
-    let chunk_chars = file_transcribe::summary_chunk_chars(&material);
-    let mut requests = 0;
-    // Each round turns parts into notes; three rounds cover hours of text.
-    for _ in 0..3 {
-        let parts = file_transcribe::chunks(&material, chunk_chars);
-        if parts.len() <= 1 {
-            break;
-        }
-        let mut notes = Vec::new();
-        for part in &parts {
-            let _ = app.emit("summary-progress", (requests, requests + parts.len() - notes.len() + 1));
-            let answer = ai_cleanup::complete_in(
-                &endpoint,
-                ai_cleanup::LONG_SLOT,
-                &file_transcribe::notes_prompt(language),
-                part,
-                0.2,
-                700,
-                TIMEOUT,
-            )
-            .await
-            .map_err(|e| summary_error(&state.llm, e))?;
-            notes.push(answer.text.trim().to_string());
-            requests += 1;
-        }
-        material = notes.join("\n");
-    }
+    let (material, requests) = file_transcribe::condense(&endpoint, &text, language, &mut |done, total| {
+        let _ = app.emit("summary-progress", (done, total));
+    })
+    .await
+    .map_err(|e| summary_error(&state.llm, e))?;
     let _ = app.emit("summary-progress", (requests, requests + 1));
     let answer = ai_cleanup::complete_in(
         &endpoint,
@@ -763,7 +739,7 @@ async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String
         &material,
         0.2,
         900,
-        TIMEOUT,
+        file_transcribe::AI_TIMEOUT,
     )
     .await
     .map_err(|e| summary_error(&state.llm, e))?;

@@ -6,7 +6,9 @@
 //! remarks.
 
 use super::store::{ActionItem, Notes};
-use crate::file_transcribe::written_in;
+use crate::ai_cleanup::{complete_in, LONG_SLOT};
+use crate::file_transcribe::{condense, written_in, AI_TIMEOUT};
+use crate::llm_server::Endpoint;
 
 /// Instructions for the notes of a meeting (or of notes on its parts).
 pub fn meeting_prompt(language: Option<&str>) -> String {
@@ -227,6 +229,15 @@ pub fn parse(answer: &str) -> Notes {
     let mut notes = draft.notes;
     notes.summary = if is_nothing(&summary) { String::new() } else { summary };
     notes
+}
+
+/// The notes of `transcript` (see `lines::transcript`) by the AI at
+/// `endpoint`. A long meeting is condensed in parts first, as in the Files
+/// tab.
+pub async fn write(endpoint: &Endpoint, transcript: &str, language: Option<&str>) -> Result<Notes, String> {
+    let (material, _) = condense(endpoint, transcript, language, &mut |_, _| {}).await?;
+    let answer = complete_in(endpoint, LONG_SLOT, &meeting_prompt(language), &material, 0.2, 900, AI_TIMEOUT).await?;
+    Ok(parse(&answer.text))
 }
 
 #[cfg(test)]

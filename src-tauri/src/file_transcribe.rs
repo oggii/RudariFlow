@@ -4,8 +4,11 @@
 //! result.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
+use crate::ai_cleanup::{complete_in, LONG_SLOT};
 use crate::audio::{loud_ms, quiet_cut, speech_spans};
+use crate::llm_server::Endpoint;
 use crate::speakers::{assign, Turn};
 use crate::whisper_engine::{FileRun, Segment, WhisperEngine};
 
@@ -331,6 +334,40 @@ pub fn notes_prompt(language: Option<&str>) -> String {
          \"- \". {} Use only what the part says. No introduction.",
         written_in(language)
     )
+}
+
+/// How long one AI request of a summary or of meeting notes may take.
+pub const AI_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// A transcript made short enough for one last AI request: a long one is
+/// cut into parts (`chunks`), each part becomes notes (`notes_prompt`), up
+/// to three rounds, so hours of text fit. Returns the material and the
+/// requests it took; `progress(done, total)` comes before each request.
+pub async fn condense(
+    endpoint: &Endpoint,
+    text: &str,
+    language: Option<&str>,
+    progress: &mut (dyn FnMut(usize, usize) + Send),
+) -> Result<(String, usize), String> {
+    let mut material = text.trim().to_string();
+    let chunk_chars = summary_chunk_chars(&material);
+    let mut requests = 0;
+    for _ in 0..3 {
+        let parts = chunks(&material, chunk_chars);
+        if parts.len() <= 1 {
+            break;
+        }
+        let mut notes = Vec::new();
+        for part in &parts {
+            progress(requests, requests + parts.len() - notes.len() + 1);
+            let answer = complete_in(endpoint, LONG_SLOT, &notes_prompt(language), part, 0.2, 700, AI_TIMEOUT).await?;
+            notes.push(answer.text.trim().to_string());
+            requests += 1;
+        }
+        material = notes.join("
+");
+    }
+    Ok((material, requests))
 }
 
 #[cfg(test)]

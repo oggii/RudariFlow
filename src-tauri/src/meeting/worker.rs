@@ -4,7 +4,7 @@
 //! models are unloaded (Free GPU, battery) it waits, and catches up once
 //! something loads them again.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -48,6 +48,11 @@ pub trait Transcriber {
     fn transcribe(&mut self, audio: &[f32], offset: u64, before: &[Segment]) -> Result<Vec<Segment>, String>;
     /// The language code in use ("auto" until detected).
     fn language(&self) -> String;
+    /// The Whisper model the last piece was transcribed with ("small",
+    /// "large-v3-turbo"); "" when not known.
+    fn model(&self) -> String {
+        String::new()
+    }
 }
 
 /// Whether a transcription error means "not now" rather than a bad piece.
@@ -63,6 +68,8 @@ pub struct Piece {
     /// How far this track is transcribed now.
     pub done_ms: u64,
     pub language: String,
+    /// The Whisper model it was transcribed with ("" when not known).
+    pub model: String,
 }
 
 pub struct Worker {
@@ -164,7 +171,13 @@ impl Worker {
                 .into_iter()
                 .map(|s| Line { start_ms: s.start_ms, end_ms: s.end_ms, track, speaker: None, text: s.text })
                 .collect();
-            return Ok(Some(Piece { track, lines, done_ms: self.done[i] / (RATE as u64 / 1000), language: whisper.language() }));
+            return Ok(Some(Piece {
+                track,
+                lines,
+                done_ms: self.done[i] / (RATE as u64 / 1000),
+                language: whisper.language(),
+                model: whisper.model(),
+            }));
         }
         Ok(None)
     }
@@ -210,11 +223,27 @@ pub struct Whisper {
     spelling: Box<dyn Fn(&str) -> String + Send>,
     /// The run could not be made: not tried again before then.
     no_run_until: Option<Instant>,
+    /// The model of the last piece (`model_name`).
+    model: String,
+}
+
+/// "large-v3-turbo" of `…\ggml-large-v3-turbo.bin` (`model_filename`).
+fn model_name(path: &Path) -> String {
+    let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    file.strip_prefix("ggml-").and_then(|f| f.strip_suffix(".bin")).map_or(file.clone(), str::to_string)
 }
 
 impl Whisper {
     pub fn new(engine: Arc<WhisperEngine>, language: &str, dictionary: String, spelling: Box<dyn Fn(&str) -> String + Send>) -> Whisper {
-        Whisper { engine, run: None, language: language.to_string(), dictionary, spelling, no_run_until: None }
+        Whisper {
+            engine,
+            run: None,
+            language: language.to_string(),
+            dictionary,
+            spelling,
+            no_run_until: None,
+            model: String::new(),
+        }
     }
 
     /// A run with the loaded model. Without one (a state needs GPU memory
@@ -278,7 +307,10 @@ impl Transcriber for Whisper {
             );
             self.language = run.language.clone();
             match found {
-                Ok(segments) => return Ok(segments),
+                Ok(segments) => {
+                    self.model = model_name(run.model_path());
+                    return Ok(segments);
+                }
                 // The run's model is gone (`file_block`), and so is the run.
                 Err(e) if e == NO_MODEL => {
                     self.run = None;
@@ -300,6 +332,10 @@ impl Transcriber for Whisper {
 
     fn language(&self) -> String {
         self.language.clone()
+    }
+
+    fn model(&self) -> String {
+        self.model.clone()
     }
 }
 
@@ -616,6 +652,14 @@ mod tests {
         }
         assert_eq!((worker.done(Track::You), worker.done(Track::Others)), (40 * 16_000, 10 * 16_000));
         assert!(whisper.calls.is_empty());
+    }
+
+    #[test]
+    fn a_model_is_named_by_its_file() {
+        assert_eq!(model_name(Path::new(r"C:\data\ggml-large-v3-turbo.bin")), "large-v3-turbo");
+        assert_eq!(model_name(Path::new(r"C:\data\ggml-small.bin")), "small");
+        assert_eq!(model_name(Path::new(r"C:\data\custom.gguf")), "custom.gguf");
+        assert_eq!(Whisperer::default().model(), "", "not known");
     }
 
     #[test]
