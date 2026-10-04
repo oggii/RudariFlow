@@ -48,6 +48,9 @@ ogg = "0.9"
 opus = "0.4"
 futures-util = "0.3"
 tauri-plugin-autostart = "2.5.1"
+# A second start brings the running window to the front instead of running twice.
+# 2.5.x needs tauri 2.11; ~2.4 stays on the tauri 2.10 the app is locked to.
+tauri-plugin-single-instance = "~2.4"
 # raw-api re-exports whisper-rs-sys for ggml device enumeration.
 whisper-rs = { version = "0.16", features = ["raw-api"] }
 # Word export of file transcripts (src/export.rs); default features add

@@ -2594,7 +2594,79 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
         | tauri_plugin_window_state::StateFlags::MAXIMIZED
 }
 
+/// Brings the main window to the front: shown (it may be hidden in the
+/// tray), unminimized and focused. The tray's Show item and icon click and
+/// a second start of the app use it.
+fn show_main_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// Only one RudariFlow runs (a second start shows the running window and
+/// exits), except in a test build: `RUDARIFLOW_DATA_DIR` (see `get_app_dir`)
+/// marks it, and it has to run next to the installed app. The installed app
+/// never sets that variable.
+fn single_instance_wanted(data_dir_env: Option<&str>) -> bool {
+    data_dir_env.map_or(true, str::is_empty)
+}
+
+/// Whether a second start (the arguments the plugin hands over, the first is
+/// the program) brings the running window to the front. The autostart entry
+/// adds `--start-minimized`: at login, racing a manual start, it must not
+/// pull the window up.
+fn second_start_shows_window(args: &[String]) -> bool {
+    !args.iter().any(|a| a == "--start-minimized")
+}
+
+/// The plugin must be registered first. Its callback runs in the running
+/// instance when another one starts.
+fn single_instance_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri_plugin_single_instance::init(|app, args, _cwd| {
+        let shows = second_start_shows_window(&args);
+        startup_log::log(&format!("[single-instance] second start {:?}: {}", args, if shows { "showing the window" } else { "ignored" }));
+        if shows {
+            show_main_window(app);
+        }
+    })
+}
+
+/// Whether the plugin's mutex (`<identifier>-sim`, see its Windows code)
+/// exists: another instance runs. Looked at before this process loads
+/// anything, since loading is not harmless: `Meetings::new` turns a meeting
+/// that records into an interrupted one.
+#[cfg(windows)]
+fn another_instance_running(identifier: &str) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
+    let name: Vec<u16> = format!("{identifier}-sim").encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: `name` is NUL-terminated; the handle is closed at once.
+    unsafe {
+        let handle = OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr());
+        if handle.is_null() {
+            return false;
+        }
+        CloseHandle(handle);
+        true
+    }
+}
+
+#[cfg(not(windows))]
+fn another_instance_running(_identifier: &str) -> bool {
+    false
+}
+
 fn main() {
+    let context = tauri::generate_context!();
+    let single_instance = single_instance_wanted(std::env::var("RUDARIFLOW_DATA_DIR").ok().as_deref());
+    if single_instance && another_instance_running(&context.config().identifier) {
+        // Nothing of this process is loaded. The plugin tells the running
+        // instance and exits; building the app is all it takes.
+        let _ = tauri::Builder::default().plugin(single_instance_plugin()).build(context);
+        std::process::exit(0);
+    }
     let app_dir = get_app_dir();
     startup_log::init(&app_dir);
     let settings = Settings::load(&app_dir);
@@ -2621,7 +2693,11 @@ fn main() {
     let initial_german = settings.ui_language == "de";
     let initial_autostart = settings.autostart;
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    if single_instance {
+        builder = builder.plugin(single_instance_plugin());
+    }
+    builder
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -2957,24 +3033,14 @@ fn main() {
                 .tooltip("RudariFlow")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.unminimize();
-                            let _ = w.set_focus();
-                        }
-                    }
+                    "show" => show_main_window(app),
                     "meeting" => toggle_meeting(app),
                     "quit" => {
                         // A meeting that records: the window asks "Stop the
                         // meeting and quit?" (meeting_quit). The status is
                         // what the tray item and the window show.
                         if app.state::<AppState>().meetings.status().recording.is_some() {
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.unminimize();
-                                let _ = w.set_focus();
-                            }
+                            show_main_window(app);
                             let _ = app.emit("meeting-quit-asked", ());
                         } else {
                             app.exit(0);
@@ -2989,12 +3055,7 @@ fn main() {
                         ..
                     } = event
                     {
-                        let app = tray.app_handle();
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.unminimize();
-                            let _ = w.set_focus();
-                        }
+                        show_main_window(tray.app_handle());
                     }
                 })
                 .build(app)?;
@@ -3002,7 +3063,7 @@ fn main() {
             startup_log::log("setup() completed successfully");
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
             if let RunEvent::Exit = event {
@@ -3020,6 +3081,21 @@ fn main() {
 mod tests {
     use super::*;
     use rudariflow_lib::soundboard::library::Sound;
+
+    #[test]
+    fn single_instance_is_off_only_for_a_test_data_dir() {
+        assert!(single_instance_wanted(None));
+        assert!(single_instance_wanted(Some("")));
+        assert!(!single_instance_wanted(Some("test-data")));
+    }
+
+    #[test]
+    fn a_second_start_shows_the_window_unless_it_is_the_autostart_entry() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(second_start_shows_window(&args(&["rudariflow.exe"])));
+        assert!(!second_start_shows_window(&args(&["rudariflow.exe", "--start-minimized"])));
+        assert!(second_start_shows_window(&args(&["rudariflow.exe", "--other"])));
+    }
 
     #[test]
     fn hotkey_pause_holders_are_per_window() {

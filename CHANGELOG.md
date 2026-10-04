@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- RudariFlow no longer runs twice: starting it again brings the running window
+  to the front.
+
 ## [0.14.1] - 2026-10-02 - Sound hotkeys on/off, loops, two columns
 
 Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
