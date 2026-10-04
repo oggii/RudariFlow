@@ -93,6 +93,15 @@ pub struct Settings {
     /// Files tab: "off", "auto" or "2" … "8" speakers to separate.
     #[serde(rename = "fileSpeakers", default = "default_file_speakers")]
     pub file_speakers: String,
+    /// Starts and stops a meeting (Meetings tab). Empty = off, the default.
+    #[serde(rename = "meetingHotkey", default)]
+    pub meeting_hotkey: String,
+    /// The meeting bar's reminder to tell the others is dismissed for good.
+    #[serde(rename = "meetingReminderOff", default)]
+    pub meeting_reminder_off: bool,
+    /// The headphones hint was shown in a meeting once.
+    #[serde(rename = "meetingHeadphonesSeen", default)]
+    pub meeting_headphones_seen: bool,
 }
 
 fn default_auto() -> String {
@@ -201,6 +210,9 @@ impl Default for Settings {
             screen_context: true,
             learn_dictionary: true,
             file_speakers: default_file_speakers(),
+            meeting_hotkey: String::new(),
+            meeting_reminder_off: false,
+            meeting_headphones_seen: false,
         }
     }
 }
@@ -522,6 +534,42 @@ mod tests {
         settings.free_gpu_hotkey = "Ctrl+Mouse5".to_string();
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir).free_gpu_hotkey, "Ctrl+Mouse5");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn meeting_settings_are_off_by_default_and_kept() {
+        let s = Settings::default();
+        assert_eq!((s.meeting_hotkey.as_str(), s.meeting_reminder_off, s.meeting_headphones_seen), ("", false, false));
+        let before_meetings = r#"{
+            "microphone": "default",
+            "engine": "local",
+            "whisperModel": "small",
+            "groqApiKey": "",
+            "recordingMode": "toggle",
+            "hotkey": "Mouse5"
+        }"#;
+        let s: Settings = serde_json::from_str(before_meetings).unwrap();
+        assert_eq!((s.meeting_hotkey.as_str(), s.meeting_reminder_off), ("", false));
+
+        let dir = temp_dir().join("typr_test_meeting_settings");
+        let _ = fs::remove_dir_all(&dir);
+        let settings = Settings {
+            meeting_hotkey: "Ctrl+Alt+M".to_string(),
+            meeting_reminder_off: true,
+            meeting_headphones_seen: true,
+            ..Settings::default()
+        };
+        settings.save(&dir).unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!(
+            (loaded.meeting_hotkey.as_str(), loaded.meeting_reminder_off, loaded.meeting_headphones_seen),
+            ("Ctrl+Alt+M", true, true)
+        );
+        let json = fs::read_to_string(Settings::config_path(&dir)).unwrap();
+        for key in ["\"meetingHotkey\"", "\"meetingReminderOff\"", "\"meetingHeadphonesSeen\""] {
+            assert!(json.contains(key), "{}", key);
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }

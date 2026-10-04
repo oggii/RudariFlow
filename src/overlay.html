@@ -168,6 +168,31 @@
       body[data-edit="1"] .edit-chip { display: flex; }
       body[data-edit="1"] .mic-icon { fill: #9aa5ff; }
       body[data-edit="1"][data-state="recording"] .bar { background: #9aa5ff; }
+
+      /* A meeting records: a small red dot, also between dictations (the
+         window lets clicks through then, see recorder.rs rest_overlay). */
+      .meeting-dot {
+        display: none;
+        position: absolute;
+        top: 6px;
+        right: 22px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #ff5c5c;
+        box-shadow: 0 0 0 2px rgba(20, 20, 22, 0.92);
+        pointer-events: none;
+      }
+      body[data-meeting="1"] .meeting-dot { display: block; }
+      body[data-meeting="1"][data-state="ready"] .pill { visibility: hidden; }
+      body[data-meeting="1"][data-state="ready"] .meeting-dot {
+        top: auto;
+        bottom: 14px;
+        right: 50%;
+        width: 12px;
+        height: 12px;
+        transform: translateX(50%);
+      }
     </style>
   </head>
   <body data-state="ready">
@@ -186,6 +211,7 @@
     </div>
     <div class="notice" id="notice"></div>
     <div class="transcript" id="transcript"></div>
+    <div class="meeting-dot" id="meeting-dot" aria-hidden="true"></div>
     <script type="module">
       import { invoke } from "@tauri-apps/api/core";
       import { listen } from "@tauri-apps/api/event";
@@ -255,6 +281,12 @@
         }
       };
 
+      // Meeting mode: the red dot while a meeting records (Recorder::set_meeting_dot).
+      window.__meetingDot = (on) => {
+        if (on) document.body.dataset.meeting = "1";
+        else delete document.body.dataset.meeting;
+      };
+
       const transcriptEl = document.getElementById("transcript");
       let cumulative = "";
       listen("partial-transcript", (event) => {
@@ -294,6 +326,9 @@
           gpu_freed: "GPU freed", gpu_loading: "Loading models…", gpu_loaded: "Models loaded",
           gpu_failed: "Models could not be loaded",
           sb_hotkeys_off: "Sound hotkeys off", sb_hotkeys_on: "Sound hotkeys on",
+          mt_limit: "Meeting stopped at 4 hours", mt_no_model: "Download a Whisper model first",
+          mt_disk_full: "Not enough disk space for a meeting", mt_pc_check: "Wait for the PC check to finish",
+          mt_failed: "The meeting could not start",
         },
         de: {
           audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar", polishing: "Überarbeitung",
@@ -303,6 +338,9 @@
           gpu_freed: "GPU freigegeben", gpu_loading: "Modelle werden geladen…", gpu_loaded: "Modelle geladen",
           gpu_failed: "Modelle konnten nicht geladen werden",
           sb_hotkeys_off: "Sound-Tastenkürzel aus", sb_hotkeys_on: "Sound-Tastenkürzel ein",
+          mt_limit: "Meeting nach 4 Stunden beendet", mt_no_model: "Zuerst ein Whisper-Modell herunterladen",
+          mt_disk_full: "Zu wenig Speicherplatz für ein Meeting", mt_pc_check: "Erst den PC-Check abwarten",
+          mt_failed: "Das Meeting konnte nicht starten",
         },
       };
       function pickLang() {
@@ -366,6 +404,17 @@
         const text = { "hotkeys-off": t.sb_hotkeys_off, "hotkeys-on": t.sb_hotkeys_on }[event.payload];
         diag(`soundboard-notice received (${event.payload})`);
         if (text) showNotice(text, 3000);
+      });
+
+      // Meeting mode: "limit" (stopped at 4 hours), or why a start from the
+      // tray or the hotkey failed ("no_model", "disk_full", "pc_check", other codes).
+      listen("meeting-notice", (event) => {
+        const t = NOTICE_TEXT[pickLang()];
+        const text =
+          { limit: t.mt_limit, no_model: t.mt_no_model, disk_full: t.mt_disk_full, pc_check: t.mt_pc_check }[event.payload] ||
+          t.mt_failed;
+        diag(`meeting-notice received (${event.payload})`);
+        showNotice(text, 3000);
       });
 
       document.getElementById("cancel").addEventListener("click", async (e) => {

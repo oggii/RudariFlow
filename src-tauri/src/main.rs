@@ -32,6 +32,7 @@ use rudariflow_lib::whisper_engine::WhisperEngine;
 use rudariflow_lib::{ai_cleanup, file_transcribe, media, screen_context};
 use rudariflow_lib::soundboard::library::{Board, Devices};
 use rudariflow_lib::soundboard::{self, engine, AddResult, BoardState, Soundboard, Status};
+use rudariflow_lib::meeting::{self, Meetings};
 
 /// One file is transcribed at a time; setting the flag stops it after the
 /// block that is running.
@@ -54,6 +55,8 @@ struct AppState {
     gpu: GpuFree,
     /// The soundboard (library, engine while on).
     soundboard: Arc<Soundboard>,
+    /// Meeting mode: the meeting that records, the ones finishing, ▶.
+    meetings: Arc<Meetings>,
 }
 
 /// State of the Free GPU hotkey.
@@ -70,7 +73,8 @@ struct GpuFree {
 /// On battery, free the GPU after `power::IDLE_UNLOAD` without dictation
 /// (about 5 GB of video memory and 3 GB of RAM with the default models), so
 /// a laptop's graphics card can sleep. The next hotkey press loads both
-/// again while the user speaks.
+/// again while the user speaks. Not while a meeting records or runs its end
+/// steps: its live text would pause until Stop, and its notes would fail.
 fn watch_idle_on_battery(handle: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -78,7 +82,12 @@ fn watch_idle_on_battery(handle: AppHandle) {
             let state = handle.state::<AppState>();
             let on_battery = power::on_battery();
             let idle = state.last_activity.lock().unwrap().elapsed();
-            let busy = state.recorder.get_state() != RecordingState::Ready;
+            let in_meeting = meeting_busy(&state.meetings.status());
+            if in_meeting {
+                // The idle time counts from the meeting's end.
+                *state.last_activity.lock().unwrap() = std::time::Instant::now();
+            }
+            let busy = in_meeting || state.recorder.get_state() != RecordingState::Ready;
             // Only looked at when it matters: the engine lock waits for a
             // running transcription.
             let loaded = on_battery
@@ -186,6 +195,8 @@ enum HotkeyAction {
     RewriteLast,
     /// Free the GPU, or load the models again (see `free_gpu_press`).
     FreeGpu,
+    /// Start a meeting, or stop the one that records (Meetings tab).
+    Meeting,
     /// Stop every soundboard sound (registered while the board is on).
     StopSounds,
     /// Turn the sounds' hotkeys off or on again (registered while the board is on).
@@ -201,19 +212,21 @@ impl HotkeyAction {
             "pasteLast" => Ok(Self::PasteLast),
             "rewriteLast" => Ok(Self::RewriteLast),
             "freeGpu" => Ok(Self::FreeGpu),
+            "meeting" => Ok(Self::Meeting),
             _ => Err(format!("Unknown hotkey target: {}", target)),
         }
     }
 
     /// The name the UI knows this hotkey by: "dictation", "pasteLast",
-    /// "rewriteLast", "freeGpu", "stopSounds", "toggleSoundHotkeys", or the
-    /// sound's id.
+    /// "rewriteLast", "freeGpu", "meeting", "stopSounds", "toggleSoundHotkeys",
+    /// or the sound's id.
     fn target(&self) -> String {
         match self {
             Self::Dictation => "dictation".to_string(),
             Self::PasteLast => "pasteLast".to_string(),
             Self::RewriteLast => "rewriteLast".to_string(),
             Self::FreeGpu => "freeGpu".to_string(),
+            Self::Meeting => "meeting".to_string(),
             Self::StopSounds => "stopSounds".to_string(),
             Self::ToggleSoundHotkeys => "toggleSoundHotkeys".to_string(),
             Self::Sound(id) => id.clone(),
@@ -222,12 +235,13 @@ impl HotkeyAction {
 }
 
 /// Every hotkey setting with its action.
-fn hotkeys(s: &Settings) -> [(HotkeyAction, String); 4] {
+fn hotkeys(s: &Settings) -> [(HotkeyAction, String); 5] {
     [
         (HotkeyAction::Dictation, s.hotkey.clone()),
         (HotkeyAction::PasteLast, s.paste_last_hotkey.clone()),
         (HotkeyAction::RewriteLast, s.rewrite_last_hotkey.clone()),
         (HotkeyAction::FreeGpu, s.free_gpu_hotkey.clone()),
+        (HotkeyAction::Meeting, s.meeting_hotkey.clone()),
     ]
 }
 
@@ -256,7 +270,7 @@ fn board_hotkeys_with(board: &Board, sounds: bool) -> Vec<(HotkeyAction, String)
     .collect()
 }
 
-/// Every hotkey: the app's four and the soundboard's.
+/// Every hotkey: the app's five and the soundboard's.
 fn all_hotkeys(settings: &Settings, board: &Board) -> Vec<(HotkeyAction, String)> {
     let mut all = hotkeys(settings).to_vec();
     all.extend(board_hotkeys(board));
@@ -285,8 +299,8 @@ fn taken_by(all: &[(HotkeyAction, String)], action: &HotkeyAction, hotkey: &str)
     all.iter().find(|(a, h)| a != action && !h.is_empty() && same_hotkey(h, hotkey)).map(|(a, _)| a.clone())
 }
 
-/// The app hotkey (dictation, paste last, rewrite last, Free GPU) that has
-/// `hotkey`. A board key never registers over one: a mouse binding would
+/// The app hotkey (dictation, paste last, rewrite last, Free GPU, meeting)
+/// that has `hotkey`. A board key never registers over one: a mouse binding would
 /// replace its handler, and releasing the board key later would release it.
 fn app_hotkey_owner(app: &[(HotkeyAction, String)], hotkey: &str) -> Option<HotkeyAction> {
     app.iter().find(|(_, h)| !h.is_empty() && same_hotkey(h, hotkey)).map(|(a, _)| a.clone())
@@ -368,7 +382,11 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
         )
     };
     let warm_prompt = polish::system_prompt(&settings);
+    let language_changed = state.settings.lock().unwrap().ui_language != settings.ui_language;
     *state.settings.lock().unwrap() = settings;
+    if language_changed {
+        show_meeting_state(&app, true);
+    }
     if engine_invalidate {
         state.whisper_engine.invalidate();
         // Load the new model or backend now, not at the next dictation;
@@ -637,8 +655,10 @@ async fn transcribe_file(
     })
     .await
     .map_err(|e| format!("worker thread failed: {}", e))?;
-    // With the cloud engine the local model is not kept loaded.
-    if settings.engine != "local" {
+    // With the cloud engine the local model is not kept loaded. A meeting
+    // that transcribes with it keeps it (nothing would load it again until
+    // Stop) and unloads it itself after its transcript.
+    if settings.engine != "local" && !meeting_uses_whisper(&state.meetings.status()) {
         state.whisper_engine.invalidate();
     }
     *state.last_activity.lock().unwrap() = std::time::Instant::now();
@@ -886,10 +906,24 @@ struct PcCheckResult {
 
 /// PC check (Engine tab): Whisper on every GPU with flash attention on and
 /// off on the user's latest recording, the fastest setup applied, the AI
-/// server's speed measured, and a report to copy.
+/// server's speed measured, and a report to copy. Errors "meeting_busy"
+/// while a meeting records or runs its end steps, "busy" while a check runs.
 #[tauri::command]
 async fn pc_check(app: AppHandle, state: State<'_, AppState>) -> Result<PcCheckResult, String> {
     use rudariflow_lib::pc_check as check;
+    // No meeting starts or finishes from here on ("pc_check"), and none
+    // may be under way: the check unloads the engine's model and runs
+    // Whisper beside it, past the gate and the engine's lock. A meeting's
+    // live text would stop and its pieces would run against the variants.
+    let _running = PcCheckRunning::begin()?;
+    // `is_recording` waits for a meeting whose devices are opening right
+    // now (it is not in the status yet); off the async threads for that.
+    let meetings = state.meetings.clone();
+    let in_meeting =
+        tauri::async_runtime::spawn_blocking(move || meetings.is_recording() || meeting_busy(&meetings.status())).await;
+    if in_meeting.unwrap_or(true) {
+        return Err("meeting_busy".to_string());
+    }
     let settings = state.settings.lock().unwrap().clone();
     let model = whisper_model_to_load(&settings, &state.app_dir).ok_or("Download a Whisper model first")?;
     // The newest recording in the history, else five seconds of silence.
@@ -1307,9 +1341,9 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     }
 }
 
-/// `target` is "dictation", "pasteLast", "rewriteLast" or "freeGpu"; each
-/// takes a keyboard chord or a mouse side button. An empty `new_hotkey` turns
-/// paste-last, rewrite or free GPU off; dictation always needs one. A key a
+/// `target` is "dictation", "pasteLast", "rewriteLast", "freeGpu" or
+/// "meeting"; each takes a keyboard chord or a mouse side button. An empty
+/// `new_hotkey` turns all but dictation off; dictation always needs one. A key a
 /// soundboard hotkey has is refused too, even while the board is off.
 #[tauri::command]
 fn change_hotkey(
@@ -1349,7 +1383,8 @@ fn change_hotkey(
         HotkeyAction::PasteLast => settings.paste_last_hotkey = new_hotkey,
         HotkeyAction::RewriteLast => settings.rewrite_last_hotkey = new_hotkey,
         HotkeyAction::FreeGpu => settings.free_gpu_hotkey = new_hotkey,
-        // `from_target` names only the app's four.
+        HotkeyAction::Meeting => settings.meeting_hotkey = new_hotkey,
+        // `from_target` names only the app's five.
         HotkeyAction::StopSounds | HotkeyAction::ToggleSoundHotkeys | HotkeyAction::Sound(_) => {}
     }
     settings.save(&state.app_dir)?;
@@ -1438,7 +1473,7 @@ fn apply_hotkey_pause(app: &AppHandle, paused: bool) -> Result<(), String> {
         } else if !hotkey_is_registered(&app, &hotkey) {
             let dictation = action == HotkeyAction::Dictation;
             if let Err(e) = register_hotkey(&app, &hotkey, action) {
-                // An optional chord (paste last, rewrite, free GPU) taken by
+                // An optional chord (paste last, rewrite, free GPU, meeting) taken by
                 // another app must not block the dictation hotkey; it is
                 // logged by register_hotkey.
                 if dictation {
@@ -1460,6 +1495,8 @@ fn on_hotkey_event(handle: &AppHandle, action: &HotkeyAction, pressed: bool) {
         HotkeyAction::RewriteLast => on_rewrite_hotkey(handle, pressed),
         HotkeyAction::FreeGpu if pressed => on_free_gpu_hotkey(handle),
         HotkeyAction::FreeGpu => {}
+        HotkeyAction::Meeting if pressed => toggle_meeting(handle),
+        HotkeyAction::Meeting => {}
         HotkeyAction::StopSounds if pressed => on_stop_sounds_hotkey(handle),
         HotkeyAction::StopSounds => {}
         HotkeyAction::ToggleSoundHotkeys if pressed => on_toggle_sound_hotkeys_hotkey(handle),
@@ -1924,6 +1961,320 @@ async fn soundboard_set_always_on_top(app: AppHandle, state: State<'_, AppState>
     Ok(())
 }
 
+/// What a meeting records and transcribes with: the settings now.
+fn meeting_config_from(s: &Settings, app_dir: &std::path::Path) -> meeting::Config {
+    let ai_model = if !s.ai_cleanup {
+        Err("ai_off".to_string())
+    } else {
+        ai_models::find(&s.ai_model)
+            .map(|m| ai_models::model_path(app_dir, m))
+            .filter(|p| p.exists())
+            .ok_or_else(|| "no_ai_model".to_string())
+    };
+    meeting::Config {
+        microphone: s.microphone.clone(),
+        whisper_model: s.whisper_model.clone(),
+        model_path: app_dir.join(rudariflow_lib::whisper_engine::model_filename(&s.whisper_model)),
+        gpu_backend: s.gpu_backend.clone(),
+        language: s.language.clone(),
+        dictionary: screen_context::whisper_prompt(&[], &s.custom_prompt),
+        terms: dictionary::terms(&s.custom_prompt),
+        swiss_spelling: s.swiss_spelling,
+        ai_model,
+        german: s.ui_language == "de",
+        unload_after: s.engine != "local",
+    }
+}
+
+fn meeting_config(state: &AppState) -> meeting::Config {
+    let settings = state.settings.lock().unwrap().clone();
+    meeting_config_from(&settings, &state.app_dir)
+}
+
+/// Whether a meeting records or runs its end steps (also "Write notes"):
+/// the battery watcher keeps the models loaded, and the PC check is refused.
+fn meeting_busy(status: &meeting::Status) -> bool {
+    status.recording.is_some() || !status.finishing.is_empty()
+}
+
+/// Whether a meeting transcribes with Whisper now: it records, or its end
+/// steps transcribe the rest. With the cloud engine the Files tab then
+/// leaves the model loaded; the meeting unloads it after its transcript.
+fn meeting_uses_whisper(status: &meeting::Status) -> bool {
+    status.recording.is_some() || status.finishing.iter().any(|f| f.step == meeting::finish::Step::Transcribing)
+}
+
+/// The PC check runs: it loads Whisper beside the engine, past the gate
+/// that puts dictations, meeting pieces and file blocks in order, so no
+/// meeting starts or finishes meanwhile ("pc_check").
+static PC_CHECK_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Clears `PC_CHECK_RUNNING` when the check ends, however it ends.
+struct PcCheckRunning;
+
+impl PcCheckRunning {
+    /// "busy" while another check runs.
+    fn begin() -> Result<Self, String> {
+        if PC_CHECK_RUNNING.swap(true, Ordering::SeqCst) {
+            return Err("busy".to_string());
+        }
+        Ok(PcCheckRunning)
+    }
+}
+
+impl Drop for PcCheckRunning {
+    fn drop(&mut self) {
+        PC_CHECK_RUNNING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// "pc_check" while the PC check runs: a meeting waits for it.
+fn pc_check_idle() -> Result<(), String> {
+    if PC_CHECK_RUNNING.load(Ordering::SeqCst) {
+        Err("pc_check".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// The tray's "Start meeting" / "Stop meeting" item.
+static TRAY_MEETING: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
+/// A meeting records, as the tray item and the pill show it. Read and
+/// written on the main thread only (`show_meeting_state`).
+static MEETING_SHOWN: AtomicBool = AtomicBool::new(false);
+
+fn tray_meeting_text(german: bool, recording: bool) -> &'static str {
+    match (german, recording) {
+        (false, false) => "Start meeting",
+        (false, true) => "Stop meeting",
+        (true, false) => "Meeting starten",
+        (true, true) => "Meeting beenden",
+    }
+}
+
+/// Bring the tray item and the pill's red dot up to date. The work is
+/// handed to the main thread, which looks at what is true when it runs
+/// (whether a meeting records, the UI language): status events come from
+/// several threads and can overtake each other, so the last one handled
+/// need not be the newest. Nothing waits for the main thread here, so a
+/// thread that stops a meeting never hangs on a main thread that is busy
+/// (Quit closes the devices there). `language` also sets the text again
+/// when only the UI language changed.
+fn show_meeting_state(app: &AppHandle, language: bool) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let state = handle.state::<AppState>();
+        // The status, not `is_recording`: that lock is held while the
+        // devices of a starting meeting open.
+        let recording = state.meetings.status().recording.is_some();
+        let changed = MEETING_SHOWN.swap(recording, Ordering::SeqCst) != recording;
+        if changed || language {
+            let german = state.settings.lock().unwrap().ui_language == "de";
+            if let Some(item) = TRAY_MEETING.get() {
+                let _ = item.set_text(tray_meeting_text(german, recording));
+            }
+        }
+        if changed {
+            state.recorder.set_meeting_dot(&handle, recording);
+        }
+    });
+}
+
+/// The meetings' changes as events; the tray item and the pill's red dot
+/// follow whether a meeting records.
+fn meeting_event(event: meeting::Event) {
+    let Some(app) = APP_HANDLE.get() else { return };
+    match event {
+        meeting::Event::Status(status) => {
+            let _ = app.emit("meeting-status", status);
+            show_meeting_state(app, false);
+        }
+        meeting::Event::Lines(lines) => {
+            let _ = app.emit("meeting-lines", lines);
+        }
+        meeting::Event::Changed => {
+            let _ = app.emit("meetings-changed", ());
+        }
+        meeting::Event::Playing(playing) => {
+            let _ = app.emit("meeting-playing", playing);
+        }
+        meeting::Event::Limit => pill_notice(app, "meeting-notice", "limit"),
+    }
+}
+
+/// Presses of the tray item and the hotkey run one after the other, so a
+/// second press while the devices open stops the meeting the first started.
+static MEETING_TOGGLE: Mutex<()> = Mutex::new(());
+
+/// The tray item and the hotkey: start a meeting, or stop the one that
+/// records. Off the main thread (menu clicks and chords arrive there):
+/// starting opens the devices and stopping waits for the capture thread.
+/// A failed start shows its reason in the pill ("meeting-notice").
+fn toggle_meeting(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _one = MEETING_TOGGLE.lock().unwrap_or_else(|p| p.into_inner());
+        let state = app.state::<AppState>();
+        if state.meetings.is_recording() {
+            // "not_recording": the window's Stop or the 4-hour limit was first.
+            if let Err(e) = state.meetings.stop() {
+                startup_log::log(&format!("[meeting] not stopped: {}", e));
+            }
+        } else if let Err(e) = pc_check_idle().and_then(|_| state.meetings.start(None, meeting_config(&state))) {
+            startup_log::log(&format!("[meeting] not started: {}", e));
+            pill_notice(&app, "meeting-notice", &e);
+        }
+    });
+}
+
+/// A meeting command's work on a blocking thread: the meetings read and
+/// write files, open devices and wait for threads.
+async fn meeting_work<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work).await.map_err(|e| e.to_string())?
+}
+
+/// Start a meeting; `title` empty or missing = "Meeting 3 Oct 2026, 14:00".
+/// Errors: "already_recording", "no_model", "disk_full", "pc_check" (the
+/// PC check runs) or a file or device error.
+#[tauri::command]
+async fn meeting_start(state: State<'_, AppState>, title: Option<String>) -> Result<String, String> {
+    pc_check_idle()?;
+    let (meetings, config) = (state.meetings.clone(), meeting_config(&state));
+    meeting_work(move || meetings.start(title, config)).await
+}
+
+/// Stop recording; the end steps follow in the background. Error
+/// "not_recording".
+#[tauri::command]
+async fn meeting_stop(state: State<'_, AppState>) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.stop()).await
+}
+
+/// The status and the meeting that records, with its paragraphs so far.
+#[tauri::command]
+async fn meeting_state(state: State<'_, AppState>) -> Result<meeting::Current, String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || Ok(meetings.state())).await
+}
+
+/// The library, newest first, filtered by title and transcript text.
+#[tauri::command]
+async fn meeting_list(state: State<'_, AppState>, query: Option<String>) -> Result<Vec<meeting::store::Summary>, String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || Ok(meetings.list(&query.unwrap_or_default()))).await
+}
+
+/// Error "no_meeting".
+#[tauri::command]
+async fn meeting_get(state: State<'_, AppState>, id: String) -> Result<meeting::MeetingView, String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.get(&id)).await
+}
+
+/// Error "empty_name".
+#[tauri::command]
+async fn meeting_rename(state: State<'_, AppState>, id: String, title: String) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.rename(&id, &title)).await
+}
+
+/// Name Speaker `speaker + 1` in one meeting ("" = back to "Speaker n").
+#[tauri::command]
+async fn meeting_rename_speaker(state: State<'_, AppState>, id: String, speaker: u8, name: String) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.rename_speaker(&id, speaker, &name)).await
+}
+
+/// Tick an action item of the notes. Error "no_item".
+#[tauri::command]
+async fn meeting_set_action_done(state: State<'_, AppState>, id: String, index: usize, done: bool) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.set_action_done(&id, index, done)).await
+}
+
+/// Errors: "busy" (it records, finishes or gets its notes), "no_meeting".
+#[tauri::command]
+async fn meeting_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.delete(&id)).await
+}
+
+/// Run the end steps of an interrupted meeting. Errors: "busy",
+/// "no_meeting", "not_interrupted", "no_audio" (deleted after 30 days),
+/// "no_model" (Whisper is needed and not downloaded), "pc_check".
+#[tauri::command]
+async fn meeting_finish(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    pc_check_idle()?;
+    let (meetings, config) = (state.meetings.clone(), meeting_config(&state));
+    meeting_work(move || meetings.finish(&id, config)).await
+}
+
+/// Write the notes (the "Write notes" button): needs the AI model
+/// downloaded ("no_ai_model"), not AI cleanup switched on. Also "busy",
+/// "no_meeting"; why the AI wrote none is the meeting's `notesError`.
+#[tauri::command]
+async fn meeting_write_notes(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let (model, backend) = {
+        let s = state.settings.lock().unwrap();
+        (ai_models::find(&s.ai_model).map(|m| ai_models::model_path(&state.app_dir, m)), s.gpu_backend.clone())
+    };
+    let model = model.filter(|p| p.exists()).ok_or_else(|| "no_ai_model".to_string())?;
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.write_notes(&id, model, backend)).await
+}
+
+/// Play a meeting from `from_ms` (JS `fromMs`). Errors: "recording" (a
+/// meeting records: it would record what plays), "no_audio", "no_meeting"
+/// or a device error.
+#[tauri::command]
+async fn meeting_play(state: State<'_, AppState>, id: String, from_ms: u64) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.play(&id, from_ms)).await
+}
+
+#[tauri::command]
+async fn meeting_stop_playing(state: State<'_, AppState>) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || {
+        meetings.stop_playing();
+        Ok(())
+    })
+    .await
+}
+
+/// The title a meeting started now gets, for the title field's placeholder.
+#[tauri::command]
+async fn meeting_default_title(state: State<'_, AppState>) -> Result<String, String> {
+    let german = state.settings.lock().unwrap().ui_language == "de";
+    Ok(meeting::store::default_title(german, &rudariflow_lib::replacements::Moment::now()))
+}
+
+/// Quit after "Stop the meeting and quit?": the meeting is saved as
+/// interrupted at exit (`Meetings::shutdown`), and Finish runs its end
+/// steps later.
+#[tauri::command]
+async fn meeting_quit(app: AppHandle) -> Result<(), String> {
+    app.exit(0);
+    Ok(())
+}
+
+/// Test hook: play an audio file on the device RUDARIFLOW_MEETING_LOOPBACK
+/// names (the virtual cable), never on a real output. Only with
+/// RUDARIFLOW_TEST_COMMANDS=1.
+#[tauri::command]
+async fn meeting_test_play(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    if std::env::var("RUDARIFLOW_TEST_COMMANDS").as_deref() != Ok("1") {
+        return Err("test commands are off".to_string());
+    }
+    let meetings = state.meetings.clone();
+    meeting_work(move || {
+        let samples = media::decode_16k_mono(std::path::Path::new(&path), |_, _| {})?;
+        meetings.test_play(samples)
+    })
+    .await
+}
+
 /// Keyboard chords go through the global-shortcut plugin; mouse side buttons
 /// (`Mouse4`, `Mouse5`, optionally with modifiers) through a mouse hook.
 fn register_hotkey(app: &AppHandle, hotkey: &str, action: HotkeyAction) -> Result<(), String> {
@@ -2000,7 +2351,7 @@ struct SyncInputs {
     /// The board hotkeys to register: none while off or paused, no sound's
     /// while the sounds' hotkeys are switched off.
     wanted: Vec<(HotkeyAction, String)>,
-    /// The app's own four, which a board key never takes over.
+    /// The app's own five, which a board key never takes over.
     app: Vec<(HotkeyAction, String)>,
 }
 
@@ -2228,6 +2579,7 @@ fn main() {
     startup_log::log("settings loaded");
     let history = Arc::new(History::load(&app_dir));
     let soundboard = Soundboard::new(&app_dir, Box::new(soundboard_event));
+    let whisper_engine = Arc::new(WhisperEngine::new());
     let llm = Arc::new(LlmServer::new(
         llama_dir(),
         app_dir.join("llm-server.log"),
@@ -2238,10 +2590,13 @@ fn main() {
         }),
     ));
     llm.set_warm_prompt(polish::system_prompt(&settings));
+    let meetings = Meetings::new(&app_dir, whisper_engine.clone(), llm.clone(), Box::new(meeting_event));
     let initial_hotkey = settings.hotkey.clone();
     let initial_paste_last_hotkey = settings.paste_last_hotkey.clone();
     let initial_rewrite_last_hotkey = settings.rewrite_last_hotkey.clone();
     let initial_free_gpu_hotkey = settings.free_gpu_hotkey.clone();
+    let initial_meeting_hotkey = settings.meeting_hotkey.clone();
+    let initial_german = settings.ui_language == "de";
     let initial_autostart = settings.autostart;
 
     tauri::Builder::default()
@@ -2269,13 +2624,14 @@ fn main() {
             recorder: Recorder::new(),
             settings: Mutex::new(settings),
             app_dir,
-            whisper_engine: Arc::new(WhisperEngine::new()),
+            whisper_engine,
             history,
             llm,
             ai_download: Mutex::new(None),
             last_activity: Mutex::new(std::time::Instant::now()),
             gpu: GpuFree::default(),
             soundboard,
+            meetings,
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -2345,6 +2701,22 @@ fn main() {
             soundboard_pop_out,
             soundboard_dock,
             soundboard_set_always_on_top,
+            meeting_start,
+            meeting_stop,
+            meeting_state,
+            meeting_list,
+            meeting_get,
+            meeting_rename,
+            meeting_rename_speaker,
+            meeting_set_action_done,
+            meeting_delete,
+            meeting_finish,
+            meeting_write_notes,
+            meeting_play,
+            meeting_stop_playing,
+            meeting_default_title,
+            meeting_quit,
+            meeting_test_play,
         ])
         .on_window_event(|window, event| {
             // Close button (X) on the main window hides to tray instead of quitting.
@@ -2489,7 +2861,7 @@ fn main() {
                 }
             }
 
-            // Paste-last, rewrite and free GPU are optional: if another app
+            // Paste-last, rewrite, free GPU and meeting are optional: if another app
             // owns the chord, the setting stays and the failure is in startup.log.
             if !initial_paste_last_hotkey.is_empty() {
                 let _ = register_hotkey(
@@ -2503,6 +2875,9 @@ fn main() {
             }
             if !initial_free_gpu_hotkey.is_empty() {
                 let _ = register_hotkey(app.handle(), &initial_free_gpu_hotkey, HotkeyAction::FreeGpu);
+            }
+            if !initial_meeting_hotkey.is_empty() {
+                let _ = register_hotkey(app.handle(), &initial_meeting_hotkey, HotkeyAction::Meeting);
             }
             // The virtual microphone was on when RudariFlow last ran: on
             // again. Its hotkeys follow from the status event.
@@ -2549,8 +2924,11 @@ fn main() {
 
             // System tray.
             let show_item = MenuItem::with_id(app, "show", "Show RudariFlow", true, None::<&str>)?;
+            let meeting_item =
+                MenuItem::with_id(app, "meeting", tray_meeting_text(initial_german, false), true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &meeting_item, &quit_item])?;
+            let _ = TRAY_MEETING.set(meeting_item);
 
             let _tray = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
@@ -2564,8 +2942,22 @@ fn main() {
                             let _ = w.set_focus();
                         }
                     }
+                    "meeting" => toggle_meeting(app),
                     "quit" => {
-                        app.exit(0);
+                        // A meeting that records: the window asks "Stop the
+                        // meeting and quit?" (meeting_quit). The status, not
+                        // `is_recording`: this is the main thread, and that
+                        // lock is held while a starting meeting's devices open.
+                        if app.state::<AppState>().meetings.status().recording.is_some() {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.unminimize();
+                                let _ = w.set_focus();
+                            }
+                            let _ = app.emit("meeting-quit-asked", ());
+                        } else {
+                            app.exit(0);
+                        }
                     }
                     _ => {}
                 })
@@ -2597,6 +2989,8 @@ fn main() {
                 state.llm.stop();
                 // Keeps the saved switch: on again at the next start.
                 state.soundboard.shutdown();
+                // A meeting that records is saved as interrupted.
+                state.meetings.shutdown();
             }
         });
 }
@@ -2677,7 +3071,7 @@ mod tests {
             vec![(HotkeyAction::StopSounds, "F14".to_string()), (HotkeyAction::Sound("s-a".into()), "F13".to_string())]
         );
         let all = all_hotkeys(&Settings::default(), &board);
-        assert_eq!(all.len(), 6);
+        assert_eq!(all.len(), 7, "the app's five and the board's two");
         let drums = HotkeyAction::Sound("s-b".into());
         assert_eq!(taken_by(&all, &drums, "f13"), Some(HotkeyAction::Sound("s-a".into())));
         assert_eq!(taken_by(&all, &drums, "F14"), Some(HotkeyAction::StopSounds));
@@ -2775,7 +3169,7 @@ mod tests {
         let all = all_hotkeys(&Settings::default(), &board);
         let toggle = HotkeyAction::ToggleSoundHotkeys;
         assert_eq!(toggle.target(), "toggleSoundHotkeys");
-        assert!(HotkeyAction::from_target("toggleSoundHotkeys").is_err(), "not one of the app's four");
+        assert!(HotkeyAction::from_target("toggleSoundHotkeys").is_err(), "not one of the app's five");
         assert_eq!(owner_label(&toggle, &board), "toggleSoundHotkeys");
         assert_eq!(taken_by(&all, &HotkeyAction::Sound("s-a".into()), "f15"), Some(toggle.clone()));
         assert_eq!(taken_by(&all, &HotkeyAction::FreeGpu, "F15"), Some(toggle.clone()), "an app hotkey cannot take it");
@@ -2837,6 +3231,71 @@ mod tests {
         let before = sync_inputs(true, false, &bare, &s);
         bare.sound_hotkeys = false;
         assert_ne!(sync_inputs(true, false, &bare, &s), before);
+    }
+
+    #[test]
+    fn the_meeting_hotkey_is_the_fifth_and_joins_the_conflict_check() {
+        assert_eq!(HotkeyAction::from_target("meeting"), Ok(HotkeyAction::Meeting));
+        assert_eq!(HotkeyAction::Meeting.target(), "meeting");
+        let mut s = Settings::default();
+        assert_eq!(hotkeys(&s)[4], (HotkeyAction::Meeting, String::new()), "off by default");
+        s.meeting_hotkey = "Ctrl+Alt+M".to_string();
+        let board = board_with("", &[("s-a", "airhorn", "F13")]);
+        let all = all_hotkeys(&s, &board);
+        assert_eq!(taken_by(&all, &HotkeyAction::FreeGpu, "ctrl+alt+m"), Some(HotkeyAction::Meeting));
+        assert_eq!(taken_by(&all, &HotkeyAction::Meeting, "F13"), Some(HotkeyAction::Sound("s-a".into())));
+        assert_eq!(owner_label(&HotkeyAction::Meeting, &board), "meeting");
+        assert_eq!(app_hotkey_owner(&hotkeys(&s), "Ctrl+Alt+M"), Some(HotkeyAction::Meeting), "a board key never takes it");
+    }
+
+    #[test]
+    fn the_tray_item_starts_or_stops_in_the_ui_language() {
+        assert_eq!(tray_meeting_text(false, false), "Start meeting");
+        assert_eq!(tray_meeting_text(false, true), "Stop meeting");
+        assert_eq!(tray_meeting_text(true, false), "Meeting starten");
+        assert_eq!(tray_meeting_text(true, true), "Meeting beenden");
+    }
+
+    #[test]
+    fn a_meeting_records_with_the_settings_at_start() {
+        let dir = std::env::temp_dir().join("rudariflow_meeting_config");
+        let mut s = Settings {
+            custom_prompt: "Prodega".to_string(),
+            language: "de".to_string(),
+            ui_language: "de".to_string(),
+            engine: "cloud".to_string(),
+            ..Settings::default()
+        };
+        let c = meeting_config_from(&s, &dir);
+        assert_eq!(c.model_path, dir.join("ggml-small.bin"));
+        assert_eq!((c.language.as_str(), c.german, c.unload_after), ("de", true, true));
+        assert!(c.dictionary.contains("Prodega"), "{}", c.dictionary);
+        assert_eq!(c.terms, ["Prodega"]);
+        assert_eq!(c.ai_model, Err("ai_off".to_string()), "notes need AI cleanup on");
+        s.ai_cleanup = true;
+        assert_eq!(meeting_config_from(&s, &dir).ai_model, Err("no_ai_model".to_string()), "and the model downloaded");
+    }
+
+    #[test]
+    fn a_meeting_keeps_the_models_and_holds_off_the_pc_check() {
+        use rudariflow_lib::meeting::finish::Step;
+        use rudariflow_lib::meeting::{Finishing, Recording, Status};
+        let finishing = |step| Finishing { id: "m-000000000002".into(), step };
+        let idle = Status::default();
+        assert!(!meeting_busy(&idle) && !meeting_uses_whisper(&idle));
+        let recording = Status {
+            recording: Some(Recording { id: "m-000000000001".into(), title: "Call".into(), started_at: 0, warnings: vec![], paused: true }),
+            finishing: vec![],
+        };
+        assert!(meeting_busy(&recording), "the battery watcher waits, the PC check is refused");
+        assert!(meeting_uses_whisper(&recording), "also while paused");
+        let transcribing = Status { recording: None, finishing: vec![finishing(Step::Transcribing)] };
+        assert!(meeting_busy(&transcribing) && meeting_uses_whisper(&transcribing));
+        for step in [Step::Speakers, Step::Notes] {
+            let later = Status { recording: None, finishing: vec![finishing(step)] };
+            assert!(meeting_busy(&later), "{:?}: the AI must not be stopped under the notes", step);
+            assert!(!meeting_uses_whisper(&later), "{:?}: the meeting let go of Whisper already", step);
+        }
     }
 
     #[test]
