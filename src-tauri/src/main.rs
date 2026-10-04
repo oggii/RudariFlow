@@ -2050,8 +2050,9 @@ impl Drop for PcCheckRunning {
     }
 }
 
-/// Start or finish a meeting (`work`) unless the PC check runs
-/// ("pc_check"); the check cannot begin until `work` is done, and then
+/// Start or finish a meeting or write its notes (`work`) unless the PC
+/// check runs ("pc_check": it measures the AI and Whisper, and starts and
+/// stops both); the check cannot begin until `work` is done, and then
 /// finds the meeting.
 fn while_no_pc_check<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     let running = PC_CHECK_RUNNING.lock().unwrap_or_else(|p| p.into_inner());
@@ -2239,7 +2240,8 @@ async fn meeting_finish(state: State<'_, AppState>, id: String) -> Result<(), St
 
 /// Write the notes (the "Write notes" button): needs the AI model
 /// downloaded ("no_ai_model"), not AI cleanup switched on. Also "busy",
-/// "no_meeting"; why the AI wrote none is the meeting's `notesError`.
+/// "no_meeting", "pc_check" (the PC check runs: it starts and stops the
+/// AI); why the AI wrote none is the meeting's `notesError`.
 #[tauri::command]
 async fn meeting_write_notes(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let (model, backend) = {
@@ -2248,7 +2250,7 @@ async fn meeting_write_notes(state: State<'_, AppState>, id: String) -> Result<(
     };
     let model = model.filter(|p| p.exists()).ok_or_else(|| "no_ai_model".to_string())?;
     let meetings = state.meetings.clone();
-    meeting_work(move || meetings.write_notes(&id, model, backend)).await
+    meeting_work(move || while_no_pc_check(|| meetings.write_notes(&id, model, backend))).await
 }
 
 /// Play a meeting from `from_ms` (JS `fromMs`). Errors: "recording" (a
@@ -2514,6 +2516,7 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
                             let s = state.settings.lock().unwrap();
                             (s.microphone.clone(), s.mute_audio)
                         };
+                        let mute = mutes_other_apps(mute, state.meetings.status().recording.is_some());
                         match state.recorder.start_recording(&handle, &mic, mute) {
                             Ok(_) => {
                                 state.recorder.capture_context(&handle, &s, &state.app_dir);
@@ -2552,6 +2555,15 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
     }
 }
 
+/// Whether a dictation mutes the other apps (`setting`: "Mute other apps
+/// while recording"). Not while a meeting records: its Others track is what
+/// the PC plays, and it would record the silence instead of the call. The
+/// status says so (its lock is held for a moment only; `is_recording`
+/// would wait for a meeting that is opening its devices).
+fn mutes_other_apps(setting: bool, meeting_records: bool) -> bool {
+    setting && !meeting_records
+}
+
 /// Shared logic for toggle recording, used by both the Tauri command and hotkey handler.
 async fn do_toggle_recording(
     app: &tauri::AppHandle,
@@ -2565,6 +2577,7 @@ async fn do_toggle_recording(
                 let s = state.settings.lock().unwrap();
                 (s.microphone.clone(), s.mute_audio)
             };
+            let mute = mutes_other_apps(mute, state.meetings.status().recording.is_some());
             state.recorder.start_recording(app, &mic, mute)?;
             let settings = state.settings.lock().unwrap().clone();
             state.recorder.capture_context(app, &settings, &state.app_dir);
@@ -2615,7 +2628,7 @@ fn show_main_window(app: &AppHandle) {
 /// marks it, and it has to run next to the installed app. The installed app
 /// never sets that variable.
 fn single_instance_wanted(data_dir_env: Option<&str>) -> bool {
-    data_dir_env.map_or(true, str::is_empty)
+    data_dir_env.is_none_or(str::is_empty)
 }
 
 /// Whether a second start (the arguments the plugin hands over, the first is
@@ -2638,23 +2651,34 @@ fn single_instance_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     })
 }
 
+/// What opening the plugin's mutex says about another instance: `opened`,
+/// or else Windows' error (`GetLastError`). "Access denied" means the mutex
+/// is there and not ours to open (the other instance runs as administrator
+/// or as another user): that instance runs too. Anything else (not found)
+/// means none does.
+#[cfg(windows)]
+fn mutex_means_running(opened: bool, error: u32) -> bool {
+    opened || error == windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED
+}
+
 /// Whether the plugin's mutex (`<identifier>-sim`, see its Windows code)
 /// exists: another instance runs. Looked at before this process loads
 /// anything, since loading is not harmless: `Meetings::new` turns a meeting
 /// that records into an interrupted one.
 #[cfg(windows)]
 fn another_instance_running(identifier: &str) -> bool {
-    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
     use windows_sys::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
     let name: Vec<u16> = format!("{identifier}-sim").encode_utf16().chain(std::iter::once(0)).collect();
-    // SAFETY: `name` is NUL-terminated; the handle is closed at once.
+    // SAFETY: `name` is NUL-terminated; the error is read right after the
+    // call that set it; the handle is closed at once.
     unsafe {
         let handle = OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr());
-        if handle.is_null() {
-            return false;
+        let error = GetLastError();
+        if !handle.is_null() {
+            CloseHandle(handle);
         }
-        CloseHandle(handle);
-        true
+        mutex_means_running(!handle.is_null(), error)
     }
 }
 
@@ -3092,6 +3116,25 @@ mod tests {
         assert!(single_instance_wanted(None));
         assert!(single_instance_wanted(Some("")));
         assert!(!single_instance_wanted(Some("test-data")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_mutex_that_is_there_but_not_ours_to_open_means_another_instance() {
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND};
+        assert!(mutex_means_running(true, 0));
+        assert!(mutex_means_running(false, ERROR_ACCESS_DENIED), "it runs as administrator or another user");
+        assert!(!mutex_means_running(false, ERROR_FILE_NOT_FOUND), "no such mutex: none runs");
+        assert!(!mutex_means_running(false, 0));
+        assert!(!another_instance_running("com.rudariflow.test-no-such-instance"));
+    }
+
+    #[test]
+    fn a_dictation_does_not_mute_the_pc_while_a_meeting_records() {
+        assert!(mutes_other_apps(true, false), "the setting, as before");
+        assert!(!mutes_other_apps(true, true), "the meeting's Others track would record silence");
+        assert!(!mutes_other_apps(false, false));
+        assert!(!mutes_other_apps(false, true));
     }
 
     #[test]
