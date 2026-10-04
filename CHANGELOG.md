@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Meetings** (new tab): record an online call on this PC (Teams, Zoom,
+  Discord, Google Meet …) with Start meeting, the tray menu or an optional
+  hotkey (Recording tab, off by default). Your microphone ("You") and what
+  the PC plays on Windows' default output ("Others") are transcribed live,
+  about half a minute behind, with a red bar, a red dot in the pill, "Jump
+  to live" and copy. After Stop the others are told apart (Speaker 1, 2, …,
+  renamed with a click) and the AI model writes the notes: Summary,
+  Decisions and Action items as a checklist; without AI cleanup, "Write
+  notes" writes them later. ▶ plays the meeting from a paragraph (not
+  while a meeting records); export as PDF, Word, text or subtitles with
+  the notes on top. Every meeting stays in a searchable list; the audio is
+  deleted after 30 days, the text stays. A meeting cut off by a crash or a
+  quit can be finished later (Finish); quitting during a meeting asks
+  first. Dictations keep going first while a meeting transcribes; after a
+  Free GPU press the recording goes on and the text catches up when the
+  models are loaded again. The PC check does not run during a meeting.
+
 ### Fixed
 - RudariFlow no longer runs twice: starting it again brings the running window
   to the front.
