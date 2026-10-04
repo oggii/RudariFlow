@@ -119,6 +119,8 @@ interface Hint {
   /** The backend's own words, as a tooltip. */
   detail?: string;
   action?: { key: string; label: string; primary?: boolean; run: () => void };
+  /** A message that can be closed (the flash). */
+  dismiss?: boolean;
 }
 
 /** A meeting stops itself at 4 hours (the backend's `MAX_MS`). */
@@ -160,7 +162,8 @@ const libraryEl = $("mt-library");
 const listEl = $("mt-list");
 const emptyEl = $("mt-empty");
 const searchInput = $("mt-search") as HTMLInputElement;
-const quitDialog = $("mt-quit");
+const announceEl = $("mt-announce");
+const quitDialog = $("mt-quit") as HTMLDialogElement;
 const quitOk = $("mt-quit-ok") as HTMLButtonElement;
 const quitCancel = $("mt-quit-cancel") as HTMLButtonElement;
 
@@ -187,13 +190,18 @@ const titles = new Map<string, string>();
 /** The rename that is open: a redraw leaves its input alone, and another
  *  meeting opening ends it (saving what was typed). */
 let editing: { kind: "title" | "speaker"; id: string; end: (keep: boolean) => void } | null = null;
-/** Under the title: an export that was saved, or why an action failed. */
+/** Under the title: an export that was saved (goes after a few seconds), or
+ *  why an action failed (stays until it is closed or something else is done). */
 let flash: { text: string; tone: "ok" | "error" } | null = null;
+let flashTimer: number | undefined;
+const FLASH_MS = 6000;
 /** Buttons whose work runs: "finish:<id>", "notes:<id>", "speaker-model". */
 const running = new Set<string>();
-/** Whether the speaker model is downloaded now; null until asked. */
-let speakerModel: boolean | null = null;
-let askingSpeakerModel = false;
+/** Whether the speaker model is downloaded now; "unknown" until the answer,
+ *  and when the question failed (then no Download is offered). */
+let speakerModel: "unknown" | "missing" | "ready" = "unknown";
+/** The meeting it was last asked for: once per meeting opened. */
+let speakerModelAskedFor = "";
 let speakerModelPercent = 0;
 /** What the view shows, so only what changed is drawn again. */
 const drawn = { id: "", lang: "", bar: "", finishing: "", hints: "", notes: "", chips: "", paragraphs: [] as Paragraph[] };
@@ -221,6 +229,17 @@ function when(startedAt: number, utcOffsetMin: number): string {
   }).format(new Date(startedAt + utcOffsetMin * 60_000));
 }
 
+/** String `key` with its `{name}` places filled in. The values go in as they
+ *  are: a "$" in a title or a name is a "$" (not a pattern of `replace`). */
+function fill(key: string, values: Record<string, string | number>): string {
+  return t(key).replace(/\{(\w+)\}/g, (place, name: string) => (name in values ? String(values[name]) : place));
+}
+
+/** "Did not work: <the backend's words>". */
+function failed(e: unknown): string {
+  return `${t("files_err_failed")}: ${e}`;
+}
+
 /** A command's refusal in words. */
 function errorText(e: unknown): string {
   const code = String(e);
@@ -236,7 +255,7 @@ function errorText(e: unknown): string {
     gpu_freed: "mt_err_gpu_freed",
     no_meeting: "mt_err_gone",
   };
-  return key[code] ? t(key[code]) : `${t("files_err_failed")}: ${code}`;
+  return key[code] ? t(key[code]) : failed(code);
 }
 
 /** Who said a paragraph or line: You, Others, or a speaker's name. */
@@ -247,7 +266,7 @@ function who(track: Track, speaker: number | undefined, names: string[]): string
 }
 
 function speakerDefault(speaker: number): string {
-  return t("files_speaker_n").replace("{n}", String(speaker + 1));
+  return fill("files_speaker_n", { n: speaker + 1 });
 }
 
 /** How many speakers the others were told apart into. */
@@ -270,7 +289,13 @@ function changedFrom(old: Paragraph[], now: Paragraph[]): number {
 }
 
 async function copy(text: string, button: HTMLButtonElement, label: string) {
-  await invoke("copy_text", { text });
+  try {
+    await invoke("copy_text", { text });
+  } catch (e) {
+    console.error("copy_text failed:", e);
+    showFlash(failed(e), "error");
+    return;
+  }
   button.textContent = t("pc_check_copied");
   setTimeout(() => (button.textContent = t(label)), 1500);
 }
@@ -294,7 +319,7 @@ function renderStatus() {
   bar.classList.toggle("hidden", !rec);
   window.clearInterval(clockTimer);
   if (rec) {
-    const tick = () => (barTime.textContent = t("mt_recording").replace("{time}", clock(Date.now() - rec.startedAt)));
+    const tick = () => (barTime.textContent = fill("mt_recording", { time: clock(Date.now() - rec.startedAt) }));
     tick();
     clockTimer = window.setInterval(tick, 1000);
     barTitle.textContent = rec.title;
@@ -329,7 +354,10 @@ function renderStatus() {
 function renderFinishing() {
   const lines = status.finishing
     .filter((f) => f.id !== view?.meeting.id)
-    .map((f) => t("mt_finishing").replace("{title}", titles.get(f.id) ?? t("mt_this_meeting")).replace("{step}", stepText(f.step)));
+    .map((f) => {
+      const title = titles.get(f.id);
+      return title === undefined ? fill("mt_finishing_unknown", { step: stepText(f.step) }) : fill("mt_finishing", { title, step: stepText(f.step) });
+    });
   if (lines.join("\n") === drawn.finishing) return;
   drawn.finishing = lines.join("\n");
   finishingEl.replaceChildren(
@@ -383,6 +411,8 @@ async function stop() {
 async function onStarted(rec: Recording) {
   following = true;
   startError.classList.add("hidden");
+  // The bar is no live region (its clock ticks): said once, here.
+  announceEl.textContent = fill("mt_announce_started", { title: rec.title });
   if (host && !host.settings().meetingHeadphonesSeen) {
     headphonesThisMeeting = true;
     renderReminder();
@@ -398,6 +428,7 @@ function onStatus(next: Status) {
   status = next;
   const now = status.recording;
   if (!now) headphonesThisMeeting = false;
+  if (!now && before) announceEl.textContent = t("mt_announce_stopped");
   renderStatus();
   // The step, the buttons that wait for a meeting to end, ▶.
   renderView();
@@ -431,12 +462,17 @@ async function open(id: string) {
 
 function setView(next: MeetingView | null) {
   if (editing && editing.id !== next?.meeting.id) editing.end(true);
-  if (next?.meeting.id !== view?.meeting.id) {
-    flash = null;
-    // It may have been downloaded in the Files tab since.
-    if (!running.has("speaker-model")) speakerModel = null;
-  }
+  if (next?.meeting.id !== view?.meeting.id) setFlash(null);
   view = next;
+  // Whether "Download" is offered: asked once per meeting opened (the model
+  // may have been downloaded in the Files tab since the last one).
+  const m = next?.meeting;
+  if (m && m.speakersError === "no_model" && speakerModelAskedFor !== m.id && !running.has("speaker-model")) {
+    speakerModelAskedFor = m.id;
+    speakerModel = "unknown";
+    void askSpeakerModel();
+  }
+  if (!m) speakerModelAskedFor = "";
   renderView();
   renderFinishing();
 }
@@ -484,13 +520,17 @@ function renderView() {
   const live = m.state === "recording";
   viewTitle.textContent = m.title;
   const meta = live ? [when(m.startedAt, m.utcOffsetMin)] : [clock(m.lengthMs), when(m.startedAt, m.utcOffsetMin)];
-  if (m.whisperModel) meta.push(t("mt_meta_model").replace("{model}", m.whisperModel));
+  if (m.whisperModel) meta.push(fill("mt_meta_model", { model: m.whisperModel }));
   viewMeta.textContent = meta.join(" · ");
   copyBtn.disabled = view.paragraphs.length === 0;
   exportBtn.disabled = live || m.lines.length === 0;
   deleteBtn.disabled = live || m.state === "finishing" || !!finishingStep(m.id);
   if (deleteBtn.disabled) resetDelete();
   transcriptEl.dataset.empty = live ? t("mt_transcript_waiting") : m.state === "finished" ? t("mt_transcript_empty") : "";
+  // While lines arrive the transcript is a log (new ones are read out); a
+  // saved one is a region to read.
+  const role = live || m.state === "finishing" ? "log" : "region";
+  if (transcriptEl.getAttribute("role") !== role) transcriptEl.setAttribute("role", role);
   renderHints();
   renderNotes(m);
   renderSpeakers();
@@ -501,7 +541,7 @@ function renderView() {
 function renderHints() {
   if (!view) return;
   const hints = hintsOf(view.meeting);
-  const key = JSON.stringify(hints.map((h) => [h.text, h.tone, h.detail, h.action?.key, h.action?.label, h.action && running.has(h.action.key)]));
+  const key = JSON.stringify(hints.map((h) => [h.text, h.tone, h.detail, h.dismiss, h.action?.key, h.action?.label, h.action && running.has(h.action.key)]));
   if (key === drawn.hints) return;
   drawn.hints = key;
   const focused = (document.activeElement as HTMLElement | null)?.dataset.action;
@@ -525,6 +565,20 @@ function renderHints() {
         b.addEventListener("click", action.run);
         row.append(b);
       }
+      if (h.dismiss) {
+        const close = document.createElement("button");
+        close.className = "icon-btn";
+        close.title = t("mt_dismiss");
+        close.setAttribute("aria-label", t("mt_dismiss"));
+        close.append(icon("M2.6 3.5l.9-.9L6 5.1l2.5-2.5.9.9L6.9 6l2.5 2.5-.9.9L6 6.9 3.5 9.4l-.9-.9L5.1 6z"));
+        close.addEventListener("click", () => {
+          setFlash(null);
+          renderHints();
+          // The button went with the message.
+          viewTitle.focus();
+        });
+        row.append(close);
+      }
       return row;
     }),
   );
@@ -532,17 +586,18 @@ function renderHints() {
   if (focused) hintEl.querySelector<HTMLElement>(`[data-action="${CSS.escape(focused)}"]`)?.focus();
 }
 
-/** A hint's button: `work` once at a time; a refusal shows in words. */
-function action(key: string, label: string, work: () => Promise<unknown>, primary = false): Hint["action"] {
+/** A hint's button: `work` once at a time; a refusal shows in words
+ *  (`words`, where the codes mean something else than in `errorText`). */
+function action(key: string, label: string, work: () => Promise<unknown>, primary = false, words = errorText): Hint["action"] {
   const run = async () => {
     if (running.has(key)) return;
     running.add(key);
-    flash = null;
+    setFlash(null);
     renderHints();
     try {
       await work();
     } catch (e) {
-      flash = { text: errorText(e), tone: "error" };
+      setFlash({ text: words(e), tone: "error" });
     } finally {
       running.delete(key);
       renderHints();
@@ -570,17 +625,18 @@ function hintsOf(m: Meeting): Hint[] {
   if (m.lengthMs >= MAX_MS && m.state !== "recording") hints.push({ text: t("mt_hint_limit"), tone: "warn" });
   if (m.state === "finished" && m.speakersError && m.speakersError !== "none_found") {
     if (m.speakersError === "no_model") {
-      if (speakerModel === null) void askSpeakerModel();
-      if (speakerModel) hints.push({ text: t("mt_hint_speakers_no_model_then") });
+      if (speakerModel === "ready") hints.push({ text: t("mt_hint_speakers_no_model_then") });
       else {
+        // "busy": the Files tab is downloading it.
+        const words = (e: unknown) => (String(e) === "busy" ? t("mt_err_model_busy") : failed(e));
         const label = running.has("speaker-model") ? `${speakerModelPercent} %` : t("download");
-        const download = speakerModel === false ? action("speaker-model", label, downloadSpeakerModel) : undefined;
+        const download = speakerModel === "missing" ? action("speaker-model", label, downloadSpeakerModel, false, words) : undefined;
         hints.push({ text: t("mt_hint_speakers_no_model"), action: download });
       }
     } else if (m.speakersError === "no_runtime") {
       hints.push({ text: t("mt_hint_speakers_no_runtime") });
     } else {
-      hints.push({ text: t("mt_hint_speakers_error").replace("{error}", m.speakersError) });
+      hints.push({ text: fill("mt_hint_speakers_error", { error: m.speakersError }) });
     }
   }
   if (m.state === "finished" && !m.notes && m.notesError && !step) {
@@ -592,28 +648,31 @@ function hintsOf(m: Meeting): Hint[] {
     });
   }
   if (m.audioDeleted && m.state !== "interrupted") hints.push({ text: t("mt_audio_deleted") });
-  if (flash) hints.push({ text: flash.text, tone: flash.tone });
+  if (flash) hints.push({ text: flash.text, tone: flash.tone, dismiss: true });
   return hints;
 }
 
+/** Asked by `setView`, never while drawing. A failure leaves "unknown": the
+ *  hint stands without its Download until another meeting is opened. */
 async function askSpeakerModel() {
-  if (askingSpeakerModel) return;
-  askingSpeakerModel = true;
+  const askedFor = speakerModelAskedFor;
+  let downloaded: boolean;
   try {
-    speakerModel = (await invoke<{ downloaded: boolean }>("speaker_model_status")).downloaded;
+    downloaded = (await invoke<{ downloaded: boolean }>("speaker_model_status")).downloaded;
   } catch (e) {
     console.error("speaker_model_status failed:", e);
     return;
-  } finally {
-    askingSpeakerModel = false;
   }
+  // Another meeting was opened meanwhile: its own question answers.
+  if (askedFor !== speakerModelAskedFor || running.has("speaker-model")) return;
+  speakerModel = downloaded ? "ready" : "missing";
   renderHints();
 }
 
 async function downloadSpeakerModel() {
   speakerModelPercent = 0;
   await invoke("speaker_model_download");
-  speakerModel = true;
+  speakerModel = "ready";
 }
 
 /** A notes section as text, for its copy button and the exports. */
@@ -652,7 +711,7 @@ function renderNotes(m: Meeting) {
     const copyOne = document.createElement("button");
     copyOne.className = "btn-ghost";
     copyOne.textContent = t("files_copy");
-    copyOne.setAttribute("aria-label", t("mt_copy_section").replace("{section}", t(`mt_${key}`)));
+    copyOne.setAttribute("aria-label", fill("mt_copy_section", { section: t(`mt_${key}`) }));
     // The notes as they are when it is pressed (the ticks change).
     copyOne.addEventListener("click", () => {
       const now = view?.meeting.id === m.id ? view.meeting.notes : undefined;
@@ -729,7 +788,7 @@ function renderSpeakers() {
         chip.className = "speaker-chip";
         chip.textContent = name;
         chip.title = t("files_speaker_rename");
-        chip.setAttribute("aria-label", t("mt_rename_speaker").replace("{name}", name));
+        chip.setAttribute("aria-label", fill("mt_rename_speaker", { name }));
         chip.addEventListener("click", () => renameSpeaker(m.id, i, chip));
         return chip;
       }),
@@ -749,24 +808,34 @@ function renameSpeaker(id: string, i: number, chip: HTMLButtonElement) {
   input.value = shown;
   input.maxLength = 60;
   input.spellcheck = false;
-  input.setAttribute("aria-label", t("mt_rename_speaker").replace("{name}", shown));
+  input.setAttribute("aria-label", fill("mt_rename_speaker", { name: shown }));
   chip.replaceWith(input);
   input.focus();
   input.select();
   const end = (keep: boolean, refocus = false) => {
     if (editing?.end !== end) return;
     editing = null;
-    const name = input.value.trim();
-    // Drawn again from the meeting as it is now (the event of the rename
-    // brings the new name).
+    // The default name is not saved as a name: it follows the language.
+    const typed = input.value.trim();
+    const name = typed === speakerDefault(i) ? "" : typed;
+    const save = keep && typed !== shown;
+    // Shown at once, in the chips and on every line; the event of the
+    // rename confirms it.
+    if (save && view?.meeting.id === id) {
+      const names = view.meeting.speakerNames;
+      while (names.length <= i) names.push("");
+      names[i] = name;
+    }
     drawn.chips = "";
     if (refocus) focusChip = i;
     renderSpeakers();
-    // The default name is not saved as a name: it follows the language.
-    if (keep && name !== shown) {
-      invoke("meeting_rename_speaker", { id, speaker: i, name: name === speakerDefault(i) ? "" : name }).catch((e) => {
+    syncRows();
+    if (save) {
+      invoke("meeting_rename_speaker", { id, speaker: i, name }).catch((e) => {
         console.error("meeting_rename_speaker failed:", e);
         showFlash(errorText(e), "error");
+        // Back to the names as they are saved.
+        if (view?.meeting.id === id) void open(id);
       });
     }
   };
@@ -801,12 +870,19 @@ function renameTitle() {
     input.replaceWith(viewTitle);
     if (refocus) viewTitle.focus();
     if (keep && next && next !== title) {
-      // Shown at once; the event of the rename confirms it.
-      if (view?.meeting.id === id) viewTitle.textContent = next;
+      // Shown at once, and kept by a redraw before the event of the rename
+      // confirms it.
+      if (view?.meeting.id === id) {
+        view.meeting.title = next;
+        viewTitle.textContent = next;
+      }
+      titles.set(id, next);
       invoke("meeting_rename", { id, title: next }).catch((e) => {
         console.error("meeting_rename failed:", e);
         showFlash(errorText(e), "error");
-        if (view?.meeting.id === id) viewTitle.textContent = view.meeting.title;
+        titles.set(id, title);
+        // Back to the title as it is saved.
+        if (view?.meeting.id === id) void open(id);
       });
     }
   };
@@ -821,8 +897,22 @@ function renameTitle() {
   input.addEventListener("blur", () => end(true));
 }
 
+/** Set or clear the message. Good news goes by itself; a failure stays
+ *  until it is closed, another meeting is opened or the next action runs. */
+function setFlash(next: { text: string; tone: "ok" | "error" } | null) {
+  window.clearTimeout(flashTimer);
+  flash = next;
+  if (next?.tone === "ok") {
+    flashTimer = window.setTimeout(() => {
+      if (flash !== next) return;
+      flash = null;
+      renderHints();
+    }, FLASH_MS);
+  }
+}
+
 function showFlash(text: string, tone: "ok" | "error") {
-  flash = { text, tone };
+  setFlash({ text, tone });
   renderHints();
 }
 
@@ -892,7 +982,9 @@ function syncRows() {
     const play = row.querySelector<HTMLButtonElement>(".mt-play")!;
     const isPlaying = !off && playing?.id === m.id && playing.fromMs === p.startMs;
     const title = off || t(isPlaying ? "mt_stop_play" : "mt_play");
-    if (play.disabled !== !!off) play.disabled = !!off;
+    // Not `disabled`: the button stays reachable, so its reason (the title
+    // and the label) can be read with the keyboard too.
+    if (play.getAttribute("aria-disabled") !== String(!!off)) play.setAttribute("aria-disabled", String(!!off));
     if (play.dataset.playing !== String(isPlaying)) play.dataset.playing = String(isPlaying);
     if (play.title !== title) {
       play.title = title;
@@ -904,7 +996,7 @@ function syncRows() {
 async function togglePlay(fromMs: number) {
   if (!view) return;
   const id = view.meeting.id;
-  flash = null;
+  setFlash(null);
   try {
     if (playing?.id === id && playing.fromMs === fromMs) await invoke("meeting_stop_playing");
     else await invoke("meeting_play", { id, fromMs });
@@ -933,12 +1025,24 @@ function setExportMenu(isOpen: boolean) {
 async function exportAs(kind: ExportKind) {
   setExportMenu(false);
   if (!view) return;
-  const m = view.meeting;
-  const path = await save({
-    defaultPath: `${m.title.replace(/[\\/:*?"<>|]/g, "-")}.${kind}`,
-    filters: [{ name: t(`files_filter_${kind}`), extensions: [kind] }],
-  });
-  if (!path) return;
+  const { id, title } = view.meeting;
+  let path: string | null;
+  let m: Meeting;
+  try {
+    path = await save({
+      defaultPath: `${title.replace(/[\\/:*?"<>|]/g, "-")}.${kind}`,
+      filters: [{ name: t(`files_filter_${kind}`), extensions: [kind] }],
+    });
+    if (!path) return;
+    // The meeting as it is saved now: the view's lines are those of its
+    // last load ("meeting-lines" brings paragraphs only), and names or ticks
+    // may have changed while the dialog was open.
+    m = (await invoke<MeetingView>("meeting_get", { id })).meeting;
+  } catch (e) {
+    console.error("the export did not start:", e);
+    if (view?.meeting.id === id) showFlash(errorText(e), "error");
+    return;
+  }
   const names = [
     t("mt_you"),
     t("mt_others"),
@@ -963,9 +1067,9 @@ async function exportAs(kind: ExportKind) {
   let done: { text: string; tone: "ok" | "error" };
   try {
     await invoke("export_file", { kind, path, doc });
-    done = { text: t("files_exported").replace("{name}", path.split(/[\\/]/).pop() ?? path), tone: "ok" };
+    done = { text: fill("files_exported", { name: path.split(/[\\/]/).pop() ?? path }), tone: "ok" };
   } catch (e) {
-    done = { text: `${t("files_err_failed")}: ${e}`, tone: "error" };
+    done = { text: failed(e), tone: "error" };
   }
   // Another meeting may be open by now.
   if (view?.meeting.id === m.id) showFlash(done.text, done.tone);
@@ -1078,14 +1182,9 @@ export async function renderMeetings() {
 
 /** The quit question, asked by the tray's Quit while a meeting records.
  *  Called when the app starts, before the settings are loaded: the question
- *  must not wait for the tab. */
+ *  must not wait for the tab. A modal <dialog>: the page behind it is inert,
+ *  focus stays inside, Escape cancels and focus goes back where it was. */
 export function initMeetingQuit() {
-  let back: HTMLElement | null = null;
-  const close = () => {
-    quitDialog.classList.add("hidden");
-    back?.focus();
-    back = null;
-  };
   quitOk.addEventListener("click", () => {
     quitOk.disabled = true;
     invoke("meeting_quit").catch((e) => {
@@ -1093,24 +1192,14 @@ export function initMeetingQuit() {
       quitOk.disabled = false;
     });
   });
-  quitCancel.addEventListener("click", close);
+  quitCancel.addEventListener("click", () => quitDialog.close());
+  // A click beside the box (on the dialog itself: its backdrop) cancels.
   quitDialog.addEventListener("mousedown", (e) => {
-    if (e.target === quitDialog) close();
-  });
-  quitDialog.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      close();
-    } else if (e.key === "Tab") {
-      // The two buttons are all there is: focus stays in the dialog.
-      e.preventDefault();
-      (document.activeElement === quitOk ? quitCancel : quitOk).focus();
-    }
+    if (e.target === quitDialog) quitDialog.close();
   });
   void listen("meeting-quit-asked", () => {
-    if (quitDialog.classList.contains("hidden")) back = document.activeElement as HTMLElement | null;
     quitOk.disabled = false;
-    quitDialog.classList.remove("hidden");
+    if (!quitDialog.open) quitDialog.showModal();
     quitOk.focus();
   });
 }
@@ -1165,7 +1254,7 @@ export async function initMeetings(h: MeetingsHost) {
   transcriptEl.addEventListener("click", (e) => {
     const play = (e.target as Element).closest<HTMLButtonElement>(".mt-play");
     const row = play?.closest<HTMLElement>(".mt-para");
-    if (play && row && !play.disabled) void togglePlay(Number(row.dataset.start));
+    if (play && row && play.getAttribute("aria-disabled") !== "true") void togglePlay(Number(row.dataset.start));
   });
   // Scrolling up stops the following; Jump to live starts it again.
   transcriptEl.addEventListener("scroll", () => {

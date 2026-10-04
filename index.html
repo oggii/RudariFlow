@@ -669,6 +669,7 @@
               <button id="mt-bar-title" class="mt-bar-title"></button>
               <button id="mt-stop-btn" class="btn-secondary mt-stop" data-i18n="mt_stop">Stop</button>
             </div>
+            <div id="mt-announce" class="mt-sr-only" role="status"></div>
             <div id="mt-warnings" class="mt-warnings" role="status"></div>
             <div id="mt-reminder" class="mt-reminder hidden">
               <span id="mt-reminder-text"></span>
@@ -699,7 +700,7 @@
                 <h3 class="mt-view-title-wrap"><button id="mt-view-title" class="mt-view-title" data-i18n-title="mt_rename" title="Click to rename"></button></h3>
                 <span id="mt-view-meta" class="label-hint mt-view-meta"></span>
               </div>
-              <div id="mt-hint" class="mt-hint hidden"></div>
+              <div id="mt-hint" class="mt-hint hidden" role="status"></div>
               <div class="mt-body">
                 <div id="mt-notes" class="mt-notes hidden"></div>
                 <div class="mt-main">
@@ -708,7 +709,7 @@
                     <div id="mt-speaker-chips" class="file-speaker-chips"></div>
                   </div>
                   <div class="mt-transcript-wrap">
-                    <div id="mt-transcript" class="mt-transcript" tabindex="0"></div>
+                    <div id="mt-transcript" class="mt-transcript" tabindex="0" role="region"></div>
                     <button id="mt-live" class="btn-primary mt-live hidden" data-i18n="mt_jump_live">Jump to live</button>
                   </div>
                 </div>
@@ -736,7 +737,7 @@
       </main>
       </div>
     </div>
-    <div id="mt-quit" class="mt-modal hidden" role="dialog" aria-modal="true" aria-labelledby="mt-quit-question" aria-describedby="mt-quit-hint">
+    <dialog id="mt-quit" class="mt-modal" aria-labelledby="mt-quit-question" aria-describedby="mt-quit-hint">
       <div class="mt-modal-box">
         <p id="mt-quit-question" class="mt-modal-question" data-i18n="mt_quit_question">Stop the meeting and quit?</p>
         <p id="mt-quit-hint" class="label-hint" data-i18n="mt_quit_hint">The meeting is kept as interrupted; Finish in the Meetings tab transcribes the rest and writes the notes.</p>
@@ -745,7 +746,7 @@
           <button id="mt-quit-ok" class="btn-primary" data-i18n="mt_quit_ok">Stop and quit</button>
         </div>
       </div>
-    </div>
+    </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

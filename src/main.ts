@@ -877,13 +877,20 @@ getVersion()
 // is listened for from the start, on every tab.
 initMeetingQuit();
 // The Meetings tab reads the settings, so it starts once they are loaded.
-loadSettings().then(() =>
-  initMeetings({
-    settings: () => currentSettings,
-    saveSettings: async (patch) => {
-      Object.assign(currentSettings, patch);
-      await invoke("save_settings", { settings: currentSettings });
-    },
-    showSection: () => showSection("meetings"),
-  }),
-);
+// It starts without them too (a meeting can record from the tray or the
+// hotkey, and the tab must show it): then with the reminders' defaults, and
+// nothing is saved over the settings that did not load.
+loadSettings()
+  .catch((err) => console.error("loading the settings failed:", err))
+  .then(() =>
+    initMeetings({
+      settings: () => currentSettings ?? { meetingReminderOff: false, meetingHeadphonesSeen: false },
+      saveSettings: async (patch) => {
+        if (!currentSettings) return;
+        Object.assign(currentSettings, patch);
+        await invoke("save_settings", { settings: currentSettings });
+      },
+      showSection: () => showSection("meetings"),
+    }),
+  )
+  .catch((err) => console.error("the Meetings tab did not start:", err));

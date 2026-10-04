@@ -1728,6 +1728,16 @@ body.sb-page {
   outline-offset: 2px;
 }
 
+/* Read out, not shown: "Recording started". */
+.mt-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .mt-start {
   display: flex;
   gap: 8px;
@@ -1943,6 +1953,11 @@ body.sb-page {
 .mt-hint-row button {
   flex-shrink: 0;
 }
+.mt-hint-row .icon-btn {
+  width: 24px;
+  height: 24px;
+  margin: -2px -4px -2px 0;
+}
 .mt-hint-row[data-tone="warn"] {
   color: var(--text);
   background: rgba(245, 166, 35, 0.07);
@@ -2146,10 +2161,10 @@ body.sb-page {
   border-color: var(--accent);
   background: var(--accent-subtle);
 }
-.mt-play:hover:not(:disabled) {
+.mt-play:hover:not([aria-disabled="true"]) {
   border-color: var(--accent);
 }
-.mt-play:disabled {
+.mt-play[aria-disabled="true"] {
   opacity: 0.35;
   cursor: default;
 }
@@ -2262,26 +2277,27 @@ body.sb-page {
   color: var(--yellow);
 }
 
+/* A modal <dialog> (showModal): the page behind is inert and dimmed by the
+   backdrop. The dialog has no padding of its own, so a click on it is a
+   click beside the box. */
 .mt-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.55);
-}
-.mt-modal-box {
-  max-width: 400px;
-  margin: 0 16px;
-  padding: 18px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  max-width: min(400px, calc(100vw - 32px));
+  margin: auto;
+  padding: 0;
+  color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+.mt-modal::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+.mt-modal-box {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .mt-modal-question {
   font-size: 14px;
