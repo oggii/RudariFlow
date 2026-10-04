@@ -8,6 +8,7 @@ import { populateLanguageSelect } from "./languages";
 import { initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
 import { initDictionary, renderDictionary } from "./dictionary";
 import { initFiles, renderFiles } from "./files";
+import { initMeetingQuit, initMeetings, renderMeetings } from "./meetings";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
 import { hotkeyLabel, startCapture } from "./hotkey-capture";
 import { mountBoard } from "./soundboard/board";
@@ -44,6 +45,9 @@ interface Settings {
   screenContext: boolean;
   learnDictionary: boolean;
   fileSpeakers: string;
+  meetingHotkey: string;
+  meetingReminderOff: boolean;
+  meetingHeadphonesSeen: boolean;
 }
 
 interface Replacement {
@@ -111,6 +115,9 @@ const rewriteLastClear = document.getElementById("rewrite-last-clear") as HTMLBu
 const freeGpuBtn = document.getElementById("free-gpu-btn") as HTMLButtonElement;
 const freeGpuText = document.getElementById("free-gpu-text")!;
 const freeGpuClear = document.getElementById("free-gpu-clear") as HTMLButtonElement;
+const meetingHotkeyBtn = document.getElementById("meeting-hotkey-btn") as HTMLButtonElement;
+const meetingHotkeyText = document.getElementById("meeting-hotkey-text")!;
+const meetingHotkeyClear = document.getElementById("meeting-hotkey-clear") as HTMLButtonElement;
 const sendCommandSelect = document.getElementById("send-command-select") as HTMLSelectElement;
 const muteAudioToggle = document.getElementById("mute-audio-toggle") as HTMLInputElement;
 const replacementList = document.getElementById("replacement-list")!;
@@ -134,6 +141,7 @@ function showSection(target: string) {
   sections.forEach((s) => s.classList.remove("active"));
   document.getElementById(`section-${target}`)?.classList.add("active");
   soundboard.setActive(target === "soundboard");
+  if (target === "meetings") void renderMeetings();
 }
 
 navItems.forEach((item) => {
@@ -409,7 +417,8 @@ pcCheckBtn.addEventListener("click", async () => {
     pcCheckReport.textContent = result.report;
     pcCheckResult.classList.remove("hidden");
   } catch (err) {
-    pcCheckReport.textContent = `${t("pc_check_failed")}: ${err}`;
+    // "meeting_busy": a meeting records or runs its end steps.
+    pcCheckReport.textContent = String(err) === "meeting_busy" ? t("pc_check_meeting_busy") : `${t("pc_check_failed")}: ${err}`;
     pcCheckResult.classList.remove("hidden");
   } finally {
     pcCheckBtn.disabled = false;
@@ -433,6 +442,7 @@ uiLanguageSelect.addEventListener("change", async () => {
   renderDictionary();
   renderFiles();
   void soundboard.refresh();
+  void renderMeetings();
 });
 
 sendCommandSelect.addEventListener("change", () => saveSettings());
@@ -531,10 +541,11 @@ listen<DownloadProgress>("download-progress", (event) => {
 
 // Hotkeys. "dictation" starts/stops recording, "pasteLast" pastes the last
 // transcript again, "rewriteLast" selects it and records an edit, "freeGpu"
-// unloads the models or loads them again. Each takes a key combination or a
-// mouse side button (with or without modifiers); the capture itself is in
-// hotkey-capture.ts, shared with the Soundboard.
-type HotkeyTarget = "dictation" | "pasteLast" | "rewriteLast" | "freeGpu";
+// unloads the models or loads them again, "meeting" starts or stops a
+// meeting. Each takes a key combination or a mouse side button (with or
+// without modifiers); the capture itself is in hotkey-capture.ts, shared with
+// the Soundboard.
+type HotkeyTarget = "dictation" | "pasteLast" | "rewriteLast" | "freeGpu" | "meeting";
 
 function renderHotkeys() {
   hotkeyText.textContent = hotkeyLabel(currentSettings.hotkey);
@@ -544,12 +555,15 @@ function renderHotkeys() {
   rewriteLastClear.classList.toggle("hidden", !currentSettings.rewriteLastHotkey);
   freeGpuText.textContent = hotkeyLabel(currentSettings.freeGpuHotkey);
   freeGpuClear.classList.toggle("hidden", !currentSettings.freeGpuHotkey);
+  meetingHotkeyText.textContent = hotkeyLabel(currentSettings.meetingHotkey);
+  meetingHotkeyClear.classList.toggle("hidden", !currentSettings.meetingHotkey);
 }
 
 function captureElements(target: HotkeyTarget) {
   if (target === "dictation") return { btn: hotkeyBtn, text: hotkeyText };
   if (target === "pasteLast") return { btn: pasteLastBtn, text: pasteLastText };
   if (target === "rewriteLast") return { btn: rewriteLastBtn, text: rewriteLastText };
+  if (target === "meeting") return { btn: meetingHotkeyBtn, text: meetingHotkeyText };
   return { btn: freeGpuBtn, text: freeGpuText };
 }
 
@@ -558,6 +572,9 @@ async function setHotkey(target: HotkeyTarget, combo: string) {
   if (target === "dictation") currentSettings.hotkey = combo;
   else if (target === "pasteLast") currentSettings.pasteLastHotkey = combo;
   else if (target === "rewriteLast") currentSettings.rewriteLastHotkey = combo;
+  // Kept in step with the backend's copy: the next save_settings sends
+  // these settings back whole.
+  else if (target === "meeting") currentSettings.meetingHotkey = combo;
   else currentSettings.freeGpuHotkey = combo;
 }
 
@@ -591,6 +608,15 @@ freeGpuClear.addEventListener("click", async () => {
     await setHotkey("freeGpu", "");
   } catch (err) {
     console.error("clearing free-GPU hotkey failed:", err);
+  }
+  renderHotkeys();
+});
+meetingHotkeyBtn.addEventListener("click", () => capture("meeting"));
+meetingHotkeyClear.addEventListener("click", async () => {
+  try {
+    await setHotkey("meeting", "");
+  } catch (err) {
+    console.error("clearing the meeting hotkey failed:", err);
   }
   renderHotkeys();
 });
@@ -847,4 +873,17 @@ initFiles({
 getVersion()
   .then((v) => (document.getElementById("version-text")!.textContent = `v${v}`))
   .catch(console.error);
-loadSettings();
+// The tray's Quit while a meeting records asks in this window: the question
+// is listened for from the start, on every tab.
+initMeetingQuit();
+// The Meetings tab reads the settings, so it starts once they are loaded.
+loadSettings().then(() =>
+  initMeetings({
+    settings: () => currentSettings,
+    saveSettings: async (patch) => {
+      Object.assign(currentSettings, patch);
+      await invoke("save_settings", { settings: currentSettings });
+    },
+    showSection: () => showSection("meetings"),
+  }),
+);
