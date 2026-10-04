@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-04 - Meetings
+
+Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
+
 ### Added
 - **Meetings** (new tab): record an online call on this PC (Teams, Zoom,
   Discord, Google Meet …) with Start meeting, the tray menu or an optional
@@ -32,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - RudariFlow no longer runs twice: starting it again brings the running window
   to the front.
+- RudariFlow's hidden window no longer takes the keyboard focus when the app
+  starts in the tray (at Windows login): typing went into it for a moment.
 
 ## [0.14.1] - 2026-10-02 - Sound hotkeys on/off, loops, two columns
 
