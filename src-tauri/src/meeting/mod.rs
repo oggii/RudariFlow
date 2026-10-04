@@ -137,7 +137,8 @@ pub enum Event {
     Limit,
 }
 
-/// What a meeting is recorded and transcribed with: the settings at Start.
+/// What a meeting is recorded and transcribed with: the settings at Start
+/// (`ai_model`: as they are at Stop, see `set_notes_model`).
 #[derive(Debug, Clone)]
 pub struct Config {
     pub microphone: String,
@@ -471,6 +472,17 @@ impl Meetings {
         lock(&self.open).insert(id.clone(), meeting.clone());
         *live = Some(Live { id: id.clone(), meeting, capture, stop, worker, config });
         Ok(Recording { id, title, started_at: now, warnings: Vec::new(), paused })
+    }
+
+    /// AI cleanup was switched or another AI model picked: the meeting that
+    /// records writes its notes with the setting as it is at Stop, so Stop
+    /// does not start an AI that was switched off meanwhile (and writes the
+    /// notes when it was switched on). Not on the main thread: `recording`
+    /// is held while a meeting starts and its devices open.
+    pub fn set_notes_model(&self, ai_model: Result<PathBuf, String>) {
+        if let Some(live) = lock(&self.recording).as_mut() {
+            live.config.ai_model = ai_model;
+        }
     }
 
     /// Stop recording; the end steps run in the background ("meeting-status"

@@ -393,6 +393,11 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     };
     let warm_prompt = polish::system_prompt(&settings);
     let language_changed = state.settings.lock().unwrap().ui_language != settings.ui_language;
+    // A meeting that records writes its notes with AI cleanup and the AI
+    // model as they are at Stop. Off this thread: a meeting that starts
+    // holds the lock while its devices open.
+    let (meetings, notes_model) = (state.meetings.clone(), meeting_config_from(&settings, &state.app_dir).ai_model);
+    tauri::async_runtime::spawn_blocking(move || meetings.set_notes_model(notes_model));
     *state.settings.lock().unwrap() = settings;
     if language_changed {
         show_meeting_state(&app, true);
