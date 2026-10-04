@@ -2689,7 +2689,7 @@ fn main() {
         }),
     ));
     llm.set_warm_prompt(polish::system_prompt(&settings));
-    let meetings = Meetings::new(&app_dir, whisper_engine.clone(), llm.clone(), Box::new(meeting_event));
+    let meetings = Meetings::new(&app_dir, whisper_engine.clone(), llm.clone(), settings.ui_language == "de", Box::new(meeting_event));
     let initial_hotkey = settings.hotkey.clone();
     let initial_paste_last_hotkey = settings.paste_last_hotkey.clone();
     let initial_rewrite_last_hotkey = settings.rewrite_last_hotkey.clone();

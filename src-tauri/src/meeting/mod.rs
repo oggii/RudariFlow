@@ -218,19 +218,19 @@ pub struct Meetings {
 
 impl Meetings {
     /// The meetings in `<app_dir>\meetings`. Meetings a quit or crash cut
-    /// off become interrupted now; old audio is deleted soon after and once
-    /// a day.
+    /// off become interrupted now, and one whose `meeting.json` a power cut
+    /// damaged is rebuilt from its audio (`german`: its title); old audio
+    /// is deleted soon after and once a day.
     pub fn new(
         app_dir: &Path,
         engine: Arc<WhisperEngine>,
         llm: Arc<LlmServer>,
+        german: bool,
         events: Box<dyn Fn(Event) + Send + Sync>,
     ) -> Arc<Meetings> {
         let root = store::root(app_dir);
-        // Before anything records or saves.
-        for id in store::recover(&root) {
-            startup_log::log(&format!("[meeting] {} was cut off: interrupted", id));
-        }
+        // Before anything records or saves; it logs what it did.
+        store::recover(&root, german);
         let meetings = Arc::new_cyclic(|this| Meetings {
             root,
             app_dir: app_dir.to_path_buf(),
@@ -1121,7 +1121,7 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let seen = events.clone();
         let llm = Arc::new(LlmServer::new(app_dir.join("llama"), app_dir.join("llm-server.log"), Box::new(|_| {})));
-        let meetings = Meetings::new(&app_dir, Arc::new(WhisperEngine::new()), llm, Box::new(move |e| seen.lock().unwrap().push(e)));
+        let meetings = Meetings::new(&app_dir, Arc::new(WhisperEngine::new()), llm, false, Box::new(move |e| seen.lock().unwrap().push(e)));
         (app_dir, meetings, events)
     }
 
@@ -1155,10 +1155,25 @@ mod tests {
         let app_dir = std::env::temp_dir().join("rudariflow_meetings_recover");
         let _ = std::fs::remove_dir_all(&app_dir);
         saved(&app_dir, "m-000000000001", State::Recording);
+        // And one whose file a power cut emptied, with a second of audio.
+        let damaged = store::root(&app_dir).join("m-000000000002");
+        std::fs::create_dir_all(&damaged).unwrap();
+        std::fs::write(damaged.join(store::FILE), b"").unwrap();
+        let mut track = TrackFile::create(&damaged.join(YOU_WAV)).unwrap();
+        track.append(&[0.1; 16_000]).unwrap();
+        drop(track);
         let llm = Arc::new(LlmServer::new(app_dir.join("llama"), app_dir.join("llm-server.log"), Box::new(|_| {})));
-        let meetings = Meetings::new(&app_dir, Arc::new(WhisperEngine::new()), llm, Box::new(|_| {}));
+        let meetings = Meetings::new(&app_dir, Arc::new(WhisperEngine::new()), llm, true, Box::new(|_| {}));
         assert_eq!(meetings.get("m-000000000001").unwrap().meeting.state, State::Interrupted);
         assert_eq!(meetings.status(), Status::default());
+        let rebuilt = meetings.get("m-000000000002").unwrap().meeting;
+        assert_eq!((rebuilt.state, rebuilt.length_ms, rebuilt.audio_deleted), (State::Interrupted, 1_000, false));
+        assert!(rebuilt.title.starts_with("Meeting ") && rebuilt.title.contains(". "), "a German title: {}", rebuilt.title);
+        assert_eq!(meetings.list("").len(), 2, "the library shows it");
+        // Finish takes it (here it stops at the missing Whisper model).
+        assert_eq!(meetings.finish("m-000000000002", config(&app_dir)), Err("no_model".into()));
+        meetings.delete("m-000000000002").unwrap();
+        assert!(!damaged.exists(), "and it can be deleted");
     }
 
     #[test]
