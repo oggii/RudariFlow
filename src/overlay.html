@@ -262,6 +262,11 @@
       window.__overlayUpdate = (state) => {
         diag(`__overlayUpdate(${state}) bodyState=${document.body.dataset.state} levelEvents=${levelEventCount}`);
         document.body.dataset.state = state;
+        // A notice's timer must not put "ready" over this state later.
+        if (noticeTimer) {
+          clearTimeout(noticeTimer);
+          noticeTimer = null;
+        }
         if (state !== "recording") {
           // Stop responding to incoming levels (set bars to baseline)
           for (let i = 0; i < BAR_COUNT; i++) HISTORY[i] = 0;
@@ -309,7 +314,11 @@
         document.body.dataset.state = "notice";
         if (noticeTimer) clearTimeout(noticeTimer);
         noticeTimer = setTimeout(() => {
-          document.body.dataset.state = "ready";
+          noticeTimer = null;
+          // Only while the notice still shows: a dictation that started
+          // meanwhile keeps its state (as "ready" it would be hidden behind
+          // the meeting's dot).
+          if (document.body.dataset.state === "notice") document.body.dataset.state = "ready";
           invoke("diag_log", { source: "overlay", message: "notice timeout" });
         }, ms);
       }

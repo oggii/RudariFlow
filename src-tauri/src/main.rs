@@ -132,7 +132,15 @@ fn ai_model_to_run(settings: &Settings, app_dir: &std::path::Path) -> Option<Pat
 /// The Whisper model to load for these settings: local engine and model
 /// downloaded.
 fn whisper_model_to_load(settings: &Settings, app_dir: &std::path::Path) -> Option<PathBuf> {
-    if settings.engine != "local" {
+    whisper_model_to_load_now(settings, app_dir, false)
+}
+
+/// `whisper_model_to_load`, and while a meeting records the downloaded
+/// model whatever the engine is: its live text runs on the local model,
+/// and with the cloud engine no dictation would load it again after a Free
+/// GPU press or a change of the model or the backend.
+fn whisper_model_to_load_now(settings: &Settings, app_dir: &std::path::Path, meeting_records: bool) -> Option<PathBuf> {
+    if settings.engine != "local" && !meeting_records {
         return None;
     }
     let path = app_dir.join(rudariflow_lib::whisper_engine::model_filename(&settings.whisper_model));
@@ -141,11 +149,13 @@ fn whisper_model_to_load(settings: &Settings, app_dir: &std::path::Path) -> Opti
 
 /// Load the Whisper model now instead of at the first dictation. False when
 /// a load was tried and failed (the log says why); true when it loaded or
-/// the settings load none (Groq, or no model downloaded).
+/// the settings load none (Groq with no meeting recording, or no model
+/// downloaded).
 async fn load_whisper(state: &AppState) -> bool {
     let settings = state.settings.lock().unwrap().clone();
     state.whisper_engine.set_flash_attn(settings.flash_attn_pref());
-    let Some(model) = whisper_model_to_load(&settings, &state.app_dir) else {
+    let meeting_records = state.meetings.status().recording.is_some();
+    let Some(model) = whisper_model_to_load_now(&settings, &state.app_dir, meeting_records) else {
         return true;
     };
     let engine = state.whisper_engine.clone();
@@ -915,15 +925,12 @@ async fn pc_check(app: AppHandle, state: State<'_, AppState>) -> Result<PcCheckR
     // may be under way: the check unloads the engine's model and runs
     // Whisper beside it, past the gate and the engine's lock. A meeting's
     // live text would stop and its pieces would run against the variants.
-    let _running = PcCheckRunning::begin()?;
-    // `is_recording` waits for a meeting whose devices are opening right
-    // now (it is not in the status yet); off the async threads for that.
     let meetings = state.meetings.clone();
-    let in_meeting =
-        tauri::async_runtime::spawn_blocking(move || meetings.is_recording() || meeting_busy(&meetings.status())).await;
-    if in_meeting.unwrap_or(true) {
-        return Err("meeting_busy".to_string());
-    }
+    let _running = tauri::async_runtime::spawn_blocking(move || {
+        PcCheckRunning::begin(|| meetings.is_recording() || meeting_busy(&meetings.status()))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let settings = state.settings.lock().unwrap().clone();
     let model = whisper_model_to_load(&settings, &state.app_dir).ok_or("Download a Whisper model first")?;
     // The newest recording in the history, else five seconds of silence.
@@ -2006,35 +2013,47 @@ fn meeting_uses_whisper(status: &meeting::Status) -> bool {
 
 /// The PC check runs: it loads Whisper beside the engine, past the gate
 /// that puts dictations, meeting pieces and file blocks in order, so no
-/// meeting starts or finishes meanwhile ("pc_check").
-static PC_CHECK_RUNNING: AtomicBool = AtomicBool::new(false);
+/// meeting starts or finishes meanwhile ("pc_check"). The lock is held
+/// while the check looks for a meeting and sets this, and while a meeting
+/// looks at this and starts (`while_no_pc_check`), so neither slips past
+/// the other. Never taken on the main thread or held across an await.
+static PC_CHECK_RUNNING: Mutex<bool> = Mutex::new(false);
 
 /// Clears `PC_CHECK_RUNNING` when the check ends, however it ends.
+#[derive(Debug)]
 struct PcCheckRunning;
 
 impl PcCheckRunning {
-    /// "busy" while another check runs.
-    fn begin() -> Result<Self, String> {
-        if PC_CHECK_RUNNING.swap(true, Ordering::SeqCst) {
+    /// "busy" while another check runs, "meeting_busy" when `in_meeting`
+    /// says a meeting records or runs its end steps.
+    fn begin(in_meeting: impl FnOnce() -> bool) -> Result<Self, String> {
+        let mut running = PC_CHECK_RUNNING.lock().unwrap_or_else(|p| p.into_inner());
+        if *running {
             return Err("busy".to_string());
         }
+        if in_meeting() {
+            return Err("meeting_busy".to_string());
+        }
+        *running = true;
         Ok(PcCheckRunning)
     }
 }
 
 impl Drop for PcCheckRunning {
     fn drop(&mut self) {
-        PC_CHECK_RUNNING.store(false, Ordering::SeqCst);
+        *PC_CHECK_RUNNING.lock().unwrap_or_else(|p| p.into_inner()) = false;
     }
 }
 
-/// "pc_check" while the PC check runs: a meeting waits for it.
-fn pc_check_idle() -> Result<(), String> {
-    if PC_CHECK_RUNNING.load(Ordering::SeqCst) {
-        Err("pc_check".to_string())
-    } else {
-        Ok(())
+/// Start or finish a meeting (`work`) unless the PC check runs
+/// ("pc_check"); the check cannot begin until `work` is done, and then
+/// finds the meeting.
+fn while_no_pc_check<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let running = PC_CHECK_RUNNING.lock().unwrap_or_else(|p| p.into_inner());
+    if *running {
+        return Err("pc_check".to_string());
     }
+    work()
 }
 
 /// The tray's "Start meeting" / "Stop meeting" item.
@@ -2052,21 +2071,26 @@ fn tray_meeting_text(german: bool, recording: bool) -> &'static str {
     }
 }
 
-/// Bring the tray item and the pill's red dot up to date. The work is
-/// handed to the main thread, which looks at what is true when it runs
-/// (whether a meeting records, the UI language): status events come from
-/// several threads and can overtake each other, so the last one handled
-/// need not be the newest. Nothing waits for the main thread here, so a
+/// Send "meeting-status" and bring the tray item and the pill's red dot up
+/// to date. The work is handed to the main thread, which looks at what is
+/// true when it runs (the status, the UI language): status events come
+/// from several threads and can overtake each other, so the last one
+/// handled need not be the newest, and the window, the tray and the pill
+/// would keep a stale one. Nothing waits for the main thread here, so a
 /// thread that stops a meeting never hangs on a main thread that is busy
-/// (Quit closes the devices there). `language` also sets the text again
-/// when only the UI language changed.
+/// (Quit closes the devices there). `language`: only the UI language
+/// changed; the tray's text is set again and no status is sent.
 fn show_meeting_state(app: &AppHandle, language: bool) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         let state = handle.state::<AppState>();
-        // The status, not `is_recording`: that lock is held while the
-        // devices of a starting meeting open.
-        let recording = state.meetings.status().recording.is_some();
+        // The status is what the window shows too; its lock is only ever
+        // held for a moment.
+        let status = state.meetings.status();
+        let recording = status.recording.is_some();
+        if !language {
+            let _ = handle.emit("meeting-status", status);
+        }
         let changed = MEETING_SHOWN.swap(recording, Ordering::SeqCst) != recording;
         if changed || language {
             let german = state.settings.lock().unwrap().ui_language == "de";
@@ -2085,10 +2109,9 @@ fn show_meeting_state(app: &AppHandle, language: bool) {
 fn meeting_event(event: meeting::Event) {
     let Some(app) = APP_HANDLE.get() else { return };
     match event {
-        meeting::Event::Status(status) => {
-            let _ = app.emit("meeting-status", status);
-            show_meeting_state(app, false);
-        }
+        // Not this event's status: the one that is true when the main
+        // thread sends it (see `show_meeting_state`).
+        meeting::Event::Status(_) => show_meeting_state(app, false),
         meeting::Event::Lines(lines) => {
             let _ = app.emit("meeting-lines", lines);
         }
@@ -2102,14 +2125,15 @@ fn meeting_event(event: meeting::Event) {
     }
 }
 
-/// Presses of the tray item and the hotkey run one after the other, so a
-/// second press while the devices open stops the meeting the first started.
+/// Presses of the tray item and the hotkey run one after the other: a
+/// second press waits for the first and then does the opposite, so two
+/// quick presses start a meeting and stop it instead of failing the second.
 static MEETING_TOGGLE: Mutex<()> = Mutex::new(());
 
 /// The tray item and the hotkey: start a meeting, or stop the one that
 /// records. Off the main thread (menu clicks and chords arrive there):
-/// starting opens the devices and stopping waits for the capture thread.
-/// A failed start shows its reason in the pill ("meeting-notice").
+/// starting creates the files and stopping waits up to 3 s for the devices
+/// to close. A failed start shows its reason in the pill ("meeting-notice").
 fn toggle_meeting(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -2120,7 +2144,7 @@ fn toggle_meeting(app: &AppHandle) {
             if let Err(e) = state.meetings.stop() {
                 startup_log::log(&format!("[meeting] not stopped: {}", e));
             }
-        } else if let Err(e) = pc_check_idle().and_then(|_| state.meetings.start(None, meeting_config(&state))) {
+        } else if let Err(e) = while_no_pc_check(|| state.meetings.start(None, meeting_config(&state))) {
             startup_log::log(&format!("[meeting] not started: {}", e));
             pill_notice(&app, "meeting-notice", &e);
         }
@@ -2128,7 +2152,7 @@ fn toggle_meeting(app: &AppHandle) {
 }
 
 /// A meeting command's work on a blocking thread: the meetings read and
-/// write files, open devices and wait for threads.
+/// write files and wait for devices and threads.
 async fn meeting_work<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(work).await.map_err(|e| e.to_string())?
 }
@@ -2138,9 +2162,8 @@ async fn meeting_work<T: Send + 'static>(work: impl FnOnce() -> Result<T, String
 /// PC check runs) or a file or device error.
 #[tauri::command]
 async fn meeting_start(state: State<'_, AppState>, title: Option<String>) -> Result<String, String> {
-    pc_check_idle()?;
     let (meetings, config) = (state.meetings.clone(), meeting_config(&state));
-    meeting_work(move || meetings.start(title, config)).await
+    meeting_work(move || while_no_pc_check(|| meetings.start(title, config))).await
 }
 
 /// Stop recording; the end steps follow in the background. Error
@@ -2205,9 +2228,8 @@ async fn meeting_delete(state: State<'_, AppState>, id: String) -> Result<(), St
 /// "no_model" (Whisper is needed and not downloaded), "pc_check".
 #[tauri::command]
 async fn meeting_finish(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    pc_check_idle()?;
     let (meetings, config) = (state.meetings.clone(), meeting_config(&state));
-    meeting_work(move || meetings.finish(&id, config)).await
+    meeting_work(move || while_no_pc_check(|| meetings.finish(&id, config))).await
 }
 
 /// Write the notes (the "Write notes" button): needs the AI model
@@ -2945,9 +2967,8 @@ fn main() {
                     "meeting" => toggle_meeting(app),
                     "quit" => {
                         // A meeting that records: the window asks "Stop the
-                        // meeting and quit?" (meeting_quit). The status, not
-                        // `is_recording`: this is the main thread, and that
-                        // lock is held while a starting meeting's devices open.
+                        // meeting and quit?" (meeting_quit). The status is
+                        // what the tray item and the window show.
                         if app.state::<AppState>().meetings.status().recording.is_some() {
                             if let Some(w) = app.get_webview_window("main") {
                                 let _ = w.show();
@@ -3296,6 +3317,47 @@ mod tests {
             assert!(meeting_busy(&later), "{:?}: the AI must not be stopped under the notes", step);
             assert!(!meeting_uses_whisper(&later), "{:?}: the meeting let go of Whisper already", step);
         }
+    }
+
+    #[test]
+    fn a_meeting_loads_whisper_with_the_cloud_engine_too() {
+        let dir = std::env::temp_dir().join("rudariflow_meeting_whisper_load");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Settings { engine: "cloud".to_string(), ..Settings::default() };
+        assert_eq!(whisper_model_to_load_now(&s, &dir, true), None, "not downloaded");
+        std::fs::write(dir.join("ggml-small.bin"), b"x").unwrap();
+        assert_eq!(whisper_model_to_load(&s, &dir), None, "dictations go to the cloud");
+        assert_eq!(whisper_model_to_load_now(&s, &dir, false), None);
+        assert_eq!(
+            whisper_model_to_load_now(&s, &dir, true),
+            Some(dir.join("ggml-small.bin")),
+            "Free GPU again or a settings change: the live text goes on"
+        );
+        s.engine = "local".to_string();
+        assert_eq!(whisper_model_to_load(&s, &dir), Some(dir.join("ggml-small.bin")));
+        assert_eq!(whisper_model_to_load_now(&s, &dir, true), Some(dir.join("ggml-small.bin")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_pc_check_and_a_meeting_start_shut_each_other_out() {
+        // The only test that takes PC_CHECK_RUNNING.
+        assert_eq!(while_no_pc_check(|| Ok(1)), Ok(1), "no check: the meeting starts");
+        assert_eq!(PcCheckRunning::begin(|| true).unwrap_err(), "meeting_busy");
+        assert_eq!(while_no_pc_check(|| Ok(2)), Ok(2), "a refused check holds nothing");
+        let check = PcCheckRunning::begin(|| false).unwrap();
+        let mut started = false;
+        let refused: Result<(), String> = while_no_pc_check(|| {
+            started = true;
+            Ok(())
+        });
+        assert_eq!((refused, started), (Err("pc_check".to_string()), false));
+        assert_eq!(PcCheckRunning::begin(|| false).unwrap_err(), "busy", "one check at a time");
+        assert_eq!(while_no_pc_check(|| Ok(3)), Err("pc_check".to_string()), "the refused second check ends nothing");
+        drop(check);
+        assert_eq!(while_no_pc_check(|| Err::<(), _>("no_model".to_string())), Err("no_model".to_string()));
+        drop(PcCheckRunning::begin(|| false).unwrap());
     }
 
     #[test]

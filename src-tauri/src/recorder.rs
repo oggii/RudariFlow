@@ -38,7 +38,29 @@ pub enum RecordingState {
 /// a small red dot that clicks go through (`Recorder::set_meeting_dot`).
 static MEETING_DOT: AtomicBool = AtomicBool::new(false);
 
-/// The pill when no dictation runs: hidden, or the meeting's red dot.
+/// One change of the pill's window at a time (see `on_pill`).
+static PILL: Mutex<()> = Mutex::new(());
+
+/// Decide what the pill's window does and do it, as one step: `change`
+/// runs on the main thread (at once when called there) with `PILL` held.
+/// Dictations, notices and the meeting's dot change the window from
+/// several threads. Decided on one thread and applied on another, a
+/// meeting's stop that lands on a notice's end could leave the dot's
+/// click-through window on screen: each would rest the pill with what the
+/// other had just changed. Here every change sees what the one before it
+/// did, and the window follows in the same order. `change` must not call
+/// `on_pill` itself.
+fn on_pill(app: &AppHandle, change: impl FnOnce(&tauri::WebviewWindow) + Send + 'static) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(overlay) = handle.get_webview_window("overlay") else { return };
+        let _one = lock(&PILL);
+        change(&overlay);
+    });
+}
+
+/// The pill when no dictation runs: hidden, or the meeting's red dot. Only
+/// inside `on_pill`.
 fn rest_overlay(overlay: &tauri::WebviewWindow) {
     if MEETING_DOT.load(Ordering::SeqCst) {
         let _ = overlay.set_ignore_cursor_events(true);
@@ -69,8 +91,9 @@ fn update_overlay(app: &AppHandle, state: &RecordingState) {
         state, was_visible, pos, size
     ));
 
-    match state {
-        RecordingState::Ready => rest_overlay(&overlay),
+    let shown = state.clone();
+    on_pill(app, move |overlay| match shown {
+        RecordingState::Ready => rest_overlay(overlay),
         RecordingState::Recording | RecordingState::Transcribing => {
             // The meeting's dot lets clicks through; the pill's Cancel needs them.
             let _ = overlay.set_ignore_cursor_events(false);
@@ -85,7 +108,7 @@ fn update_overlay(app: &AppHandle, state: &RecordingState) {
                 startup_log::log(&format!("[overlay] show() failed: {}", e));
             }
         }
-    }
+    });
     let class = match state {
         RecordingState::Ready => "ready",
         RecordingState::Recording => "recording",
@@ -263,6 +286,14 @@ fn hides_pill(notice: u64, latest: u64, state: &RecordingState) -> bool {
     notice == latest && *state == RecordingState::Ready
 }
 
+/// Whether the meeting's dot coming or going puts the pill to rest now
+/// (the dot, or hidden): not during a dictation, which ends with the rest
+/// itself, and not while notice number `notice_shown` (0: none) is on
+/// screen, whose timer does it when its time is up.
+fn dot_rests_pill(state: &RecordingState, notice_shown: u64) -> bool {
+    *state == RecordingState::Ready && notice_shown == 0
+}
+
 /// Briefly show the overlay with a notice (`audio-empty`, `mic-error`) so a
 /// failed hotkey press is visible instead of silently doing nothing.
 fn show_notice(app: &AppHandle, state: Arc<Mutex<RecordingState>>, event: &str, hide_after_ms: u64) {
@@ -277,27 +308,28 @@ fn show_notice_with<P: serde::Serialize + Clone>(
     hide_after_ms: u64,
 ) {
     let notice = NOTICES.fetch_add(1, Ordering::SeqCst) + 1;
-    NOTICE_SHOWN.store(notice, Ordering::SeqCst);
-    if let Some(overlay) = app.get_webview_window("overlay") {
+    on_pill(app, move |overlay| {
+        // The latest: two notices from two threads can arrive out of order.
+        NOTICE_SHOWN.fetch_max(notice, Ordering::SeqCst);
         let _ = overlay.set_always_on_top(false);
         let _ = overlay.set_always_on_top(true);
         let _ = overlay.show();
-    }
+    });
     let _ = app.emit(event, payload);
     let app_clone = app.clone();
     let state_clone = state.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(hide_after_ms)).await;
-        let _ = NOTICE_SHOWN.compare_exchange(notice, 0, Ordering::SeqCst, Ordering::SeqCst);
-        // A later notice hides the pill itself, after its own full time. If
-        // a new recording started during the grace window, leave the overlay
-        // alone — don't hide it mid-dictation.
-        let current = lock(&state_clone).clone();
-        if hides_pill(notice, NOTICES.load(Ordering::SeqCst), &current) {
-            if let Some(overlay) = app_clone.get_webview_window("overlay") {
-                rest_overlay(&overlay);
+        on_pill(&app_clone, move |overlay| {
+            let _ = NOTICE_SHOWN.compare_exchange(notice, 0, Ordering::SeqCst, Ordering::SeqCst);
+            // A later notice hides the pill itself, after its own full time. If
+            // a new recording started during the grace window, leave the overlay
+            // alone — don't hide it mid-dictation.
+            let current = lock(&state_clone).clone();
+            if hides_pill(notice, NOTICES.load(Ordering::SeqCst), &current) {
+                rest_overlay(overlay);
             }
-        }
+        });
     });
 }
 
@@ -354,13 +386,15 @@ impl Recorder {
     /// A meeting started (`on`) or ended: the pill shows a small red dot
     /// while it records, also between dictations and with the window hidden.
     pub fn set_meeting_dot(&self, app: &AppHandle, on: bool) {
-        MEETING_DOT.store(on, Ordering::SeqCst);
-        let Some(overlay) = app.get_webview_window("overlay") else { return };
-        let _ = overlay.eval(format!("window.__meetingDot && window.__meetingDot({});", on));
-        // A notice keeps the pill until its time is up; then `rest_overlay`.
-        if self.get_state() == RecordingState::Ready && NOTICE_SHOWN.load(Ordering::SeqCst) == 0 {
-            rest_overlay(&overlay);
-        }
+        let state = self.state.clone();
+        on_pill(app, move |overlay| {
+            MEETING_DOT.store(on, Ordering::SeqCst);
+            let _ = overlay.eval(format!("window.__meetingDot && window.__meetingDot({});", on));
+            let current = lock(&state).clone();
+            if dot_rests_pill(&current, NOTICE_SHOWN.load(Ordering::SeqCst)) {
+                rest_overlay(overlay);
+            }
+        });
     }
 
     /// Show a short notice in the pill, e.g. why "rewrite last" did not
@@ -927,5 +961,14 @@ mod tests {
         assert!(!hides_pill(1, 2, &RecordingState::Ready), "a later notice keeps its full time");
         assert!(!hides_pill(2, 2, &RecordingState::Recording), "never mid-dictation");
         assert!(!hides_pill(2, 2, &RecordingState::Transcribing), "never mid-dictation");
+    }
+
+    #[test]
+    fn the_meeting_dot_leaves_a_dictation_and_a_notice_alone() {
+        assert!(dot_rests_pill(&RecordingState::Ready, 0), "between dictations: the dot, or hidden");
+        assert!(!dot_rests_pill(&RecordingState::Ready, 7), "\"stopped at 4 hours\" keeps its time");
+        assert!(!dot_rests_pill(&RecordingState::Recording, 0), "the pill shows the dictation");
+        assert!(!dot_rests_pill(&RecordingState::Transcribing, 0));
+        assert!(!dot_rests_pill(&RecordingState::Recording, 7));
     }
 }
