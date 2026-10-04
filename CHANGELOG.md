@@ -12,8 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Discord, Google Meet …) with Start meeting, the tray menu or an optional
   hotkey (Recording tab, off by default). Your microphone ("You") and what
   the PC plays on Windows' default output ("Others") are transcribed live,
-  at most about half a minute behind, with a red bar, a red dot in the
-  pill, "Jump to live" and copy. After Stop the others are told apart
+  about half a minute behind on a GPU (longer on the CPU), with a red bar,
+  a red dot in the pill, "Jump to live" and copy. After Stop the others are told apart
   (Speaker 1, 2, …, renamed with a click) and the AI model writes the
   notes: Summary, Decisions and Action items as a checklist; without AI
   cleanup, "Write notes" writes them later. ▶ plays the meeting from a
@@ -22,8 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   list; the audio is deleted after 30 days, the text stays. A meeting cut
   off by a crash or a quit can be finished later (Finish); quitting during
   a meeting asks first. Dictations keep going first while a meeting
-  transcribes; after a Free GPU press the recording goes on and the text
-  catches up when the models are loaded again. The PC check does not run
+  transcribes, and "Mute other apps while recording" does not mute during
+  a meeting (it would record the silence); after a Free GPU press the
+  recording goes on and the text catches up when the models are loaded
+  again. Stop loads the models again when they were freed before it, for
+  the rest of the transcript and the notes. The PC check does not run
   during a meeting.
 
 ### Fixed
