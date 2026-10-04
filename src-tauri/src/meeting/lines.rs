@@ -1,6 +1,6 @@
-//! A meeting's text: where the live worker cuts a growing track, the echo
-//! rule, lines in time order, the speakers of the Others track, paragraphs,
-//! and the transcript the AI writes the notes from.
+//! A meeting's text: where the live worker cuts a growing track, sound
+//! labels, the echo rule, lines in time order, the speakers of the Others
+//! track, paragraphs, and the transcript the AI writes the notes from.
 
 use std::collections::HashSet;
 
@@ -25,6 +25,11 @@ pub const ECHO_SHARE: f32 = 0.7;
 /// The two tracks' times this close count as the same moment (Whisper's
 /// times are rough, and the echo comes a little later).
 const ECHO_SLACK_MS: u64 = 1_000;
+
+/// A sound label has at most this many words between its marks.
+const LABEL_WORDS: usize = 3;
+/// What Whisper writes around (or instead of) music.
+const NOTES: [char; 4] = ['\u{266a}', '\u{266b}', '\u{2669}', '\u{266c}'];
 
 const RATE: f32 = 16_000.0;
 
@@ -58,6 +63,42 @@ fn is_pause(audio: &[f32], at: usize) -> bool {
     }
     let window = &audio[at - HALF..at + HALF];
     (window.iter().map(|s| s * s).sum::<f32>() / window.len() as f32).sqrt() < PAUSE_RMS
+}
+
+/// Whether a segment's whole text is a sound label and no speech: for
+/// noise and music Whisper writes "*throwing*", "[Musik]", "(applause)",
+/// "[BLANK_AUDIO]" or music notes. The rule: the trimmed text is nothing
+/// but music notes and labels, a label being at most `LABEL_WORDS` words
+/// inside one pair of `[ ]`, `( )`, `* *` or two notes. Anything else is
+/// speech and stays: text with such marks in it, and a sentence of four
+/// or more words in brackets.
+pub fn sound_label(text: &str) -> bool {
+    let note = |c: char| NOTES.contains(&c);
+    let mut rest = text.trim();
+    let mut labels = 0;
+    loop {
+        rest = rest.trim_start();
+        if rest.chars().all(|c| c.is_whitespace() || note(c)) {
+            return labels > 0 || !rest.is_empty();
+        }
+        let mut chars = rest.chars();
+        let open = chars.next().unwrap_or(' ');
+        let after = chars.as_str();
+        let end = match open {
+            '[' => after.find(']'),
+            '(' => after.find(')'),
+            '*' => after.find('*'),
+            c if note(c) => after.find(note),
+            _ => None,
+        };
+        let Some(end) = end else { return false };
+        if after[..end].split_whitespace().count() > LABEL_WORDS {
+            return false;
+        }
+        labels += 1;
+        let close = after[end..].chars().next().map_or(0, char::len_utf8);
+        rest = &after[end + close..];
+    }
 }
 
 /// The words of a line for the echo comparison: lower case, apostrophes
@@ -254,6 +295,59 @@ mod tests {
         let cut = next_piece(&audio, true).unwrap();
         assert!(cut <= 30 * 16_000, "over 30 s it is still cut: {}", cut);
         assert_eq!(next_piece(&[], true), None);
+    }
+
+    #[test]
+    fn a_sound_label_is_no_speech() {
+        for label in [
+            "*throwing*",
+            "[Musik]",
+            "(applause)",
+            "[BLANK_AUDIO]",
+            "  [MUSIC]  ",
+            "(Applaus)",
+            "*Lachen*",
+            "* Musik *",
+            "[Musik spielt]",
+            "(Gel\u{e4}chter im Hintergrund)",
+            "[ Stille ]",
+            "[Musik] [Applaus]",
+            "(Musik)(Applaus)",
+            "\u{266a}",
+            "\u{266a}\u{266a}\u{266a}",
+            "\u{266a} \u{266b}",
+            "\u{266a} Musik \u{266a}",
+            "\u{266a} la la la \u{266a}",
+            "[Musik] \u{266a}",
+            "()",
+        ] {
+            assert!(sound_label(label), "{:?} is a label", label);
+        }
+        for speech in [
+            "",
+            "   ",
+            "Hallo zusammen.",
+            "Ja.",
+            // A sentence in brackets: more than three words.
+            "(Das habe ich ihm gestern schon gesagt)",
+            "(I think we should move on now)",
+            "[speaking in a foreign language]",
+            "\u{266a} I'm singing in the rain \u{266a}",
+            // Marks in normal text.
+            "[Musik] Danke.",
+            "Danke. (Applaus)",
+            "Wir nehmen Variante [B] und fertig.",
+            "Das kostet 3 * 4 Franken.",
+            "Das ist *wirklich* wichtig.",
+            "(lacht) Das war gut.",
+            // A mark that never closes.
+            "[Musik",
+            "(applause",
+            "*",
+            "Musik]",
+        ] {
+            assert!(!sound_label(speech), "{:?} stays", speech);
+        }
     }
 
     #[test]

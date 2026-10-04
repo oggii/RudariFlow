@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::capture::Written;
-use super::lines::{next_piece, PIECE_MAX_SECS, PIECE_MIN_SECS};
+use super::lines::{next_piece, sound_label, PIECE_MAX_SECS, PIECE_MIN_SECS};
 use super::store::{Line, Track};
 use super::wav::{self, RATE};
 use crate::file_transcribe;
@@ -157,7 +157,7 @@ impl Worker {
                 // Once more: a passing failure loses nothing.
                 result = whisper.transcribe(audio, from, &self.tail[i]);
             }
-            let segments = match result {
+            let mut segments = match result {
                 Ok(segments) => segments,
                 Err(e) if paused(&e) => return Err(PAUSED.to_string()),
                 Err(e) => {
@@ -166,6 +166,9 @@ impl Worker {
                 }
             };
             self.done[i] = from + len as u64;
+            // What Whisper writes for noise and music ("*throwing*",
+            // "[Musik]") is no line, and no prompt for the next piece.
+            segments.retain(|s| !sound_label(&s.text));
             self.tail[i].extend(segments.iter().cloned());
             let excess = self.tail[i].len().saturating_sub(TAIL);
             self.tail[i].drain(..excess);
@@ -397,6 +400,8 @@ mod tests {
         no_memory: bool,
         /// Holds a run, as `Whisper` does, until it is unloaded.
         held: bool,
+        /// What it hears in every piece, instead of "at <ms>".
+        says: Option<Vec<&'static str>>,
         calls: Vec<(u64, usize, Vec<String>)>,
     }
 
@@ -425,7 +430,11 @@ mod tests {
             }
             self.held = true;
             let start_ms = offset / 16;
-            Ok(vec![Segment { start_ms, end_ms: start_ms + 1_000, text: format!("at {}", start_ms), speaker: None }])
+            let texts = match &self.says {
+                Some(says) => says.iter().map(|s| s.to_string()).collect(),
+                None => vec![format!("at {}", start_ms)],
+            };
+            Ok(texts.into_iter().map(|text| Segment { start_ms, end_ms: start_ms + 1_000, text, speaker: None }).collect())
         }
 
         fn language(&self) -> String {
@@ -658,6 +667,26 @@ mod tests {
         }
         assert_eq!((worker.done(Track::You), worker.done(Track::Others)), (40 * 16_000, 10 * 16_000));
         assert!(whisper.calls.is_empty());
+    }
+
+    #[test]
+    fn sound_labels_are_no_lines_and_no_prompt() {
+        let source = Fake::new(talk(60.0, &[17.0]), Vec::new());
+        let says = vec![" *throwing* ", "Guten Morgen zusammen.", "[Musik]", "(Das habe ich ihm gestern schon gesagt)", "(Applaus)"];
+        let mut whisper = Whisperer { says: Some(says), ..Default::default() };
+        let mut worker = Worker::new(0, 0, &[]);
+        source.up_to(25.0, 0.0);
+        let piece = worker.step(&source, &mut whisper, false).unwrap().unwrap();
+        let texts: Vec<&str> = piece.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["Guten Morgen zusammen.", "(Das habe ich ihm gestern schon gesagt)"], "speech stays, in brackets too");
+        // A piece with nothing but noise: no line, and the track goes on.
+        whisper.says = Some(vec!["[BLANK_AUDIO]"]);
+        source.up_to(60.0, 0.0);
+        let done = worker.done(Track::You);
+        let piece = worker.step(&source, &mut whisper, true).unwrap().unwrap();
+        assert!(piece.lines.is_empty());
+        assert!(worker.done(Track::You) > done && piece.done_ms == worker.done(Track::You) / 16);
+        assert_eq!(whisper.calls[1].2, texts, "the labels are not in the next prompt");
     }
 
     #[test]
