@@ -54,9 +54,12 @@ pub const MIN_FREE_BYTES: u64 = 1 << 30;
 pub const MAX_MS: u64 = 4 * 3600 * 1000;
 const TICK: Duration = Duration::from_millis(500);
 /// Old audio is looked for a minute after the start (not in its busiest
-/// moment: it loads every meeting), then once a day.
+/// moment: it loads every meeting), then once a day by the clock on the
+/// wall: a sleep of a day would not count the hours the PC sleeps, so the
+/// clock is looked at every hour.
 const CLEANUP_AFTER: Duration = Duration::from_secs(60);
-const CLEANUP_EVERY: Duration = Duration::from_secs(24 * 3600);
+const CLEANUP_EVERY_MS: u64 = 24 * 3600 * 1000;
+const CLEANUP_CHECK: Duration = Duration::from_secs(3600);
 /// Quit waits this long for the live transcription to end (a piece may be
 /// running); then it is left behind.
 const QUIT_WAIT: Duration = Duration::from_secs(2);
@@ -249,10 +252,15 @@ impl Meetings {
         let this = Arc::downgrade(&meetings);
         let _ = std::thread::Builder::new().name("rf-meeting-cleanup".into()).spawn(move || {
             std::thread::sleep(CLEANUP_AFTER);
+            let mut last = None;
             while let Some(meetings) = this.upgrade() {
-                meetings.delete_old_audio();
+                let now = store::now_ms();
+                if cleanup_due(last, now) {
+                    meetings.delete_old_audio();
+                    last = Some(now);
+                }
                 drop(meetings);
-                std::thread::sleep(CLEANUP_EVERY);
+                std::thread::sleep(CLEANUP_CHECK);
             }
         });
         meetings
@@ -288,9 +296,9 @@ impl Meetings {
         (self.events)(event);
     }
 
-    /// Change the status and send it. Never while `recording` is locked:
-    /// main.rs updates the tray from it through the main thread, which may
-    /// be waiting for that lock (`is_recording`).
+    /// Change the status and send it. main.rs hands it on to the main
+    /// thread and does not wait for it, so the sender never hangs on a main
+    /// thread that is busy.
     fn change_status(&self, change: impl FnOnce(&mut Status)) {
         let status = {
             let mut status = lock(&self.status);
@@ -374,8 +382,8 @@ impl Meetings {
 
     /// Start recording a meeting; returns its id. Errors: "already_recording",
     /// "no_model" (no Whisper model downloaded), "disk_full" (under 1 GB
-    /// free), or why a file could not be created. Not on the main thread
-    /// (see `change_status`).
+    /// free), or why a file could not be created. Not on the main thread:
+    /// the devices take a moment to open.
     pub fn start(&self, title: Option<String>, config: Config) -> Result<String, String> {
         let id = {
             let mut live = lock(&self.recording);
@@ -492,8 +500,17 @@ impl Meetings {
         self.stop_if(None)
     }
 
+    /// What the Free GPU hotkey has freed right now.
+    fn freed(&self) -> Freed {
+        Freed { ai: self.llm.released(), whisper: self.engine.released() }
+    }
+
     /// `stop`, with `only`: only that meeting (the 4-hour limit).
     fn stop_if(&self, only: Option<&str>) -> Result<(), String> {
+        // Before the devices close and the live transcription ends, which
+        // takes seconds: a Free GPU press from here on is one during the
+        // end steps and keeps the GPU free (`end_steps`).
+        let freed = self.freed();
         let live = {
             let mut live = lock(&self.recording);
             if !stops(live.as_ref().map(|l| l.id.as_str()), only) {
@@ -540,7 +557,7 @@ impl Meetings {
                     (Worker::new(m.you_done_ms, m.others_done_ms, &m.lines), config.whisper(&this.engine, &m.language))
                 }
             };
-            this.end_steps_guarded(m, worker, whisper, Tracks::saved(dir), config)
+            this.end_steps_guarded(m, worker, whisper, Tracks::saved(dir), config, freed)
         });
         if let Err(e) = spawned {
             self.interrupt(&id, &meeting);
@@ -562,10 +579,10 @@ impl Meetings {
 
     /// `end_steps`; a panic in them leaves the meeting interrupted (Finish
     /// later) rather than busy until the next start.
-    fn end_steps_guarded(&self, meeting: Arc<Mutex<Meeting>>, worker: Worker, whisper: Whisper, source: Tracks, config: Config) {
+    fn end_steps_guarded(&self, meeting: Arc<Mutex<Meeting>>, worker: Worker, whisper: Whisper, source: Tracks, config: Config, freed: Freed) {
         let id = lock(&meeting).id.clone();
         let m = meeting.clone();
-        let steps = std::panic::catch_unwind(AssertUnwindSafe(|| self.end_steps(m, worker, whisper, source, config)));
+        let steps = std::panic::catch_unwind(AssertUnwindSafe(|| self.end_steps(m, worker, whisper, source, config, freed)));
         if steps.is_err() {
             startup_log::log(&format!("[meeting] {}: the end steps stopped with a panic", id));
             let finished = lock(&meeting).state == State::Finished;
@@ -578,25 +595,36 @@ impl Meetings {
     }
 
     /// The end steps of `meeting` (see `finish::run`) with the real Whisper,
-    /// speaker models and AI.
-    fn end_steps(&self, meeting: Arc<Mutex<Meeting>>, worker: Worker, mut whisper: Whisper, source: Tracks, config: Config) {
+    /// speaker models and AI. `freed`: what the Free GPU hotkey had freed
+    /// when Stop (or Finish) was pressed. Freed before that, Stop loads the
+    /// models again; a press since then keeps the GPU free
+    /// (`notes_allowed`).
+    fn end_steps(&self, meeting: Arc<Mutex<Meeting>>, worker: Worker, mut whisper: Whisper, source: Tracks, config: Config, freed: Freed) {
         let (id, audio) = {
             let m = lock(&meeting);
             (m.id.clone(), !m.audio_deleted)
         };
-        // A Free GPU press from here on keeps the GPU free (`notes_allowed`).
-        let ai_freed = self.llm.released();
-        // Stop loads Whisper, also after the Free GPU hotkey, when there is
-        // audio left to transcribe.
+        // Pressed while the devices closed and the live transcription
+        // ended: Whisper is not loaded again, and audio that is left makes
+        // the meeting interrupted, for Finish later (Ruling 4).
+        let pressed = pressed_since(freed, self.freed());
+        if pressed {
+            startup_log::log(&format!("[meeting] {}: Free GPU was pressed after Stop: the models stay unloaded", id));
+        }
+        let ai_freed = freed.ai;
+        // Stop loads Whisper, also after a Free GPU press before Stop, when
+        // there is audio left to transcribe.
         let loaded = audio
+            && !pressed
             && finish::left(&source, &worker)
             && self
                 .engine
                 .ensure_loaded(&config.model_path, &config.gpu_backend)
                 .inspect_err(|e| startup_log::log(&format!("[meeting] {}: Whisper did not load: {}", id, e)))
                 .is_ok();
-        // After that load: a release from now on is a press.
-        let whisper_freed = self.engine.released();
+        // Still freed from before Stop (the load above ends that): a
+        // release from now on is a press.
+        let whisper_freed = freed.whisper && self.engine.released();
         let app_dir = self.app_dir.clone();
         let separate = |audio: &[f32]| -> Result<Vec<Turn>, String> {
             if !speakers::models_ready(&app_dir) {
@@ -621,7 +649,7 @@ impl Meetings {
             &self.root,
             &meeting,
             worker,
-            if loaded { Some(&mut whisper as &mut dyn Transcriber) } else { None },
+            for_the_rest(&mut whisper, loaded),
             &source,
             separate,
             notes,
@@ -794,6 +822,8 @@ impl Meetings {
     /// "Write notes" still works), "no_model" (Whisper is needed and not
     /// downloaded).
     pub fn finish(&self, id: &str, config: Config) -> Result<(), String> {
+        // As at Stop: a Free GPU press from here on keeps the GPU free.
+        let freed = self.freed();
         let (meeting, worker, source, language) = {
             let mut open = lock(&self.open);
             if self.busy(&open, id) {
@@ -828,7 +858,7 @@ impl Meetings {
         let m = meeting.clone();
         let spawned = std::thread::Builder::new()
             .name("rf-meeting-finish".into())
-            .spawn(move || this.end_steps_guarded(m, worker, whisper, source, config));
+            .spawn(move || this.end_steps_guarded(m, worker, whisper, source, config, freed));
         if let Err(e) = spawned {
             self.interrupt(id, &meeting);
             return Err(e.to_string());
@@ -974,8 +1004,8 @@ impl Meetings {
     /// Quit (on the main thread): a meeting that records stops at once and
     /// becomes interrupted; Finish runs its end steps later (Ruling 3).
     /// Meetings finishing stay "finishing" on disk and are recovered at the
-    /// next start. No status is sent: main.rs would wait for the main
-    /// thread.
+    /// next start. No status is sent: the app is closing, and the main
+    /// thread, which would pass it on, is the one that runs this.
     pub fn shutdown(&self) {
         self.stop_playing();
         let live = {
@@ -1018,6 +1048,41 @@ fn stops(recording: Option<&str>, only: Option<&str>) -> bool {
 /// them, Stop loads the models.
 fn notes_allowed(released_at_start: bool, released_now: bool) -> bool {
     released_at_start || !released_now
+}
+
+/// What the Free GPU hotkey had freed at a moment (`released()` of the AI
+/// and of Whisper). Taken when Stop or Finish is pressed, before anything
+/// they do, and handed to the end steps.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Freed {
+    ai: bool,
+    whisper: bool,
+}
+
+/// Whether Free GPU was pressed between `before` (Stop) and `now`: one of
+/// the two was not freed then and is now.
+fn pressed_since(before: Freed, now: Freed) -> bool {
+    !notes_allowed(before.ai, now.ai) || !notes_allowed(before.whisper, now.whisper)
+}
+
+/// Whisper for the rest of the audio: `whisper` when it is loaded for
+/// that. With nothing left to transcribe (both tracks were caught up at
+/// Stop) or no model, none; then the live transcription's run lets go of
+/// Whisper now, not after the speakers and the notes.
+fn for_the_rest(whisper: &mut dyn Transcriber, loaded: bool) -> Option<&mut dyn Transcriber> {
+    if loaded {
+        Some(whisper)
+    } else {
+        whisper.release();
+        None
+    }
+}
+
+/// Whether the daily look for old audio is due: none yet, a day or more
+/// since the last one (`last_ms`) by the clock, or the clock was set back
+/// behind it.
+fn cleanup_due(last_ms: Option<u64>, now_ms: u64) -> bool {
+    last_ms.is_none_or(|last| now_ms < last || now_ms - last >= CLEANUP_EVERY_MS)
 }
 
 fn save(root: &Path, meeting: &Meeting) {
@@ -1352,6 +1417,76 @@ mod tests {
         assert!(notes_allowed(true, true), "freed before Stop: Stop loads the models");
         assert!(notes_allowed(true, false), "loaded again meanwhile");
         assert!(!notes_allowed(false, true), "pressed during the end steps: it stays free");
+    }
+
+    #[test]
+    fn a_press_between_stop_and_the_end_steps_counts_as_one_during_them() {
+        let (none, both) = (Freed { ai: false, whisper: false }, Freed { ai: true, whisper: true });
+        assert!(!pressed_since(none, none), "nothing freed");
+        assert!(!pressed_since(both, both), "freed before Stop: Stop loads the models");
+        assert!(!pressed_since(both, none), "loaded again meanwhile");
+        assert!(pressed_since(none, both), "pressed while the devices closed");
+        assert!(pressed_since(none, Freed { ai: true, whisper: false }));
+        assert!(pressed_since(Freed { ai: true, whisper: false }, both), "Whisper freed since");
+
+        // The end steps go by what Stop saw, not by what is true when they
+        // start. Here both are freed by then, as the hotkey does it.
+        let (app_dir, meetings, _) = setup("freed");
+        meetings.llm.release();
+        meetings.engine.release();
+        assert_eq!(meetings.freed(), both);
+        let end_steps = |id: &str, at_stop: Freed| {
+            let meeting = Arc::new(Mutex::new(saved(&app_dir, id, State::Finishing)));
+            meetings.open.lock().unwrap().insert(id.to_string(), meeting.clone());
+            let mut config = config(&app_dir);
+            // What only the AI's own step says: the notes were let through.
+            config.ai_model = Err("no_ai_model".into());
+            let whisper = config.whisper(&meetings.engine, "en");
+            let source = Tracks::saved(store::root(&app_dir).join(id));
+            meetings.end_steps_guarded(meeting.clone(), Worker::new(0, 0, &[]), whisper, source, config, at_stop);
+            let m = meeting.lock().unwrap();
+            (m.state, m.notes_error.clone())
+        };
+        assert_eq!(end_steps("m-000000000001", both), (State::Finished, Some("no_ai_model".into())), "freed before Stop: the notes are written");
+        assert_eq!(end_steps("m-000000000002", none), (State::Finished, Some("gpu_freed".into())), "pressed after Stop: the AI stays off");
+        assert!(meetings.llm.released() && meetings.engine.released(), "nothing was loaded");
+        assert!(meetings.open.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn with_nothing_left_to_transcribe_the_live_run_lets_go_at_once() {
+        /// Counts its releases.
+        struct Held(usize);
+        impl Transcriber for Held {
+            fn ready(&mut self) -> bool {
+                true
+            }
+            fn transcribe(&mut self, _: &[f32], _: u64, _: &[crate::whisper_engine::Segment]) -> Result<Vec<crate::whisper_engine::Segment>, String> {
+                Ok(Vec::new())
+            }
+            fn language(&self) -> String {
+                "en".into()
+            }
+            fn release(&mut self) {
+                self.0 += 1;
+            }
+        }
+        let mut held = Held(0);
+        assert!(for_the_rest(&mut held, true).is_some());
+        assert_eq!(held.0, 0, "it transcribes the rest and lets go after that (`finish::run`)");
+        assert!(for_the_rest(&mut held, false).is_none());
+        assert_eq!(held.0, 1, "both tracks caught up at Stop: before the speakers and the notes");
+    }
+
+    #[test]
+    fn old_audio_is_looked_for_once_a_day_by_the_clock() {
+        let (hour, day) = (3_600_000, 24 * 3_600_000);
+        assert!(cleanup_due(None, 5 * day), "a minute after the start");
+        assert!(!cleanup_due(Some(5 * day), 5 * day + hour));
+        assert!(!cleanup_due(Some(5 * day), 6 * day - 1));
+        assert!(cleanup_due(Some(5 * day), 6 * day), "a day later, slept through or not");
+        assert!(cleanup_due(Some(5 * day), 9 * day));
+        assert!(cleanup_due(Some(5 * day), 4 * day), "the clock was set back");
     }
 
     #[test]
