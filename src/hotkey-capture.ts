@@ -102,6 +102,7 @@ function ownerName(target: string, name?: string): string {
     pasteLast: "paste_last_label",
     rewriteLast: "rewrite_last_label",
     freeGpu: "free_gpu_label",
+    meeting: "meeting_hotkey_label",
     stopSounds: "sb_stop_hotkey_label",
     toggleSoundHotkeys: "sb_toggle_hotkey_owner",
   };

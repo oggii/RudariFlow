@@ -452,6 +452,20 @@ pub fn speech_spans(samples: &[f32], sample_rate: u32, min_gap_secs: f32) -> Vec
     spans.into_iter().map(|(start, end)| (start.saturating_sub(pad), (end + pad).min(samples.len()))).collect()
 }
 
+/// How much of `samples` is sound, in ms: the 20 ms windows that
+/// `speech_spans` counts as not silent.
+pub fn loud_ms(samples: &[f32], sample_rate: u32) -> u64 {
+    let window = (sample_rate / 50) as usize; // 20 ms
+    if window == 0 {
+        return 0;
+    }
+    let loud = samples
+        .chunks_exact(window)
+        .filter(|chunk| (chunk.iter().map(|s| s * s).sum::<f32>() / window as f32).sqrt() >= TRIM_RMS_THRESHOLD)
+        .count();
+    loud as u64 * 20
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

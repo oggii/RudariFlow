@@ -34,6 +34,49 @@ pub enum RecordingState {
     Transcribing,
 }
 
+/// While a meeting records, the pill stays on screen between dictations as
+/// a small red dot that clicks go through (`Recorder::set_meeting_dot`).
+static MEETING_DOT: AtomicBool = AtomicBool::new(false);
+
+/// One change of the pill's window at a time (see `on_pill`).
+static PILL: Mutex<()> = Mutex::new(());
+
+/// Decide what the pill's window does and do it, as one step: `change`
+/// runs on the main thread (at once when called there) with `PILL` held.
+/// Dictations, notices and the meeting's dot change the window from
+/// several threads. Decided on one thread and applied on another, a
+/// meeting's stop that lands on a notice's end could leave the dot's
+/// click-through window on screen: each would rest the pill with what the
+/// other had just changed. Here every change sees what the one before it
+/// did, and the window follows in the same order. `change` must not call
+/// `on_pill` itself.
+fn on_pill(app: &AppHandle, change: impl FnOnce(&tauri::WebviewWindow) + Send + 'static) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(overlay) = handle.get_webview_window("overlay") else { return };
+        let _one = lock(&PILL);
+        change(&overlay);
+    });
+}
+
+/// The pill when no dictation runs: hidden, or the meeting's red dot. Only
+/// inside `on_pill`.
+fn rest_overlay(overlay: &tauri::WebviewWindow) {
+    if MEETING_DOT.load(Ordering::SeqCst) {
+        let _ = overlay.set_ignore_cursor_events(true);
+        let _ = overlay.eval("document.body.dataset.state = 'ready'; window.__meetingDot && window.__meetingDot(true);");
+        let _ = overlay.set_always_on_top(false);
+        let _ = overlay.set_always_on_top(true);
+        let _ = overlay.show();
+    } else {
+        // The dot's click-through ends with it (dragging a notice works again).
+        let _ = overlay.set_ignore_cursor_events(false);
+        if let Err(e) = overlay.hide() {
+            startup_log::log(&format!("[overlay] hide() failed: {}", e));
+        }
+    }
+}
+
 fn update_overlay(app: &AppHandle, state: &RecordingState) {
     let Some(overlay) = app.get_webview_window("overlay") else {
         startup_log::log("[overlay] no window handle");
@@ -48,13 +91,12 @@ fn update_overlay(app: &AppHandle, state: &RecordingState) {
         state, was_visible, pos, size
     ));
 
-    match state {
-        RecordingState::Ready => {
-            if let Err(e) = overlay.hide() {
-                startup_log::log(&format!("[overlay] hide() failed: {}", e));
-            }
-        }
+    let shown = state.clone();
+    on_pill(app, move |overlay| match shown {
+        RecordingState::Ready => rest_overlay(overlay),
         RecordingState::Recording | RecordingState::Transcribing => {
+            // The meeting's dot lets clicks through; the pill's Cancel needs them.
+            let _ = overlay.set_ignore_cursor_events(false);
             // Defensive: force always-on-top off then on, then show.
             // This kicks Windows' compositor into re-stacking the window correctly
             // after fullscreen apps / monitor switches have left it stale.
@@ -66,7 +108,7 @@ fn update_overlay(app: &AppHandle, state: &RecordingState) {
                 startup_log::log(&format!("[overlay] show() failed: {}", e));
             }
         }
-    }
+    });
     let class = match state {
         RecordingState::Ready => "ready",
         RecordingState::Recording => "recording",
@@ -233,12 +275,23 @@ fn mic_label(mic_name: &str) -> String {
 
 /// Counts the notices in the pill (one pill per app).
 static NOTICES: AtomicU64 = AtomicU64::new(0);
+/// The notice on screen until its time is up (0: none), so the meeting's
+/// dot coming or going does not cut it short (e.g. "stopped at 4 hours").
+static NOTICE_SHOWN: AtomicU64 = AtomicU64::new(0);
 
 /// Whether the timer of notice number `notice` hides the pill: only while it
 /// is the `latest` one, so a notice that follows gets its full time, and not
 /// once a recording has started (the pill shows the dictation then).
 fn hides_pill(notice: u64, latest: u64, state: &RecordingState) -> bool {
     notice == latest && *state == RecordingState::Ready
+}
+
+/// Whether the meeting's dot coming or going puts the pill to rest now
+/// (the dot, or hidden): not during a dictation, which ends with the rest
+/// itself, and not while notice number `notice_shown` (0: none) is on
+/// screen, whose timer does it when its time is up.
+fn dot_rests_pill(state: &RecordingState, notice_shown: u64) -> bool {
+    *state == RecordingState::Ready && notice_shown == 0
 }
 
 /// Briefly show the overlay with a notice (`audio-empty`, `mic-error`) so a
@@ -255,25 +308,28 @@ fn show_notice_with<P: serde::Serialize + Clone>(
     hide_after_ms: u64,
 ) {
     let notice = NOTICES.fetch_add(1, Ordering::SeqCst) + 1;
-    if let Some(overlay) = app.get_webview_window("overlay") {
+    on_pill(app, move |overlay| {
+        // The latest: two notices from two threads can arrive out of order.
+        NOTICE_SHOWN.fetch_max(notice, Ordering::SeqCst);
         let _ = overlay.set_always_on_top(false);
         let _ = overlay.set_always_on_top(true);
         let _ = overlay.show();
-    }
+    });
     let _ = app.emit(event, payload);
     let app_clone = app.clone();
     let state_clone = state.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(hide_after_ms)).await;
-        // A later notice hides the pill itself, after its own full time. If
-        // a new recording started during the grace window, leave the overlay
-        // alone — don't hide it mid-dictation.
-        let current = lock(&state_clone).clone();
-        if hides_pill(notice, NOTICES.load(Ordering::SeqCst), &current) {
-            if let Some(overlay) = app_clone.get_webview_window("overlay") {
-                let _ = overlay.hide();
+        on_pill(&app_clone, move |overlay| {
+            let _ = NOTICE_SHOWN.compare_exchange(notice, 0, Ordering::SeqCst, Ordering::SeqCst);
+            // A later notice hides the pill itself, after its own full time. If
+            // a new recording started during the grace window, leave the overlay
+            // alone — don't hide it mid-dictation.
+            let current = lock(&state_clone).clone();
+            if hides_pill(notice, NOTICES.load(Ordering::SeqCst), &current) {
+                rest_overlay(overlay);
             }
-        }
+        });
     });
 }
 
@@ -292,6 +348,10 @@ pub struct Recorder {
     pieces: Arc<tokio::sync::Mutex<Pieces>>,
     /// Learning dictionary: the last dictation, until it is checked.
     last_paste: LearnSlot,
+    /// The dictation runs while the GPU is freed for a game and Edit mode
+    /// would apply otherwise (AI cleanup and Edit mode on): with text
+    /// selected it pastes nothing (`set_edit_off_for_game`).
+    edit_off_for_game: AtomicBool,
 }
 
 /// Resets the recorder to Ready when dropped, including when transcription
@@ -320,11 +380,35 @@ impl Recorder {
             generation: Arc::new(AtomicU64::new(0)),
             pieces: Arc::new(tokio::sync::Mutex::new(Pieces::default())),
             last_paste: Arc::new(Mutex::new(None)),
+            edit_off_for_game: AtomicBool::new(false),
         }
+    }
+
+    /// Set when a dictation starts: the GPU is freed for a game, and with
+    /// the user's settings Edit mode would edit a selection. Such a
+    /// dictation with text selected shows "No editing while the GPU is
+    /// freed for a game" and pastes nothing, so it does not type over the
+    /// selection.
+    pub fn set_edit_off_for_game(&self, on: bool) {
+        self.edit_off_for_game.store(on, Ordering::SeqCst);
     }
 
     pub fn get_state(&self) -> RecordingState {
         lock(&self.state).clone()
+    }
+
+    /// A meeting started (`on`) or ended: the pill shows a small red dot
+    /// while it records, also between dictations and with the window hidden.
+    pub fn set_meeting_dot(&self, app: &AppHandle, on: bool) {
+        let state = self.state.clone();
+        on_pill(app, move |overlay| {
+            MEETING_DOT.store(on, Ordering::SeqCst);
+            let _ = overlay.eval(format!("window.__meetingDot && window.__meetingDot({});", on));
+            let current = lock(&state).clone();
+            if dot_rests_pill(&current, NOTICE_SHOWN.load(Ordering::SeqCst)) {
+                rest_overlay(overlay);
+            }
+        });
     }
 
     /// Show a short notice in the pill, e.g. why "rewrite last" did not
@@ -344,9 +428,16 @@ impl Recorder {
             let app = app.clone();
             tauri::async_runtime::spawn_blocking(move || learn_from_field(&app, last));
         }
-        let edit = voice_edit::available(settings, app_dir, &foreground_app::current());
+        let ctx = foreground_app::current();
+        let edit = voice_edit::available(settings, app_dir, &ctx);
+        // Freed for a game, Edit mode is off, but a selection must still be
+        // found at the release (nothing is typed over it): this read wakes
+        // Chromium's and Electron's accessibility, as it does for an edit.
+        let wake_for_game = !edit
+            && self.edit_off_for_game.load(Ordering::SeqCst)
+            && voice_edit::available(&Settings { ai_cleanup: true, ..settings.clone() }, app_dir, &ctx);
         let screen = settings.screen_context;
-        if !edit && !screen {
+        if !edit && !screen && !wake_for_game {
             return;
         }
         let dictionary = dictionary::terms(&settings.custom_prompt);
@@ -356,6 +447,8 @@ impl Recorder {
                 if let Target::Selected(text) = selection::read() {
                     emit_edit_target(&app, Some(selection::word_count(&text)));
                 }
+            } else if wake_for_game {
+                let _ = selection::read();
             }
             if screen {
                 let started = std::time::Instant::now();
@@ -546,6 +639,12 @@ impl Recorder {
         } else {
             None
         };
+        // Freed for a game, `settings` has AI cleanup off; with it on, would
+        // this have been an edit?
+        let edit_blocked = selection.is_none()
+            && self.edit_off_for_game.load(Ordering::SeqCst)
+            && *lock(&self.state) == RecordingState::Recording
+            && edit_selection(&Settings { ai_cleanup: true, ..settings.clone() }, app_dir, &ctx).await.is_some();
 
         // Stop recording
         {
@@ -566,6 +665,13 @@ impl Recorder {
         // Always reset state to Ready, regardless of success, failure or panic.
         let ready = ReadyOnDrop { app, state: &self.state };
         laps.lap("start");
+        if edit_blocked {
+            lock(&self.audio_recorder).discard();
+            drop(ready);
+            startup_log::log("[edit] text selected while the GPU is freed for a game: nothing pasted");
+            show_notice(app, self.state.clone(), "edit-game", 2600);
+            return Ok(String::new());
+        }
 
         ctx.screen_terms = self.take_screen_terms(settings).await;
         laps.lap("screen wait");
@@ -891,5 +997,14 @@ mod tests {
         assert!(!hides_pill(1, 2, &RecordingState::Ready), "a later notice keeps its full time");
         assert!(!hides_pill(2, 2, &RecordingState::Recording), "never mid-dictation");
         assert!(!hides_pill(2, 2, &RecordingState::Transcribing), "never mid-dictation");
+    }
+
+    #[test]
+    fn the_meeting_dot_leaves_a_dictation_and_a_notice_alone() {
+        assert!(dot_rests_pill(&RecordingState::Ready, 0), "between dictations: the dot, or hidden");
+        assert!(!dot_rests_pill(&RecordingState::Ready, 7), "\"stopped at 4 hours\" keeps its time");
+        assert!(!dot_rests_pill(&RecordingState::Recording, 0), "the pill shows the dictation");
+        assert!(!dot_rests_pill(&RecordingState::Transcribing, 0));
+        assert!(!dot_rests_pill(&RecordingState::Recording, 7));
     }
 }

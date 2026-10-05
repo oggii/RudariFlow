@@ -846,6 +846,29 @@ impl LlmServer {
         }
     }
 
+    /// Whether the server got a request since the last call, in any slot:
+    /// another program on the shared slot (the Twitch caption service), a
+    /// summary, meeting notes. Read from llm-server.log, where llama-server
+    /// writes "launch_slot_: id  2 | task 45 | processing task" for each;
+    /// `seen` is how far the log was read (`None` before the first call,
+    /// which only takes its length).
+    pub fn requests_since(&self, seen: &mut Option<u64>) -> bool {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut file) = File::open(&self.log_path) else {
+            *seen = None;
+            return false;
+        };
+        let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let from = log_read_from(len, *seen);
+        *seen = Some(len);
+        let Some(from) = from else { return false };
+        let mut text = Vec::new();
+        if file.seek(SeekFrom::Start(from)).is_err() || file.take(len - from).read_to_end(&mut text).is_err() {
+            return false;
+        }
+        log_shows_request(&String::from_utf8_lossy(&text))
+    }
+
     /// Stop the server: feature switched off, model changed, app exit. Also
     /// clears earlier failures, so the next start is tried again.
     pub fn stop(&self) {
@@ -950,9 +973,68 @@ mod job {
     }
 }
 
+/// At most this much of llm-server.log is read per look for requests.
+const LOG_READ_MAX: u64 = 1 << 20;
+
+/// Where to read llm-server.log from for the requests since the last look:
+/// `None` when there is nothing new (or at the first look, which only takes
+/// the length); from the start when the log is shorter than before (the
+/// server restarted with a new one); at most the last `LOG_READ_MAX` bytes.
+fn log_read_from(len: u64, seen: Option<u64>) -> Option<u64> {
+    let seen = seen?;
+    if len < seen {
+        return Some(len.saturating_sub(LOG_READ_MAX));
+    }
+    (len > seen).then(|| seen.max(len - LOG_READ_MAX.min(len)))
+}
+
+/// A request started in some slot in this part of llama-server's log.
+fn log_shows_request(text: &str) -> bool {
+    text.contains("launch_slot_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requests_are_found_in_the_new_part_of_the_log() {
+        assert_eq!(log_read_from(500, None), None, "the first look only takes the length");
+        assert_eq!(log_read_from(500, Some(500)), None, "nothing new");
+        assert_eq!(log_read_from(800, Some(500)), Some(500));
+        assert_eq!(log_read_from(100, Some(500)), Some(0), "a new log after a restart");
+        let big = 10 * LOG_READ_MAX;
+        assert_eq!(log_read_from(big, Some(0)), Some(big - LOG_READ_MAX), "only the end of a long log");
+        let shared = "103.39.930.929 I slot launch_slot_: id  2 | task 45 | processing task, is_child = 0
+";
+        assert!(log_shows_request(shared));
+        let idle = "103.40.101.002 I slot      release: id  2 | task 45 | stop processing: n_tokens = 764
+";
+        assert!(!log_shows_request(idle), "only a start counts");
+        assert!(!log_shows_request(""));
+    }
+
+    #[test]
+    fn requests_since_reads_only_what_was_added() {
+        let dir = std::env::temp_dir().join("rf_llm_requests_since");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("llm-server.log");
+        std::fs::write(&log, "I slot launch_slot_: id  0 | task 1 | processing task
+").unwrap();
+        let llm = LlmServer::new(dir.join("llama"), log.clone(), Box::new(|_| {}));
+        let mut seen = None;
+        assert!(!llm.requests_since(&mut seen), "the first look counts nothing");
+        assert!(!llm.requests_since(&mut seen), "nothing new");
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        writeln!(file, "I slot launch_slot_: id  2 | task 7 | processing task").unwrap();
+        assert!(llm.requests_since(&mut seen), "the caption service asked");
+        writeln!(file, "I slot      release: id  2 | task 7 | stop processing").unwrap();
+        assert!(!llm.requests_since(&mut seen));
+        drop(file);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     const LIST: &str = "0.00.001.020 I srv  llama_server: initializing ...
 Available devices:

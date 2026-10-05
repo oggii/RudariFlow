@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-05 - Free GPU for games
+
+Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
+
+### Added
+- **Free GPU for games** (Engine tab, off by default): when an app covers a
+  whole monitor (fullscreen or borderless) in the foreground for 5 seconds,
+  Whisper and the AI model are unloaded as with the Free GPU hotkey. Video
+  players count as games; browsers (a fullscreen video), calls (Teams, Zoom,
+  Discord), remote desktops (Remote Desktop, RustDesk, Parsec, AnyDesk,
+  TeamViewer), the desktop and RudariFlow's own windows do not. The game
+  then counts as running while its window stays open and fullscreen, also
+  while another window is in front (Discord on another monitor); 30 seconds
+  after it is closed, minimised or no longer fullscreen, the models load
+  again. Meanwhile a dictation loads only Whisper (about 1 GB), is pasted
+  without AI cleanup and unloads Whisper again; Edit mode is off (with text
+  selected nothing is pasted, and the pill says so), and Rewrite last
+  refuses with a notice. A meeting keeps recording; its text catches up once
+  the models are back, and Stop during a game transcribes the rest with
+  Whisper alone and leaves the notes for Write notes. Loading with the Free
+  GPU hotkey during a game keeps the models loaded until that game is over.
+  The Engine and AI tabs say when the GPU is freed for a game.
+- **Large v3 Turbo q5** in the Whisper model list (~574 MB): about 0.3 GB
+  less graphics memory than Large v3 Turbo q8 at the same speed.
+- **Unload when idle** (Engine tab): on mains power, Whisper and the AI
+  model can be unloaded after 15 minutes, 30 minutes or 1 hour without a
+  dictation (Never by default); on battery it stays 10 minutes. Requests to
+  the AI from another program (the Twitch caption service), a running file
+  transcription or a meeting keep the models loaded. The AI tab now says
+  "Unloaded" instead of "Starting…" after such an unload.
+- **Unused models** (Engine tab): downloaded Whisper models, AI models and
+  drafters that no setting uses, and unfinished downloads, with their size
+  and a Delete button that asks once more; a file with other hard links
+  says that deleting it frees no disk space. Nothing is deleted on its own.
+
+## [0.15.0] - 2026-10-04 - Meetings
+
+Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
+
+### Added
+- **Meetings** (new tab): record an online call on this PC (Teams, Zoom,
+  Discord, Google Meet …) with Start meeting, the tray menu or an optional
+  hotkey (Recording tab, off by default). Your microphone ("You") and what
+  the PC plays on Windows' default output ("Others") are transcribed live,
+  about half a minute behind on a GPU (longer on the CPU), with a red bar,
+  a red dot in the pill, "Jump to live" and copy. After Stop the others are told apart
+  (Speaker 1, 2, …, renamed with a click) and the AI model writes the
+  notes: Summary, Decisions and Action items as a checklist; without AI
+  cleanup, "Write notes" writes them later. ▶ plays the meeting from a
+  paragraph (not while a meeting records); export as PDF, Word, text or
+  subtitles with the notes on top. Every meeting stays in a searchable
+  list; the audio is deleted after 30 days, the text stays. A meeting cut
+  off by a crash or a quit can be finished later (Finish); quitting during
+  a meeting asks first. Dictations keep going first while a meeting
+  transcribes, and "Mute other apps while recording" does not mute during
+  a meeting (it would record the silence); after a Free GPU press the
+  recording goes on and the text catches up when the models are loaded
+  again. Stop loads the models again when they were freed before it, for
+  the rest of the transcript and the notes. The PC check does not run
+  during a meeting.
+
+### Fixed
+- RudariFlow no longer runs twice: starting it again brings the running window
+  to the front.
+- RudariFlow's hidden window no longer takes the keyboard focus when the app
+  starts in the tray (at Windows login): typing went into it for a moment.
+
 ## [0.14.1] - 2026-10-02 - Sound hotkeys on/off, loops, two columns
 
 Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.

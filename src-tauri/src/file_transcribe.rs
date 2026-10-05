@@ -4,8 +4,11 @@
 //! result.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use crate::audio::{quiet_cut, speech_spans};
+use crate::ai_cleanup::{complete_in, LONG_SLOT};
+use crate::audio::{loud_ms, quiet_cut, speech_spans};
+use crate::llm_server::Endpoint;
 use crate::speakers::{assign, Turn};
 use crate::whisper_engine::{FileRun, Segment, WhisperEngine};
 
@@ -88,20 +91,51 @@ pub fn transcribe(
             return Err(CANCELLED.to_string());
         }
         let block = &audio[start..end];
-        let mut new = Vec::new();
-        for (from, to) in speech_spans(block, 16_000, SKIP_PAUSE_SECS) {
-            let prompt = block_prompt(dictionary, segments.iter().chain(&new));
-            let mut found = engine.file_block(&mut run, &block[from..to], (start + from) as u64 / 16, &prompt)?;
-            for segment in &mut found {
-                segment.text = spelling(&segment.text);
-            }
-            new.extend(found);
-        }
+        let new = transcribe_stretch(engine, &mut run, block, &stretches(block, 0), start, dictionary, &segments, &spelling)?;
         progress(Progress { done_ms: end as u64 / 16, total_ms, segments: &new });
         segments.extend(new);
         start = end;
     }
     Ok((segments, run.language))
+}
+
+/// The stretches of speech in `audio` (16 kHz mono) that go to Whisper:
+/// silences of `SKIP_PAUSE_SECS` and more split them off, and one with less
+/// than `min_speech_ms` of sound in it (a lone click or blip) is left out.
+/// A file keeps every stretch (0).
+pub fn stretches(audio: &[f32], min_speech_ms: u64) -> Vec<(usize, usize)> {
+    speech_spans(audio, 16_000, SKIP_PAUSE_SECS)
+        .into_iter()
+        .filter(|&(from, to)| min_speech_ms == 0 || loud_ms(&audio[from..to], 16_000) >= min_speech_ms)
+        .collect()
+}
+
+/// Whisper on the `spans` (`stretches`) of a stretch of a recording (16
+/// kHz mono) that starts at sample `offset`: each gets the dictionary and
+/// the end of the text before it (`before`, then what this call found) in
+/// its prompt, and `spelling` fixes every segment. A file's block or a
+/// meeting's piece.
+#[allow(clippy::too_many_arguments)]
+pub fn transcribe_stretch(
+    engine: &WhisperEngine,
+    run: &mut FileRun,
+    audio: &[f32],
+    spans: &[(usize, usize)],
+    offset: usize,
+    dictionary: &str,
+    before: &[Segment],
+    spelling: &dyn Fn(&str) -> String,
+) -> Result<Vec<Segment>, String> {
+    let mut new: Vec<Segment> = Vec::new();
+    for &(from, to) in spans {
+        let prompt = block_prompt(dictionary, before.iter().chain(&new));
+        let mut found = engine.file_block(run, &audio[from..to], (offset + from) as u64 / 16, &prompt)?;
+        for segment in &mut found {
+            segment.text = spelling(&segment.text);
+        }
+        new.extend(found);
+    }
+    Ok(new)
 }
 
 /// Whisper's prompt for the next stretch: the dictionary, then the end of
@@ -272,7 +306,7 @@ pub fn chunks(text: &str, max: usize) -> Vec<String> {
     out
 }
 
-fn written_in(language: Option<&str>) -> String {
+pub(crate) fn written_in(language: Option<&str>) -> String {
     match language {
         Some(language) => format!("Write in {}, the language of the transcript.", language),
         None => "Write in the language of the transcript.".to_string(),
@@ -300,6 +334,39 @@ pub fn notes_prompt(language: Option<&str>) -> String {
          \"- \". {} Use only what the part says. No introduction.",
         written_in(language)
     )
+}
+
+/// How long one AI request of a summary or of meeting notes may take.
+pub const AI_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// A transcript made short enough for one last AI request: a long one is
+/// cut into parts (`chunks`), each part becomes notes (`notes_prompt`), up
+/// to three rounds, so hours of text fit. Returns the material and the
+/// requests it took; `progress(done, total)` comes before each request.
+pub async fn condense(
+    endpoint: &Endpoint,
+    text: &str,
+    language: Option<&str>,
+    progress: &mut (dyn FnMut(usize, usize) + Send),
+) -> Result<(String, usize), String> {
+    let mut material = text.trim().to_string();
+    let chunk_chars = summary_chunk_chars(&material);
+    let mut requests = 0;
+    for _ in 0..3 {
+        let parts = chunks(&material, chunk_chars);
+        if parts.len() <= 1 {
+            break;
+        }
+        let mut notes = Vec::new();
+        for part in &parts {
+            progress(requests, requests + parts.len() - notes.len() + 1);
+            let answer = complete_in(endpoint, LONG_SLOT, &notes_prompt(language), part, 0.2, 700, AI_TIMEOUT).await?;
+            notes.push(answer.text.trim().to_string());
+            requests += 1;
+        }
+        material = notes.join("\n");
+    }
+    Ok((material, requests))
 }
 
 #[cfg(test)]
@@ -332,6 +399,29 @@ mod tests {
         // Short files are one block.
         assert_eq!(block_ends(&audio[..10 * sr]), vec![10 * sr]);
         assert_eq!(block_ends(&[]), vec![0]);
+    }
+
+    /// `secs` of silence with `sounds` (start s, length ms) of sound in it.
+    fn sounds(secs: f32, sounds: &[(f32, usize)]) -> Vec<f32> {
+        let mut audio = vec![0.0_f32; (secs * 16_000.0) as usize];
+        for &(at, ms) in sounds {
+            let at = (at * 16_000.0) as usize;
+            audio[at..at + ms * 16].iter_mut().for_each(|s| *s = 0.3);
+        }
+        audio
+    }
+
+    #[test]
+    fn a_meeting_leaves_out_a_lone_click_a_file_keeps_it() {
+        // Speech (1.5 s), clicks (20 ms, 50 ms), a short "Ja." (250 ms).
+        let audio = sounds(20.0, &[(1.0, 1_500), (6.0, 20), (10.0, 50), (15.0, 250)]);
+        let file = stretches(&audio, 0);
+        assert_eq!(file, speech_spans(&audio, 16_000, SKIP_PAUSE_SECS), "the Files tab as before");
+        assert_eq!(file.len(), 4);
+        let meeting = stretches(&audio, 200);
+        assert_eq!(meeting, vec![file[0], file[3]], "the clicks are no stretch, the short answer is");
+        assert!(stretches(&sounds(5.0, &[(1.0, 50)]), 200).is_empty());
+        assert_eq!(stretches(&sounds(5.0, &[(1.0, 200)]), 200).len(), 1, "200 ms of sound is enough");
     }
 
     #[test]

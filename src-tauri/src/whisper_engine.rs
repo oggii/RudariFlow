@@ -223,6 +223,8 @@ use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
 
+use crate::whisper_gate::{Gate, Priority};
+
 /// The error of a transcription that finds no model loaded.
 pub const NO_MODEL: &str = "WhisperEngine: no model loaded";
 
@@ -238,10 +240,15 @@ pub struct WhisperEngine {
     flash_attn: Mutex<Option<bool>>,
     /// Unloaded by the Free GPU hotkey and not loaded since (see `release`).
     released: AtomicBool,
+    /// Who runs next when a dictation, a meeting and a file wait.
+    gate: Gate,
 }
 
 struct EngineState {
     loaded: Option<Loaded>,
+    /// Models loaded so far: tells a meeting's run whether it still holds
+    /// the model that is loaded now.
+    loads: u64,
 }
 
 struct Loaded {
@@ -256,9 +263,10 @@ struct Loaded {
 impl WhisperEngine {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(EngineState { loaded: None }),
+            inner: Mutex::new(EngineState { loaded: None, loads: 0 }),
             flash_attn: Mutex::new(None),
             released: AtomicBool::new(false),
+            gate: Gate::new(),
         }
     }
 
@@ -281,7 +289,7 @@ impl WhisperEngine {
     /// Free the GPU (Free GPU hotkey): drop the model like `invalidate`, and
     /// remember it until a load brings it back. Waits for a transcription
     /// that is running. A file being transcribed keeps its own reference to
-    /// the model until it is done.
+    /// the model until it is done; a meeting's run lets go of it.
     pub fn release(&self) {
         let mut state = self.lock();
         state.loaded = None;
@@ -338,6 +346,7 @@ impl WhisperEngine {
                         ctx,
                         state: wstate,
                     });
+                    state.loads += 1;
                     self.released.store(false, Ordering::SeqCst);
                     return Ok(backend);
                 }
@@ -367,6 +376,8 @@ impl WhisperEngine {
         language: &str,
         custom_prompt: &str,
     ) -> Result<(String, Option<String>), String> {
+        // A dictation goes before waiting meeting pieces and file blocks.
+        let _turn = self.gate.enter(Priority::Dictation);
         let mut state = self.lock();
         let loaded = state.loaded.as_mut().ok_or_else(|| NO_MODEL.to_string())?;
 
@@ -457,6 +468,19 @@ pub struct FileRun {
     /// `LANGUAGE_FROM_SECS` detected it, then fixed, so a long file does not
     /// switch language midway (and a cough does not pick it).
     pub language: String,
+    /// A file in the Files tab, or a meeting (see `whisper_gate`).
+    priority: Priority,
+    /// The model it was started with (`EngineState::loads`).
+    load: u64,
+    /// That model's file.
+    model: PathBuf,
+}
+
+impl FileRun {
+    /// The file of the model this run transcribes with.
+    pub fn model_path(&self) -> &Path {
+        &self.model
+    }
 }
 
 /// Shortest stretch whose detected language is kept for the rest of a file.
@@ -465,9 +489,34 @@ const LANGUAGE_FROM_SECS: usize = 5;
 impl WhisperEngine {
     /// Start transcribing a file with the loaded model.
     pub fn start_file(&self, language: &str) -> Result<FileRun, String> {
+        self.start_run(language, Priority::File)
+    }
+
+    /// Start transcribing a meeting with the loaded model: its pieces go
+    /// before file blocks, after dictations. Unlike a file's, a meeting's
+    /// run does not keep a model the engine let go of (`file_block`).
+    pub fn start_meeting(&self, language: &str) -> Result<FileRun, String> {
+        self.start_run(language, Priority::Meeting)
+    }
+
+    fn start_run(&self, language: &str, priority: Priority) -> Result<FileRun, String> {
         let engine = self.lock();
         let loaded = engine.loaded.as_ref().ok_or_else(|| NO_MODEL.to_string())?;
-        Ok(FileRun { state: new_state(&loaded.ctx)?, language: language.to_string() })
+        Ok(FileRun {
+            state: new_state(&loaded.ctx)?,
+            language: language.to_string(),
+            priority,
+            load: engine.loads,
+            model: loaded.model_path.clone(),
+        })
+    }
+
+    /// Whether a model is loaded, and whether `run` was started with it,
+    /// in one look (so the two agree). A meeting's run that was not lets go
+    /// of it: the run's state keeps its model in memory.
+    pub fn loaded_for(&self, run: Option<&FileRun>) -> (bool, bool) {
+        let engine = self.lock();
+        (engine.loaded.is_some(), run.is_some_and(|run| is_current(&engine, run)))
     }
 
     /// `start_file` for a file the user started, after `ensure_loaded` of
@@ -485,12 +534,19 @@ impl WhisperEngine {
         }
     }
 
-    /// Transcribe one block of a file that starts `offset_ms` into it.
-    /// `prompt` carries the dictionary and the text before the block. The
-    /// engine stays locked for this block only (one GPU user at a time), so
-    /// a dictation in between waits for one block at most.
+    /// Transcribe one block of a file (or a stretch of a meeting's track)
+    /// that starts `offset_ms` into it. `prompt` carries the dictionary and
+    /// the text before the block. Whisper is taken for this block only, and
+    /// a dictation waiting goes next (`whisper_gate`), so it waits for one
+    /// block at most. A meeting's run fails with `NO_MODEL` once its model
+    /// was unloaded (Free GPU, battery) or replaced: nothing runs on a
+    /// model the user freed.
     pub fn file_block(&self, run: &mut FileRun, samples: &[f32], offset_ms: u64, prompt: &str) -> Result<Vec<Segment>, String> {
-        let _gpu = self.lock();
+        let _turn = self.gate.enter(run.priority);
+        let gpu = self.lock();
+        if run.priority == Priority::Meeting && !is_current(&gpu, run) {
+            return Err(NO_MODEL.to_string());
+        }
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some(&run.language));
         params.set_print_special(false);
@@ -524,6 +580,11 @@ impl WhisperEngine {
         }
         Ok(out)
     }
+}
+
+/// Whether the model `run` was started with is the one loaded now.
+fn is_current(engine: &EngineState, run: &FileRun) -> bool {
+    engine.loaded.is_some() && engine.loads == run.load
 }
 
 /// Whisper language code of an English name as `transcribe` returns it
@@ -699,6 +760,13 @@ mod tests {
     }
 
     #[test]
+    fn a_meeting_needs_a_loaded_model() {
+        let engine = WhisperEngine::new();
+        assert_eq!(engine.start_meeting("auto").err().as_deref(), Some(NO_MODEL));
+        assert_eq!(engine.loaded_for(None), (false, false));
+    }
+
+    #[test]
     fn language_names_and_codes_round_trip() {
         assert_eq!(language_name("de").as_deref(), Some("German"));
         assert_eq!(language_code("German").as_deref(), Some("de"));
@@ -811,6 +879,7 @@ mod tests {
         assert_eq!(model_filename("small"), "ggml-small.bin");
         assert_eq!(model_filename("large-v3-turbo"), "ggml-large-v3-turbo.bin");
         assert_eq!(model_filename("large-v3-turbo-q8_0"), "ggml-large-v3-turbo-q8_0.bin");
+        assert_eq!(model_filename("large-v3-turbo-q5_0"), "ggml-large-v3-turbo-q5_0.bin");
     }
 
     #[test]
@@ -818,6 +887,10 @@ mod tests {
         assert_eq!(
             model_download_url("small"),
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
+        );
+        assert_eq!(
+            model_download_url("large-v3-turbo-q5_0"),
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
         );
     }
 

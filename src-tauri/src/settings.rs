@@ -93,7 +93,28 @@ pub struct Settings {
     /// Files tab: "off", "auto" or "2" … "8" speakers to separate.
     #[serde(rename = "fileSpeakers", default = "default_file_speakers")]
     pub file_speakers: String,
+    /// Starts and stops a meeting (Meetings tab). Empty = off, the default.
+    #[serde(rename = "meetingHotkey", default)]
+    pub meeting_hotkey: String,
+    /// The meeting bar's reminder to tell the others is dismissed for good.
+    #[serde(rename = "meetingReminderOff", default)]
+    pub meeting_reminder_off: bool,
+    /// The headphones hint was shown in a meeting once.
+    #[serde(rename = "meetingHeadphonesSeen", default)]
+    pub meeting_headphones_seen: bool,
+    /// Free the GPU while a fullscreen app (a game) is in the foreground
+    /// (src/game_watch.rs). Off by default.
+    #[serde(rename = "freeGpuForGames", default)]
+    pub free_gpu_for_games: bool,
+    /// On mains power, unload the models after this many minutes without
+    /// dictation: 0 (never, the default), 15, 30 or 60. On battery it is
+    /// always 10 minutes (`power::IDLE_UNLOAD`).
+    #[serde(rename = "idleUnloadMinutes", default)]
+    pub idle_unload_minutes: u32,
 }
+
+/// The choices of "Unload when idle" (minutes; 0 = never).
+pub const IDLE_UNLOAD_CHOICES: [u32; 4] = [0, 15, 30, 60];
 
 fn default_auto() -> String {
     "auto".to_string()
@@ -201,6 +222,11 @@ impl Default for Settings {
             screen_context: true,
             learn_dictionary: true,
             file_speakers: default_file_speakers(),
+            meeting_hotkey: String::new(),
+            meeting_reminder_off: false,
+            meeting_headphones_seen: false,
+            free_gpu_for_games: false,
+            idle_unload_minutes: 0,
         }
     }
 }
@@ -251,6 +277,9 @@ impl Settings {
         }
         if crate::whisper_engine::language_name(&settings.ai_output_language).is_none() {
             settings.ai_output_language = String::new();
+        }
+        if !IDLE_UNLOAD_CHOICES.contains(&settings.idle_unload_minutes) {
+            settings.idle_unload_minutes = 0;
         }
         settings
     }
@@ -522,6 +551,84 @@ mod tests {
         settings.free_gpu_hotkey = "Ctrl+Mouse5".to_string();
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir).free_gpu_hotkey, "Ctrl+Mouse5");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn meeting_settings_are_off_by_default_and_kept() {
+        let s = Settings::default();
+        assert_eq!((s.meeting_hotkey.as_str(), s.meeting_reminder_off, s.meeting_headphones_seen), ("", false, false));
+        let before_meetings = r#"{
+            "microphone": "default",
+            "engine": "local",
+            "whisperModel": "small",
+            "groqApiKey": "",
+            "recordingMode": "toggle",
+            "hotkey": "Mouse5"
+        }"#;
+        let s: Settings = serde_json::from_str(before_meetings).unwrap();
+        assert_eq!((s.meeting_hotkey.as_str(), s.meeting_reminder_off), ("", false));
+
+        let dir = temp_dir().join("typr_test_meeting_settings");
+        let _ = fs::remove_dir_all(&dir);
+        let settings = Settings {
+            meeting_hotkey: "Ctrl+Alt+M".to_string(),
+            meeting_reminder_off: true,
+            meeting_headphones_seen: true,
+            ..Settings::default()
+        };
+        settings.save(&dir).unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!(
+            (loaded.meeting_hotkey.as_str(), loaded.meeting_reminder_off, loaded.meeting_headphones_seen),
+            ("Ctrl+Alt+M", true, true)
+        );
+        let json = fs::read_to_string(Settings::config_path(&dir)).unwrap();
+        for key in ["\"meetingHotkey\"", "\"meetingReminderOff\"", "\"meetingHeadphonesSeen\""] {
+            assert!(json.contains(key), "{}", key);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gpu_management_settings_are_off_by_default_and_kept() {
+        let s = Settings::default();
+        assert_eq!((s.free_gpu_for_games, s.idle_unload_minutes), (false, 0));
+        // A config.json from 0.15 has neither field.
+        let before = r#"{
+            "microphone": "default",
+            "engine": "local",
+            "whisperModel": "small",
+            "groqApiKey": "",
+            "recordingMode": "toggle",
+            "hotkey": "Mouse5",
+            "freeGpuHotkey": "Ctrl+Mouse5"
+        }"#;
+        let s: Settings = serde_json::from_str(before).unwrap();
+        assert_eq!((s.free_gpu_for_games, s.idle_unload_minutes, s.free_gpu_hotkey.as_str()), (false, 0, "Ctrl+Mouse5"));
+
+        let dir = temp_dir().join("typr_test_gpu_management");
+        let _ = fs::remove_dir_all(&dir);
+        let settings = Settings { free_gpu_for_games: true, idle_unload_minutes: 30, ..Settings::default() };
+        settings.save(&dir).unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!((loaded.free_gpu_for_games, loaded.idle_unload_minutes), (true, 30));
+        let json = fs::read_to_string(Settings::config_path(&dir)).unwrap();
+        assert!(json.contains("\"freeGpuForGames\": true"), "{}", json);
+        assert!(json.contains("\"idleUnloadMinutes\": 30"), "{}", json);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_idle_unload_time_that_is_no_choice_becomes_never() {
+        let dir = temp_dir().join("typr_test_idle_unload_choice");
+        let _ = fs::remove_dir_all(&dir);
+        for minutes in [0, 15, 30, 60] {
+            Settings { idle_unload_minutes: minutes, ..Settings::default() }.save(&dir).unwrap();
+            assert_eq!(Settings::load(&dir).idle_unload_minutes, minutes);
+        }
+        Settings { idle_unload_minutes: 7, ..Settings::default() }.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).idle_unload_minutes, 0);
         let _ = fs::remove_dir_all(&dir);
     }
 }

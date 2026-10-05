@@ -1,6 +1,7 @@
 pub mod settings;
 pub mod audio;
 pub mod whisper_engine;
+pub mod whisper_gate;
 pub mod transcribe_groq;
 pub mod cleanup;
 pub mod paste;
@@ -23,6 +24,8 @@ pub mod screen_context;
 pub mod uia;
 pub mod voice_edit;
 pub mod power;
+pub mod game_watch;
+pub mod model_files;
 pub mod pc_check;
 pub mod learn;
 pub mod media;
@@ -31,6 +34,7 @@ pub mod speakers;
 pub mod export;
 pub mod pdf;
 pub mod soundboard;
+pub mod meeting;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

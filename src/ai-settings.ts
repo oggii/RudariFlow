@@ -44,8 +44,10 @@ interface AiStatus {
   installed: boolean;
   models: AiModelInfo[];
   downloading: string | null;
-  /** Unloaded by the Free GPU hotkey; the next dictation loads it. */
+  /** Unloaded by the Free GPU hotkey, for a game or when idle; the next dictation loads it. */
   gpuFreed: boolean;
+  /** Freed for a game (Engine tab): dictations run without AI cleanup until it ends. */
+  gameFreed: boolean;
 }
 
 interface Polished {
@@ -161,6 +163,9 @@ function renderStatus() {
   } else if (server.state === "failed") {
     text = `${t("ai_status_failed")}: ${server.error ?? ""}`;
     tone = "error";
+  } else if (status.gameFreed) {
+    text = t("ai_status_game_freed");
+    tone = "warn";
   } else if (status.gpuFreed) {
     text = t("ai_status_freed");
   } else {
@@ -424,6 +429,7 @@ export function initAiSettings(h: AiSettingsHost) {
   });
 
   listen("ai-status", () => refreshStatus());
+  listen("game-free", () => refreshStatus());
   listen<DownloadProgress>("ai-download-progress", (event) => {
     const { downloaded, total, percent } = event.payload;
     progress.classList.remove("hidden");

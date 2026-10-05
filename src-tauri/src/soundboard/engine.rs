@@ -245,7 +245,7 @@ impl Boosts {
 /// The MMCSS registration of an audio thread; ended when dropped (cpal
 /// drops a stream's data callback on the stream's own thread).
 #[cfg(windows)]
-struct MmcssGuard(windows_sys::Win32::Foundation::HANDLE);
+pub(crate) struct MmcssGuard(windows_sys::Win32::Foundation::HANDLE);
 
 // SAFETY: the handle is only passed to AvRevertMmThreadCharacteristics.
 #[cfg(windows)]
@@ -262,7 +262,7 @@ impl Drop for MmcssGuard {
 }
 
 #[cfg(not(windows))]
-struct MmcssGuard;
+pub(crate) struct MmcssGuard;
 
 /// Kept in a stream's callback: whether its thread was raised, and the MMCSS
 /// registration to end with the stream.
@@ -276,7 +276,7 @@ struct Booster {
 /// priority. Returns the `Boosts` code and the MMCSS registration (if any).
 /// System calls only, no allocation.
 #[cfg(windows)]
-fn boost_this_thread() -> (u8, Option<MmcssGuard>) {
+pub(crate) fn boost_this_thread() -> (u8, Option<MmcssGuard>) {
     use windows_sys::Win32::System::Threading::{
         AvSetMmThreadCharacteristicsW, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
     };
@@ -306,7 +306,7 @@ fn boost_this_thread() -> (u8, Option<MmcssGuard>) {
 }
 
 #[cfg(not(windows))]
-fn boost_this_thread() -> (u8, Option<MmcssGuard>) {
+pub(crate) fn boost_this_thread() -> (u8, Option<MmcssGuard>) {
     (3, None)
 }
 
@@ -496,7 +496,7 @@ fn run_until_stopped(
     }
 }
 
-fn find_device(host: &cpal::Host, name: &str, input: bool) -> Option<cpal::Device> {
+pub(crate) fn find_device(host: &cpal::Host, name: &str, input: bool) -> Option<cpal::Device> {
     let devices: Vec<cpal::Device> =
         if input { host.input_devices().ok()?.collect() } else { host.output_devices().ok()?.collect() };
     devices.into_iter().find(|d| d.name().is_ok_and(|n| n == name))

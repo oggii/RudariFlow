@@ -81,6 +81,14 @@
             </svg>
             <span data-i18n="nav_files">Files</span>
           </a>
+          <a class="nav-item" data-section="meetings">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <circle cx="5.5" cy="5.5" r="2" stroke="currentColor" stroke-width="1.2"/>
+              <circle cx="10.5" cy="5.5" r="2" stroke="currentColor" stroke-width="1.2"/>
+              <path d="M2 12.5c0-1.9 1.6-3.5 3.5-3.5S9 10.6 9 12.5M8.6 9.4A3.5 3.5 0 0114 12.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            <span data-i18n="nav_meetings">Meetings</span>
+          </a>
           <a class="nav-item" data-section="soundboard">
             <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
               <path d="M2.5 6.2h2.3L8 3.5v9L4.8 9.8H2.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
@@ -217,6 +225,7 @@
                     <option value="large-v3" data-i18n="model_large_v3">Large v3 (~2.9 GB) — highest accuracy</option>
                     <option value="large-v3-turbo" data-i18n="model_large_v3_turbo">Large v3 Turbo (~1.5 GB) — large quality, ~8x faster</option>
                     <option value="large-v3-turbo-q8_0" data-i18n="model_large_v3_turbo_q8">Large v3 Turbo q8 (~870 MB) — same text as Turbo, faster, half the memory</option>
+                    <option value="large-v3-turbo-q5_0" data-i18n="model_large_v3_turbo_q5">Large v3 Turbo q5 (~574 MB) — saves ~0.3 GB of graphics memory over q8, same speed</option>
                   </select>
                   <button id="download-btn" class="btn-primary" data-i18n="download">Download</button>
                 </div>
@@ -234,7 +243,39 @@
                 <input type="password" id="groq-key" placeholder="gsk_..." />
               </div>
             </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="game_free_label">Free GPU for games</span>
+                <span class="label-hint" data-i18n="game_free_hint">When a fullscreen app (a game or a video player) is in front for 5 seconds, Whisper and the AI model are unloaded, as with the Free GPU hotkey. Meanwhile a dictation loads only Whisper and is pasted without AI cleanup, and Edit mode is off. The models load again 30 seconds after the game is closed, minimised or no longer fullscreen, not when you just use another window or monitor. Browsers, calls (Teams, Zoom, Discord) and remote desktops in fullscreen do not count.</span>
+                <span class="label-hint ai-status hidden" id="game-free-status" data-tone="warn" data-i18n="game_free_now">Freed for a game: dictations run without AI cleanup until it ends.</span>
+              </div>
+              <div class="setting-control">
+                <label class="switch">
+                  <input id="game-free-toggle" type="checkbox" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="idle_unload_label">Unload when idle</span>
+                <span class="label-hint" data-i18n="idle_unload_hint">On mains power, unload Whisper and the AI model after this long without a dictation, to free the graphics card. The next dictation loads them again and takes a few seconds longer. On battery it is always 10 minutes.</span>
+              </div>
+              <div class="setting-control">
+                <select id="idle-unload-select">
+                  <option value="0" data-i18n="idle_unload_never">Never</option>
+                  <option value="15" data-i18n="idle_unload_15">After 15 minutes</option>
+                  <option value="30" data-i18n="idle_unload_30">After 30 minutes</option>
+                  <option value="60" data-i18n="idle_unload_60">After 1 hour</option>
+                </select>
+              </div>
+            </div>
           </div>
+
+          <h3 class="subsection-title" data-i18n="unused_models_title">Unused models</h3>
+          <p class="subsection-desc" data-i18n="unused_models_desc">Downloaded Whisper and AI models that no setting uses. They only take disk space; delete the ones you no longer need.</p>
+          <div id="unused-model-list" class="unused-model-list"></div>
+          <p id="unused-model-empty" class="empty-state hidden" data-i18n="unused_models_empty">No unused models.</p>
         </section>
 
         <section id="section-recording" class="content-section">
@@ -296,6 +337,18 @@
               <div class="setting-control hotkey-control">
                 <button id="free-gpu-btn" class="hotkey-btn"><kbd id="free-gpu-text"></kbd></button>
                 <button id="free-gpu-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
+                  <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="meeting_hotkey_label">Start / stop a meeting</span>
+                <span class="label-hint" data-i18n="meeting_hotkey_hint">Starts a meeting in the Meetings tab, or stops the one that records.</span>
+              </div>
+              <div class="setting-control hotkey-control">
+                <button id="meeting-hotkey-btn" class="hotkey-btn"><kbd id="meeting-hotkey-text"></kbd></button>
+                <button id="meeting-hotkey-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
                   <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
                 </button>
               </div>
@@ -632,6 +685,79 @@
             <textarea id="file-text" class="file-text" spellcheck="false"></textarea>
           </div>
         </section>
+        <section id="section-meetings" class="content-section">
+          <div class="mt-layout">
+            <div class="section-header">
+              <h2 class="section-title" data-i18n="mt_title">Meetings</h2>
+              <p class="section-desc" data-i18n="mt_desc">Record an online call on this PC (Teams, Zoom, Discord, Google Meet …): your microphone and what the PC plays, transcribed live, with notes when it ends. Everything stays on your PC.</p>
+            </div>
+            <div id="mt-start" class="mt-start">
+              <input id="mt-title" type="text" class="mt-title-input" spellcheck="false" autocomplete="off" maxlength="200" data-i18n-title="mt_title_label" title="Title" />
+              <button id="mt-start-btn" class="btn-primary" data-i18n="mt_start">Start meeting</button>
+            </div>
+            <p id="mt-start-error" class="label-hint mt-error hidden" role="alert"></p>
+            <div id="mt-bar" class="mt-bar hidden">
+              <span class="mt-bar-dot" aria-hidden="true"></span>
+              <span id="mt-bar-time" class="mt-bar-time"></span>
+              <button id="mt-bar-title" class="mt-bar-title"></button>
+              <button id="mt-stop-btn" class="btn-secondary mt-stop" data-i18n="mt_stop">Stop</button>
+            </div>
+            <div id="mt-announce" class="mt-sr-only" role="status"></div>
+            <div id="mt-warnings" class="mt-warnings" role="status"></div>
+            <div id="mt-reminder" class="mt-reminder hidden">
+              <span id="mt-reminder-text"></span>
+              <button id="mt-reminder-close" class="icon-btn" data-i18n-title="mt_reminder_dismiss" title="Don't show again">
+                <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              </button>
+            </div>
+            <div id="mt-finishing" class="mt-finishing" role="status"></div>
+            <div id="mt-view" class="mt-view hidden">
+              <div class="mt-view-head">
+                <button id="mt-back" class="btn-ghost mt-back" data-i18n="mt_back">← All meetings</button>
+                <div class="mt-view-actions">
+                  <button id="mt-copy" class="btn-secondary" data-i18n="mt_copy_all">Copy all</button>
+                  <div id="mt-export-menu" class="export-menu">
+                    <button id="mt-export" class="btn-secondary" aria-expanded="false" aria-controls="mt-export-list"><span data-i18n="files_export">Export</span> ▾</button>
+                    <div id="mt-export-list" class="export-list hidden">
+                      <button data-kind="pdf" data-i18n="files_export_pdf">PDF…</button>
+                      <button data-kind="docx" data-i18n="files_export_docx">Word (.docx)…</button>
+                      <button data-kind="srt" data-i18n="files_export_srt">Subtitles (.srt)…</button>
+                      <button data-kind="vtt" data-i18n="files_export_vtt">Subtitles (.vtt)…</button>
+                      <button data-kind="txt" data-i18n="files_export_txt">Text (.txt)…</button>
+                    </div>
+                  </div>
+                  <button id="mt-delete" class="btn-secondary" data-i18n="mt_delete">Delete</button>
+                </div>
+              </div>
+              <div class="mt-view-heading">
+                <h3 class="mt-view-title-wrap"><button id="mt-view-title" class="mt-view-title" data-i18n-title="mt_rename" title="Click to rename"></button></h3>
+                <span id="mt-view-meta" class="label-hint mt-view-meta"></span>
+              </div>
+              <div id="mt-hint" class="mt-hint hidden" role="status"></div>
+              <div class="mt-body">
+                <div id="mt-notes" class="mt-notes hidden"></div>
+                <div class="mt-main">
+                  <div id="mt-speakers" class="file-speakers mt-speakers hidden">
+                    <span class="label-hint" data-i18n="files_speakers_names">Speakers:</span>
+                    <div id="mt-speaker-chips" class="file-speaker-chips"></div>
+                  </div>
+                  <div class="mt-transcript-wrap">
+                    <div id="mt-transcript" class="mt-transcript" tabindex="0" role="region"></div>
+                    <button id="mt-live" class="btn-primary mt-live hidden" data-i18n="mt_jump_live">Jump to live</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="mt-library" class="mt-library">
+              <div class="mt-library-head">
+                <h3 class="mt-library-title" data-i18n="mt_library">Your meetings</h3>
+                <input id="mt-search" type="search" class="mt-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="mt_search" placeholder="Search titles and transcripts" />
+              </div>
+              <div id="mt-list" class="mt-list"></div>
+              <p id="mt-empty" class="empty-state hidden"></p>
+            </div>
+          </div>
+        </section>
         <section id="section-soundboard" class="content-section">
           <div class="sb-layout">
             <div class="section-header">
@@ -644,6 +770,16 @@
       </main>
       </div>
     </div>
+    <dialog id="mt-quit" class="mt-modal" aria-labelledby="mt-quit-question" aria-describedby="mt-quit-hint">
+      <div class="mt-modal-box">
+        <p id="mt-quit-question" class="mt-modal-question" data-i18n="mt_quit_question">Stop the meeting and quit?</p>
+        <p id="mt-quit-hint" class="label-hint" data-i18n="mt_quit_hint">The meeting is kept as interrupted; Finish in the Meetings tab transcribes the rest and writes the notes.</p>
+        <div class="mt-modal-actions">
+          <button id="mt-quit-cancel" class="btn-secondary" data-i18n="files_cancel">Cancel</button>
+          <button id="mt-quit-ok" class="btn-primary" data-i18n="mt_quit_ok">Stop and quit</button>
+        </div>
+      </div>
+    </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

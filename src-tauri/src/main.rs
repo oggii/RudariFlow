@@ -17,6 +17,7 @@ use rudariflow_lib::cleanup::cleanup_text;
 use rudariflow_lib::dictionary;
 use rudariflow_lib::downloader;
 use rudariflow_lib::foreground_app;
+use rudariflow_lib::game_watch::{self, GameWatch};
 use rudariflow_lib::history::{self, History, HistoryEntry};
 use rudariflow_lib::llm_server::{self, LlmServer, ServerStatus};
 use rudariflow_lib::mouse_hotkey;
@@ -32,6 +33,8 @@ use rudariflow_lib::whisper_engine::WhisperEngine;
 use rudariflow_lib::{ai_cleanup, file_transcribe, media, screen_context};
 use rudariflow_lib::soundboard::library::{Board, Devices};
 use rudariflow_lib::soundboard::{self, engine, AddResult, BoardState, Soundboard, Status};
+use rudariflow_lib::meeting::{self, Meetings};
+use rudariflow_lib::model_files;
 
 /// One file is transcribed at a time; setting the flag stops it after the
 /// block that is running.
@@ -48,12 +51,16 @@ struct AppState {
     llm: Arc<LlmServer>,
     /// Id of the AI model being downloaded, if any.
     ai_download: Mutex<Option<String>>,
-    /// Last hotkey press or recording start, for unloading on battery.
+    /// Last hotkey press or recording start, for unloading when idle.
     last_activity: Mutex<std::time::Instant>,
     /// The Free GPU hotkey (see `free_gpu_press`).
     gpu: GpuFree,
+    /// Free GPU for games (see `watch_games`).
+    game: GameFree,
     /// The soundboard (library, engine while on).
     soundboard: Arc<Soundboard>,
+    /// Meeting mode: the meeting that records, the ones finishing, ▶.
+    meetings: Arc<Meetings>,
 }
 
 /// State of the Free GPU hotkey.
@@ -63,32 +70,109 @@ struct GpuFree {
     freed: AtomicBool,
     /// Counts presses, so a load that a newer press overtook shows no notice.
     press: AtomicU64,
-    /// Presses run one after the other.
+    /// Presses run one after the other (and the frees and loads for games).
     ops: tokio::sync::Mutex<()>,
+    /// The idle watcher unloaded the models and nothing has loaded them
+    /// since: the AI tab says "unloaded" instead of "starting".
+    idle_unloaded: AtomicBool,
+}
+
+/// State of "Free GPU for games" (Engine tab).
+#[derive(Default)]
+struct GameFree {
+    /// The switch. The watcher thread waits on `wake` while it is off.
+    enabled: Mutex<bool>,
+    wake: std::sync::Condvar,
+    /// The watcher freed the GPU for a game and has not loaded it again,
+    /// and no Free GPU press came since. Meanwhile a dictation loads only
+    /// Whisper, pastes without AI cleanup and unloads Whisper again.
+    holds: AtomicBool,
+    /// A Free GPU press loaded the models; the watcher takes it.
+    user_loaded: AtomicBool,
+    /// The dictation that runs started while `holds`: it stays without AI
+    /// cleanup until it is pasted, even if the models load meanwhile.
+    dictation: AtomicBool,
+}
+
+impl GameFree {
+    fn new(enabled: bool) -> Self {
+        Self { enabled: Mutex::new(enabled), ..Default::default() }
+    }
+
+    fn set_enabled(&self, on: bool) {
+        *self.enabled.lock().unwrap() = on;
+        self.wake.notify_all();
+    }
+
+    fn enabled(&self) -> bool {
+        *self.enabled.lock().unwrap()
+    }
+
+    /// Blocks until the switch is on.
+    fn wait_enabled(&self) {
+        let mut on = self.enabled.lock().unwrap();
+        while !*on {
+            on = self.wake.wait(on).unwrap();
+        }
+    }
+
+    fn holds(&self) -> bool {
+        self.holds.load(Ordering::SeqCst)
+    }
+}
+
+/// Free GPU for games holds the GPU (`on`) or no longer; the meetings learn
+/// it too (Stop during a game writes no notes). Returns what it was.
+fn set_game_hold(state: &AppState, on: bool) -> bool {
+    let was = state.game.holds.swap(on, Ordering::SeqCst);
+    state.meetings.set_freed_for_game(on);
+    was
 }
 
 /// On battery, free the GPU after `power::IDLE_UNLOAD` without dictation
 /// (about 5 GB of video memory and 3 GB of RAM with the default models), so
-/// a laptop's graphics card can sleep. The next hotkey press loads both
-/// again while the user speaks.
-fn watch_idle_on_battery(handle: AppHandle) {
+/// a laptop's graphics card can sleep; on mains power after the "Unload when
+/// idle" minutes, if set. The next hotkey press loads both again while the
+/// user speaks. Not while a meeting records or runs its end steps: its live
+/// text would pause until Stop, and its notes would fail; not while a file
+/// is transcribed. A request to the AI server counts as use: the Twitch
+/// caption service on the shared slot keeps the AI loaded while it runs.
+fn watch_idle(handle: AppHandle) {
     tauri::async_runtime::spawn(async move {
+        // How far llm-server.log was read (`LlmServer::requests_since`).
+        let mut log_seen = None;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             let state = handle.state::<AppState>();
             let on_battery = power::on_battery();
+            let mains_minutes = state.settings.lock().unwrap().idle_unload_minutes;
+            let limit = power::idle_limit(on_battery, mains_minutes);
+            if state.llm.requests_since(&mut log_seen) {
+                *state.last_activity.lock().unwrap() = std::time::Instant::now();
+            }
             let idle = state.last_activity.lock().unwrap().elapsed();
-            let busy = state.recorder.get_state() != RecordingState::Ready;
+            let in_meeting = meeting_busy(&state.meetings.status());
+            if in_meeting {
+                // The idle time counts from the meeting's end.
+                *state.last_activity.lock().unwrap() = std::time::Instant::now();
+            }
+            let busy = power::busy(
+                state.recorder.get_state() != RecordingState::Ready,
+                in_meeting,
+                FILE_RUNNING.load(Ordering::SeqCst),
+            );
             // Only looked at when it matters: the engine lock waits for a
             // running transcription.
-            let loaded = on_battery
+            let loaded = limit.is_some()
                 && !busy
                 && (state.llm.status() != ServerStatus::Stopped || state.whisper_engine.is_loaded());
-            if power::should_unload(on_battery, idle, loaded, busy) {
+            if power::should_unload(on_battery, mains_minutes, idle, loaded, busy) {
+                state.gpu.idle_unloaded.store(true, Ordering::SeqCst);
                 state.whisper_engine.invalidate();
                 state.llm.stop();
                 startup_log::log(&format!(
-                    "[power] on battery and idle for {} min: models unloaded",
+                    "[power] on {} and idle for {} min: models unloaded",
+                    if on_battery { "battery" } else { "mains power" },
                     idle.as_secs() / 60
                 ));
             }
@@ -123,7 +207,15 @@ fn ai_model_to_run(settings: &Settings, app_dir: &std::path::Path) -> Option<Pat
 /// The Whisper model to load for these settings: local engine and model
 /// downloaded.
 fn whisper_model_to_load(settings: &Settings, app_dir: &std::path::Path) -> Option<PathBuf> {
-    if settings.engine != "local" {
+    whisper_model_to_load_now(settings, app_dir, false)
+}
+
+/// `whisper_model_to_load`, and while a meeting records the downloaded
+/// model whatever the engine is: its live text runs on the local model,
+/// and with the cloud engine no dictation would load it again after a Free
+/// GPU press or a change of the model or the backend.
+fn whisper_model_to_load_now(settings: &Settings, app_dir: &std::path::Path, meeting_records: bool) -> Option<PathBuf> {
+    if settings.engine != "local" && !meeting_records {
         return None;
     }
     let path = app_dir.join(rudariflow_lib::whisper_engine::model_filename(&settings.whisper_model));
@@ -132,11 +224,13 @@ fn whisper_model_to_load(settings: &Settings, app_dir: &std::path::Path) -> Opti
 
 /// Load the Whisper model now instead of at the first dictation. False when
 /// a load was tried and failed (the log says why); true when it loaded or
-/// the settings load none (Groq, or no model downloaded).
+/// the settings load none (Groq with no meeting recording, or no model
+/// downloaded).
 async fn load_whisper(state: &AppState) -> bool {
     let settings = state.settings.lock().unwrap().clone();
     state.whisper_engine.set_flash_attn(settings.flash_attn_pref());
-    let Some(model) = whisper_model_to_load(&settings, &state.app_dir) else {
+    let meeting_records = state.meetings.status().recording.is_some();
+    let Some(model) = whisper_model_to_load_now(&settings, &state.app_dir, meeting_records) else {
         return true;
     };
     let engine = state.whisper_engine.clone();
@@ -160,6 +254,7 @@ async fn load_whisper(state: &AppState) -> bool {
 
 /// Start the AI server in the background when the settings use it.
 fn start_ai(state: &AppState) {
+    state.gpu.idle_unloaded.store(false, Ordering::SeqCst);
     let settings = state.settings.lock().unwrap().clone();
     if let Some(model) = ai_model_to_run(&settings, &state.app_dir) {
         state.llm.warm(model, Some(settings.gpu_backend));
@@ -186,6 +281,8 @@ enum HotkeyAction {
     RewriteLast,
     /// Free the GPU, or load the models again (see `free_gpu_press`).
     FreeGpu,
+    /// Start a meeting, or stop the one that records (Meetings tab).
+    Meeting,
     /// Stop every soundboard sound (registered while the board is on).
     StopSounds,
     /// Turn the sounds' hotkeys off or on again (registered while the board is on).
@@ -201,19 +298,21 @@ impl HotkeyAction {
             "pasteLast" => Ok(Self::PasteLast),
             "rewriteLast" => Ok(Self::RewriteLast),
             "freeGpu" => Ok(Self::FreeGpu),
+            "meeting" => Ok(Self::Meeting),
             _ => Err(format!("Unknown hotkey target: {}", target)),
         }
     }
 
     /// The name the UI knows this hotkey by: "dictation", "pasteLast",
-    /// "rewriteLast", "freeGpu", "stopSounds", "toggleSoundHotkeys", or the
-    /// sound's id.
+    /// "rewriteLast", "freeGpu", "meeting", "stopSounds", "toggleSoundHotkeys",
+    /// or the sound's id.
     fn target(&self) -> String {
         match self {
             Self::Dictation => "dictation".to_string(),
             Self::PasteLast => "pasteLast".to_string(),
             Self::RewriteLast => "rewriteLast".to_string(),
             Self::FreeGpu => "freeGpu".to_string(),
+            Self::Meeting => "meeting".to_string(),
             Self::StopSounds => "stopSounds".to_string(),
             Self::ToggleSoundHotkeys => "toggleSoundHotkeys".to_string(),
             Self::Sound(id) => id.clone(),
@@ -222,12 +321,13 @@ impl HotkeyAction {
 }
 
 /// Every hotkey setting with its action.
-fn hotkeys(s: &Settings) -> [(HotkeyAction, String); 4] {
+fn hotkeys(s: &Settings) -> [(HotkeyAction, String); 5] {
     [
         (HotkeyAction::Dictation, s.hotkey.clone()),
         (HotkeyAction::PasteLast, s.paste_last_hotkey.clone()),
         (HotkeyAction::RewriteLast, s.rewrite_last_hotkey.clone()),
         (HotkeyAction::FreeGpu, s.free_gpu_hotkey.clone()),
+        (HotkeyAction::Meeting, s.meeting_hotkey.clone()),
     ]
 }
 
@@ -256,7 +356,7 @@ fn board_hotkeys_with(board: &Board, sounds: bool) -> Vec<(HotkeyAction, String)
     .collect()
 }
 
-/// Every hotkey: the app's four and the soundboard's.
+/// Every hotkey: the app's five and the soundboard's.
 fn all_hotkeys(settings: &Settings, board: &Board) -> Vec<(HotkeyAction, String)> {
     let mut all = hotkeys(settings).to_vec();
     all.extend(board_hotkeys(board));
@@ -285,8 +385,8 @@ fn taken_by(all: &[(HotkeyAction, String)], action: &HotkeyAction, hotkey: &str)
     all.iter().find(|(a, h)| a != action && !h.is_empty() && same_hotkey(h, hotkey)).map(|(a, _)| a.clone())
 }
 
-/// The app hotkey (dictation, paste last, rewrite last, Free GPU) that has
-/// `hotkey`. A board key never registers over one: a mouse binding would
+/// The app hotkey (dictation, paste last, rewrite last, Free GPU, meeting)
+/// that has `hotkey`. A board key never registers over one: a mouse binding would
 /// replace its handler, and releasing the board key later would release it.
 fn app_hotkey_owner(app: &[(HotkeyAction, String)], hotkey: &str) -> Option<HotkeyAction> {
     app.iter().find(|(_, h)| !h.is_empty() && same_hotkey(h, hotkey)).map(|(a, _)| a.clone())
@@ -368,7 +468,19 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
         )
     };
     let warm_prompt = polish::system_prompt(&settings);
+    let language_changed = state.settings.lock().unwrap().ui_language != settings.ui_language;
+    let games = settings.free_gpu_for_games;
+    // A meeting that records writes its notes with AI cleanup and the AI
+    // model as they are at Stop. Off this thread: a meeting that starts
+    // holds the lock while its devices open.
+    let (meetings, notes_model) = (state.meetings.clone(), meeting_config_from(&settings, &state.app_dir).ai_model);
+    tauri::async_runtime::spawn_blocking(move || meetings.set_notes_model(notes_model));
     *state.settings.lock().unwrap() = settings;
+    // Off: the watcher loads the models again if it freed them for a game.
+    state.game.set_enabled(games);
+    if language_changed {
+        show_meeting_state(&app, true);
+    }
     if engine_invalidate {
         state.whisper_engine.invalidate();
         // Load the new model or backend now, not at the next dictation;
@@ -437,7 +549,11 @@ fn cancel_recording(
     app: tauri::AppHandle,
     state: State<AppState>,
 ) -> Result<(), String> {
-    state.recorder.cancel_recording(&app)
+    state.recorder.cancel_recording(&app)?;
+    tauri::async_runtime::spawn(async move {
+        after_game_dictation(app.state::<AppState>().inner()).await;
+    });
+    Ok(())
 }
 
 /// GPUs whisper.cpp can use, for the settings hint. Async so backend
@@ -637,8 +753,10 @@ async fn transcribe_file(
     })
     .await
     .map_err(|e| format!("worker thread failed: {}", e))?;
-    // With the cloud engine the local model is not kept loaded.
-    if settings.engine != "local" {
+    // With the cloud engine the local model is not kept loaded. A meeting
+    // that transcribes with it keeps it (nothing would load it again until
+    // Stop) and unloads it itself after its transcript.
+    if settings.engine != "local" && !meeting_uses_whisper(&state.meetings.status()) {
         state.whisper_engine.invalidate();
     }
     *state.last_activity.lock().unwrap() = std::time::Instant::now();
@@ -712,7 +830,6 @@ fn summary_wait_error(llm: &LlmServer, error: String) -> String {
 /// the Free GPU hotkey stopped the AI.
 #[tauri::command]
 async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<String, String> {
-    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
     let settings = state.settings.lock().unwrap().clone();
     let model = ai_models::find(&settings.ai_model).ok_or("no_ai_model")?;
     let model_path = ai_models::model_path(&state.app_dir, model);
@@ -727,34 +844,11 @@ async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String
         .await
         .map_err(|e| summary_wait_error(&state.llm, e))?;
     let started = std::time::Instant::now();
-    let mut material = text.trim().to_string();
-    let chunk_chars = file_transcribe::summary_chunk_chars(&material);
-    let mut requests = 0;
-    // Each round turns parts into notes; three rounds cover hours of text.
-    for _ in 0..3 {
-        let parts = file_transcribe::chunks(&material, chunk_chars);
-        if parts.len() <= 1 {
-            break;
-        }
-        let mut notes = Vec::new();
-        for part in &parts {
-            let _ = app.emit("summary-progress", (requests, requests + parts.len() - notes.len() + 1));
-            let answer = ai_cleanup::complete_in(
-                &endpoint,
-                ai_cleanup::LONG_SLOT,
-                &file_transcribe::notes_prompt(language),
-                part,
-                0.2,
-                700,
-                TIMEOUT,
-            )
-            .await
-            .map_err(|e| summary_error(&state.llm, e))?;
-            notes.push(answer.text.trim().to_string());
-            requests += 1;
-        }
-        material = notes.join("\n");
-    }
+    let (material, requests) = file_transcribe::condense(&endpoint, &text, language, &mut |done, total| {
+        let _ = app.emit("summary-progress", (done, total));
+    })
+    .await
+    .map_err(|e| summary_error(&state.llm, e))?;
     let _ = app.emit("summary-progress", (requests, requests + 1));
     let answer = ai_cleanup::complete_in(
         &endpoint,
@@ -763,7 +857,7 @@ async fn summarize_text(app: AppHandle, state: State<'_, AppState>, text: String
         &material,
         0.2,
         900,
-        TIMEOUT,
+        file_transcribe::AI_TIMEOUT,
     )
     .await
     .map_err(|e| summary_error(&state.llm, e))?;
@@ -910,10 +1004,21 @@ struct PcCheckResult {
 
 /// PC check (Engine tab): Whisper on every GPU with flash attention on and
 /// off on the user's latest recording, the fastest setup applied, the AI
-/// server's speed measured, and a report to copy.
+/// server's speed measured, and a report to copy. Errors "meeting_busy"
+/// while a meeting records or runs its end steps, "busy" while a check runs.
 #[tauri::command]
 async fn pc_check(app: AppHandle, state: State<'_, AppState>) -> Result<PcCheckResult, String> {
     use rudariflow_lib::pc_check as check;
+    // No meeting starts or finishes from here on ("pc_check"), and none
+    // may be under way: the check unloads the engine's model and runs
+    // Whisper beside it, past the gate and the engine's lock. A meeting's
+    // live text would stop and its pieces would run against the variants.
+    let meetings = state.meetings.clone();
+    let _running = tauri::async_runtime::spawn_blocking(move || {
+        PcCheckRunning::begin(|| meetings.is_recording() || meeting_busy(&meetings.status()))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let settings = state.settings.lock().unwrap().clone();
     let model = whisper_model_to_load(&settings, &state.app_dir).ok_or("Download a Whisper model first")?;
     // The newest recording in the history, else five seconds of silence.
@@ -1058,9 +1163,13 @@ struct AiStatus {
     installed: bool,
     models: Vec<AiModelInfo>,
     downloading: Option<String>,
-    /// Unloaded by the Free GPU hotkey; the next request starts it.
+    /// Unloaded by the Free GPU hotkey, for a game or after the idle
+    /// minutes; the next request starts it.
     #[serde(rename = "gpuFreed")]
     gpu_freed: bool,
+    /// Freed for a game: dictations run without AI cleanup until it ends.
+    #[serde(rename = "gameFreed")]
+    game_freed: bool,
 }
 
 #[tauri::command]
@@ -1078,7 +1187,8 @@ fn ai_status(state: State<AppState>) -> AiStatus {
             })
             .collect(),
         downloading: state.ai_download.lock().unwrap().clone(),
-        gpu_freed: state.llm.released(),
+        gpu_freed: state.llm.released() || state.gpu.idle_unloaded.load(Ordering::SeqCst),
+        game_freed: state.game.holds(),
     }
 }
 
@@ -1331,9 +1441,9 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     }
 }
 
-/// `target` is "dictation", "pasteLast", "rewriteLast" or "freeGpu"; each
-/// takes a keyboard chord or a mouse side button. An empty `new_hotkey` turns
-/// paste-last, rewrite or free GPU off; dictation always needs one. A key a
+/// `target` is "dictation", "pasteLast", "rewriteLast", "freeGpu" or
+/// "meeting"; each takes a keyboard chord or a mouse side button. An empty
+/// `new_hotkey` turns all but dictation off; dictation always needs one. A key a
 /// soundboard hotkey has is refused too, even while the board is off.
 #[tauri::command]
 fn change_hotkey(
@@ -1373,7 +1483,8 @@ fn change_hotkey(
         HotkeyAction::PasteLast => settings.paste_last_hotkey = new_hotkey,
         HotkeyAction::RewriteLast => settings.rewrite_last_hotkey = new_hotkey,
         HotkeyAction::FreeGpu => settings.free_gpu_hotkey = new_hotkey,
-        // `from_target` names only the app's four.
+        HotkeyAction::Meeting => settings.meeting_hotkey = new_hotkey,
+        // `from_target` names only the app's five.
         HotkeyAction::StopSounds | HotkeyAction::ToggleSoundHotkeys | HotkeyAction::Sound(_) => {}
     }
     settings.save(&state.app_dir)?;
@@ -1462,7 +1573,7 @@ fn apply_hotkey_pause(app: &AppHandle, paused: bool) -> Result<(), String> {
         } else if !hotkey_is_registered(&app, &hotkey) {
             let dictation = action == HotkeyAction::Dictation;
             if let Err(e) = register_hotkey(&app, &hotkey, action) {
-                // An optional chord (paste last, rewrite, free GPU) taken by
+                // An optional chord (paste last, rewrite, free GPU, meeting) taken by
                 // another app must not block the dictation hotkey; it is
                 // logged by register_hotkey.
                 if dictation {
@@ -1484,6 +1595,8 @@ fn on_hotkey_event(handle: &AppHandle, action: &HotkeyAction, pressed: bool) {
         HotkeyAction::RewriteLast => on_rewrite_hotkey(handle, pressed),
         HotkeyAction::FreeGpu if pressed => on_free_gpu_hotkey(handle),
         HotkeyAction::FreeGpu => {}
+        HotkeyAction::Meeting if pressed => toggle_meeting(handle),
+        HotkeyAction::Meeting => {}
         HotkeyAction::StopSounds if pressed => on_stop_sounds_hotkey(handle),
         HotkeyAction::StopSounds => {}
         HotkeyAction::ToggleSoundHotkeys if pressed => on_toggle_sound_hotkeys_hotkey(handle),
@@ -1551,6 +1664,11 @@ fn on_rewrite_hotkey(handle: &AppHandle, pressed: bool) {
         let state = handle.state::<AppState>();
         let settings = state.settings.lock().unwrap().clone();
         let ctx = foreground_app::current();
+        if state.game.holds() {
+            startup_log::log("[rewrite] not while the GPU is freed for a game");
+            state.recorder.notice(&handle, "rewrite-failed", "game");
+            return;
+        }
         if !voice_edit::available(&settings, &state.app_dir, &ctx) {
             startup_log::log(&format!("[rewrite] needs AI cleanup and Edit mode ('{}')", ctx.exe));
             state.recorder.notice(&handle, "rewrite-failed", "needs-ai");
@@ -1645,11 +1763,20 @@ async fn free_gpu_press(handle: &AppHandle, press: u64) -> FreeGpuResult {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
-    let toggle = power::gpu_toggle(
+    // Freed for a game, Whisper loaded for a dictation (not let go of yet)
+    // counts as released: the press loads.
+    let toggle = power::press_toggle(
         state.gpu.freed.load(Ordering::SeqCst),
         state.whisper_engine.released(),
         state.llm.released(),
+        state.game.holds(),
     );
+    // A press ends a free for a game: the models stay as the user wants
+    // them, also after the game.
+    if set_game_hold(state.inner(), false) {
+        startup_log::log("[game] the Free GPU hotkey takes over");
+        let _ = handle.emit("game-free", false);
+    }
     if toggle == GpuToggle::Free {
         state.gpu.freed.store(true, Ordering::SeqCst);
         let (llm, engine) = (state.llm.clone(), state.whisper_engine.clone());
@@ -1666,7 +1793,9 @@ async fn free_gpu_press(handle: &AppHandle, press: u64) -> FreeGpuResult {
         return FreeGpuResult::Freed;
     }
     state.gpu.freed.store(false, Ordering::SeqCst);
-    // Asked for now: the battery watcher must not unload them at its next look.
+    // Loaded during a game: no free for it until it is over.
+    state.game.user_loaded.store(true, Ordering::SeqCst);
+    // Asked for now: the idle watcher must not unload them at its next look.
     *state.last_activity.lock().unwrap() = std::time::Instant::now();
     gpu_notice(handle, "loading");
     let started = std::time::Instant::now();
@@ -1724,6 +1853,241 @@ async fn free_gpu_test(app: AppHandle, state: State<'_, AppState>) -> Result<Fre
     }
     let press = state.gpu.press.fetch_add(1, Ordering::SeqCst) + 1;
     Ok(free_gpu_press(&app, press).await)
+}
+
+/// Free GPU for games: a thread looks at the windows about once a second
+/// while the switch is on (`game_watch`). A fullscreen app in front for 5 s
+/// frees the GPU like the Free GPU hotkey. Its window is watched from then
+/// on, in front or not (Discord on another monitor); 30 s after it is
+/// closed, minimised or no longer fullscreen, the models load again. No
+/// pill notice for either: the pill is a topmost window over the game.
+fn watch_games(handle: AppHandle) {
+    let spawned = std::thread::Builder::new().name("rf-games".into()).spawn(move || {
+        let mut watch = GameWatch::new();
+        loop {
+            let state = handle.state::<AppState>();
+            if !state.game.enabled() {
+                watch.reset();
+                state.game.user_loaded.store(false, Ordering::SeqCst);
+                if state.game.holds() {
+                    tauri::async_runtime::block_on(load_after_game(&handle, "the switch is off"));
+                }
+                state.game.wait_enabled();
+                continue;
+            }
+            let now = std::time::Instant::now();
+            if state.game.user_loaded.swap(false, Ordering::SeqCst) {
+                watch.user_loaded(now);
+            }
+            let seen = game_watch::look(&watch, state.game.holds());
+            match watch.observe(&seen, now) {
+                Some(game_watch::Action::FreeNow) => {
+                    let game = seen.front.map(|f| f.game).unwrap_or_default();
+                    tauri::async_runtime::block_on(free_for_game(&handle, &game));
+                }
+                Some(game_watch::Action::LoadAgain) => {
+                    tauri::async_runtime::block_on(load_after_game(&handle, "the game stopped 30 s ago"));
+                }
+                None => tauri::async_runtime::block_on(sweep_game_whisper(state.inner())),
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    });
+    if let Err(e) = spawned {
+        startup_log::log(&format!("[game] the watcher could not start: {}", e));
+    }
+}
+
+/// `game` has been in fullscreen in the foreground for 5 s: free the GPU as
+/// the Free GPU hotkey does, after a dictation that runs. Nothing when the
+/// hotkey has already freed it (it then stays the user's: no load after the
+/// game either).
+async fn free_for_game(handle: &AppHandle, game: &str) {
+    let state = handle.state::<AppState>();
+    let _ops = state.gpu.ops.lock().await;
+    while state.recorder.get_state() != RecordingState::Ready {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let toggle = power::gpu_toggle(
+        state.gpu.freed.load(Ordering::SeqCst),
+        state.whisper_engine.released(),
+        state.llm.released(),
+    );
+    if toggle == GpuToggle::Load {
+        startup_log::log(&format!("[game] {} in fullscreen; the GPU is already free", game));
+        return;
+    }
+    state.gpu.freed.store(true, Ordering::SeqCst);
+    // Set before the release: the AI tab reads it at the "stopped" status.
+    set_game_hold(state.inner(), true);
+    let _ = handle.emit("game-free", true);
+    let (llm, engine) = (state.llm.clone(), state.whisper_engine.clone());
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        llm.release();
+        engine.release();
+    })
+    .await;
+    startup_log::log(&format!("[game] {} in fullscreen: Whisper unloaded, AI server stopped", game));
+}
+
+/// The game is over (or the switch went off): load the models again, as a
+/// Free GPU press that loads does, unless a press has taken over since.
+async fn load_after_game(handle: &AppHandle, why: &str) {
+    let state = handle.state::<AppState>();
+    let ops = state.gpu.ops.lock().await;
+    if !set_game_hold(state.inner(), false) {
+        return;
+    }
+    let _ = handle.emit("game-free", false);
+    state.gpu.freed.store(false, Ordering::SeqCst);
+    *state.last_activity.lock().unwrap() = std::time::Instant::now();
+    let started = std::time::Instant::now();
+    let whisper_ok = load_whisper(state.inner()).await;
+    // A press from here on frees the GPU at once (see `free_gpu_press`).
+    let generation = state.llm.generation();
+    drop(ops);
+    let settings = state.settings.lock().unwrap().clone();
+    let ai_ok = match ai_model_to_run(&settings, &state.app_dir) {
+        Some(model) => state
+            .llm
+            .ensure_running_since(generation, &model, Some(settings.gpu_backend.as_str()))
+            .await
+            .is_ok(),
+        None => true,
+    };
+    startup_log::log(&format!(
+        "[game] {}: models {} after {} ms",
+        why,
+        if whisper_ok && ai_ok { "loaded" } else { "not all loaded" },
+        started.elapsed().as_millis()
+    ));
+}
+
+/// The settings a dictation runs with: while the GPU is freed for a game,
+/// without AI cleanup, so only Whisper (about 1 GB) is loaded and the text
+/// is pasted as with AI cleanup off (`after_game_dictation` unloads Whisper
+/// again).
+fn for_dictation(mut settings: Settings, freed_for_game: bool) -> Settings {
+    if freed_for_game {
+        settings.ai_cleanup = false;
+    }
+    settings
+}
+
+fn dictation_settings(state: &AppState) -> Settings {
+    let for_game = state.game.holds() || state.game.dictation.load(Ordering::SeqCst);
+    for_dictation(state.settings.lock().unwrap().clone(), for_game)
+}
+
+/// A dictation has started: it keeps the mode of this moment (see
+/// `GameFree::dictation`).
+fn dictation_started(state: &AppState) {
+    let holds = state.game.holds();
+    state.game.dictation.store(holds, Ordering::SeqCst);
+    let edit_on = {
+        let s = state.settings.lock().unwrap();
+        s.ai_cleanup && s.edit_mode
+    };
+    state.recorder.set_edit_off_for_game(holds && edit_on);
+}
+
+/// After a dictation (pasted, empty or cancelled) while the GPU is freed
+/// for a game: unload Whisper again, unless the next dictation has started
+/// already (it does this when it is done).
+async fn after_game_dictation(state: &AppState) {
+    state.game.dictation.store(false, Ordering::SeqCst);
+    let _ops = state.gpu.ops.lock().await;
+    // Not `released()` as a shortcut: a dictation's warm-up load may still
+    // run (`release` waits for it), and it would stay loaded. Not while a
+    // stopped meeting transcribes its rest: the sweep lets go of Whisper
+    // after that.
+    let meeting_rest = state.meetings.status().finishing.iter().any(|f| f.step == meeting::finish::Step::Transcribing);
+    if !state.game.holds() || meeting_rest || state.recorder.get_state() != RecordingState::Ready {
+        return;
+    }
+    let engine = state.whisper_engine.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || engine.release()).await;
+    startup_log::log("[game] dictation done: Whisper unloaded again");
+}
+
+/// Whether the watcher lets go of Whisper now, while the GPU is freed for a
+/// game: nothing uses it (no dictation, no file, no meeting transcribing
+/// its rest) and it is loaded (a dictation too short to unload it, a file,
+/// a History re-run).
+fn game_sweep_due(holds: bool, ready: bool, game_dictation: bool, file_running: bool, meeting_rest: bool, loaded: bool) -> bool {
+    holds && ready && !game_dictation && !file_running && !meeting_rest && loaded
+}
+
+/// The watcher's look each second: Whisper loaded while the GPU is freed
+/// for a game goes again (`game_sweep_due`).
+async fn sweep_game_whisper(state: &AppState) {
+    if !state.game.holds() {
+        return;
+    }
+    let _ops = state.gpu.ops.lock().await;
+    let busy = |state: &AppState| {
+        let meeting_rest = state.meetings.status().finishing.iter().any(|f| f.step == meeting::finish::Step::Transcribing);
+        (
+            state.recorder.get_state() == RecordingState::Ready,
+            state.game.dictation.load(Ordering::SeqCst),
+            FILE_RUNNING.load(Ordering::SeqCst),
+            meeting_rest,
+        )
+    };
+    let (ready, dictation, file, rest) = busy(state);
+    if !game_sweep_due(state.game.holds(), ready, dictation, file, rest, true) {
+        return;
+    }
+    // The engine's lock waits for a transcription that runs.
+    let engine = state.whisper_engine.clone();
+    let loaded = tauri::async_runtime::spawn_blocking(move || engine.is_loaded()).await.unwrap_or(false);
+    let (ready, dictation, file, rest) = busy(state);
+    if !game_sweep_due(state.game.holds(), ready, dictation, file, rest, loaded) {
+        return;
+    }
+    let engine = state.whisper_engine.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || engine.release()).await;
+    startup_log::log("[game] Whisper was loaded while the GPU is freed for a game: unloaded again");
+}
+
+/// Freed for a game right now (Engine tab).
+#[tauri::command]
+fn game_free_state(state: State<AppState>) -> bool {
+    state.game.holds()
+}
+
+/// Downloaded model files no setting uses (Engine tab).
+#[tauri::command]
+fn unused_models(state: State<AppState>) -> Vec<model_files::ModelFile> {
+    let (whisper, ai) = {
+        let s = state.settings.lock().unwrap();
+        (s.whisper_model.clone(), s.ai_model.clone())
+    };
+    model_files::unused(&state.app_dir, &whisper, &ai)
+}
+
+/// Delete one of `unused_models` (`kind` "whisper" or "ai", the file name).
+/// Returns the bytes freed. Errors "in_use" for a model the settings use,
+/// "meeting_busy" while a meeting records or finishes and "busy" while a
+/// file is transcribed (they may hold a model chosen before).
+#[tauri::command]
+fn delete_unused_model(state: State<AppState>, kind: String, file: String) -> Result<u64, String> {
+    if meeting_busy(&state.meetings.status()) {
+        return Err("meeting_busy".to_string());
+    }
+    if FILE_RUNNING.load(Ordering::SeqCst) {
+        return Err("busy".to_string());
+    }
+    let (whisper, ai) = {
+        let s = state.settings.lock().unwrap();
+        (s.whisper_model.clone(), s.ai_model.clone())
+    };
+    let result = model_files::delete(&state.app_dir, &whisper, &ai, &kind, &file);
+    startup_log::log(&match &result {
+        Ok(bytes) => format!("[models] deleted {} ({} MB)", file, bytes / 1_000_000),
+        Err(e) => format!("[models] not deleting {}: {}", file, e),
+    });
+    result
 }
 
 #[tauri::command]
@@ -1948,6 +2312,337 @@ async fn soundboard_set_always_on_top(app: AppHandle, state: State<'_, AppState>
     Ok(())
 }
 
+/// What a meeting records and transcribes with: the settings now.
+fn meeting_config_from(s: &Settings, app_dir: &std::path::Path) -> meeting::Config {
+    let ai_model = if !s.ai_cleanup {
+        Err("ai_off".to_string())
+    } else {
+        ai_models::find(&s.ai_model)
+            .map(|m| ai_models::model_path(app_dir, m))
+            .filter(|p| p.exists())
+            .ok_or_else(|| "no_ai_model".to_string())
+    };
+    meeting::Config {
+        microphone: s.microphone.clone(),
+        whisper_model: s.whisper_model.clone(),
+        model_path: app_dir.join(rudariflow_lib::whisper_engine::model_filename(&s.whisper_model)),
+        gpu_backend: s.gpu_backend.clone(),
+        language: s.language.clone(),
+        dictionary: screen_context::whisper_prompt(&[], &s.custom_prompt),
+        terms: dictionary::terms(&s.custom_prompt),
+        swiss_spelling: s.swiss_spelling,
+        ai_model,
+        german: s.ui_language == "de",
+        unload_after: s.engine != "local",
+    }
+}
+
+fn meeting_config(state: &AppState) -> meeting::Config {
+    let settings = state.settings.lock().unwrap().clone();
+    meeting_config_from(&settings, &state.app_dir)
+}
+
+/// Whether a meeting records or runs its end steps (also "Write notes"):
+/// the battery watcher keeps the models loaded, and the PC check is refused.
+fn meeting_busy(status: &meeting::Status) -> bool {
+    status.recording.is_some() || !status.finishing.is_empty()
+}
+
+/// Whether a meeting transcribes with Whisper now: it records, or its end
+/// steps transcribe the rest. With the cloud engine the Files tab then
+/// leaves the model loaded; the meeting unloads it after its transcript.
+fn meeting_uses_whisper(status: &meeting::Status) -> bool {
+    status.recording.is_some() || status.finishing.iter().any(|f| f.step == meeting::finish::Step::Transcribing)
+}
+
+/// The PC check runs: it loads Whisper beside the engine, past the gate
+/// that puts dictations, meeting pieces and file blocks in order, so no
+/// meeting starts or finishes meanwhile ("pc_check"). The lock is held
+/// while the check looks for a meeting and sets this, and while a meeting
+/// looks at this and starts (`while_no_pc_check`), so neither slips past
+/// the other. Never taken on the main thread or held across an await.
+static PC_CHECK_RUNNING: Mutex<bool> = Mutex::new(false);
+
+/// Clears `PC_CHECK_RUNNING` when the check ends, however it ends.
+#[derive(Debug)]
+struct PcCheckRunning;
+
+impl PcCheckRunning {
+    /// "busy" while another check runs, "meeting_busy" when `in_meeting`
+    /// says a meeting records or runs its end steps.
+    fn begin(in_meeting: impl FnOnce() -> bool) -> Result<Self, String> {
+        let mut running = PC_CHECK_RUNNING.lock().unwrap_or_else(|p| p.into_inner());
+        if *running {
+            return Err("busy".to_string());
+        }
+        if in_meeting() {
+            return Err("meeting_busy".to_string());
+        }
+        *running = true;
+        Ok(PcCheckRunning)
+    }
+}
+
+impl Drop for PcCheckRunning {
+    fn drop(&mut self) {
+        *PC_CHECK_RUNNING.lock().unwrap_or_else(|p| p.into_inner()) = false;
+    }
+}
+
+/// Start or finish a meeting or write its notes (`work`) unless the PC
+/// check runs ("pc_check": it measures the AI and Whisper, and starts and
+/// stops both); the check cannot begin until `work` is done, and then
+/// finds the meeting.
+fn while_no_pc_check<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let running = PC_CHECK_RUNNING.lock().unwrap_or_else(|p| p.into_inner());
+    if *running {
+        return Err("pc_check".to_string());
+    }
+    work()
+}
+
+/// The tray's "Start meeting" / "Stop meeting" item.
+static TRAY_MEETING: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
+/// A meeting records, as the tray item and the pill show it. Read and
+/// written on the main thread only (`show_meeting_state`).
+static MEETING_SHOWN: AtomicBool = AtomicBool::new(false);
+
+fn tray_meeting_text(german: bool, recording: bool) -> &'static str {
+    match (german, recording) {
+        (false, false) => "Start meeting",
+        (false, true) => "Stop meeting",
+        (true, false) => "Meeting starten",
+        (true, true) => "Meeting beenden",
+    }
+}
+
+/// Send "meeting-status" and bring the tray item and the pill's red dot up
+/// to date. The work is handed to the main thread, which looks at what is
+/// true when it runs (the status, the UI language): status events come
+/// from several threads and can overtake each other, so the last one
+/// handled need not be the newest, and the window, the tray and the pill
+/// would keep a stale one. Nothing waits for the main thread here, so a
+/// thread that stops a meeting never hangs on a main thread that is busy
+/// (Quit closes the devices there). `language`: only the UI language
+/// changed; the tray's text is set again and no status is sent.
+fn show_meeting_state(app: &AppHandle, language: bool) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let state = handle.state::<AppState>();
+        // The status is what the window shows too; its lock is only ever
+        // held for a moment.
+        let status = state.meetings.status();
+        let recording = status.recording.is_some();
+        if !language {
+            let _ = handle.emit("meeting-status", status);
+        }
+        let changed = MEETING_SHOWN.swap(recording, Ordering::SeqCst) != recording;
+        if changed || language {
+            let german = state.settings.lock().unwrap().ui_language == "de";
+            if let Some(item) = TRAY_MEETING.get() {
+                let _ = item.set_text(tray_meeting_text(german, recording));
+            }
+        }
+        if changed {
+            state.recorder.set_meeting_dot(&handle, recording);
+        }
+    });
+}
+
+/// The meetings' changes as events; the tray item and the pill's red dot
+/// follow whether a meeting records.
+fn meeting_event(event: meeting::Event) {
+    let Some(app) = APP_HANDLE.get() else { return };
+    match event {
+        // Not this event's status: the one that is true when the main
+        // thread sends it (see `show_meeting_state`).
+        meeting::Event::Status(_) => show_meeting_state(app, false),
+        meeting::Event::Lines(lines) => {
+            let _ = app.emit("meeting-lines", lines);
+        }
+        meeting::Event::Changed => {
+            let _ = app.emit("meetings-changed", ());
+        }
+        meeting::Event::Playing(playing) => {
+            let _ = app.emit("meeting-playing", playing);
+        }
+        meeting::Event::Limit => pill_notice(app, "meeting-notice", "limit"),
+    }
+}
+
+/// Presses of the tray item and the hotkey run one after the other: a
+/// second press waits for the first and then does the opposite, so two
+/// quick presses start a meeting and stop it instead of failing the second.
+static MEETING_TOGGLE: Mutex<()> = Mutex::new(());
+
+/// The tray item and the hotkey: start a meeting, or stop the one that
+/// records. Off the main thread (menu clicks and chords arrive there):
+/// starting creates the files and stopping waits up to 3 s for the devices
+/// to close. A failed start shows its reason in the pill ("meeting-notice").
+fn toggle_meeting(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _one = MEETING_TOGGLE.lock().unwrap_or_else(|p| p.into_inner());
+        let state = app.state::<AppState>();
+        if state.meetings.is_recording() {
+            // "not_recording": the window's Stop or the 4-hour limit was first.
+            if let Err(e) = state.meetings.stop() {
+                startup_log::log(&format!("[meeting] not stopped: {}", e));
+            }
+        } else if let Err(e) = while_no_pc_check(|| state.meetings.start(None, meeting_config(&state))) {
+            startup_log::log(&format!("[meeting] not started: {}", e));
+            pill_notice(&app, "meeting-notice", &e);
+        }
+    });
+}
+
+/// A meeting command's work on a blocking thread: the meetings read and
+/// write files and wait for devices and threads.
+async fn meeting_work<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work).await.map_err(|e| e.to_string())?
+}
+
+/// Start a meeting; `title` empty or missing = "Meeting 3 Oct 2026, 14:00".
+/// Errors: "already_recording", "no_model", "disk_full", "pc_check" (the
+/// PC check runs) or a file or device error.
+#[tauri::command]
+async fn meeting_start(state: State<'_, AppState>, title: Option<String>) -> Result<String, String> {
+    let (meetings, config) = (state.meetings.clone(), meeting_config(&state));
+    meeting_work(move || while_no_pc_check(|| meetings.start(title, config))).await
+}
+
+/// Stop recording; the end steps follow in the background. Error
+/// "not_recording".
+#[tauri::command]
+async fn meeting_stop(state: State<'_, AppState>) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.stop()).await
+}
+
+/// The status and the meeting that records, with its paragraphs so far.
+#[tauri::command]
+async fn meeting_state(state: State<'_, AppState>) -> Result<meeting::Current, String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || Ok(meetings.state())).await
+}
+
+/// The library, newest first, filtered by title and transcript text.
+#[tauri::command]
+async fn meeting_list(state: State<'_, AppState>, query: Option<String>) -> Result<Vec<meeting::store::Summary>, String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || Ok(meetings.list(&query.unwrap_or_default()))).await
+}
+
+/// Error "no_meeting".
+#[tauri::command]
+async fn meeting_get(state: State<'_, AppState>, id: String) -> Result<meeting::MeetingView, String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.get(&id)).await
+}
+
+/// Error "empty_name".
+#[tauri::command]
+async fn meeting_rename(state: State<'_, AppState>, id: String, title: String) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.rename(&id, &title)).await
+}
+
+/// Name Speaker `speaker + 1` in one meeting ("" = back to "Speaker n").
+#[tauri::command]
+async fn meeting_rename_speaker(state: State<'_, AppState>, id: String, speaker: u8, name: String) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.rename_speaker(&id, speaker, &name)).await
+}
+
+/// Tick an action item of the notes. Error "no_item".
+#[tauri::command]
+async fn meeting_set_action_done(state: State<'_, AppState>, id: String, index: usize, done: bool) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.set_action_done(&id, index, done)).await
+}
+
+/// Errors: "busy" (it records, finishes or gets its notes), "no_meeting".
+#[tauri::command]
+async fn meeting_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.delete(&id)).await
+}
+
+/// Run the end steps of an interrupted meeting. Errors: "busy",
+/// "no_meeting", "not_interrupted", "no_audio" (deleted after 30 days),
+/// "no_model" (Whisper is needed and not downloaded), "pc_check".
+#[tauri::command]
+async fn meeting_finish(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let (meetings, config) = (state.meetings.clone(), meeting_config(&state));
+    meeting_work(move || while_no_pc_check(|| meetings.finish(&id, config))).await
+}
+
+/// Write the notes (the "Write notes" button): needs the AI model
+/// downloaded ("no_ai_model"), not AI cleanup switched on. Also "busy",
+/// "no_meeting", "pc_check" (the PC check runs: it starts and stops the
+/// AI); why the AI wrote none is the meeting's `notesError`.
+#[tauri::command]
+async fn meeting_write_notes(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let (model, backend) = {
+        let s = state.settings.lock().unwrap();
+        (ai_models::find(&s.ai_model).map(|m| ai_models::model_path(&state.app_dir, m)), s.gpu_backend.clone())
+    };
+    let model = model.filter(|p| p.exists()).ok_or_else(|| "no_ai_model".to_string())?;
+    let meetings = state.meetings.clone();
+    meeting_work(move || while_no_pc_check(|| meetings.write_notes(&id, model, backend))).await
+}
+
+/// Play a meeting from `from_ms` (JS `fromMs`). Errors: "recording" (a
+/// meeting records: it would record what plays), "no_audio", "no_meeting"
+/// or a device error.
+#[tauri::command]
+async fn meeting_play(state: State<'_, AppState>, id: String, from_ms: u64) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || meetings.play(&id, from_ms)).await
+}
+
+#[tauri::command]
+async fn meeting_stop_playing(state: State<'_, AppState>) -> Result<(), String> {
+    let meetings = state.meetings.clone();
+    meeting_work(move || {
+        meetings.stop_playing();
+        Ok(())
+    })
+    .await
+}
+
+/// The title a meeting started now gets, for the title field's placeholder.
+#[tauri::command]
+async fn meeting_default_title(state: State<'_, AppState>) -> Result<String, String> {
+    let german = state.settings.lock().unwrap().ui_language == "de";
+    Ok(meeting::store::default_title(german, &rudariflow_lib::replacements::Moment::now()))
+}
+
+/// Quit after "Stop the meeting and quit?": the meeting is saved as
+/// interrupted at exit (`Meetings::shutdown`), and Finish runs its end
+/// steps later.
+#[tauri::command]
+async fn meeting_quit(app: AppHandle) -> Result<(), String> {
+    app.exit(0);
+    Ok(())
+}
+
+/// Test hook: play an audio file on the device RUDARIFLOW_MEETING_LOOPBACK
+/// names (the virtual cable), never on a real output. Only with
+/// RUDARIFLOW_TEST_COMMANDS=1.
+#[tauri::command]
+async fn meeting_test_play(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    if std::env::var("RUDARIFLOW_TEST_COMMANDS").as_deref() != Ok("1") {
+        return Err("test commands are off".to_string());
+    }
+    let meetings = state.meetings.clone();
+    meeting_work(move || {
+        let samples = media::decode_16k_mono(std::path::Path::new(&path), |_, _| {})?;
+        meetings.test_play(samples)
+    })
+    .await
+}
+
 /// Keyboard chords go through the global-shortcut plugin; mouse side buttons
 /// (`Mouse4`, `Mouse5`, optionally with modifiers) through a mouse hook.
 fn register_hotkey(app: &AppHandle, hotkey: &str, action: HotkeyAction) -> Result<(), String> {
@@ -2024,7 +2719,7 @@ struct SyncInputs {
     /// The board hotkeys to register: none while off or paused, no sound's
     /// while the sounds' hotkeys are switched off.
     wanted: Vec<(HotkeyAction, String)>,
-    /// The app's own four, which a board key never takes over.
+    /// The app's own five, which a board key never takes over.
     app: Vec<(HotkeyAction, String)>,
 }
 
@@ -2126,15 +2821,23 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
     let mode = state.settings.lock().unwrap().recording_mode.clone();
     println!("[RudariFlow] Recording mode: {}", mode);
     *state.last_activity.lock().unwrap() = std::time::Instant::now();
+    state.gpu.idle_unloaded.store(false, Ordering::SeqCst);
 
     if pressed {
         tauri::async_runtime::spawn(async move {
             let state = handle.state::<AppState>();
+            // A start: in the dictation's mode before the warm-up loads
+            // Whisper, so the watcher's sweep leaves that load alone while
+            // the microphone opens.
+            let starting = state.recorder.get_state() == RecordingState::Ready;
+            if starting {
+                dictation_started(state.inner());
+            }
             // Background warmup: kick off model load in parallel
             // with audio capture. Single-flight via the engine's
             // mutex; ignores errors here — they surface at
-            // transcription time.
-            let s = state.settings.lock().unwrap().clone();
+            // transcription time. Freed for a game: Whisper only.
+            let s = dictation_settings(state.inner());
             if let Some(model) = ai_model_to_run(&s, &state.app_dir) {
                 state.llm.warm(model, Some(s.gpu_backend.clone()));
             }
@@ -2150,7 +2853,13 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
             match mode.as_str() {
                 "toggle" => match do_toggle_recording(&handle, state.inner()).await {
                     Ok(result) => println!("[RudariFlow] Toggle result: {}", result),
-                    Err(e) => startup_log::log(&format!("[hotkey] toggle error: {}", e)),
+                    Err(e) => {
+                        startup_log::log(&format!("[hotkey] toggle error: {}", e));
+                        if starting && state.recorder.get_state() == RecordingState::Ready {
+                            // No dictation started: the sweep may go on.
+                            state.game.dictation.store(false, Ordering::SeqCst);
+                        }
+                    }
                 },
                 "push-to-talk" => {
                     let current = state.recorder.get_state();
@@ -2160,12 +2869,17 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
                             let s = state.settings.lock().unwrap();
                             (s.microphone.clone(), s.mute_audio)
                         };
+                        let mute = mutes_other_apps(mute, state.meetings.status().recording.is_some());
                         match state.recorder.start_recording(&handle, &mic, mute) {
                             Ok(_) => {
+                                dictation_started(state.inner());
                                 state.recorder.capture_context(&handle, &s, &state.app_dir);
                                 state.recorder.start_pieces(&s, &state.app_dir, &state.whisper_engine);
                             }
-                            Err(e) => startup_log::log(&format!("[hotkey] start error: {}", e)),
+                            Err(e) => {
+                                startup_log::log(&format!("[hotkey] start error: {}", e));
+                                state.game.dictation.store(false, Ordering::SeqCst);
+                            }
                         }
                     }
                 }
@@ -2177,7 +2891,7 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
             let state = handle.state::<AppState>();
             let current = state.recorder.get_state();
             if current == RecordingState::Recording {
-                let settings = state.settings.lock().unwrap().clone();
+                let settings = dictation_settings(state.inner());
                 match state
                     .recorder
                     .stop_and_transcribe(
@@ -2193,9 +2907,19 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
                     Ok(result) => println!("[RudariFlow] Transcription: {}", result),
                     Err(e) => eprintln!("[RudariFlow] Transcription error: {}", e),
                 }
+                after_game_dictation(state.inner()).await;
             }
         });
     }
+}
+
+/// Whether a dictation mutes the other apps (`setting`: "Mute other apps
+/// while recording"). Not while a meeting records: its Others track is what
+/// the PC plays, and it would record the silence instead of the call. The
+/// status says so (its lock is held for a moment only; `is_recording`
+/// would wait for a meeting that is opening its devices).
+fn mutes_other_apps(setting: bool, meeting_records: bool) -> bool {
+    setting && !meeting_records
 }
 
 /// Shared logic for toggle recording, used by both the Tauri command and hotkey handler.
@@ -2211,14 +2935,16 @@ async fn do_toggle_recording(
                 let s = state.settings.lock().unwrap();
                 (s.microphone.clone(), s.mute_audio)
             };
+            let mute = mutes_other_apps(mute, state.meetings.status().recording.is_some());
             state.recorder.start_recording(app, &mic, mute)?;
-            let settings = state.settings.lock().unwrap().clone();
+            dictation_started(state);
+            let settings = dictation_settings(state);
             state.recorder.capture_context(app, &settings, &state.app_dir);
             state.recorder.start_pieces(&settings, &state.app_dir, &state.whisper_engine);
             Ok("recording".to_string())
         }
         RecordingState::Recording => {
-            let settings = state.settings.lock().unwrap().clone();
+            let settings = dictation_settings(state);
             let result = state
                 .recorder
                 .stop_and_transcribe(
@@ -2229,8 +2955,9 @@ async fn do_toggle_recording(
                     &state.history,
                     &state.llm,
                 )
-                .await?;
-            Ok(result)
+                .await;
+            after_game_dictation(state).await;
+            result
         }
         RecordingState::Transcribing => {
             Err("Currently transcribing, please wait".to_string())
@@ -2245,13 +2972,97 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
         | tauri_plugin_window_state::StateFlags::MAXIMIZED
 }
 
+/// Brings the main window to the front: shown (it may be hidden in the
+/// tray), unminimized and focused. The tray's Show item and icon click and
+/// a second start of the app use it.
+fn show_main_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// Only one RudariFlow runs (a second start shows the running window and
+/// exits), except in a test build: `RUDARIFLOW_DATA_DIR` (see `get_app_dir`)
+/// marks it, and it has to run next to the installed app. The installed app
+/// never sets that variable.
+fn single_instance_wanted(data_dir_env: Option<&str>) -> bool {
+    data_dir_env.is_none_or(str::is_empty)
+}
+
+/// Whether a second start (the arguments the plugin hands over, the first is
+/// the program) brings the running window to the front. The autostart entry
+/// adds `--start-minimized`: at login, racing a manual start, it must not
+/// pull the window up.
+fn second_start_shows_window(args: &[String]) -> bool {
+    !args.iter().any(|a| a == "--start-minimized")
+}
+
+/// The plugin must be registered first. Its callback runs in the running
+/// instance when another one starts.
+fn single_instance_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri_plugin_single_instance::init(|app, args, _cwd| {
+        let shows = second_start_shows_window(&args);
+        startup_log::log(&format!("[single-instance] second start {:?}: {}", args, if shows { "showing the window" } else { "ignored" }));
+        if shows {
+            show_main_window(app);
+        }
+    })
+}
+
+/// What opening the plugin's mutex says about another instance: `opened`,
+/// or else Windows' error (`GetLastError`). "Access denied" means the mutex
+/// is there and not ours to open (the other instance runs as administrator
+/// or as another user): that instance runs too. Anything else (not found)
+/// means none does.
+#[cfg(windows)]
+fn mutex_means_running(opened: bool, error: u32) -> bool {
+    opened || error == windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED
+}
+
+/// Whether the plugin's mutex (`<identifier>-sim`, see its Windows code)
+/// exists: another instance runs. Looked at before this process loads
+/// anything, since loading is not harmless: `Meetings::new` turns a meeting
+/// that records into an interrupted one.
+#[cfg(windows)]
+fn another_instance_running(identifier: &str) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
+    let name: Vec<u16> = format!("{identifier}-sim").encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: `name` is NUL-terminated; the error is read right after the
+    // call that set it; the handle is closed at once.
+    unsafe {
+        let handle = OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr());
+        let error = GetLastError();
+        if !handle.is_null() {
+            CloseHandle(handle);
+        }
+        mutex_means_running(!handle.is_null(), error)
+    }
+}
+
+#[cfg(not(windows))]
+fn another_instance_running(_identifier: &str) -> bool {
+    false
+}
+
 fn main() {
+    let context = tauri::generate_context!();
+    let single_instance = single_instance_wanted(std::env::var("RUDARIFLOW_DATA_DIR").ok().as_deref());
+    if single_instance && another_instance_running(&context.config().identifier) {
+        // Nothing of this process is loaded. The plugin tells the running
+        // instance and exits; building the app is all it takes.
+        let _ = tauri::Builder::default().plugin(single_instance_plugin()).build(context);
+        std::process::exit(0);
+    }
     let app_dir = get_app_dir();
     startup_log::init(&app_dir);
     let settings = Settings::load(&app_dir);
     startup_log::log("settings loaded");
     let history = Arc::new(History::load(&app_dir));
     let soundboard = Soundboard::new(&app_dir, Box::new(soundboard_event));
+    let whisper_engine = Arc::new(WhisperEngine::new());
     let llm = Arc::new(LlmServer::new(
         llama_dir(),
         app_dir.join("llm-server.log"),
@@ -2262,13 +3073,21 @@ fn main() {
         }),
     ));
     llm.set_warm_prompt(polish::system_prompt(&settings));
+    let meetings = Meetings::new(&app_dir, whisper_engine.clone(), llm.clone(), settings.ui_language == "de", Box::new(meeting_event));
     let initial_hotkey = settings.hotkey.clone();
     let initial_paste_last_hotkey = settings.paste_last_hotkey.clone();
     let initial_rewrite_last_hotkey = settings.rewrite_last_hotkey.clone();
     let initial_free_gpu_hotkey = settings.free_gpu_hotkey.clone();
+    let initial_meeting_hotkey = settings.meeting_hotkey.clone();
+    let initial_german = settings.ui_language == "de";
     let initial_autostart = settings.autostart;
+    let initial_games = settings.free_gpu_for_games;
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    if single_instance {
+        builder = builder.plugin(single_instance_plugin());
+    }
+    builder
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -2293,13 +3112,15 @@ fn main() {
             recorder: Recorder::new(),
             settings: Mutex::new(settings),
             app_dir,
-            whisper_engine: Arc::new(WhisperEngine::new()),
+            whisper_engine,
             history,
             llm,
             ai_download: Mutex::new(None),
             last_activity: Mutex::new(std::time::Instant::now()),
             gpu: GpuFree::default(),
+            game: GameFree::new(initial_games),
             soundboard,
+            meetings,
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -2328,6 +3149,9 @@ fn main() {
             screen_context_test,
             caret_test,
             free_gpu_test,
+            game_free_state,
+            unused_models,
+            delete_unused_model,
             ai_restart,
             list_open_apps,
             dictionary_export,
@@ -2369,6 +3193,22 @@ fn main() {
             soundboard_pop_out,
             soundboard_dock,
             soundboard_set_always_on_top,
+            meeting_start,
+            meeting_stop,
+            meeting_state,
+            meeting_list,
+            meeting_get,
+            meeting_rename,
+            meeting_rename_speaker,
+            meeting_set_action_done,
+            meeting_delete,
+            meeting_finish,
+            meeting_write_notes,
+            meeting_play,
+            meeting_stop_playing,
+            meeting_default_title,
+            meeting_quit,
+            meeting_test_play,
         ])
         .on_window_event(|window, event| {
             // Close button (X) on the main window hides to tray instead of quitting.
@@ -2415,7 +3255,8 @@ fn main() {
                     fetch_ai_draft(state.inner(), model).await;
                 }
             });
-            watch_idle_on_battery(app.handle().clone());
+            watch_idle(app.handle().clone());
+            watch_games(app.handle().clone());
             // The CUDA runtime and Vulkan loader DLLs are load-time imports and
             // are installed next to rudariflow.exe (see tauri.conf.json).
             if let Ok(rd) = app.path().resource_dir() {
@@ -2513,7 +3354,7 @@ fn main() {
                 }
             }
 
-            // Paste-last, rewrite and free GPU are optional: if another app
+            // Paste-last, rewrite, free GPU and meeting are optional: if another app
             // owns the chord, the setting stays and the failure is in startup.log.
             if !initial_paste_last_hotkey.is_empty() {
                 let _ = register_hotkey(
@@ -2527,6 +3368,9 @@ fn main() {
             }
             if !initial_free_gpu_hotkey.is_empty() {
                 let _ = register_hotkey(app.handle(), &initial_free_gpu_hotkey, HotkeyAction::FreeGpu);
+            }
+            if !initial_meeting_hotkey.is_empty() {
+                let _ = register_hotkey(app.handle(), &initial_meeting_hotkey, HotkeyAction::Meeting);
             }
             // The virtual microphone was on when RudariFlow last ran: on
             // again. Its hotkeys follow from the status event.
@@ -2573,23 +3417,29 @@ fn main() {
 
             // System tray.
             let show_item = MenuItem::with_id(app, "show", "Show RudariFlow", true, None::<&str>)?;
+            let meeting_item =
+                MenuItem::with_id(app, "meeting", tray_meeting_text(initial_german, false), true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &meeting_item, &quit_item])?;
+            let _ = TRAY_MEETING.set(meeting_item);
 
             let _tray = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("RudariFlow")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.unminimize();
-                            let _ = w.set_focus();
-                        }
-                    }
+                    "show" => show_main_window(app),
+                    "meeting" => toggle_meeting(app),
                     "quit" => {
-                        app.exit(0);
+                        // A meeting that records: the window asks "Stop the
+                        // meeting and quit?" (meeting_quit). The status is
+                        // what the tray item and the window show.
+                        if app.state::<AppState>().meetings.status().recording.is_some() {
+                            show_main_window(app);
+                            let _ = app.emit("meeting-quit-asked", ());
+                        } else {
+                            app.exit(0);
+                        }
                     }
                     _ => {}
                 })
@@ -2600,12 +3450,7 @@ fn main() {
                         ..
                     } = event
                     {
-                        let app = tray.app_handle();
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.unminimize();
-                            let _ = w.set_focus();
-                        }
+                        show_main_window(tray.app_handle());
                     }
                 })
                 .build(app)?;
@@ -2613,7 +3458,7 @@ fn main() {
             startup_log::log("setup() completed successfully");
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
             if let RunEvent::Exit = event {
@@ -2621,6 +3466,8 @@ fn main() {
                 state.llm.stop();
                 // Keeps the saved switch: on again at the next start.
                 state.soundboard.shutdown();
+                // A meeting that records is saved as interrupted.
+                state.meetings.shutdown();
             }
         });
 }
@@ -2629,6 +3476,79 @@ fn main() {
 mod tests {
     use super::*;
     use rudariflow_lib::soundboard::library::Sound;
+
+    #[test]
+    fn a_dictation_freed_for_a_game_runs_without_ai_cleanup() {
+        let on = Settings { ai_cleanup: true, edit_mode: true, ..Settings::default() };
+        assert!(for_dictation(on.clone(), false).ai_cleanup, "the hotkey's free keeps today's behaviour");
+        let game = for_dictation(on.clone(), true);
+        assert!(!game.ai_cleanup, "Whisper only, pasted as with AI cleanup off");
+        // Nothing else changes: Edit mode is off because it needs AI cleanup.
+        assert_eq!(Settings { ai_cleanup: true, ..game }, on);
+        let off = Settings { ai_cleanup: false, ..Settings::default() };
+        assert_eq!(for_dictation(off.clone(), true), off);
+    }
+
+    #[test]
+    fn whisper_loaded_during_a_game_goes_when_nothing_uses_it() {
+        assert!(game_sweep_due(true, true, false, false, false, true), "a short dictation or a file left it loaded");
+        assert!(!game_sweep_due(false, true, false, false, false, true), "not freed for a game");
+        assert!(!game_sweep_due(true, false, false, false, false, true), "a dictation records or transcribes");
+        assert!(!game_sweep_due(true, true, true, false, false, true), "a game dictation is not done yet");
+        assert!(!game_sweep_due(true, true, false, true, false, true), "a file is transcribed");
+        assert!(!game_sweep_due(true, true, false, false, true, true), "a meeting transcribes its rest");
+        assert!(!game_sweep_due(true, true, false, false, false, false), "nothing loaded");
+    }
+
+    #[test]
+    fn the_game_switch_wakes_the_watcher() {
+        let game = std::sync::Arc::new(GameFree::new(false));
+        assert!(!game.enabled() && !game.holds());
+        let waiting = {
+            let game = game.clone();
+            std::thread::spawn(move || game.wait_enabled())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!waiting.is_finished(), "waits while off");
+        game.set_enabled(true);
+        waiting.join().unwrap();
+        assert!(game.enabled());
+        game.wait_enabled();
+    }
+
+    #[test]
+    fn single_instance_is_off_only_for_a_test_data_dir() {
+        assert!(single_instance_wanted(None));
+        assert!(single_instance_wanted(Some("")));
+        assert!(!single_instance_wanted(Some("test-data")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_mutex_that_is_there_but_not_ours_to_open_means_another_instance() {
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND};
+        assert!(mutex_means_running(true, 0));
+        assert!(mutex_means_running(false, ERROR_ACCESS_DENIED), "it runs as administrator or another user");
+        assert!(!mutex_means_running(false, ERROR_FILE_NOT_FOUND), "no such mutex: none runs");
+        assert!(!mutex_means_running(false, 0));
+        assert!(!another_instance_running("com.rudariflow.test-no-such-instance"));
+    }
+
+    #[test]
+    fn a_dictation_does_not_mute_the_pc_while_a_meeting_records() {
+        assert!(mutes_other_apps(true, false), "the setting, as before");
+        assert!(!mutes_other_apps(true, true), "the meeting's Others track would record silence");
+        assert!(!mutes_other_apps(false, false));
+        assert!(!mutes_other_apps(false, true));
+    }
+
+    #[test]
+    fn a_second_start_shows_the_window_unless_it_is_the_autostart_entry() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(second_start_shows_window(&args(&["rudariflow.exe"])));
+        assert!(!second_start_shows_window(&args(&["rudariflow.exe", "--start-minimized"])));
+        assert!(second_start_shows_window(&args(&["rudariflow.exe", "--other"])));
+    }
 
     #[test]
     fn hotkey_pause_holders_are_per_window() {
@@ -2701,7 +3621,7 @@ mod tests {
             vec![(HotkeyAction::StopSounds, "F14".to_string()), (HotkeyAction::Sound("s-a".into()), "F13".to_string())]
         );
         let all = all_hotkeys(&Settings::default(), &board);
-        assert_eq!(all.len(), 6);
+        assert_eq!(all.len(), 7, "the app's five and the board's two");
         let drums = HotkeyAction::Sound("s-b".into());
         assert_eq!(taken_by(&all, &drums, "f13"), Some(HotkeyAction::Sound("s-a".into())));
         assert_eq!(taken_by(&all, &drums, "F14"), Some(HotkeyAction::StopSounds));
@@ -2799,7 +3719,7 @@ mod tests {
         let all = all_hotkeys(&Settings::default(), &board);
         let toggle = HotkeyAction::ToggleSoundHotkeys;
         assert_eq!(toggle.target(), "toggleSoundHotkeys");
-        assert!(HotkeyAction::from_target("toggleSoundHotkeys").is_err(), "not one of the app's four");
+        assert!(HotkeyAction::from_target("toggleSoundHotkeys").is_err(), "not one of the app's five");
         assert_eq!(owner_label(&toggle, &board), "toggleSoundHotkeys");
         assert_eq!(taken_by(&all, &HotkeyAction::Sound("s-a".into()), "f15"), Some(toggle.clone()));
         assert_eq!(taken_by(&all, &HotkeyAction::FreeGpu, "F15"), Some(toggle.clone()), "an app hotkey cannot take it");
@@ -2861,6 +3781,112 @@ mod tests {
         let before = sync_inputs(true, false, &bare, &s);
         bare.sound_hotkeys = false;
         assert_ne!(sync_inputs(true, false, &bare, &s), before);
+    }
+
+    #[test]
+    fn the_meeting_hotkey_is_the_fifth_and_joins_the_conflict_check() {
+        assert_eq!(HotkeyAction::from_target("meeting"), Ok(HotkeyAction::Meeting));
+        assert_eq!(HotkeyAction::Meeting.target(), "meeting");
+        let mut s = Settings::default();
+        assert_eq!(hotkeys(&s)[4], (HotkeyAction::Meeting, String::new()), "off by default");
+        s.meeting_hotkey = "Ctrl+Alt+M".to_string();
+        let board = board_with("", &[("s-a", "airhorn", "F13")]);
+        let all = all_hotkeys(&s, &board);
+        assert_eq!(taken_by(&all, &HotkeyAction::FreeGpu, "ctrl+alt+m"), Some(HotkeyAction::Meeting));
+        assert_eq!(taken_by(&all, &HotkeyAction::Meeting, "F13"), Some(HotkeyAction::Sound("s-a".into())));
+        assert_eq!(owner_label(&HotkeyAction::Meeting, &board), "meeting");
+        assert_eq!(app_hotkey_owner(&hotkeys(&s), "Ctrl+Alt+M"), Some(HotkeyAction::Meeting), "a board key never takes it");
+    }
+
+    #[test]
+    fn the_tray_item_starts_or_stops_in_the_ui_language() {
+        assert_eq!(tray_meeting_text(false, false), "Start meeting");
+        assert_eq!(tray_meeting_text(false, true), "Stop meeting");
+        assert_eq!(tray_meeting_text(true, false), "Meeting starten");
+        assert_eq!(tray_meeting_text(true, true), "Meeting beenden");
+    }
+
+    #[test]
+    fn a_meeting_records_with_the_settings_at_start() {
+        let dir = std::env::temp_dir().join("rudariflow_meeting_config");
+        let mut s = Settings {
+            custom_prompt: "Prodega".to_string(),
+            language: "de".to_string(),
+            ui_language: "de".to_string(),
+            engine: "cloud".to_string(),
+            ..Settings::default()
+        };
+        let c = meeting_config_from(&s, &dir);
+        assert_eq!(c.model_path, dir.join("ggml-small.bin"));
+        assert_eq!((c.language.as_str(), c.german, c.unload_after), ("de", true, true));
+        assert!(c.dictionary.contains("Prodega"), "{}", c.dictionary);
+        assert_eq!(c.terms, ["Prodega"]);
+        assert_eq!(c.ai_model, Err("ai_off".to_string()), "notes need AI cleanup on");
+        s.ai_cleanup = true;
+        assert_eq!(meeting_config_from(&s, &dir).ai_model, Err("no_ai_model".to_string()), "and the model downloaded");
+    }
+
+    #[test]
+    fn a_meeting_keeps_the_models_and_holds_off_the_pc_check() {
+        use rudariflow_lib::meeting::finish::Step;
+        use rudariflow_lib::meeting::{Finishing, Recording, Status};
+        let finishing = |step| Finishing { id: "m-000000000002".into(), step };
+        let idle = Status::default();
+        assert!(!meeting_busy(&idle) && !meeting_uses_whisper(&idle));
+        let recording = Status {
+            recording: Some(Recording { id: "m-000000000001".into(), title: "Call".into(), started_at: 0, warnings: vec![], paused: true }),
+            finishing: vec![],
+        };
+        assert!(meeting_busy(&recording), "the battery watcher waits, the PC check is refused");
+        assert!(meeting_uses_whisper(&recording), "also while paused");
+        let transcribing = Status { recording: None, finishing: vec![finishing(Step::Transcribing)] };
+        assert!(meeting_busy(&transcribing) && meeting_uses_whisper(&transcribing));
+        for step in [Step::Speakers, Step::Notes] {
+            let later = Status { recording: None, finishing: vec![finishing(step)] };
+            assert!(meeting_busy(&later), "{:?}: the AI must not be stopped under the notes", step);
+            assert!(!meeting_uses_whisper(&later), "{:?}: the meeting let go of Whisper already", step);
+        }
+    }
+
+    #[test]
+    fn a_meeting_loads_whisper_with_the_cloud_engine_too() {
+        let dir = std::env::temp_dir().join("rudariflow_meeting_whisper_load");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Settings { engine: "cloud".to_string(), ..Settings::default() };
+        assert_eq!(whisper_model_to_load_now(&s, &dir, true), None, "not downloaded");
+        std::fs::write(dir.join("ggml-small.bin"), b"x").unwrap();
+        assert_eq!(whisper_model_to_load(&s, &dir), None, "dictations go to the cloud");
+        assert_eq!(whisper_model_to_load_now(&s, &dir, false), None);
+        assert_eq!(
+            whisper_model_to_load_now(&s, &dir, true),
+            Some(dir.join("ggml-small.bin")),
+            "Free GPU again or a settings change: the live text goes on"
+        );
+        s.engine = "local".to_string();
+        assert_eq!(whisper_model_to_load(&s, &dir), Some(dir.join("ggml-small.bin")));
+        assert_eq!(whisper_model_to_load_now(&s, &dir, true), Some(dir.join("ggml-small.bin")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_pc_check_and_a_meeting_start_shut_each_other_out() {
+        // The only test that takes PC_CHECK_RUNNING.
+        assert_eq!(while_no_pc_check(|| Ok(1)), Ok(1), "no check: the meeting starts");
+        assert_eq!(PcCheckRunning::begin(|| true).unwrap_err(), "meeting_busy");
+        assert_eq!(while_no_pc_check(|| Ok(2)), Ok(2), "a refused check holds nothing");
+        let check = PcCheckRunning::begin(|| false).unwrap();
+        let mut started = false;
+        let refused: Result<(), String> = while_no_pc_check(|| {
+            started = true;
+            Ok(())
+        });
+        assert_eq!((refused, started), (Err("pc_check".to_string()), false));
+        assert_eq!(PcCheckRunning::begin(|| false).unwrap_err(), "busy", "one check at a time");
+        assert_eq!(while_no_pc_check(|| Ok(3)), Err("pc_check".to_string()), "the refused second check ends nothing");
+        drop(check);
+        assert_eq!(while_no_pc_check(|| Err::<(), _>("no_model".to_string())), Err("no_model".to_string()));
+        drop(PcCheckRunning::begin(|| false).unwrap());
     }
 
     #[test]

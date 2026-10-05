@@ -8,6 +8,7 @@ import { populateLanguageSelect } from "./languages";
 import { initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
 import { initDictionary, renderDictionary } from "./dictionary";
 import { initFiles, renderFiles } from "./files";
+import { initMeetingQuit, initMeetings, renderMeetings } from "./meetings";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
 import { hotkeyLabel, startCapture } from "./hotkey-capture";
 import { mountBoard } from "./soundboard/board";
@@ -44,6 +45,12 @@ interface Settings {
   screenContext: boolean;
   learnDictionary: boolean;
   fileSpeakers: string;
+  meetingHotkey: string;
+  meetingReminderOff: boolean;
+  meetingHeadphonesSeen: boolean;
+  freeGpuForGames: boolean;
+  /** Mains power: unload the models after this many idle minutes; 0 = never. */
+  idleUnloadMinutes: number;
 }
 
 interface Replacement {
@@ -111,8 +118,16 @@ const rewriteLastClear = document.getElementById("rewrite-last-clear") as HTMLBu
 const freeGpuBtn = document.getElementById("free-gpu-btn") as HTMLButtonElement;
 const freeGpuText = document.getElementById("free-gpu-text")!;
 const freeGpuClear = document.getElementById("free-gpu-clear") as HTMLButtonElement;
+const meetingHotkeyBtn = document.getElementById("meeting-hotkey-btn") as HTMLButtonElement;
+const meetingHotkeyText = document.getElementById("meeting-hotkey-text")!;
+const meetingHotkeyClear = document.getElementById("meeting-hotkey-clear") as HTMLButtonElement;
 const sendCommandSelect = document.getElementById("send-command-select") as HTMLSelectElement;
 const muteAudioToggle = document.getElementById("mute-audio-toggle") as HTMLInputElement;
+const gameFreeToggle = document.getElementById("game-free-toggle") as HTMLInputElement;
+const gameFreeStatus = document.getElementById("game-free-status")!;
+const idleUnloadSelect = document.getElementById("idle-unload-select") as HTMLSelectElement;
+const unusedModelList = document.getElementById("unused-model-list")!;
+const unusedModelEmpty = document.getElementById("unused-model-empty")!;
 const replacementList = document.getElementById("replacement-list")!;
 const replacementEmpty = document.getElementById("replacement-empty")!;
 const replacementAdd = document.getElementById("replacement-add") as HTMLButtonElement;
@@ -134,6 +149,8 @@ function showSection(target: string) {
   sections.forEach((s) => s.classList.remove("active"));
   document.getElementById(`section-${target}`)?.classList.add("active");
   soundboard.setActive(target === "soundboard");
+  if (target === "meetings") void renderMeetings();
+  if (target === "engine") void renderUnusedModels();
 }
 
 navItems.forEach((item) => {
@@ -219,6 +236,12 @@ async function loadSettings() {
 
   // Groq key
   groqKey.value = currentSettings.groqApiKey;
+
+  // GPU management
+  gameFreeToggle.checked = currentSettings.freeGpuForGames ?? false;
+  idleUnloadSelect.value = String(currentSettings.idleUnloadMinutes ?? 0);
+  invoke<boolean>("game_free_state").then(showGameFree).catch(console.error);
+  void renderUnusedModels();
   renderDictionary();
   renderFiles();
   void soundboard.refresh();
@@ -359,6 +382,8 @@ async function saveSettings() {
   currentSettings.autostart = autostartToggle.checked;
   currentSettings.sendCommand = sendCommandSelect.value;
   currentSettings.muteAudio = muteAudioToggle.checked;
+  currentSettings.freeGpuForGames = gameFreeToggle.checked;
+  currentSettings.idleUnloadMinutes = parseInt(idleUnloadSelect.value, 10) || 0;
   currentSettings.history = historyModeSelect.value;
   currentSettings.replacements = readReplacements();
   await invoke("save_settings", { settings: currentSettings });
@@ -383,6 +408,108 @@ languageSelect.addEventListener("change", async () => {
 });
 
 gpuBackendSelect.addEventListener("change", () => saveSettings());
+
+// ── GPU management: free for games, unload when idle, unused models ──
+
+function showGameFree(freed: boolean) {
+  gameFreeStatus.classList.toggle("hidden", !freed);
+}
+
+gameFreeToggle.addEventListener("change", () => saveSettings());
+idleUnloadSelect.addEventListener("change", () => saveSettings());
+// The watcher freed the GPU for a game (true) or loaded the models again.
+listen<boolean>("game-free", (event) => showGameFree(event.payload));
+
+interface ModelFile {
+  kind: "whisper" | "ai";
+  file: string;
+  bytes: number;
+  /** An unfinished download (".part"). */
+  partial: boolean;
+  /** Other hard links to the file: deleting it frees no disk space. */
+  otherLinks: boolean;
+}
+
+function formatSize(bytes: number): string {
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`;
+}
+
+const DELETE_ERRORS: Record<string, string> = {
+  in_use: "unused_model_in_use",
+  meeting_busy: "unused_model_meeting_busy",
+  busy: "unused_model_busy",
+};
+
+/// One unused model with a Delete button that asks once more (click again
+/// within 3 s, like Clear history).
+function unusedModelRow(m: ModelFile): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "unused-model-row";
+  const info = document.createElement("div");
+  info.className = "unused-model-info";
+  const name = document.createElement("span");
+  name.className = "unused-model-name";
+  name.textContent = m.file;
+  const meta = document.createElement("span");
+  meta.className = "label-hint";
+  const parts = [t(m.kind === "ai" ? "unused_model_ai" : "unused_model_whisper")];
+  if (m.partial) parts.push(t("unused_model_partial"));
+  parts.push(m.otherLinks ? `${formatSize(m.bytes)} (${t("unused_model_links")})` : formatSize(m.bytes));
+  meta.textContent = parts.join(" \u00b7 ");
+  const error = document.createElement("span");
+  error.className = "label-hint unused-model-error hidden";
+  info.append(name, meta, error);
+
+  const del = document.createElement("button");
+  del.className = "btn-secondary";
+  del.textContent = t("unused_model_delete");
+  let armed: number | undefined;
+  const disarm = () => {
+    window.clearTimeout(armed);
+    armed = undefined;
+    del.classList.remove("armed");
+    del.textContent = t("unused_model_delete");
+  };
+  del.addEventListener("click", async () => {
+    if (armed === undefined) {
+      del.classList.add("armed");
+      // With other links nothing is freed: no size is promised.
+      del.textContent = m.otherLinks
+        ? t("unused_model_confirm_plain")
+        : t("unused_model_confirm").replace("{size}", formatSize(m.bytes));
+      armed = window.setTimeout(disarm, 3000);
+      return;
+    }
+    disarm();
+    del.disabled = true;
+    try {
+      await invoke<number>("delete_unused_model", { kind: m.kind, file: m.file });
+      await renderUnusedModels();
+      if (m.kind === "ai") await renderAiSettings();
+      else await refreshModelDropdownLabels();
+    } catch (err) {
+      const code = String(err);
+      const key = DELETE_ERRORS[code];
+      error.textContent = key ? t(key) : t("unused_model_failed").replace("{error}", code);
+      error.classList.remove("hidden");
+      del.disabled = false;
+    }
+  });
+  row.append(info, del);
+  return row;
+}
+
+async function renderUnusedModels() {
+  let files: ModelFile[] = [];
+  try {
+    files = await invoke<ModelFile[]>("unused_models");
+  } catch (err) {
+    console.error("unused_models failed:", err);
+  }
+  unusedModelList.innerHTML = "";
+  for (const m of files) unusedModelList.appendChild(unusedModelRow(m));
+  unusedModelEmpty.classList.toggle("hidden", files.length > 0);
+}
 
 // PC check: measures, applies the fastest Whisper setup, shows a report.
 interface PcCheckResult {
@@ -409,7 +536,8 @@ pcCheckBtn.addEventListener("click", async () => {
     pcCheckReport.textContent = result.report;
     pcCheckResult.classList.remove("hidden");
   } catch (err) {
-    pcCheckReport.textContent = `${t("pc_check_failed")}: ${err}`;
+    // "meeting_busy": a meeting records or runs its end steps.
+    pcCheckReport.textContent = String(err) === "meeting_busy" ? t("pc_check_meeting_busy") : `${t("pc_check_failed")}: ${err}`;
     pcCheckResult.classList.remove("hidden");
   } finally {
     pcCheckBtn.disabled = false;
@@ -430,9 +558,11 @@ uiLanguageSelect.addEventListener("change", async () => {
   await saveSettings();
   await refreshHistory();
   await renderAiSettings();
+  await renderUnusedModels();
   renderDictionary();
   renderFiles();
   void soundboard.refresh();
+  void renderMeetings();
 });
 
 sendCommandSelect.addEventListener("change", () => saveSettings());
@@ -466,6 +596,7 @@ modelSelect.addEventListener("change", async () => {
     await refreshModelStatusUI();
     await saveSettings();
     lastSavedModel = chosen;
+    await renderUnusedModels();
     return;
   }
   // Missing -> auto-download. Don't persist until success.
@@ -474,6 +605,7 @@ modelSelect.addEventListener("change", async () => {
     await saveSettings();
     lastSavedModel = chosen;
     await refreshModelStatusUI();
+    await renderUnusedModels();
   } else {
     // Revert dropdown to last working choice
     modelSelect.value = previousSaved;
@@ -531,10 +663,11 @@ listen<DownloadProgress>("download-progress", (event) => {
 
 // Hotkeys. "dictation" starts/stops recording, "pasteLast" pastes the last
 // transcript again, "rewriteLast" selects it and records an edit, "freeGpu"
-// unloads the models or loads them again. Each takes a key combination or a
-// mouse side button (with or without modifiers); the capture itself is in
-// hotkey-capture.ts, shared with the Soundboard.
-type HotkeyTarget = "dictation" | "pasteLast" | "rewriteLast" | "freeGpu";
+// unloads the models or loads them again, "meeting" starts or stops a
+// meeting. Each takes a key combination or a mouse side button (with or
+// without modifiers); the capture itself is in hotkey-capture.ts, shared with
+// the Soundboard.
+type HotkeyTarget = "dictation" | "pasteLast" | "rewriteLast" | "freeGpu" | "meeting";
 
 function renderHotkeys() {
   hotkeyText.textContent = hotkeyLabel(currentSettings.hotkey);
@@ -544,12 +677,15 @@ function renderHotkeys() {
   rewriteLastClear.classList.toggle("hidden", !currentSettings.rewriteLastHotkey);
   freeGpuText.textContent = hotkeyLabel(currentSettings.freeGpuHotkey);
   freeGpuClear.classList.toggle("hidden", !currentSettings.freeGpuHotkey);
+  meetingHotkeyText.textContent = hotkeyLabel(currentSettings.meetingHotkey);
+  meetingHotkeyClear.classList.toggle("hidden", !currentSettings.meetingHotkey);
 }
 
 function captureElements(target: HotkeyTarget) {
   if (target === "dictation") return { btn: hotkeyBtn, text: hotkeyText };
   if (target === "pasteLast") return { btn: pasteLastBtn, text: pasteLastText };
   if (target === "rewriteLast") return { btn: rewriteLastBtn, text: rewriteLastText };
+  if (target === "meeting") return { btn: meetingHotkeyBtn, text: meetingHotkeyText };
   return { btn: freeGpuBtn, text: freeGpuText };
 }
 
@@ -558,6 +694,9 @@ async function setHotkey(target: HotkeyTarget, combo: string) {
   if (target === "dictation") currentSettings.hotkey = combo;
   else if (target === "pasteLast") currentSettings.pasteLastHotkey = combo;
   else if (target === "rewriteLast") currentSettings.rewriteLastHotkey = combo;
+  // Kept in step with the backend's copy: the next save_settings sends
+  // these settings back whole.
+  else if (target === "meeting") currentSettings.meetingHotkey = combo;
   else currentSettings.freeGpuHotkey = combo;
 }
 
@@ -591,6 +730,15 @@ freeGpuClear.addEventListener("click", async () => {
     await setHotkey("freeGpu", "");
   } catch (err) {
     console.error("clearing free-GPU hotkey failed:", err);
+  }
+  renderHotkeys();
+});
+meetingHotkeyBtn.addEventListener("click", () => capture("meeting"));
+meetingHotkeyClear.addEventListener("click", async () => {
+  try {
+    await setHotkey("meeting", "");
+  } catch (err) {
+    console.error("clearing the meeting hotkey failed:", err);
   }
   renderHotkeys();
 });
@@ -847,4 +995,24 @@ initFiles({
 getVersion()
   .then((v) => (document.getElementById("version-text")!.textContent = `v${v}`))
   .catch(console.error);
-loadSettings();
+// The tray's Quit while a meeting records asks in this window: the question
+// is listened for from the start, on every tab.
+initMeetingQuit();
+// The Meetings tab reads the settings, so it starts once they are loaded.
+// It starts without them too (a meeting can record from the tray or the
+// hotkey, and the tab must show it): then with the reminders' defaults, and
+// nothing is saved over the settings that did not load.
+loadSettings()
+  .catch((err) => console.error("loading the settings failed:", err))
+  .then(() =>
+    initMeetings({
+      settings: () => currentSettings ?? { meetingReminderOff: false, meetingHeadphonesSeen: false },
+      saveSettings: async (patch) => {
+        if (!currentSettings) return;
+        Object.assign(currentSettings, patch);
+        await invoke("save_settings", { settings: currentSettings });
+      },
+      showSection: () => showSection("meetings"),
+    }),
+  )
+  .catch((err) => console.error("the Meetings tab did not start:", err));
