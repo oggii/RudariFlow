@@ -17,6 +17,7 @@ use rudariflow_lib::cleanup::cleanup_text;
 use rudariflow_lib::dictionary;
 use rudariflow_lib::downloader;
 use rudariflow_lib::foreground_app;
+use rudariflow_lib::game_watch::{self, GameWatch};
 use rudariflow_lib::history::{self, History, HistoryEntry};
 use rudariflow_lib::llm_server::{self, LlmServer, ServerStatus};
 use rudariflow_lib::mouse_hotkey;
@@ -33,6 +34,7 @@ use rudariflow_lib::{ai_cleanup, file_transcribe, media, screen_context};
 use rudariflow_lib::soundboard::library::{Board, Devices};
 use rudariflow_lib::soundboard::{self, engine, AddResult, BoardState, Soundboard, Status};
 use rudariflow_lib::meeting::{self, Meetings};
+use rudariflow_lib::model_files;
 
 /// One file is transcribed at a time; setting the flag stops it after the
 /// block that is running.
@@ -49,10 +51,12 @@ struct AppState {
     llm: Arc<LlmServer>,
     /// Id of the AI model being downloaded, if any.
     ai_download: Mutex<Option<String>>,
-    /// Last hotkey press or recording start, for unloading on battery.
+    /// Last hotkey press or recording start, for unloading when idle.
     last_activity: Mutex<std::time::Instant>,
     /// The Free GPU hotkey (see `free_gpu_press`).
     gpu: GpuFree,
+    /// Free GPU for games (see `watch_games`).
+    game: GameFree,
     /// The soundboard (library, engine while on).
     soundboard: Arc<Soundboard>,
     /// Meeting mode: the meeting that records, the ones finishing, ▶.
@@ -66,21 +70,71 @@ struct GpuFree {
     freed: AtomicBool,
     /// Counts presses, so a load that a newer press overtook shows no notice.
     press: AtomicU64,
-    /// Presses run one after the other.
+    /// Presses run one after the other (and the frees and loads for games).
     ops: tokio::sync::Mutex<()>,
+    /// The idle watcher unloaded the models and nothing has loaded them
+    /// since: the AI tab says "unloaded" instead of "starting".
+    idle_unloaded: AtomicBool,
+}
+
+/// State of "Free GPU for games" (Engine tab).
+#[derive(Default)]
+struct GameFree {
+    /// The switch. The watcher thread waits on `wake` while it is off.
+    enabled: Mutex<bool>,
+    wake: std::sync::Condvar,
+    /// The watcher freed the GPU for a game and has not loaded it again,
+    /// and no Free GPU press came since. Meanwhile a dictation loads only
+    /// Whisper, pastes without AI cleanup and unloads Whisper again.
+    holds: AtomicBool,
+    /// A Free GPU press loaded the models; the watcher takes it.
+    user_loaded: AtomicBool,
+    /// The dictation that runs started while `holds`: it stays without AI
+    /// cleanup until it is pasted, even if the models load meanwhile.
+    dictation: AtomicBool,
+}
+
+impl GameFree {
+    fn new(enabled: bool) -> Self {
+        Self { enabled: Mutex::new(enabled), ..Default::default() }
+    }
+
+    fn set_enabled(&self, on: bool) {
+        *self.enabled.lock().unwrap() = on;
+        self.wake.notify_all();
+    }
+
+    fn enabled(&self) -> bool {
+        *self.enabled.lock().unwrap()
+    }
+
+    /// Blocks until the switch is on.
+    fn wait_enabled(&self) {
+        let mut on = self.enabled.lock().unwrap();
+        while !*on {
+            on = self.wake.wait(on).unwrap();
+        }
+    }
+
+    fn holds(&self) -> bool {
+        self.holds.load(Ordering::SeqCst)
+    }
 }
 
 /// On battery, free the GPU after `power::IDLE_UNLOAD` without dictation
 /// (about 5 GB of video memory and 3 GB of RAM with the default models), so
-/// a laptop's graphics card can sleep. The next hotkey press loads both
-/// again while the user speaks. Not while a meeting records or runs its end
-/// steps: its live text would pause until Stop, and its notes would fail.
-fn watch_idle_on_battery(handle: AppHandle) {
+/// a laptop's graphics card can sleep; on mains power after the "Unload when
+/// idle" minutes, if set. The next hotkey press loads both again while the
+/// user speaks. Not while a meeting records or runs its end steps: its live
+/// text would pause until Stop, and its notes would fail.
+fn watch_idle(handle: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             let state = handle.state::<AppState>();
             let on_battery = power::on_battery();
+            let mains_minutes = state.settings.lock().unwrap().idle_unload_minutes;
+            let limit = power::idle_limit(on_battery, mains_minutes);
             let idle = state.last_activity.lock().unwrap().elapsed();
             let in_meeting = meeting_busy(&state.meetings.status());
             if in_meeting {
@@ -90,14 +144,16 @@ fn watch_idle_on_battery(handle: AppHandle) {
             let busy = in_meeting || state.recorder.get_state() != RecordingState::Ready;
             // Only looked at when it matters: the engine lock waits for a
             // running transcription.
-            let loaded = on_battery
+            let loaded = limit.is_some()
                 && !busy
                 && (state.llm.status() != ServerStatus::Stopped || state.whisper_engine.is_loaded());
-            if power::should_unload(on_battery, idle, loaded, busy) {
+            if power::should_unload(on_battery, mains_minutes, idle, loaded, busy) {
+                state.gpu.idle_unloaded.store(true, Ordering::SeqCst);
                 state.whisper_engine.invalidate();
                 state.llm.stop();
                 startup_log::log(&format!(
-                    "[power] on battery and idle for {} min: models unloaded",
+                    "[power] on {} and idle for {} min: models unloaded",
+                    if on_battery { "battery" } else { "mains power" },
                     idle.as_secs() / 60
                 ));
             }
@@ -179,6 +235,7 @@ async fn load_whisper(state: &AppState) -> bool {
 
 /// Start the AI server in the background when the settings use it.
 fn start_ai(state: &AppState) {
+    state.gpu.idle_unloaded.store(false, Ordering::SeqCst);
     let settings = state.settings.lock().unwrap().clone();
     if let Some(model) = ai_model_to_run(&settings, &state.app_dir) {
         state.llm.warm(model, Some(settings.gpu_backend));
@@ -393,12 +450,15 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     };
     let warm_prompt = polish::system_prompt(&settings);
     let language_changed = state.settings.lock().unwrap().ui_language != settings.ui_language;
+    let games = settings.free_gpu_for_games;
     // A meeting that records writes its notes with AI cleanup and the AI
     // model as they are at Stop. Off this thread: a meeting that starts
     // holds the lock while its devices open.
     let (meetings, notes_model) = (state.meetings.clone(), meeting_config_from(&settings, &state.app_dir).ai_model);
     tauri::async_runtime::spawn_blocking(move || meetings.set_notes_model(notes_model));
     *state.settings.lock().unwrap() = settings;
+    // Off: the watcher loads the models again if it freed them for a game.
+    state.game.set_enabled(games);
     if language_changed {
         show_meeting_state(&app, true);
     }
@@ -470,7 +530,11 @@ fn cancel_recording(
     app: tauri::AppHandle,
     state: State<AppState>,
 ) -> Result<(), String> {
-    state.recorder.cancel_recording(&app)
+    state.recorder.cancel_recording(&app)?;
+    tauri::async_runtime::spawn(async move {
+        after_game_dictation(app.state::<AppState>().inner()).await;
+    });
+    Ok(())
 }
 
 /// GPUs whisper.cpp can use, for the settings hint. Async so backend
@@ -1080,9 +1144,13 @@ struct AiStatus {
     installed: bool,
     models: Vec<AiModelInfo>,
     downloading: Option<String>,
-    /// Unloaded by the Free GPU hotkey; the next request starts it.
+    /// Unloaded by the Free GPU hotkey, for a game or after the idle
+    /// minutes; the next request starts it.
     #[serde(rename = "gpuFreed")]
     gpu_freed: bool,
+    /// Freed for a game: dictations run without AI cleanup until it ends.
+    #[serde(rename = "gameFreed")]
+    game_freed: bool,
 }
 
 #[tauri::command]
@@ -1100,7 +1168,8 @@ fn ai_status(state: State<AppState>) -> AiStatus {
             })
             .collect(),
         downloading: state.ai_download.lock().unwrap().clone(),
-        gpu_freed: state.llm.released(),
+        gpu_freed: state.llm.released() || state.gpu.idle_unloaded.load(Ordering::SeqCst),
+        game_freed: state.game.holds(),
     }
 }
 
@@ -1576,6 +1645,11 @@ fn on_rewrite_hotkey(handle: &AppHandle, pressed: bool) {
         let state = handle.state::<AppState>();
         let settings = state.settings.lock().unwrap().clone();
         let ctx = foreground_app::current();
+        if state.game.holds() {
+            startup_log::log("[rewrite] not while the GPU is freed for a game");
+            state.recorder.notice(&handle, "rewrite-failed", "game");
+            return;
+        }
         if !voice_edit::available(&settings, &state.app_dir, &ctx) {
             startup_log::log(&format!("[rewrite] needs AI cleanup and Edit mode ('{}')", ctx.exe));
             state.recorder.notice(&handle, "rewrite-failed", "needs-ai");
@@ -1675,6 +1749,12 @@ async fn free_gpu_press(handle: &AppHandle, press: u64) -> FreeGpuResult {
         state.whisper_engine.released(),
         state.llm.released(),
     );
+    // A press ends a free for a game: the models stay as the user wants
+    // them, also after the game.
+    if state.game.holds.swap(false, Ordering::SeqCst) {
+        startup_log::log("[game] the Free GPU hotkey takes over");
+        let _ = handle.emit("game-free", false);
+    }
     if toggle == GpuToggle::Free {
         state.gpu.freed.store(true, Ordering::SeqCst);
         let (llm, engine) = (state.llm.clone(), state.whisper_engine.clone());
@@ -1691,7 +1771,9 @@ async fn free_gpu_press(handle: &AppHandle, press: u64) -> FreeGpuResult {
         return FreeGpuResult::Freed;
     }
     state.gpu.freed.store(false, Ordering::SeqCst);
-    // Asked for now: the battery watcher must not unload them at its next look.
+    // Loaded during a game: no free for it until it is over.
+    state.game.user_loaded.store(true, Ordering::SeqCst);
+    // Asked for now: the idle watcher must not unload them at its next look.
     *state.last_activity.lock().unwrap() = std::time::Instant::now();
     gpu_notice(handle, "loading");
     let started = std::time::Instant::now();
@@ -1749,6 +1831,192 @@ async fn free_gpu_test(app: AppHandle, state: State<'_, AppState>) -> Result<Fre
     }
     let press = state.gpu.press.fetch_add(1, Ordering::SeqCst) + 1;
     Ok(free_gpu_press(&app, press).await)
+}
+
+/// Free GPU for games: a thread looks at the foreground window about once a
+/// second while the switch is on (`game_watch`). A fullscreen app in front
+/// for 5 s frees the GPU like the Free GPU hotkey; no fullscreen app in
+/// front for 30 s loads the models again. No pill notice for either: the
+/// pill is a topmost window, and the game is in front.
+fn watch_games(handle: AppHandle) {
+    let spawned = std::thread::Builder::new().name("rf-games".into()).spawn(move || {
+        let mut watch = GameWatch::new();
+        loop {
+            let state = handle.state::<AppState>();
+            if !state.game.enabled() {
+                watch.reset();
+                state.game.user_loaded.store(false, Ordering::SeqCst);
+                if state.game.holds() {
+                    tauri::async_runtime::block_on(load_after_game(&handle, "the switch is off"));
+                }
+                state.game.wait_enabled();
+                continue;
+            }
+            let now = std::time::Instant::now();
+            if state.game.user_loaded.swap(false, Ordering::SeqCst) {
+                watch.user_loaded(now);
+            }
+            let seen = game_watch::foreground_game();
+            match watch.observe(&seen, now) {
+                Some(game_watch::Action::FreeNow) => {
+                    let game = seen.game.unwrap_or_default();
+                    tauri::async_runtime::block_on(free_for_game(&handle, &game));
+                }
+                Some(game_watch::Action::LoadAgain) => {
+                    tauri::async_runtime::block_on(load_after_game(&handle, "no fullscreen app for 30 s"));
+                }
+                None => {}
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    });
+    if let Err(e) = spawned {
+        startup_log::log(&format!("[game] the watcher could not start: {}", e));
+    }
+}
+
+/// `game` has been in fullscreen in the foreground for 5 s: free the GPU as
+/// the Free GPU hotkey does, after a dictation that runs. Nothing when the
+/// hotkey has already freed it (it then stays the user's: no load after the
+/// game either).
+async fn free_for_game(handle: &AppHandle, game: &str) {
+    let state = handle.state::<AppState>();
+    let _ops = state.gpu.ops.lock().await;
+    while state.recorder.get_state() != RecordingState::Ready {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let toggle = power::gpu_toggle(
+        state.gpu.freed.load(Ordering::SeqCst),
+        state.whisper_engine.released(),
+        state.llm.released(),
+    );
+    if toggle == GpuToggle::Load {
+        startup_log::log(&format!("[game] {} in fullscreen; the GPU is already free", game));
+        return;
+    }
+    state.gpu.freed.store(true, Ordering::SeqCst);
+    // Set before the release: the AI tab reads it at the "stopped" status.
+    state.game.holds.store(true, Ordering::SeqCst);
+    let _ = handle.emit("game-free", true);
+    let (llm, engine) = (state.llm.clone(), state.whisper_engine.clone());
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        llm.release();
+        engine.release();
+    })
+    .await;
+    startup_log::log(&format!("[game] {} in fullscreen: Whisper unloaded, AI server stopped", game));
+}
+
+/// The game is over (or the switch went off): load the models again, as a
+/// Free GPU press that loads does, unless a press has taken over since.
+async fn load_after_game(handle: &AppHandle, why: &str) {
+    let state = handle.state::<AppState>();
+    let ops = state.gpu.ops.lock().await;
+    if !state.game.holds.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let _ = handle.emit("game-free", false);
+    state.gpu.freed.store(false, Ordering::SeqCst);
+    *state.last_activity.lock().unwrap() = std::time::Instant::now();
+    let started = std::time::Instant::now();
+    let whisper_ok = load_whisper(state.inner()).await;
+    // A press from here on frees the GPU at once (see `free_gpu_press`).
+    let generation = state.llm.generation();
+    drop(ops);
+    let settings = state.settings.lock().unwrap().clone();
+    let ai_ok = match ai_model_to_run(&settings, &state.app_dir) {
+        Some(model) => state
+            .llm
+            .ensure_running_since(generation, &model, Some(settings.gpu_backend.as_str()))
+            .await
+            .is_ok(),
+        None => true,
+    };
+    startup_log::log(&format!(
+        "[game] {}: models {} after {} ms",
+        why,
+        if whisper_ok && ai_ok { "loaded" } else { "not all loaded" },
+        started.elapsed().as_millis()
+    ));
+}
+
+/// The settings a dictation runs with: while the GPU is freed for a game,
+/// without AI cleanup, so only Whisper (about 1 GB) is loaded and the text
+/// is pasted as with AI cleanup off (`after_game_dictation` unloads Whisper
+/// again).
+fn for_dictation(mut settings: Settings, freed_for_game: bool) -> Settings {
+    if freed_for_game {
+        settings.ai_cleanup = false;
+    }
+    settings
+}
+
+fn dictation_settings(state: &AppState) -> Settings {
+    let for_game = state.game.holds() || state.game.dictation.load(Ordering::SeqCst);
+    for_dictation(state.settings.lock().unwrap().clone(), for_game)
+}
+
+/// A dictation has started: it keeps the mode of this moment (see
+/// `GameFree::dictation`).
+fn dictation_started(state: &AppState) {
+    state.game.dictation.store(state.game.holds(), Ordering::SeqCst);
+}
+
+/// After a dictation (pasted, empty or cancelled) while the GPU is freed
+/// for a game: unload Whisper again, unless the next dictation has started
+/// already (it does this when it is done).
+async fn after_game_dictation(state: &AppState) {
+    state.game.dictation.store(false, Ordering::SeqCst);
+    let _ops = state.gpu.ops.lock().await;
+    if !state.game.holds()
+        || state.whisper_engine.released()
+        || state.recorder.get_state() != RecordingState::Ready
+    {
+        return;
+    }
+    let engine = state.whisper_engine.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || engine.release()).await;
+    startup_log::log("[game] dictation done: Whisper unloaded again");
+}
+
+/// Freed for a game right now (Engine tab).
+#[tauri::command]
+fn game_free_state(state: State<AppState>) -> bool {
+    state.game.holds()
+}
+
+/// Downloaded model files no setting uses (Engine tab).
+#[tauri::command]
+fn unused_models(state: State<AppState>) -> Vec<model_files::ModelFile> {
+    let (whisper, ai) = {
+        let s = state.settings.lock().unwrap();
+        (s.whisper_model.clone(), s.ai_model.clone())
+    };
+    model_files::unused(&state.app_dir, &whisper, &ai)
+}
+
+/// Delete one of `unused_models` (`kind` "whisper" or "ai", the file name).
+/// Returns the bytes freed. Errors "in_use" for a model the settings use,
+/// "meeting_busy" while a meeting records or finishes and "busy" while a
+/// file is transcribed (they may hold a model chosen before).
+#[tauri::command]
+fn delete_unused_model(state: State<AppState>, kind: String, file: String) -> Result<u64, String> {
+    if meeting_busy(&state.meetings.status()) {
+        return Err("meeting_busy".to_string());
+    }
+    if FILE_RUNNING.load(Ordering::SeqCst) {
+        return Err("busy".to_string());
+    }
+    let (whisper, ai) = {
+        let s = state.settings.lock().unwrap();
+        (s.whisper_model.clone(), s.ai_model.clone())
+    };
+    let result = model_files::delete(&state.app_dir, &whisper, &ai, &kind, &file);
+    startup_log::log(&match &result {
+        Ok(bytes) => format!("[models] deleted {} ({} MB)", file, bytes / 1_000_000),
+        Err(e) => format!("[models] not deleting {}: {}", file, e),
+    });
+    result
 }
 
 #[tauri::command]
@@ -2482,6 +2750,7 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
     let mode = state.settings.lock().unwrap().recording_mode.clone();
     println!("[RudariFlow] Recording mode: {}", mode);
     *state.last_activity.lock().unwrap() = std::time::Instant::now();
+    state.gpu.idle_unloaded.store(false, Ordering::SeqCst);
 
     if pressed {
         tauri::async_runtime::spawn(async move {
@@ -2489,8 +2758,8 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
             // Background warmup: kick off model load in parallel
             // with audio capture. Single-flight via the engine's
             // mutex; ignores errors here — they surface at
-            // transcription time.
-            let s = state.settings.lock().unwrap().clone();
+            // transcription time. Freed for a game: Whisper only.
+            let s = dictation_settings(state.inner());
             if let Some(model) = ai_model_to_run(&s, &state.app_dir) {
                 state.llm.warm(model, Some(s.gpu_backend.clone()));
             }
@@ -2519,6 +2788,7 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
                         let mute = mutes_other_apps(mute, state.meetings.status().recording.is_some());
                         match state.recorder.start_recording(&handle, &mic, mute) {
                             Ok(_) => {
+                                dictation_started(state.inner());
                                 state.recorder.capture_context(&handle, &s, &state.app_dir);
                                 state.recorder.start_pieces(&s, &state.app_dir, &state.whisper_engine);
                             }
@@ -2534,7 +2804,7 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
             let state = handle.state::<AppState>();
             let current = state.recorder.get_state();
             if current == RecordingState::Recording {
-                let settings = state.settings.lock().unwrap().clone();
+                let settings = dictation_settings(state.inner());
                 match state
                     .recorder
                     .stop_and_transcribe(
@@ -2550,6 +2820,7 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
                     Ok(result) => println!("[RudariFlow] Transcription: {}", result),
                     Err(e) => eprintln!("[RudariFlow] Transcription error: {}", e),
                 }
+                after_game_dictation(state.inner()).await;
             }
         });
     }
@@ -2579,13 +2850,14 @@ async fn do_toggle_recording(
             };
             let mute = mutes_other_apps(mute, state.meetings.status().recording.is_some());
             state.recorder.start_recording(app, &mic, mute)?;
-            let settings = state.settings.lock().unwrap().clone();
+            dictation_started(state);
+            let settings = dictation_settings(state);
             state.recorder.capture_context(app, &settings, &state.app_dir);
             state.recorder.start_pieces(&settings, &state.app_dir, &state.whisper_engine);
             Ok("recording".to_string())
         }
         RecordingState::Recording => {
-            let settings = state.settings.lock().unwrap().clone();
+            let settings = dictation_settings(state);
             let result = state
                 .recorder
                 .stop_and_transcribe(
@@ -2596,8 +2868,9 @@ async fn do_toggle_recording(
                     &state.history,
                     &state.llm,
                 )
-                .await?;
-            Ok(result)
+                .await;
+            after_game_dictation(state).await;
+            result
         }
         RecordingState::Transcribing => {
             Err("Currently transcribing, please wait".to_string())
@@ -2721,6 +2994,7 @@ fn main() {
     let initial_meeting_hotkey = settings.meeting_hotkey.clone();
     let initial_german = settings.ui_language == "de";
     let initial_autostart = settings.autostart;
+    let initial_games = settings.free_gpu_for_games;
 
     let mut builder = tauri::Builder::default();
     if single_instance {
@@ -2757,6 +3031,7 @@ fn main() {
             ai_download: Mutex::new(None),
             last_activity: Mutex::new(std::time::Instant::now()),
             gpu: GpuFree::default(),
+            game: GameFree::new(initial_games),
             soundboard,
             meetings,
         })
@@ -2787,6 +3062,9 @@ fn main() {
             screen_context_test,
             caret_test,
             free_gpu_test,
+            game_free_state,
+            unused_models,
+            delete_unused_model,
             ai_restart,
             list_open_apps,
             dictionary_export,
@@ -2890,7 +3168,8 @@ fn main() {
                     fetch_ai_draft(state.inner(), model).await;
                 }
             });
-            watch_idle_on_battery(app.handle().clone());
+            watch_idle(app.handle().clone());
+            watch_games(app.handle().clone());
             // The CUDA runtime and Vulkan loader DLLs are load-time imports and
             // are installed next to rudariflow.exe (see tauri.conf.json).
             if let Ok(rd) = app.path().resource_dir() {
@@ -3110,6 +3389,34 @@ fn main() {
 mod tests {
     use super::*;
     use rudariflow_lib::soundboard::library::Sound;
+
+    #[test]
+    fn a_dictation_freed_for_a_game_runs_without_ai_cleanup() {
+        let on = Settings { ai_cleanup: true, edit_mode: true, ..Settings::default() };
+        assert!(for_dictation(on.clone(), false).ai_cleanup, "the hotkey's free keeps today's behaviour");
+        let game = for_dictation(on.clone(), true);
+        assert!(!game.ai_cleanup, "Whisper only, pasted as with AI cleanup off");
+        // Nothing else changes: Edit mode is off because it needs AI cleanup.
+        assert_eq!(Settings { ai_cleanup: true, ..game }, on);
+        let off = Settings { ai_cleanup: false, ..Settings::default() };
+        assert_eq!(for_dictation(off.clone(), true), off);
+    }
+
+    #[test]
+    fn the_game_switch_wakes_the_watcher() {
+        let game = std::sync::Arc::new(GameFree::new(false));
+        assert!(!game.enabled() && !game.holds());
+        let waiting = {
+            let game = game.clone();
+            std::thread::spawn(move || game.wait_enabled())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!waiting.is_finished(), "waits while off");
+        game.set_enabled(true);
+        waiting.join().unwrap();
+        assert!(game.enabled());
+        game.wait_enabled();
+    }
 
     #[test]
     fn single_instance_is_off_only_for_a_test_data_dir() {

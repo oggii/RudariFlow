@@ -77,13 +77,15 @@ whisper-rs-sys = { path = "vendor/whisper-rs-sys" }
 [target.'cfg(windows)'.dependencies]
 # Low-level mouse hook for side-button hotkeys (src/mouse_hotkey.rs); the
 # foreground app for AI cleanup rules (src/foreground_app.rs); battery state
-# (src/power.rs); local time and UI language for replacement variables
+# (src/power.rs); the monitor a fullscreen game covers (src/game_watch.rs);
+# local time and UI language for replacement variables
 # (src/replacements.rs); speaker model paths in the ANSI code page or as
 # short names (src/speakers.rs).
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Globalization",
   "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
   "Win32_Storage_FileSystem",
   "Win32_System_LibraryLoader",
   "Win32_System_Power",

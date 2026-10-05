@@ -331,6 +331,7 @@
           audio_empty: "No speech detected", mic_error: "Microphone unavailable", polishing: "Polishing",
           mic_missing: "Microphone not found", no_mic: "No microphone found",
           rewrite_missing: "Last dictation not found here", rewrite_needs_ai: "Rewriting needs AI cleanup and Edit mode",
+          rewrite_game: "No rewriting while the GPU is freed for a game",
           editing: "Editing", word: "word", words: "words", edit_failed: "Edit failed, text unchanged",
           gpu_freed: "GPU freed", gpu_loading: "Loading models…", gpu_loaded: "Models loaded",
           gpu_failed: "Models could not be loaded",
@@ -343,6 +344,7 @@
           audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar", polishing: "Überarbeitung",
           mic_missing: "Mikrofon nicht gefunden", no_mic: "Kein Mikrofon gefunden",
           rewrite_missing: "Letztes Diktat hier nicht gefunden", rewrite_needs_ai: "Umschreiben braucht KI-Korrektur und Bearbeiten",
+          rewrite_game: "Kein Umschreiben, solange die GPU für ein Spiel frei ist",
           editing: "Bearbeiten", word: "Wort", words: "Wörter", edit_failed: "Bearbeiten ging nicht, Text unverändert",
           gpu_freed: "GPU freigegeben", gpu_loading: "Modelle werden geladen…", gpu_loaded: "Modelle geladen",
           gpu_failed: "Modelle konnten nicht geladen werden",
@@ -391,12 +393,14 @@
         showNotice(text, 3000);
       });
 
-      // "Rewrite last" could not start: "missing" (not in this field) or
-      // "needs-ai" (AI cleanup or Edit mode off, or No AI for the app).
+      // "Rewrite last" could not start: "missing" (not in this field),
+      // "needs-ai" (AI cleanup or Edit mode off, or No AI for the app) or
+      // "game" (the GPU is freed for a game: no AI until it ends).
       listen("rewrite-failed", (event) => {
         const t = NOTICE_TEXT[pickLang()];
         diag(`rewrite-failed received (${event.payload})`);
-        showNotice(event.payload === "needs-ai" ? t.rewrite_needs_ai : t.rewrite_missing, 3000);
+        const text = { "needs-ai": t.rewrite_needs_ai, game: t.rewrite_game }[event.payload] || t.rewrite_missing;
+        showNotice(text, 3000);
       });
 
       // Free GPU hotkey: "freed", "loading", "loaded" or "failed".

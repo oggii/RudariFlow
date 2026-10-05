@@ -242,7 +242,39 @@
                 <input type="password" id="groq-key" placeholder="gsk_..." />
               </div>
             </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="game_free_label">Free GPU for games</span>
+                <span class="label-hint" data-i18n="game_free_hint">When a fullscreen app (a game) is in front for 5 seconds, Whisper and the AI model are unloaded, as with the Free GPU hotkey. Meanwhile a dictation loads only Whisper and is pasted without AI cleanup. 30 seconds after the game the models load again. Browsers in fullscreen do not count.</span>
+                <span class="label-hint ai-status hidden" id="game-free-status" data-tone="warn" data-i18n="game_free_now">Freed for a game: dictations run without AI cleanup until it ends.</span>
+              </div>
+              <div class="setting-control">
+                <label class="switch">
+                  <input id="game-free-toggle" type="checkbox" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="idle_unload_label">Unload when idle</span>
+                <span class="label-hint" data-i18n="idle_unload_hint">On mains power, unload Whisper and the AI model after this long without a dictation, to free the graphics card. The next dictation loads them again and takes a few seconds longer. On battery it is always 10 minutes.</span>
+              </div>
+              <div class="setting-control">
+                <select id="idle-unload-select">
+                  <option value="0" data-i18n="idle_unload_never">Never</option>
+                  <option value="15" data-i18n="idle_unload_15">After 15 minutes</option>
+                  <option value="30" data-i18n="idle_unload_30">After 30 minutes</option>
+                  <option value="60" data-i18n="idle_unload_60">After 1 hour</option>
+                </select>
+              </div>
+            </div>
           </div>
+
+          <h3 class="subsection-title" data-i18n="unused_models_title">Unused models</h3>
+          <p class="subsection-desc" data-i18n="unused_models_desc">Downloaded Whisper and AI models that no setting uses. They only take disk space; delete the ones you no longer need.</p>
+          <div id="unused-model-list" class="unused-model-list"></div>
+          <p id="unused-model-empty" class="empty-state hidden" data-i18n="unused_models_empty">No unused models.</p>
         </section>
 
         <section id="section-recording" class="content-section">

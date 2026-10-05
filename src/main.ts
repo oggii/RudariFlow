@@ -48,6 +48,9 @@ interface Settings {
   meetingHotkey: string;
   meetingReminderOff: boolean;
   meetingHeadphonesSeen: boolean;
+  freeGpuForGames: boolean;
+  /** Mains power: unload the models after this many idle minutes; 0 = never. */
+  idleUnloadMinutes: number;
 }
 
 interface Replacement {
@@ -120,6 +123,11 @@ const meetingHotkeyText = document.getElementById("meeting-hotkey-text")!;
 const meetingHotkeyClear = document.getElementById("meeting-hotkey-clear") as HTMLButtonElement;
 const sendCommandSelect = document.getElementById("send-command-select") as HTMLSelectElement;
 const muteAudioToggle = document.getElementById("mute-audio-toggle") as HTMLInputElement;
+const gameFreeToggle = document.getElementById("game-free-toggle") as HTMLInputElement;
+const gameFreeStatus = document.getElementById("game-free-status")!;
+const idleUnloadSelect = document.getElementById("idle-unload-select") as HTMLSelectElement;
+const unusedModelList = document.getElementById("unused-model-list")!;
+const unusedModelEmpty = document.getElementById("unused-model-empty")!;
 const replacementList = document.getElementById("replacement-list")!;
 const replacementEmpty = document.getElementById("replacement-empty")!;
 const replacementAdd = document.getElementById("replacement-add") as HTMLButtonElement;
@@ -142,6 +150,7 @@ function showSection(target: string) {
   document.getElementById(`section-${target}`)?.classList.add("active");
   soundboard.setActive(target === "soundboard");
   if (target === "meetings") void renderMeetings();
+  if (target === "engine") void renderUnusedModels();
 }
 
 navItems.forEach((item) => {
@@ -227,6 +236,12 @@ async function loadSettings() {
 
   // Groq key
   groqKey.value = currentSettings.groqApiKey;
+
+  // GPU management
+  gameFreeToggle.checked = currentSettings.freeGpuForGames ?? false;
+  idleUnloadSelect.value = String(currentSettings.idleUnloadMinutes ?? 0);
+  invoke<boolean>("game_free_state").then(showGameFree).catch(console.error);
+  void renderUnusedModels();
   renderDictionary();
   renderFiles();
   void soundboard.refresh();
@@ -367,6 +382,8 @@ async function saveSettings() {
   currentSettings.autostart = autostartToggle.checked;
   currentSettings.sendCommand = sendCommandSelect.value;
   currentSettings.muteAudio = muteAudioToggle.checked;
+  currentSettings.freeGpuForGames = gameFreeToggle.checked;
+  currentSettings.idleUnloadMinutes = parseInt(idleUnloadSelect.value, 10) || 0;
   currentSettings.history = historyModeSelect.value;
   currentSettings.replacements = readReplacements();
   await invoke("save_settings", { settings: currentSettings });
@@ -391,6 +408,98 @@ languageSelect.addEventListener("change", async () => {
 });
 
 gpuBackendSelect.addEventListener("change", () => saveSettings());
+
+// ── GPU management: free for games, unload when idle, unused models ──
+
+function showGameFree(freed: boolean) {
+  gameFreeStatus.classList.toggle("hidden", !freed);
+}
+
+gameFreeToggle.addEventListener("change", () => saveSettings());
+idleUnloadSelect.addEventListener("change", () => saveSettings());
+// The watcher freed the GPU for a game (true) or loaded the models again.
+listen<boolean>("game-free", (event) => showGameFree(event.payload));
+
+interface ModelFile {
+  kind: "whisper" | "ai";
+  file: string;
+  bytes: number;
+}
+
+function formatSize(bytes: number): string {
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`;
+}
+
+const DELETE_ERRORS: Record<string, string> = {
+  in_use: "unused_model_in_use",
+  meeting_busy: "unused_model_meeting_busy",
+  busy: "unused_model_busy",
+};
+
+/// One unused model with a Delete button that asks once more (click again
+/// within 3 s, like Clear history).
+function unusedModelRow(m: ModelFile): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "unused-model-row";
+  const info = document.createElement("div");
+  info.className = "unused-model-info";
+  const name = document.createElement("span");
+  name.className = "unused-model-name";
+  name.textContent = m.file;
+  const meta = document.createElement("span");
+  meta.className = "label-hint";
+  meta.textContent = `${t(m.kind === "ai" ? "unused_model_ai" : "unused_model_whisper")} \u00b7 ${formatSize(m.bytes)}`;
+  const error = document.createElement("span");
+  error.className = "label-hint unused-model-error hidden";
+  info.append(name, meta, error);
+
+  const del = document.createElement("button");
+  del.className = "btn-secondary";
+  del.textContent = t("unused_model_delete");
+  let armed: number | undefined;
+  const disarm = () => {
+    window.clearTimeout(armed);
+    armed = undefined;
+    del.classList.remove("armed");
+    del.textContent = t("unused_model_delete");
+  };
+  del.addEventListener("click", async () => {
+    if (armed === undefined) {
+      del.classList.add("armed");
+      del.textContent = t("unused_model_confirm").replace("{size}", formatSize(m.bytes));
+      armed = window.setTimeout(disarm, 3000);
+      return;
+    }
+    disarm();
+    del.disabled = true;
+    try {
+      await invoke<number>("delete_unused_model", { kind: m.kind, file: m.file });
+      await renderUnusedModels();
+      if (m.kind === "ai") await renderAiSettings();
+      else await refreshModelDropdownLabels();
+    } catch (err) {
+      const code = String(err);
+      const key = DELETE_ERRORS[code];
+      error.textContent = key ? t(key) : t("unused_model_failed").replace("{error}", code);
+      error.classList.remove("hidden");
+      del.disabled = false;
+    }
+  });
+  row.append(info, del);
+  return row;
+}
+
+async function renderUnusedModels() {
+  let files: ModelFile[] = [];
+  try {
+    files = await invoke<ModelFile[]>("unused_models");
+  } catch (err) {
+    console.error("unused_models failed:", err);
+  }
+  unusedModelList.innerHTML = "";
+  for (const m of files) unusedModelList.appendChild(unusedModelRow(m));
+  unusedModelEmpty.classList.toggle("hidden", files.length > 0);
+}
 
 // PC check: measures, applies the fastest Whisper setup, shows a report.
 interface PcCheckResult {
@@ -439,6 +548,7 @@ uiLanguageSelect.addEventListener("change", async () => {
   await saveSettings();
   await refreshHistory();
   await renderAiSettings();
+  await renderUnusedModels();
   renderDictionary();
   renderFiles();
   void soundboard.refresh();
@@ -476,6 +586,7 @@ modelSelect.addEventListener("change", async () => {
     await refreshModelStatusUI();
     await saveSettings();
     lastSavedModel = chosen;
+    await renderUnusedModels();
     return;
   }
   // Missing -> auto-download. Don't persist until success.
@@ -484,6 +595,7 @@ modelSelect.addEventListener("change", async () => {
     await saveSettings();
     lastSavedModel = chosen;
     await refreshModelStatusUI();
+    await renderUnusedModels();
   } else {
     // Revert dropdown to last working choice
     modelSelect.value = previousSaved;

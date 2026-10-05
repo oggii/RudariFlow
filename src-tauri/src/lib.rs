@@ -24,6 +24,8 @@ pub mod screen_context;
 pub mod uia;
 pub mod voice_edit;
 pub mod power;
+pub mod game_watch;
+pub mod model_files;
 pub mod pc_check;
 pub mod learn;
 pub mod media;

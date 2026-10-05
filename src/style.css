@@ -704,6 +704,44 @@ kbd {
   padding: 4px 0 16px;
 }
 
+/* ── Unused models (Engine tab) ─────────────────────── */
+
+.unused-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 16px;
+}
+.unused-model-list:empty {
+  display: none;
+}
+
+.unused-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 10px 14px;
+}
+
+.unused-model-info {
+  min-width: 0;
+}
+
+.unused-model-name {
+  display: block;
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.unused-model-error {
+  color: var(--red);
+}
+
 /* ── Replacements ───────────────────────────────────── */
 
 .replacement-list {

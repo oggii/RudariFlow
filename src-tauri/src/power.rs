@@ -1,5 +1,6 @@
 //! Power state. On battery, RudariFlow frees the GPU after a while without
-//! dictation, so a laptop's graphics card can go to sleep. The Free GPU
+//! dictation, so a laptop's graphics card can go to sleep; on mains power
+//! only when the Engine setting "Unload when idle" asks for it. The Free GPU
 //! hotkey frees it on demand (`gpu_toggle`).
 
 use std::time::Duration;
@@ -14,9 +15,23 @@ pub fn on_battery() -> bool {
     imp::on_battery()
 }
 
-/// Whether to unload the models now.
-pub fn should_unload(on_battery: bool, idle: Duration, loaded: bool, busy: bool) -> bool {
-    on_battery && loaded && !busy && idle >= IDLE_UNLOAD
+/// How long without dictation unloads the models: `IDLE_UNLOAD` on battery,
+/// the "Unload when idle" setting (`mains_minutes`, 0 = never) on mains
+/// power. `None` = never.
+pub fn idle_limit(on_battery: bool, mains_minutes: u32) -> Option<Duration> {
+    if on_battery {
+        Some(IDLE_UNLOAD)
+    } else if mains_minutes > 0 {
+        Some(Duration::from_secs(u64::from(mains_minutes) * 60))
+    } else {
+        None
+    }
+}
+
+/// Whether to unload the models now. `busy`: a dictation, or a meeting that
+/// records or runs its end steps.
+pub fn should_unload(on_battery: bool, mains_minutes: u32, idle: Duration, loaded: bool, busy: bool) -> bool {
+    loaded && !busy && idle_limit(on_battery, mains_minutes).is_some_and(|limit| idle >= limit)
 }
 
 /// What a press of the Free GPU hotkey does.
@@ -66,14 +81,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unloads_only_on_battery_when_idle_and_loaded() {
+    fn unloads_on_battery_when_idle_and_loaded() {
         let long = IDLE_UNLOAD;
         let short = IDLE_UNLOAD - Duration::from_secs(1);
-        assert!(should_unload(true, long, true, false));
-        assert!(!should_unload(false, long, true, false), "plugged in or desktop");
-        assert!(!should_unload(true, short, true, false), "not idle long enough");
-        assert!(!should_unload(true, long, false, false), "nothing loaded");
-        assert!(!should_unload(true, long, true, true), "recording or transcribing");
+        assert!(should_unload(true, 0, long, true, false));
+        assert!(!should_unload(false, 0, long, true, false), "plugged in or desktop, Never");
+        assert!(!should_unload(true, 0, short, true, false), "not idle long enough");
+        assert!(!should_unload(true, 0, long, false, false), "nothing loaded");
+        assert!(!should_unload(true, 0, long, true, true), "recording, transcribing or a meeting");
+    }
+
+    #[test]
+    fn unloads_on_mains_only_after_the_chosen_minutes() {
+        let min = |m: u64| Duration::from_secs(m * 60);
+        assert!(!should_unload(false, 0, min(24 * 60), true, false), "Never, the default");
+        assert!(!should_unload(false, 15, min(15) - Duration::from_secs(1), true, false));
+        assert!(should_unload(false, 15, min(15), true, false));
+        assert!(!should_unload(false, 30, min(29), true, false));
+        assert!(should_unload(false, 30, min(30), true, false));
+        assert!(should_unload(false, 60, min(61), true, false));
+        assert!(!should_unload(false, 60, min(61), true, true), "a meeting or a dictation keeps them");
+        assert!(!should_unload(false, 60, min(61), false, false), "nothing loaded");
+    }
+
+    #[test]
+    fn the_battery_keeps_its_ten_minutes_whatever_the_mains_setting() {
+        assert_eq!(idle_limit(true, 0), Some(IDLE_UNLOAD));
+        assert_eq!(idle_limit(true, 60), Some(IDLE_UNLOAD), "a longer mains time does not delay it");
+        assert_eq!(idle_limit(true, 15), Some(IDLE_UNLOAD));
+        assert!(should_unload(true, 60, IDLE_UNLOAD, true, false));
+        assert_eq!(idle_limit(false, 0), None);
+        assert_eq!(idle_limit(false, 15), Some(Duration::from_secs(15 * 60)));
     }
 
     #[test]
