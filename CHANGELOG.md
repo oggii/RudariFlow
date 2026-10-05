@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Free GPU for games** (Engine tab, off by default): when an app covers a
+  whole monitor (fullscreen or borderless) in the foreground for 5 seconds,
+  Whisper and the AI model are unloaded as with the Free GPU hotkey.
+  Browsers (a fullscreen video), the desktop and RudariFlow's own windows do
+  not count. Meanwhile a dictation loads only Whisper (about 1 GB), is
+  pasted without AI cleanup and unloads Whisper again; Rewrite last waits
+  for the game to end. 30 seconds without a fullscreen app in front, the
+  models load again. A meeting keeps recording; its text catches up once
+  the models are back. Loading with the Free GPU hotkey during a game keeps
+  them loaded until that game is over. The Engine and AI tabs say when the
+  GPU is freed for a game.
+- **Unload when idle** (Engine tab): on mains power, Whisper and the AI
+  model can be unloaded after 15 minutes, 30 minutes or 1 hour without a
+  dictation (Never by default); on battery it stays 10 minutes. The AI tab
+  now says "Unloaded" instead of "Starting…" after such an unload.
+- **Unused models** (Engine tab): downloaded Whisper models, AI models and
+  drafters that no setting uses, with their size and a Delete button that
+  asks once more. Nothing is deleted on its own.
+
 ## [0.15.0] - 2026-10-04 - Meetings
 
 Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.

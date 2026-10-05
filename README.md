@@ -20,7 +20,7 @@ Made by [oggi](https://0ggi.ch).
 ## Features
 
 - Local transcription via in-process whisper-rs — no cloud required, no subprocess per dictation
-- **Persistent model:** loaded when the app starts and reused across dictations (on battery it is unloaded after 10 minutes without dictation; the Free GPU hotkey unloads it whenever you want)
+- **Persistent model:** loaded when the app starts and reused across dictations (on battery it is unloaded after 10 minutes without dictation, on mains power after the time you choose, if any; the Free GPU hotkey unloads it whenever you want, and Free GPU for games when a game is in fullscreen)
 - **Hotkey-press warmup:** if the model is not loaded, pressing the hotkey loads it in parallel so it's hot by the time you finish speaking
 - **Streaming partial transcripts:** text appears in the overlay as Whisper emits each segment
 - **Auto backend detection:** NVIDIA CUDA when available, otherwise Vulkan (AMD / Intel / NVIDIA), otherwise CPU. Settings show the detected GPUs and let you force CUDA, Vulkan or CPU. Flash attention is on for CUDA and off for Vulkan (2× slower on an RX 6800); force it with `RUDARIFLOW_FLASH_ATTN=1` or `=0`
@@ -34,6 +34,9 @@ Made by [oggi](https://0ggi.ch).
 - **Paste last transcript:** a second hotkey (default Alt+Shift+V) pastes your last dictation again
 - **Rewrite last dictation:** a third hotkey selects your last dictation in the field, and what you say next changes it like Edit mode ("shorter", "more formal")
 - **Free GPU:** a fourth hotkey (off by default; set it under Recording) unloads Whisper and the AI model so a game gets the graphics card's memory, about 5.6 GB with Large v3 Turbo q8 and Gemma 4 E4B. Press it again to load them; a dictation, a file or a summary also loads what it needs, the first dictation a few seconds later than usual
+- **Free GPU for games** (Engine tab, off by default): an app in fullscreen or borderless fullscreen in front for 5 seconds unloads both models on its own (not a browser's fullscreen video, not the desktop). Dictations still work while you play: they load only Whisper (about 1 GB), paste without AI cleanup and unload it again. 30 seconds after the game the models load again; pressing the Free GPU hotkey to load them during a game keeps them loaded until it is over
+- **Unload when idle** (Engine tab): on mains power, unload the models after 15 minutes, 30 minutes or 1 hour without a dictation (Never by default; on battery always after 10 minutes)
+- **Unused models** (Engine tab): lists downloaded Whisper and AI models no setting uses, with their size, and deletes the ones you pick (after a second click); never on its own
 - **Mute other apps while recording:** music and videos go quiet while you dictate and come back afterwards (off by default; not while a meeting records, which would record the silence)
 - **Words on screen:** names and terms visible in the window you dictate into (a colleague's name in an email, a brand on a web page, identifiers in your editor) help Whisper and the AI spell them. Read locally when you press the hotkey, never stored
 - **Edit mode:** select text in any app, hold the hotkey and say what to change ("shorter", "more formal", "in Turkish", "delete that") or say the new wording; the local model rewrites the selection in place, Ctrl+Z undoes it. Terminals, address bars and password fields are left alone
