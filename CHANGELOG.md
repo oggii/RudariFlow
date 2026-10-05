@@ -12,13 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   whole monitor (fullscreen or borderless) in the foreground for 5 seconds,
   Whisper and the AI model are unloaded as with the Free GPU hotkey.
   Browsers (a fullscreen video), the desktop and RudariFlow's own windows do
-  not count. Meanwhile a dictation loads only Whisper (about 1 GB), is
-  pasted without AI cleanup and unloads Whisper again; Rewrite last waits
-  for the game to end. 30 seconds without a fullscreen app in front, the
-  models load again. A meeting keeps recording; its text catches up once
-  the models are back. Loading with the Free GPU hotkey during a game keeps
-  them loaded until that game is over. The Engine and AI tabs say when the
-  GPU is freed for a game.
+  not count. The game then counts as running while its window stays open
+  and fullscreen, also while another window is in front (Discord on another
+  monitor); 30 seconds after it is closed, minimised or no longer
+  fullscreen, the models load again. Meanwhile a dictation loads only
+  Whisper (about 1 GB), is pasted without AI cleanup and unloads Whisper
+  again; Rewrite last waits for the game to end. A meeting keeps recording;
+  its text catches up once the models are back. Loading with the Free GPU
+  hotkey during a game keeps them loaded until that game is over. The
+  Engine and AI tabs say when the GPU is freed for a game.
+- **Large v3 Turbo q5** in the Whisper model list (~574 MB): about 0.3 GB
+  less graphics memory than Large v3 Turbo q8 at the same speed.
 - **Unload when idle** (Engine tab): on mains power, Whisper and the AI
   model can be unloaded after 15 minutes, 30 minutes or 1 hour without a
   dictation (Never by default); on battery it stays 10 minutes. The AI tab

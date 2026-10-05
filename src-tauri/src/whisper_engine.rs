@@ -879,6 +879,7 @@ mod tests {
         assert_eq!(model_filename("small"), "ggml-small.bin");
         assert_eq!(model_filename("large-v3-turbo"), "ggml-large-v3-turbo.bin");
         assert_eq!(model_filename("large-v3-turbo-q8_0"), "ggml-large-v3-turbo-q8_0.bin");
+        assert_eq!(model_filename("large-v3-turbo-q5_0"), "ggml-large-v3-turbo-q5_0.bin");
     }
 
     #[test]
@@ -886,6 +887,10 @@ mod tests {
         assert_eq!(
             model_download_url("small"),
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
+        );
+        assert_eq!(
+            model_download_url("large-v3-turbo-q5_0"),
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
         );
     }
 

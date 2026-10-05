@@ -172,6 +172,22 @@ mod tests {
     }
 
     #[test]
+    fn the_q5_model_is_a_whisper_model_like_the_others() {
+        let dir = folder_with(
+            "rf_unused_models_q5",
+            &["ggml-large-v3-turbo-q8_0.bin", "ggml-large-v3-turbo-q5_0.bin"],
+            &[E4B, E4B_DRAFT],
+        );
+        assert_eq!(names(&unused(&dir, "large-v3-turbo-q8_0", "gemma-4-e4b")), vec![("whisper", "ggml-large-v3-turbo-q5_0.bin")]);
+        assert_eq!(names(&unused(&dir, "large-v3-turbo-q5_0", "gemma-4-e4b")), vec![("whisper", "ggml-large-v3-turbo-q8_0.bin")]);
+        let in_use = delete(&dir, "large-v3-turbo-q5_0", "gemma-4-e4b", "whisper", "ggml-large-v3-turbo-q5_0.bin");
+        assert_eq!(in_use, Err("in_use".to_string()));
+        let freed = delete(&dir, "large-v3-turbo-q8_0", "gemma-4-e4b", "whisper", "ggml-large-v3-turbo-q5_0.bin");
+        assert_eq!(freed, Ok("ggml-large-v3-turbo-q5_0.bin".len() as u64));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn deletes_an_unused_model() {
         let dir = folder_with("rf_unused_models_delete", &["ggml-small.bin", "ggml-large-v3.bin"], &[E4B, E2B]);
         assert_eq!(delete(&dir, "small", "gemma-4-e4b", "whisper", "ggml-large-v3.bin"), Ok(17));
