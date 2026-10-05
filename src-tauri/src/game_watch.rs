@@ -216,8 +216,8 @@ const BROWSERS: &[&str] = &[
 /// Calls and remote desktops in fullscreen: a screen share or a remote PC
 /// is no game.
 const CALLS_AND_REMOTE: &[&str] = &[
-    "ms-teams", "teams", "zoom", "discord", "rustdesk", "mstsc", "msrdc", "parsecd", "parsec", "anydesk",
-    "teamviewer",
+    "ms-teams", "teams", "zoom", "discord", "discordptb", "discordcanary", "rustdesk", "mstsc", "msrdc", "parsecd",
+    "parsec", "anydesk", "teamviewer",
 ];
 
 /// Windows' own fullscreen surfaces: the desktop, task view, the lock
@@ -743,7 +743,10 @@ mod tests {
 
     #[test]
     fn calls_and_remote_desktops_are_no_games_but_video_players_are() {
-        for exe in ["ms-teams", "teams", "zoom", "discord", "rustdesk", "mstsc", "msrdc", "parsecd", "anydesk", "teamviewer"] {
+        for exe in [
+            "ms-teams", "teams", "zoom", "discord", "discordptb", "discordcanary", "rustdesk", "mstsc", "msrdc", "parsecd",
+            "anydesk", "teamviewer",
+        ] {
             let mut w = game_window();
             w.exe = exe.to_string();
             assert_eq!(game_in(&w, 1), None, "{}", exe);

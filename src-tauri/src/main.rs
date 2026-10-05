@@ -1998,8 +1998,11 @@ async fn after_game_dictation(state: &AppState) {
     state.game.dictation.store(false, Ordering::SeqCst);
     let _ops = state.gpu.ops.lock().await;
     // Not `released()` as a shortcut: a dictation's warm-up load may still
-    // run (`release` waits for it), and it would stay loaded.
-    if !state.game.holds() || state.recorder.get_state() != RecordingState::Ready {
+    // run (`release` waits for it), and it would stay loaded. Not while a
+    // stopped meeting transcribes its rest: the sweep lets go of Whisper
+    // after that.
+    let meeting_rest = state.meetings.status().finishing.iter().any(|f| f.step == meeting::finish::Step::Transcribing);
+    if !state.game.holds() || meeting_rest || state.recorder.get_state() != RecordingState::Ready {
         return;
     }
     let engine = state.whisper_engine.clone();
@@ -2823,6 +2826,13 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
     if pressed {
         tauri::async_runtime::spawn(async move {
             let state = handle.state::<AppState>();
+            // A start: in the dictation's mode before the warm-up loads
+            // Whisper, so the watcher's sweep leaves that load alone while
+            // the microphone opens.
+            let starting = state.recorder.get_state() == RecordingState::Ready;
+            if starting {
+                dictation_started(state.inner());
+            }
             // Background warmup: kick off model load in parallel
             // with audio capture. Single-flight via the engine's
             // mutex; ignores errors here — they surface at
@@ -2843,7 +2853,13 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
             match mode.as_str() {
                 "toggle" => match do_toggle_recording(&handle, state.inner()).await {
                     Ok(result) => println!("[RudariFlow] Toggle result: {}", result),
-                    Err(e) => startup_log::log(&format!("[hotkey] toggle error: {}", e)),
+                    Err(e) => {
+                        startup_log::log(&format!("[hotkey] toggle error: {}", e));
+                        if starting && state.recorder.get_state() == RecordingState::Ready {
+                            // No dictation started: the sweep may go on.
+                            state.game.dictation.store(false, Ordering::SeqCst);
+                        }
+                    }
                 },
                 "push-to-talk" => {
                     let current = state.recorder.get_state();
@@ -2860,7 +2876,10 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
                                 state.recorder.capture_context(&handle, &s, &state.app_dir);
                                 state.recorder.start_pieces(&s, &state.app_dir, &state.whisper_engine);
                             }
-                            Err(e) => startup_log::log(&format!("[hotkey] start error: {}", e)),
+                            Err(e) => {
+                                startup_log::log(&format!("[hotkey] start error: {}", e));
+                                state.game.dictation.store(false, Ordering::SeqCst);
+                            }
                         }
                     }
                 }

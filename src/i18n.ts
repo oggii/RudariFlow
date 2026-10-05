@@ -524,7 +524,7 @@ const de: Translations = {
   unused_model_confirm: "{size} löschen?",
   unused_model_confirm_plain: "Wirklich löschen?",
   unused_model_partial: "unvollständiger Download",
-  unused_model_links: "weitere Verknüpfungen — kein Speicherplatz frei",
+  unused_model_links: "weitere Hardlinks — kein Speicherplatz frei",
   unused_model_in_use: "Dieses Modell wird gerade verwendet.",
   unused_model_meeting_busy: "Nicht, solange ein Meeting aufgenommen oder abgeschlossen wird.",
   unused_model_busy: "Nicht, solange eine Datei transkribiert wird.",

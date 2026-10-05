@@ -428,9 +428,16 @@ impl Recorder {
             let app = app.clone();
             tauri::async_runtime::spawn_blocking(move || learn_from_field(&app, last));
         }
-        let edit = voice_edit::available(settings, app_dir, &foreground_app::current());
+        let ctx = foreground_app::current();
+        let edit = voice_edit::available(settings, app_dir, &ctx);
+        // Freed for a game, Edit mode is off, but a selection must still be
+        // found at the release (nothing is typed over it): this read wakes
+        // Chromium's and Electron's accessibility, as it does for an edit.
+        let wake_for_game = !edit
+            && self.edit_off_for_game.load(Ordering::SeqCst)
+            && voice_edit::available(&Settings { ai_cleanup: true, ..settings.clone() }, app_dir, &ctx);
         let screen = settings.screen_context;
-        if !edit && !screen {
+        if !edit && !screen && !wake_for_game {
             return;
         }
         let dictionary = dictionary::terms(&settings.custom_prompt);
@@ -440,6 +447,8 @@ impl Recorder {
                 if let Target::Selected(text) = selection::read() {
                     emit_edit_target(&app, Some(selection::word_count(&text)));
                 }
+            } else if wake_for_game {
+                let _ = selection::read();
             }
             if screen {
                 let started = std::time::Instant::now();

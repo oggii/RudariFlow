@@ -57,6 +57,15 @@ fn is_part(name: &str) -> bool {
     name.to_ascii_lowercase().ends_with(PART)
 }
 
+/// The model a file is or will be: the name without ".part".
+fn model_name(file: &str) -> &str {
+    if is_part(file) {
+        &file[..file.len() - PART.len()]
+    } else {
+        file
+    }
+}
+
 fn in_use(kind: &str, whisper_model: &str, ai_model: &str) -> Vec<String> {
     match kind {
         WHISPER => vec![model_filename(whisper_model)],
@@ -81,9 +90,10 @@ fn unused_of(app_dir: &Path, kind: &'static str, whisper_model: &str, ai_model: 
             let meta = entry.metadata().ok()?;
             let file = entry.file_name().into_string().ok()?;
             let partial = is_part(&file);
+            // A part of a model in use is its download's resume point.
             let unused = meta.is_file()
                 && is_model_file(kind, &file)
-                && !used.iter().any(|u| u.eq_ignore_ascii_case(&file))
+                && !used.iter().any(|u| u.eq_ignore_ascii_case(model_name(&file)))
                 && !(partial && crate::downloader::downloading(&entry.path()));
             let other_links = unused && imp::links(&entry.path()) > 1;
             unused.then_some(ModelFile { kind, file, bytes: meta.len(), partial, other_links })
@@ -118,7 +128,7 @@ pub fn delete(app_dir: &Path, whisper_model: &str, ai_model: &str, kind: &str, f
         return Err(format!("'{}' is not a model file name", file));
     }
     let dir = folder(app_dir, kind).ok_or_else(|| format!("unknown model kind '{}'", kind))?;
-    if in_use(kind, whisper_model, ai_model).iter().any(|u| u.eq_ignore_ascii_case(file)) {
+    if in_use(kind, whisper_model, ai_model).iter().any(|u| u.eq_ignore_ascii_case(model_name(file))) {
         return Err("in_use".to_string());
     }
     let found = unused(app_dir, whisper_model, ai_model)
@@ -255,6 +265,25 @@ mod tests {
         assert!(delete(&dir, "small", "gemma-4-e4b", "whisper", "ggml-medium.bin.part").is_ok());
         assert!(!dir.join("ggml-medium.bin.part").exists());
         assert!(!dir.join("ggml-medium.bin.part.etag").exists(), "its tag goes too");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_part_of_the_selected_model_is_kept_for_its_download() {
+        let dir = folder_with(
+            "rf_unused_models_selected_part",
+            &["ggml-small.bin", "ggml-large-v3.bin.part", "ggml-medium.bin.part"],
+            &[E4B_DRAFT, "gemma-4-E4B-it-Q4_K_M.gguf.part"],
+        );
+        // large-v3 and Gemma 4 E4B are selected and still downloading (or
+        // stopped half-way): their parts are where the download goes on.
+        assert_eq!(
+            names(&unused(&dir, "large-v3", "gemma-4-e4b")),
+            vec![("whisper", "ggml-medium.bin.part"), ("whisper", "ggml-small.bin")]
+        );
+        let refused = delete(&dir, "large-v3", "gemma-4-e4b", "whisper", "ggml-large-v3.bin.part");
+        assert_eq!(refused, Err("in_use".to_string()));
+        assert!(dir.join("ggml-large-v3.bin.part").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
