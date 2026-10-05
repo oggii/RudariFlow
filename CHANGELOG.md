@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-05 - Free GPU for games
+
+Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X.
+
 ### Added
 - **Free GPU for games** (Engine tab, off by default): when an app covers a
   whole monitor (fullscreen or borderless) in the foreground for 5 seconds,
