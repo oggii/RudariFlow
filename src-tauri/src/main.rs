@@ -1833,11 +1833,12 @@ async fn free_gpu_test(app: AppHandle, state: State<'_, AppState>) -> Result<Fre
     Ok(free_gpu_press(&app, press).await)
 }
 
-/// Free GPU for games: a thread looks at the foreground window about once a
-/// second while the switch is on (`game_watch`). A fullscreen app in front
-/// for 5 s frees the GPU like the Free GPU hotkey; no fullscreen app in
-/// front for 30 s loads the models again. No pill notice for either: the
-/// pill is a topmost window, and the game is in front.
+/// Free GPU for games: a thread looks at the windows about once a second
+/// while the switch is on (`game_watch`). A fullscreen app in front for 5 s
+/// frees the GPU like the Free GPU hotkey. Its window is watched from then
+/// on, in front or not (Discord on another monitor); 30 s after it is
+/// closed, minimised or no longer fullscreen, the models load again. No
+/// pill notice for either: the pill is a topmost window over the game.
 fn watch_games(handle: AppHandle) {
     let spawned = std::thread::Builder::new().name("rf-games".into()).spawn(move || {
         let mut watch = GameWatch::new();
@@ -1856,14 +1857,14 @@ fn watch_games(handle: AppHandle) {
             if state.game.user_loaded.swap(false, Ordering::SeqCst) {
                 watch.user_loaded(now);
             }
-            let seen = game_watch::foreground_game();
+            let seen = game_watch::look(&watch);
             match watch.observe(&seen, now) {
                 Some(game_watch::Action::FreeNow) => {
-                    let game = seen.game.unwrap_or_default();
+                    let game = seen.front.map(|f| f.game).unwrap_or_default();
                     tauri::async_runtime::block_on(free_for_game(&handle, &game));
                 }
                 Some(game_watch::Action::LoadAgain) => {
-                    tauri::async_runtime::block_on(load_after_game(&handle, "no fullscreen app for 30 s"));
+                    tauri::async_runtime::block_on(load_after_game(&handle, "the game stopped 30 s ago"));
                 }
                 None => {}
             }

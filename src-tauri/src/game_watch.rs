@@ -1,35 +1,42 @@
 //! Free GPU for games (Engine tab, off by default): an app that covers a
 //! whole monitor (fullscreen or borderless) in the foreground for a few
-//! seconds frees the GPU like the Free GPU hotkey; once no such app has been
-//! in the foreground for half a minute, the models load again.
+//! seconds frees the GPU like the Free GPU hotkey. The game then counts as
+//! running while its window is open, visible, not minimised and covers its
+//! monitor, whatever window is in front (Discord on another monitor). Half a
+//! minute after it stops, the models load again.
 //!
 //! `GameWatch` decides from what main.rs observes about once a second
-//! (`observe`); `foreground_game` reads the foreground window on Windows.
+//! (`observe`); `look` reads the windows on Windows.
 
 use std::time::{Duration, Instant};
 
 /// A fullscreen app in the foreground this long frees the GPU.
 pub const FREE_AFTER: Duration = Duration::from_secs(5);
-/// No fullscreen app in the foreground this long loads the models again.
+/// The game stopped (closed, minimised, no longer fullscreen) this long ago
+/// loads the models again.
 pub const LOAD_AFTER: Duration = Duration::from_secs(30);
 
-/// What the watcher saw in the foreground at one look.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Observation {
-    /// The program of the fullscreen app in the foreground (as
-    /// `foreground_app::exe_name`, "?" when unknown); `None` when the
-    /// foreground is no game.
-    pub game: Option<String>,
+/// A fullscreen app: its program and its window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Front {
+    /// As `foreground_app::exe_name`, "?" when unknown.
+    pub game: String,
+    /// The window handle as a number.
+    pub window: isize,
+    /// Its process, so a handle Windows gives to a new window later is not
+    /// taken for the game.
+    pub pid: u32,
 }
 
-impl Observation {
-    pub fn game(exe: &str) -> Self {
-        Self { game: Some(exe.to_string()) }
-    }
-
-    pub fn none() -> Self {
-        Self { game: None }
-    }
+/// What the watcher saw at one look.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Observation {
+    /// The fullscreen app in the foreground; `None` when the foreground is
+    /// no game.
+    pub front: Option<Front>,
+    /// The window `GameWatch::tracked` named before this look still runs:
+    /// open, visible, not minimised, covering its monitor (`still_running`).
+    pub tracked_running: bool,
 }
 
 /// What the watcher asks main.rs to do.
@@ -46,12 +53,12 @@ enum Phase {
     /// No game in the foreground.
     Idle,
     /// `game` has been in the foreground since `since`, not yet long enough.
-    Seen { game: String, since: Instant },
-    /// Freed for a game; `last_seen` is the last look a game was in front.
-    Freed { game: String, last_seen: Instant },
+    Seen { game: Front, since: Instant },
+    /// Freed for `game`; `last_seen` is the last look it ran.
+    Freed { game: Front, last_seen: Instant },
     /// The user loaded the models with the hotkey while `game` ran: no free
-    /// for it until it has been gone for `LOAD_AFTER`.
-    Suspended { game: String, last_seen: Instant },
+    /// until it has stopped for `LOAD_AFTER`.
+    Suspended { game: Front, last_seen: Instant },
 }
 
 /// The decision part of the watcher: fed with observations and the time,
@@ -72,14 +79,17 @@ impl GameWatch {
         Self { phase: Phase::Idle }
     }
 
-    /// One look at the foreground at `now`.
+    /// One look at `now`.
     pub fn observe(&mut self, seen: &Observation, now: Instant) -> Option<Action> {
         let phase = std::mem::replace(&mut self.phase, Phase::Idle);
-        let (next, action) = match (phase, &seen.game) {
+        let (next, action) = match (phase, &seen.front) {
             (Phase::Idle, None) => (Phase::Idle, None),
-            (Phase::Idle, Some(game)) => (Phase::Seen { game: game.clone(), since: now }, None),
+            (Phase::Idle, Some(front)) => (Phase::Seen { game: front.clone(), since: now }, None),
             (Phase::Seen { .. }, None) => (Phase::Idle, None),
-            (Phase::Seen { game, since }, Some(now_game)) if *now_game == game => {
+            (Phase::Seen { game, since }, Some(front)) if front.game == game.game => {
+                // The newest window of the program (a game may make a new
+                // one when it changes the resolution).
+                let game = front.clone();
                 if now.saturating_duration_since(since) >= FREE_AFTER {
                     (Phase::Freed { game, last_seen: now }, Some(Action::FreeNow))
                 } else {
@@ -88,7 +98,10 @@ impl GameWatch {
             }
             // Another app came to the front: its own seconds count.
             (Phase::Seen { .. }, Some(other)) => (Phase::Seen { game: other.clone(), since: now }, None),
-            (Phase::Freed { .. }, Some(game)) => (Phase::Freed { game: game.clone(), last_seen: now }, None),
+            (Phase::Freed { game, .. }, _) if seen.tracked_running => (Phase::Freed { game, last_seen: now }, None),
+            // The game's window is gone, but a fullscreen app is in front
+            // (the same game's new window, or the next game): follow it.
+            (Phase::Freed { .. }, Some(front)) => (Phase::Freed { game: front.clone(), last_seen: now }, None),
             (Phase::Freed { game, last_seen }, None) => {
                 if now.saturating_duration_since(last_seen) >= LOAD_AFTER {
                     (Phase::Idle, Some(Action::LoadAgain))
@@ -96,10 +109,13 @@ impl GameWatch {
                     (Phase::Freed { game, last_seen }, None)
                 }
             }
-            (Phase::Suspended { game, .. }, Some(now_game)) if *now_game == game => {
+            (Phase::Suspended { game, .. }, _) if seen.tracked_running => {
                 (Phase::Suspended { game, last_seen: now }, None)
             }
-            // A different game: it is not the one the user loaded for.
+            (Phase::Suspended { game, .. }, Some(front)) if front.game == game.game => {
+                (Phase::Suspended { game: front.clone(), last_seen: now }, None)
+            }
+            // A different game while the one the user loaded for is gone.
             (Phase::Suspended { .. }, Some(other)) => (Phase::Seen { game: other.clone(), since: now }, None),
             (Phase::Suspended { game, last_seen }, None) => {
                 if now.saturating_duration_since(last_seen) >= LOAD_AFTER {
@@ -115,7 +131,7 @@ impl GameWatch {
 
     /// The Free GPU hotkey loaded the models at `now`. While a game is in
     /// the foreground or was freed for, the automatic free waits until that
-    /// game has been gone for `LOAD_AFTER`.
+    /// game has stopped for `LOAD_AFTER`.
     pub fn user_loaded(&mut self, now: Instant) {
         self.phase = match std::mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Idle => Phase::Idle,
@@ -129,6 +145,14 @@ impl GameWatch {
     /// The switch went off: forget everything.
     pub fn reset(&mut self) {
         self.phase = Phase::Idle;
+    }
+
+    /// The game whose window the next look checks (`Observation::tracked_running`).
+    pub fn tracked(&self) -> Option<&Front> {
+        match &self.phase {
+            Phase::Freed { game, .. } | Phase::Suspended { game, .. } => Some(game),
+            Phase::Idle | Phase::Seen { .. } => None,
+        }
     }
 
     /// Freed for a game and waiting for it to end.
@@ -151,7 +175,7 @@ pub struct Rect {
     pub bottom: i32,
 }
 
-/// What the watcher reads about the foreground window.
+/// What the watcher reads about a window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowInfo {
     pub visible: bool,
@@ -205,13 +229,16 @@ pub fn covers_monitor(window: Rect, monitor: Rect) -> bool {
         && window.bottom >= monitor.bottom
 }
 
-/// The game in this foreground window, if it is one: visible, not
-/// minimised, covering its monitor, and none of RudariFlow's own windows
-/// (`own_pid`), the shell, a screen saver or a browser.
+/// A window in fullscreen: visible, not minimised, no ordinary maximised
+/// window, covering its monitor.
+fn fullscreen(window: &WindowInfo) -> bool {
+    window.visible && !window.minimized && !window.maximized_with_caption && covers_monitor(window.rect, window.monitor)
+}
+
+/// The game in this foreground window, if it is one: in fullscreen, and
+/// none of RudariFlow's own windows (`own_pid`), the shell, a screen saver
+/// or a browser.
 pub fn game_in(window: &WindowInfo, own_pid: u32) -> Option<String> {
-    if !window.visible || window.minimized || window.maximized_with_caption {
-        return None;
-    }
     if window.pid == own_pid || SHELL_CLASSES.contains(&window.class.as_str()) {
         return None;
     }
@@ -219,37 +246,64 @@ pub fn game_in(window: &WindowInfo, own_pid: u32) -> Option<String> {
     if SHELL_EXES.contains(&exe) || exe.ends_with(".scr") || is_browser(exe) {
         return None;
     }
-    if !covers_monitor(window.rect, window.monitor) {
+    if !fullscreen(window) {
         return None;
     }
     Some(if exe.is_empty() { "?".to_string() } else { exe.to_string() })
 }
 
-/// What is in the foreground right now.
-pub fn foreground_game() -> Observation {
-    Observation { game: imp::foreground_window().and_then(|w| game_in(&w, std::process::id())) }
+/// The game's window (now `window`) still runs: the same process, and still
+/// in fullscreen on its monitor. In the foreground or not.
+pub fn still_running(game: &Front, window: &WindowInfo) -> bool {
+    window.pid == game.pid && fullscreen(window)
+}
+
+/// One look: the fullscreen app in front, and whether the game `watch`
+/// tracks still runs.
+pub fn look(watch: &GameWatch) -> Observation {
+    let own_pid = std::process::id();
+    let front = imp::foreground_window().and_then(|(window, info)| {
+        game_in(&info, own_pid).map(|game| Front { game, window, pid: info.pid })
+    });
+    let tracked_running = watch
+        .tracked()
+        .is_some_and(|game| imp::window_info(game.window).is_some_and(|info| still_running(game, &info)));
+    Observation { front, tracked_running }
 }
 
 #[cfg(windows)]
 mod imp {
     use super::{Rect, WindowInfo};
-    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Foundation::{HWND, RECT};
     use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetClassNameW, GetForegroundWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, IsIconic,
-        IsWindowVisible, IsZoomed, GWL_STYLE, WS_CAPTION,
+        IsWindow, IsWindowVisible, IsZoomed, GWL_STYLE, WS_CAPTION,
     };
 
     fn rect(r: RECT) -> Rect {
         Rect { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
     }
 
-    pub fn foreground_window() -> Option<WindowInfo> {
-        // SAFETY: plain Win32 queries on the foreground window handle; the
-        // buffers and structs are owned here and sized for the calls.
+    /// The foreground window: its handle as a number and what it is.
+    pub fn foreground_window() -> Option<(isize, WindowInfo)> {
+        // SAFETY: returns a handle or null; no memory is passed.
+        let hwnd = unsafe { GetForegroundWindow() };
+        if hwnd.is_null() {
+            return None;
+        }
+        let window = hwnd as isize;
+        window_info(window).map(|info| (window, info))
+    }
+
+    /// What `window` is, or `None` when it no longer exists.
+    pub fn window_info(window: isize) -> Option<WindowInfo> {
+        let hwnd = window as HWND;
+        // SAFETY: plain Win32 queries on a window handle (one that no
+        // longer exists only makes them fail); the buffers and structs are
+        // owned here and sized for the calls.
         unsafe {
-            let hwnd = GetForegroundWindow();
-            if hwnd.is_null() {
+            if hwnd.is_null() || IsWindow(hwnd) == 0 {
                 return None;
             }
             let mut window = std::mem::zeroed::<RECT>();
@@ -283,7 +337,11 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    pub fn foreground_window() -> Option<super::WindowInfo> {
+    pub fn foreground_window() -> Option<(isize, super::WindowInfo)> {
+        None
+    }
+
+    pub fn window_info(_window: isize) -> Option<super::WindowInfo> {
         None
     }
 }
@@ -296,6 +354,34 @@ mod tests {
         Duration::from_secs(s)
     }
 
+    /// `game` in fullscreen in front, in window `window` (process = window).
+    fn front(game: &str, window: isize) -> Front {
+        Front { game: game.to_string(), window, pid: window as u32 }
+    }
+
+    /// A look: `front` in the foreground (`None`: no game there), and the
+    /// tracked game's window running or not.
+    fn look_at(front: Option<Front>, tracked_running: bool) -> Observation {
+        Observation { front, tracked_running }
+    }
+
+    /// The game in front, its window running.
+    fn playing(game: &str, window: isize) -> Observation {
+        look_at(Some(front(game, window)), true)
+    }
+
+    /// Something else in front (Discord, the desktop), the game's window
+    /// still running on its monitor.
+    fn elsewhere() -> Observation {
+        look_at(None, true)
+    }
+
+    /// No game in front, and the tracked game's window closed, minimised or
+    /// no longer fullscreen.
+    fn stopped() -> Observation {
+        look_at(None, false)
+    }
+
     /// Feeds `seen` once a second from `start + from` to `start + to`
     /// (inclusive) and returns the actions with their second.
     fn run(watch: &mut GameWatch, start: Instant, from: u64, to: u64, seen: &Observation) -> Vec<(u64, Action)> {
@@ -306,105 +392,179 @@ mod tests {
     fn a_game_in_front_for_five_seconds_frees_once() {
         let start = Instant::now();
         let mut watch = GameWatch::new();
-        let actions = run(&mut watch, start, 0, 20, &Observation::game("eldenring"));
+        let actions = run(&mut watch, start, 0, 20, &playing("eldenring", 7));
         assert_eq!(actions, vec![(5, Action::FreeNow)], "after 5 s, and only once");
         assert!(watch.freed());
+        assert_eq!(watch.tracked(), Some(&front("eldenring", 7)), "its window is watched from now on");
     }
 
     #[test]
     fn a_short_fullscreen_moment_frees_nothing() {
         let start = Instant::now();
         let mut watch = GameWatch::new();
-        assert!(run(&mut watch, start, 0, 4, &Observation::game("vlc")).is_empty());
+        assert!(run(&mut watch, start, 0, 4, &playing("vlc", 7)).is_empty());
         // Back to the desktop before the 5 s were up: the count starts over.
-        assert!(run(&mut watch, start, 5, 5, &Observation::none()).is_empty());
-        assert!(run(&mut watch, start, 6, 10, &Observation::game("vlc")).is_empty());
-        assert_eq!(run(&mut watch, start, 11, 11, &Observation::game("vlc")), vec![(11, Action::FreeNow)]);
+        assert!(run(&mut watch, start, 5, 5, &stopped()).is_empty());
+        assert!(run(&mut watch, start, 6, 10, &playing("vlc", 7)).is_empty());
+        assert_eq!(run(&mut watch, start, 11, 11, &playing("vlc", 7)), vec![(11, Action::FreeNow)]);
+    }
+
+    #[test]
+    fn detection_needs_the_game_in_front_even_if_a_window_runs() {
+        // Before a free nothing is tracked: a fullscreen game behind Discord
+        // does not count.
+        let start = Instant::now();
+        let mut watch = GameWatch::new();
+        assert!(run(&mut watch, start, 0, 60, &elsewhere()).is_empty());
+        assert_eq!(watch.tracked(), None);
     }
 
     #[test]
     fn switching_between_fullscreen_apps_restarts_the_count() {
         let start = Instant::now();
         let mut watch = GameWatch::new();
-        assert!(run(&mut watch, start, 0, 3, &Observation::game("launcher")).is_empty());
-        assert!(run(&mut watch, start, 4, 8, &Observation::game("game")).is_empty());
-        assert_eq!(run(&mut watch, start, 9, 9, &Observation::game("game")), vec![(9, Action::FreeNow)]);
+        assert!(run(&mut watch, start, 0, 3, &playing("launcher", 3)).is_empty());
+        assert!(run(&mut watch, start, 4, 8, &playing("game", 7)).is_empty());
+        assert_eq!(run(&mut watch, start, 9, 9, &playing("game", 7)), vec![(9, Action::FreeNow)]);
+        assert_eq!(watch.tracked(), Some(&front("game", 7)));
     }
 
     #[test]
-    fn the_models_load_again_thirty_seconds_after_the_game() {
+    fn a_game_that_makes_a_new_window_is_tracked_by_the_newest() {
         let start = Instant::now();
         let mut watch = GameWatch::new();
-        run(&mut watch, start, 0, 100, &Observation::game("game"));
-        let actions = run(&mut watch, start, 101, 200, &Observation::none());
-        assert_eq!(actions, vec![(130, Action::LoadAgain)], "30 s after the last look at the game");
+        run(&mut watch, start, 0, 2, &playing("game", 7));
+        assert_eq!(run(&mut watch, start, 3, 5, &playing("game", 8)), vec![(5, Action::FreeNow)]);
+        assert_eq!(watch.tracked(), Some(&front("game", 8)));
+    }
+
+    #[test]
+    fn the_game_stays_freed_while_another_window_is_in_front() {
+        // Three monitors: Discord on another one for ten minutes.
+        let start = Instant::now();
+        let mut watch = GameWatch::new();
+        run(&mut watch, start, 0, 10, &playing("game", 7));
+        assert!(run(&mut watch, start, 11, 600, &elsewhere()).is_empty());
+        assert!(watch.freed());
+        assert!(run(&mut watch, start, 601, 700, &playing("game", 7)).is_empty(), "no second free");
+    }
+
+    #[test]
+    fn a_different_fullscreen_app_in_front_while_the_game_runs_keeps_it_freed() {
+        let start = Instant::now();
+        let mut watch = GameWatch::new();
+        run(&mut watch, start, 0, 10, &playing("game", 7));
+        assert!(run(&mut watch, start, 11, 300, &look_at(Some(front("vlc", 9)), true)).is_empty());
+        assert!(watch.freed());
+        assert_eq!(watch.tracked(), Some(&front("game", 7)), "still the game's window");
+    }
+
+    #[test]
+    fn the_models_load_again_thirty_seconds_after_the_game_is_closed() {
+        let start = Instant::now();
+        let mut watch = GameWatch::new();
+        run(&mut watch, start, 0, 100, &playing("game", 7));
+        let actions = run(&mut watch, start, 101, 200, &stopped());
+        assert_eq!(actions, vec![(130, Action::LoadAgain)], "30 s after the last look it ran");
         assert!(!watch.freed());
+        assert_eq!(watch.tracked(), None);
     }
 
     #[test]
-    fn alt_tab_for_less_than_thirty_seconds_keeps_the_gpu_free() {
+    fn a_minimised_game_loads_the_models_again_after_thirty_seconds() {
+        // Minimised (or windowed): `still_running` says no, behind Discord
+        // or not.
         let start = Instant::now();
         let mut watch = GameWatch::new();
-        run(&mut watch, start, 0, 10, &Observation::game("game"));
-        assert!(run(&mut watch, start, 11, 39, &Observation::none()).is_empty(), "Discord for 29 s");
-        assert!(run(&mut watch, start, 40, 50, &Observation::game("game")).is_empty(), "no second free");
+        run(&mut watch, start, 0, 10, &playing("game", 7));
+        run(&mut watch, start, 11, 20, &elsewhere());
+        assert_eq!(run(&mut watch, start, 21, 60, &stopped()), vec![(50, Action::LoadAgain)]);
+    }
+
+    #[test]
+    fn minimised_for_less_than_thirty_seconds_keeps_the_gpu_free() {
+        let start = Instant::now();
+        let mut watch = GameWatch::new();
+        run(&mut watch, start, 0, 10, &playing("game", 7));
+        assert!(run(&mut watch, start, 11, 39, &stopped()).is_empty(), "minimised for 29 s");
+        assert!(run(&mut watch, start, 40, 50, &playing("game", 7)).is_empty(), "no second free");
         assert!(watch.freed());
-        assert_eq!(run(&mut watch, start, 51, 81, &Observation::none()), vec![(80, Action::LoadAgain)]);
+        assert_eq!(run(&mut watch, start, 51, 81, &stopped()), vec![(80, Action::LoadAgain)]);
     }
 
     #[test]
-    fn another_game_after_the_first_keeps_the_gpu_free() {
+    fn the_next_game_after_the_first_is_closed_keeps_the_gpu_free() {
         let start = Instant::now();
         let mut watch = GameWatch::new();
-        run(&mut watch, start, 0, 10, &Observation::game("game"));
-        assert!(run(&mut watch, start, 11, 60, &Observation::game("other")).is_empty());
-        assert!(watch.freed());
+        run(&mut watch, start, 0, 10, &playing("game", 7));
+        // Game closed, the next one in front: follow it.
+        assert!(run(&mut watch, start, 11, 12, &look_at(Some(front("other", 9)), false)).is_empty());
+        assert_eq!(watch.tracked(), Some(&front("other", 9)));
+        assert!(run(&mut watch, start, 13, 300, &elsewhere()).is_empty(), "its window runs");
+        assert_eq!(run(&mut watch, start, 301, 331, &stopped()), vec![(330, Action::LoadAgain)]);
     }
 
     #[test]
-    fn loading_with_the_hotkey_during_the_game_suspends_until_it_is_gone() {
+    fn loading_with_the_hotkey_during_the_game_suspends_until_it_has_stopped() {
         let start = Instant::now();
         let mut watch = GameWatch::new();
-        run(&mut watch, start, 0, 10, &Observation::game("game"));
+        run(&mut watch, start, 0, 10, &playing("game", 7));
         watch.user_loaded(start + secs(10));
         assert!(watch.suspended());
-        assert!(run(&mut watch, start, 11, 100, &Observation::game("game")).is_empty(), "no free, no load");
-        // Alt-tab out for 20 s and back: still the same game, still suspended.
-        assert!(run(&mut watch, start, 101, 120, &Observation::none()).is_empty());
-        assert!(run(&mut watch, start, 121, 130, &Observation::game("game")).is_empty());
+        assert_eq!(watch.tracked(), Some(&front("game", 7)));
+        assert!(run(&mut watch, start, 11, 100, &playing("game", 7)).is_empty(), "no free, no load");
+        // Discord in front for minutes while the game runs: still suspended.
+        assert!(run(&mut watch, start, 101, 400, &elsewhere()).is_empty());
+        // Another fullscreen app in front while the game runs: still suspended.
+        assert!(run(&mut watch, start, 401, 450, &look_at(Some(front("vlc", 9)), true)).is_empty());
         assert!(watch.suspended());
-        // Gone for 30 s: nothing to load (the user did), and the next game frees again.
-        assert!(run(&mut watch, start, 131, 170, &Observation::none()).is_empty());
+        // Minimised for 20 s and back: still suspended.
+        assert!(run(&mut watch, start, 451, 470, &stopped()).is_empty());
+        assert!(run(&mut watch, start, 471, 480, &playing("game", 7)).is_empty());
+        assert!(watch.suspended());
+        // Closed for 30 s: nothing to load (the user did), and the next game frees again.
+        assert!(run(&mut watch, start, 481, 520, &stopped()).is_empty());
         assert!(!watch.suspended());
-        assert_eq!(run(&mut watch, start, 171, 180, &Observation::game("game")), vec![(176, Action::FreeNow)]);
+        assert_eq!(run(&mut watch, start, 521, 530, &playing("game", 11)), vec![(526, Action::FreeNow)]);
     }
 
     #[test]
     fn loading_while_a_game_is_being_counted_suspends_too() {
         let start = Instant::now();
         let mut watch = GameWatch::new();
-        run(&mut watch, start, 0, 2, &Observation::game("game"));
+        run(&mut watch, start, 0, 2, &playing("game", 7));
         watch.user_loaded(start + secs(2));
-        assert!(run(&mut watch, start, 3, 60, &Observation::game("game")).is_empty());
+        assert!(run(&mut watch, start, 3, 60, &playing("game", 7)).is_empty());
     }
 
     #[test]
-    fn a_different_game_ends_the_suspension() {
+    fn the_suspended_game_with_a_new_window_stays_suspended() {
         let start = Instant::now();
         let mut watch = GameWatch::new();
-        run(&mut watch, start, 0, 10, &Observation::game("game"));
+        run(&mut watch, start, 0, 10, &playing("game", 7));
         watch.user_loaded(start + secs(10));
-        assert_eq!(run(&mut watch, start, 11, 20, &Observation::game("other")), vec![(16, Action::FreeNow)]);
+        assert!(run(&mut watch, start, 11, 60, &look_at(Some(front("game", 8)), false)).is_empty());
+        assert_eq!(watch.tracked(), Some(&front("game", 8)));
+    }
+
+    #[test]
+    fn a_different_game_after_the_suspended_one_is_gone_frees() {
+        let start = Instant::now();
+        let mut watch = GameWatch::new();
+        run(&mut watch, start, 0, 10, &playing("game", 7));
+        watch.user_loaded(start + secs(10));
+        let other = look_at(Some(front("other", 9)), false);
+        assert_eq!(run(&mut watch, start, 11, 20, &other), vec![(16, Action::FreeNow)]);
     }
 
     #[test]
     fn loading_after_the_game_while_waiting_to_reload_loads_nothing_twice() {
         let start = Instant::now();
         let mut watch = GameWatch::new();
-        run(&mut watch, start, 0, 10, &Observation::game("game"));
-        run(&mut watch, start, 11, 20, &Observation::none());
+        run(&mut watch, start, 0, 10, &playing("game", 7));
+        run(&mut watch, start, 11, 20, &stopped());
         watch.user_loaded(start + secs(20));
-        assert!(run(&mut watch, start, 21, 100, &Observation::none()).is_empty(), "the hotkey already loaded");
+        assert!(run(&mut watch, start, 21, 100, &stopped()).is_empty(), "the hotkey already loaded");
     }
 
     #[test]
@@ -413,17 +573,18 @@ mod tests {
         let mut watch = GameWatch::new();
         watch.user_loaded(start);
         assert!(!watch.suspended());
-        assert_eq!(run(&mut watch, start, 1, 6, &Observation::game("game")), vec![(6, Action::FreeNow)]);
+        assert_eq!(run(&mut watch, start, 1, 6, &playing("game", 7)), vec![(6, Action::FreeNow)]);
     }
 
     #[test]
     fn reset_forgets_a_free() {
         let start = Instant::now();
         let mut watch = GameWatch::new();
-        run(&mut watch, start, 0, 10, &Observation::game("game"));
+        run(&mut watch, start, 0, 10, &playing("game", 7));
         watch.reset();
         assert!(!watch.freed());
-        assert!(run(&mut watch, start, 11, 100, &Observation::none()).is_empty());
+        assert_eq!(watch.tracked(), None);
+        assert!(run(&mut watch, start, 11, 100, &stopped()).is_empty());
     }
 
     #[test]
@@ -431,10 +592,10 @@ mod tests {
         // The watcher thread can be held up (a free waits for a dictation).
         let start = Instant::now();
         let mut watch = GameWatch::new();
-        assert_eq!(watch.observe(&Observation::game("game"), start), None);
-        assert_eq!(watch.observe(&Observation::game("game"), start + secs(9)), Some(Action::FreeNow));
-        assert_eq!(watch.observe(&Observation::none(), start + secs(10)), None);
-        assert_eq!(watch.observe(&Observation::none(), start + secs(60)), Some(Action::LoadAgain));
+        assert_eq!(watch.observe(&playing("game", 7), start), None);
+        assert_eq!(watch.observe(&playing("game", 7), start + secs(9)), Some(Action::FreeNow));
+        assert_eq!(watch.observe(&stopped(), start + secs(10)), None);
+        assert_eq!(watch.observe(&stopped(), start + secs(60)), Some(Action::LoadAgain));
     }
 
     fn monitor() -> Rect {
@@ -502,5 +663,21 @@ mod tests {
         for browser in ["chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "arc"] {
             check(&|w| w.exe = browser.to_string(), "a video in a browser");
         }
+    }
+
+    #[test]
+    fn the_tracked_game_runs_while_its_window_stays_fullscreen() {
+        let game = Front { game: "fortniteclient-win64-shipping".to_string(), window: 7, pid: 4242 };
+        assert!(still_running(&game, &game_window()), "in front or not, it is the same check");
+        let stops = |change: &dyn Fn(&mut WindowInfo), why: &str| {
+            let mut w = game_window();
+            change(&mut w);
+            assert!(!still_running(&game, &w), "{}", why);
+        };
+        stops(&|w| w.minimized = true, "minimised");
+        stops(&|w| w.visible = false, "hidden");
+        stops(&|w| w.rect = Rect { left: 200, top: 100, right: 1800, bottom: 1000 }, "switched to windowed");
+        stops(&|w| w.maximized_with_caption = true, "an ordinary maximised window");
+        stops(&|w| w.pid = 5555, "the handle now belongs to another program");
     }
 }
