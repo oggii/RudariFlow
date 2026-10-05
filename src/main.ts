@@ -424,6 +424,10 @@ interface ModelFile {
   kind: "whisper" | "ai";
   file: string;
   bytes: number;
+  /** An unfinished download (".part"). */
+  partial: boolean;
+  /** Other hard links to the file: deleting it frees no disk space. */
+  otherLinks: boolean;
 }
 
 function formatSize(bytes: number): string {
@@ -448,7 +452,10 @@ function unusedModelRow(m: ModelFile): HTMLElement {
   name.textContent = m.file;
   const meta = document.createElement("span");
   meta.className = "label-hint";
-  meta.textContent = `${t(m.kind === "ai" ? "unused_model_ai" : "unused_model_whisper")} \u00b7 ${formatSize(m.bytes)}`;
+  const parts = [t(m.kind === "ai" ? "unused_model_ai" : "unused_model_whisper")];
+  if (m.partial) parts.push(t("unused_model_partial"));
+  parts.push(m.otherLinks ? `${formatSize(m.bytes)} (${t("unused_model_links")})` : formatSize(m.bytes));
+  meta.textContent = parts.join(" \u00b7 ");
   const error = document.createElement("span");
   error.className = "label-hint unused-model-error hidden";
   info.append(name, meta, error);
@@ -466,7 +473,10 @@ function unusedModelRow(m: ModelFile): HTMLElement {
   del.addEventListener("click", async () => {
     if (armed === undefined) {
       del.classList.add("armed");
-      del.textContent = t("unused_model_confirm").replace("{size}", formatSize(m.bytes));
+      // With other links nothing is freed: no size is promised.
+      del.textContent = m.otherLinks
+        ? t("unused_model_confirm_plain")
+        : t("unused_model_confirm").replace("{size}", formatSize(m.bytes));
       armed = window.setTimeout(disarm, 3000);
       return;
     }

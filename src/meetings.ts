@@ -640,7 +640,7 @@ function hintsOf(m: Meeting): Hint[] {
     }
   }
   if (m.state === "finished" && !m.notes && m.notesError && !step) {
-    const known = ["ai_off", "no_ai_model", "gpu_freed", "empty"].includes(m.notesError);
+    const known = ["ai_off", "no_ai_model", "gpu_freed", "game", "empty"].includes(m.notesError);
     hints.push({
       text: known ? t(`mt_hint_notes_${m.notesError}`) : t("mt_hint_notes_error"),
       detail: known ? undefined : m.notesError,

@@ -35,6 +35,7 @@ pub async fn download_file(
     mut on_progress: impl FnMut(DownloadProgress),
 ) -> Result<(), String> {
     let part = part_path(dest);
+    let _active = Active::new(&part);
     // The server may not resume (or the file changed since): start over once.
     if download_to(url, &part, &mut on_progress).await? == Outcome::StartOver {
         let _ = std::fs::remove_file(&part);
@@ -48,6 +49,34 @@ pub async fn download_file(
     Ok(())
 }
 
+/// The parts being downloaded now (the Engine tab's unused models leave
+/// them alone).
+static ACTIVE: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// A part in `ACTIVE` while its download runs, however it ends.
+struct Active(PathBuf);
+
+impl Active {
+    fn new(part: &std::path::Path) -> Self {
+        ACTIVE.lock().unwrap_or_else(|p| p.into_inner()).push(part.to_path_buf());
+        Self(part.to_path_buf())
+    }
+}
+
+impl Drop for Active {
+    fn drop(&mut self) {
+        let mut active = ACTIVE.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(i) = active.iter().position(|p| *p == self.0) {
+            active.remove(i);
+        }
+    }
+}
+
+/// Whether `part` is being downloaded right now.
+pub fn downloading(part: &std::path::Path) -> bool {
+    ACTIVE.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|p| p == part)
+}
+
 pub fn part_path(dest: &PathBuf) -> PathBuf {
     let mut name = dest.clone().into_os_string();
     name.push(".part");
@@ -56,7 +85,7 @@ pub fn part_path(dest: &PathBuf) -> PathBuf {
 
 /// The server's ETag of the file a part belongs to: a resume only continues
 /// the same file (If-Range).
-fn tag_path(part: &PathBuf) -> PathBuf {
+pub fn tag_path(part: &PathBuf) -> PathBuf {
     let mut name = part.clone().into_os_string();
     name.push(".etag");
     PathBuf::from(name)

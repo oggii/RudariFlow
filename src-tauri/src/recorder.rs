@@ -348,6 +348,10 @@ pub struct Recorder {
     pieces: Arc<tokio::sync::Mutex<Pieces>>,
     /// Learning dictionary: the last dictation, until it is checked.
     last_paste: LearnSlot,
+    /// The dictation runs while the GPU is freed for a game and Edit mode
+    /// would apply otherwise (AI cleanup and Edit mode on): with text
+    /// selected it pastes nothing (`set_edit_off_for_game`).
+    edit_off_for_game: AtomicBool,
 }
 
 /// Resets the recorder to Ready when dropped, including when transcription
@@ -376,7 +380,17 @@ impl Recorder {
             generation: Arc::new(AtomicU64::new(0)),
             pieces: Arc::new(tokio::sync::Mutex::new(Pieces::default())),
             last_paste: Arc::new(Mutex::new(None)),
+            edit_off_for_game: AtomicBool::new(false),
         }
+    }
+
+    /// Set when a dictation starts: the GPU is freed for a game, and with
+    /// the user's settings Edit mode would edit a selection. Such a
+    /// dictation with text selected shows "No editing while the GPU is
+    /// freed for a game" and pastes nothing, so it does not type over the
+    /// selection.
+    pub fn set_edit_off_for_game(&self, on: bool) {
+        self.edit_off_for_game.store(on, Ordering::SeqCst);
     }
 
     pub fn get_state(&self) -> RecordingState {
@@ -616,6 +630,12 @@ impl Recorder {
         } else {
             None
         };
+        // Freed for a game, `settings` has AI cleanup off; with it on, would
+        // this have been an edit?
+        let edit_blocked = selection.is_none()
+            && self.edit_off_for_game.load(Ordering::SeqCst)
+            && *lock(&self.state) == RecordingState::Recording
+            && edit_selection(&Settings { ai_cleanup: true, ..settings.clone() }, app_dir, &ctx).await.is_some();
 
         // Stop recording
         {
@@ -636,6 +656,13 @@ impl Recorder {
         // Always reset state to Ready, regardless of success, failure or panic.
         let ready = ReadyOnDrop { app, state: &self.state };
         laps.lap("start");
+        if edit_blocked {
+            lock(&self.audio_recorder).discard();
+            drop(ready);
+            startup_log::log("[edit] text selected while the GPU is freed for a game: nothing pasted");
+            show_notice(app, self.state.clone(), "edit-game", 2600);
+            return Ok(String::new());
+        }
 
         ctx.screen_terms = self.take_screen_terms(settings).await;
         laps.lap("screen wait");

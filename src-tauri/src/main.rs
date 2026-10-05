@@ -121,27 +121,46 @@ impl GameFree {
     }
 }
 
+/// Free GPU for games holds the GPU (`on`) or no longer; the meetings learn
+/// it too (Stop during a game writes no notes). Returns what it was.
+fn set_game_hold(state: &AppState, on: bool) -> bool {
+    let was = state.game.holds.swap(on, Ordering::SeqCst);
+    state.meetings.set_freed_for_game(on);
+    was
+}
+
 /// On battery, free the GPU after `power::IDLE_UNLOAD` without dictation
 /// (about 5 GB of video memory and 3 GB of RAM with the default models), so
 /// a laptop's graphics card can sleep; on mains power after the "Unload when
 /// idle" minutes, if set. The next hotkey press loads both again while the
 /// user speaks. Not while a meeting records or runs its end steps: its live
-/// text would pause until Stop, and its notes would fail.
+/// text would pause until Stop, and its notes would fail; not while a file
+/// is transcribed. A request to the AI server counts as use: the Twitch
+/// caption service on the shared slot keeps the AI loaded while it runs.
 fn watch_idle(handle: AppHandle) {
     tauri::async_runtime::spawn(async move {
+        // How far llm-server.log was read (`LlmServer::requests_since`).
+        let mut log_seen = None;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             let state = handle.state::<AppState>();
             let on_battery = power::on_battery();
             let mains_minutes = state.settings.lock().unwrap().idle_unload_minutes;
             let limit = power::idle_limit(on_battery, mains_minutes);
+            if state.llm.requests_since(&mut log_seen) {
+                *state.last_activity.lock().unwrap() = std::time::Instant::now();
+            }
             let idle = state.last_activity.lock().unwrap().elapsed();
             let in_meeting = meeting_busy(&state.meetings.status());
             if in_meeting {
                 // The idle time counts from the meeting's end.
                 *state.last_activity.lock().unwrap() = std::time::Instant::now();
             }
-            let busy = in_meeting || state.recorder.get_state() != RecordingState::Ready;
+            let busy = power::busy(
+                state.recorder.get_state() != RecordingState::Ready,
+                in_meeting,
+                FILE_RUNNING.load(Ordering::SeqCst),
+            );
             // Only looked at when it matters: the engine lock waits for a
             // running transcription.
             let loaded = limit.is_some()
@@ -1744,14 +1763,17 @@ async fn free_gpu_press(handle: &AppHandle, press: u64) -> FreeGpuResult {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
-    let toggle = power::gpu_toggle(
+    // Freed for a game, Whisper loaded for a dictation (not let go of yet)
+    // counts as released: the press loads.
+    let toggle = power::press_toggle(
         state.gpu.freed.load(Ordering::SeqCst),
         state.whisper_engine.released(),
         state.llm.released(),
+        state.game.holds(),
     );
     // A press ends a free for a game: the models stay as the user wants
     // them, also after the game.
-    if state.game.holds.swap(false, Ordering::SeqCst) {
+    if set_game_hold(state.inner(), false) {
         startup_log::log("[game] the Free GPU hotkey takes over");
         let _ = handle.emit("game-free", false);
     }
@@ -1857,7 +1879,7 @@ fn watch_games(handle: AppHandle) {
             if state.game.user_loaded.swap(false, Ordering::SeqCst) {
                 watch.user_loaded(now);
             }
-            let seen = game_watch::look(&watch);
+            let seen = game_watch::look(&watch, state.game.holds());
             match watch.observe(&seen, now) {
                 Some(game_watch::Action::FreeNow) => {
                     let game = seen.front.map(|f| f.game).unwrap_or_default();
@@ -1866,7 +1888,7 @@ fn watch_games(handle: AppHandle) {
                 Some(game_watch::Action::LoadAgain) => {
                     tauri::async_runtime::block_on(load_after_game(&handle, "the game stopped 30 s ago"));
                 }
-                None => {}
+                None => tauri::async_runtime::block_on(sweep_game_whisper(state.inner())),
             }
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
@@ -1897,7 +1919,7 @@ async fn free_for_game(handle: &AppHandle, game: &str) {
     }
     state.gpu.freed.store(true, Ordering::SeqCst);
     // Set before the release: the AI tab reads it at the "stopped" status.
-    state.game.holds.store(true, Ordering::SeqCst);
+    set_game_hold(state.inner(), true);
     let _ = handle.emit("game-free", true);
     let (llm, engine) = (state.llm.clone(), state.whisper_engine.clone());
     let _ = tauri::async_runtime::spawn_blocking(move || {
@@ -1913,7 +1935,7 @@ async fn free_for_game(handle: &AppHandle, game: &str) {
 async fn load_after_game(handle: &AppHandle, why: &str) {
     let state = handle.state::<AppState>();
     let ops = state.gpu.ops.lock().await;
-    if !state.game.holds.swap(false, Ordering::SeqCst) {
+    if !set_game_hold(state.inner(), false) {
         return;
     }
     let _ = handle.emit("game-free", false);
@@ -1960,7 +1982,13 @@ fn dictation_settings(state: &AppState) -> Settings {
 /// A dictation has started: it keeps the mode of this moment (see
 /// `GameFree::dictation`).
 fn dictation_started(state: &AppState) {
-    state.game.dictation.store(state.game.holds(), Ordering::SeqCst);
+    let holds = state.game.holds();
+    state.game.dictation.store(holds, Ordering::SeqCst);
+    let edit_on = {
+        let s = state.settings.lock().unwrap();
+        s.ai_cleanup && s.edit_mode
+    };
+    state.recorder.set_edit_off_for_game(holds && edit_on);
 }
 
 /// After a dictation (pasted, empty or cancelled) while the GPU is freed
@@ -1969,15 +1997,54 @@ fn dictation_started(state: &AppState) {
 async fn after_game_dictation(state: &AppState) {
     state.game.dictation.store(false, Ordering::SeqCst);
     let _ops = state.gpu.ops.lock().await;
-    if !state.game.holds()
-        || state.whisper_engine.released()
-        || state.recorder.get_state() != RecordingState::Ready
-    {
+    // Not `released()` as a shortcut: a dictation's warm-up load may still
+    // run (`release` waits for it), and it would stay loaded.
+    if !state.game.holds() || state.recorder.get_state() != RecordingState::Ready {
         return;
     }
     let engine = state.whisper_engine.clone();
     let _ = tauri::async_runtime::spawn_blocking(move || engine.release()).await;
     startup_log::log("[game] dictation done: Whisper unloaded again");
+}
+
+/// Whether the watcher lets go of Whisper now, while the GPU is freed for a
+/// game: nothing uses it (no dictation, no file, no meeting transcribing
+/// its rest) and it is loaded (a dictation too short to unload it, a file,
+/// a History re-run).
+fn game_sweep_due(holds: bool, ready: bool, game_dictation: bool, file_running: bool, meeting_rest: bool, loaded: bool) -> bool {
+    holds && ready && !game_dictation && !file_running && !meeting_rest && loaded
+}
+
+/// The watcher's look each second: Whisper loaded while the GPU is freed
+/// for a game goes again (`game_sweep_due`).
+async fn sweep_game_whisper(state: &AppState) {
+    if !state.game.holds() {
+        return;
+    }
+    let _ops = state.gpu.ops.lock().await;
+    let busy = |state: &AppState| {
+        let meeting_rest = state.meetings.status().finishing.iter().any(|f| f.step == meeting::finish::Step::Transcribing);
+        (
+            state.recorder.get_state() == RecordingState::Ready,
+            state.game.dictation.load(Ordering::SeqCst),
+            FILE_RUNNING.load(Ordering::SeqCst),
+            meeting_rest,
+        )
+    };
+    let (ready, dictation, file, rest) = busy(state);
+    if !game_sweep_due(state.game.holds(), ready, dictation, file, rest, true) {
+        return;
+    }
+    // The engine's lock waits for a transcription that runs.
+    let engine = state.whisper_engine.clone();
+    let loaded = tauri::async_runtime::spawn_blocking(move || engine.is_loaded()).await.unwrap_or(false);
+    let (ready, dictation, file, rest) = busy(state);
+    if !game_sweep_due(state.game.holds(), ready, dictation, file, rest, loaded) {
+        return;
+    }
+    let engine = state.whisper_engine.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || engine.release()).await;
+    startup_log::log("[game] Whisper was loaded while the GPU is freed for a game: unloaded again");
 }
 
 /// Freed for a game right now (Engine tab).
@@ -3401,6 +3468,17 @@ mod tests {
         assert_eq!(Settings { ai_cleanup: true, ..game }, on);
         let off = Settings { ai_cleanup: false, ..Settings::default() };
         assert_eq!(for_dictation(off.clone(), true), off);
+    }
+
+    #[test]
+    fn whisper_loaded_during_a_game_goes_when_nothing_uses_it() {
+        assert!(game_sweep_due(true, true, false, false, false, true), "a short dictation or a file left it loaded");
+        assert!(!game_sweep_due(false, true, false, false, false, true), "not freed for a game");
+        assert!(!game_sweep_due(true, false, false, false, false, true), "a dictation records or transcribes");
+        assert!(!game_sweep_due(true, true, true, false, false, true), "a game dictation is not done yet");
+        assert!(!game_sweep_due(true, true, false, true, false, true), "a file is transcribed");
+        assert!(!game_sweep_due(true, true, false, false, true, true), "a meeting transcribes its rest");
+        assert!(!game_sweep_due(true, true, false, false, false, false), "nothing loaded");
     }
 
     #[test]

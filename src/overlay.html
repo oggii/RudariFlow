@@ -332,6 +332,7 @@
           mic_missing: "Microphone not found", no_mic: "No microphone found",
           rewrite_missing: "Last dictation not found here", rewrite_needs_ai: "Rewriting needs AI cleanup and Edit mode",
           rewrite_game: "No rewriting while the GPU is freed for a game",
+          edit_game: "No editing while the GPU is freed for a game",
           editing: "Editing", word: "word", words: "words", edit_failed: "Edit failed, text unchanged",
           gpu_freed: "GPU freed", gpu_loading: "Loading models…", gpu_loaded: "Models loaded",
           gpu_failed: "Models could not be loaded",
@@ -345,6 +346,7 @@
           mic_missing: "Mikrofon nicht gefunden", no_mic: "Kein Mikrofon gefunden",
           rewrite_missing: "Letztes Diktat hier nicht gefunden", rewrite_needs_ai: "Umschreiben braucht KI-Korrektur und Bearbeiten",
           rewrite_game: "Kein Umschreiben, solange die GPU für ein Spiel frei ist",
+          edit_game: "Kein Bearbeiten, solange die GPU für ein Spiel frei ist",
           editing: "Bearbeiten", word: "Wort", words: "Wörter", edit_failed: "Bearbeiten ging nicht, Text unverändert",
           gpu_freed: "GPU freigegeben", gpu_loading: "Modelle werden geladen…", gpu_loaded: "Modelle geladen",
           gpu_failed: "Modelle konnten nicht geladen werden",
@@ -376,6 +378,13 @@
         } else {
           delete document.body.dataset.edit;
         }
+      });
+
+      // Text was selected while the GPU is freed for a game: Edit mode is
+      // off, and nothing was pasted over the selection.
+      listen("edit-game", () => {
+        diag("edit-game received");
+        showNotice(NOTICE_TEXT[pickLang()].edit_game, 2600);
       });
 
       listen("edit-failed", () => {

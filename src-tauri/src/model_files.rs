@@ -1,7 +1,8 @@
 //! Downloaded model files that no setting uses (Engine tab, "Unused
 //! models"): Whisper models (`ggml-*.bin` in the data folder) and AI models
-//! with their drafters (`*.gguf` in `llm\`). Nothing is deleted on its own;
-//! `delete` removes one file the user picked, and only one of this list.
+//! with their drafters (`*.gguf` in `llm\`), and unfinished downloads of
+//! either (`.part`) that no download is writing. Nothing is deleted on its
+//! own; `delete` removes one file the user picked, and only one of this list.
 
 use std::path::{Path, PathBuf};
 
@@ -15,6 +16,13 @@ pub struct ModelFile {
     /// The file name, e.g. "ggml-large-v3-turbo.bin".
     pub file: String,
     pub bytes: u64,
+    /// An unfinished download (".part"), which a new download of the same
+    /// model would resume.
+    pub partial: bool,
+    /// The file has other hard links (e.g. a test data folder): deleting
+    /// it here frees no disk space.
+    #[serde(rename = "otherLinks")]
+    pub other_links: bool,
 }
 
 pub const WHISPER: &str = "whisper";
@@ -28,9 +36,13 @@ fn folder(app_dir: &Path, kind: &str) -> Option<PathBuf> {
     }
 }
 
-/// A model file of `kind` by its name. Unfinished downloads end in ".part".
+const PART: &str = ".part";
+
+/// A model file of `kind` by its name, or an unfinished download of one
+/// (".part").
 fn is_model_file(kind: &str, name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
+    let lower = lower.strip_suffix(PART).unwrap_or(&lower);
     match kind {
         WHISPER => lower.starts_with("ggml-") && lower.ends_with(".bin"),
         AI => lower.ends_with(".gguf"),
@@ -41,6 +53,10 @@ fn is_model_file(kind: &str, name: &str) -> bool {
 /// The files the settings use: the Whisper model, and the AI model with its
 /// drafter (whether AI cleanup is on or not: the Files tab's summary and a
 /// meeting's notes use it either way).
+fn is_part(name: &str) -> bool {
+    name.to_ascii_lowercase().ends_with(PART)
+}
+
 fn in_use(kind: &str, whisper_model: &str, ai_model: &str) -> Vec<String> {
     match kind {
         WHISPER => vec![model_filename(whisper_model)],
@@ -64,10 +80,13 @@ fn unused_of(app_dir: &Path, kind: &'static str, whisper_model: &str, ai_model: 
         .filter_map(|entry| {
             let meta = entry.metadata().ok()?;
             let file = entry.file_name().into_string().ok()?;
+            let partial = is_part(&file);
             let unused = meta.is_file()
                 && is_model_file(kind, &file)
-                && !used.iter().any(|u| u.eq_ignore_ascii_case(&file));
-            unused.then_some(ModelFile { kind, file, bytes: meta.len() })
+                && !used.iter().any(|u| u.eq_ignore_ascii_case(&file))
+                && !(partial && crate::downloader::downloading(&entry.path()));
+            let other_links = unused && imp::links(&entry.path()) > 1;
+            unused.then_some(ModelFile { kind, file, bytes: meta.len(), partial, other_links })
         })
         .collect();
     files.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.file.cmp(&b.file)));
@@ -111,7 +130,39 @@ pub fn delete(app_dir: &Path, whisper_model: &str, ai_model: &str, kind: &str, f
         return Err(format!("'{}' is not in the model folder", file));
     }
     std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    if found.partial {
+        // The resume tag of the part.
+        let _ = std::fs::remove_file(crate::downloader::tag_path(&path));
+    }
     Ok(found.bytes)
+}
+
+#[cfg(windows)]
+mod imp {
+    use std::os::windows::io::AsRawHandle;
+    use std::path::Path;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+
+    /// How many hard links the file has; 1 when Windows does not say.
+    pub fn links(path: &Path) -> u32 {
+        let Ok(file) = std::fs::File::open(path) else { return 1 };
+        // SAFETY: an open file's handle, valid while `file` lives, and a
+        // struct the call fills.
+        unsafe {
+            let mut info = std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>();
+            if GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) == 0 {
+                return 1;
+            }
+            info.nNumberOfLinks.max(1)
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod imp {
+    pub fn links(_path: &std::path::Path) -> u32 {
+        1
+    }
 }
 
 #[cfg(test)]
@@ -147,15 +198,15 @@ mod tests {
     fn lists_the_models_no_setting_uses() {
         let dir = folder_with(
             "rf_unused_models_list",
-            &["ggml-large-v3-turbo.bin", "ggml-large-v3-turbo-q8_0.bin", "ggml-small.bin.part", "config.json"],
-            &[E4B, E4B_DRAFT, E2B, E2B_DRAFT, "gemma-4-E4B-it-IQ4_XS.gguf.part"],
+            &["ggml-large-v3-turbo.bin", "ggml-large-v3-turbo-q8_0.bin", "config.json"],
+            &[E4B, E4B_DRAFT, E2B, E2B_DRAFT],
         );
         fs::create_dir_all(dir.join("ggml-folder.bin")).unwrap();
         let unused = unused(&dir, "large-v3-turbo-q8_0", "gemma-4-e4b");
         assert_eq!(
             names(&unused),
             vec![("whisper", "ggml-large-v3-turbo.bin"), ("ai", E2B), ("ai", E2B_DRAFT)],
-            "not the models in use, unfinished downloads, folders or other files"
+            "not the models in use, folders or other files"
         );
         assert_eq!(unused[0].bytes, "ggml-large-v3-turbo.bin".len() as u64);
         let _ = fs::remove_dir_all(&dir);
@@ -184,6 +235,52 @@ mod tests {
         assert_eq!(in_use, Err("in_use".to_string()));
         let freed = delete(&dir, "large-v3-turbo-q8_0", "gemma-4-e4b", "whisper", "ggml-large-v3-turbo-q5_0.bin");
         assert_eq!(freed, Ok("ggml-large-v3-turbo-q5_0.bin".len() as u64));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unfinished_downloads_are_listed_and_deleted_with_their_tag() {
+        let dir = folder_with(
+            "rf_unused_models_parts",
+            &["ggml-small.bin", "ggml-medium.bin.part", "ggml-medium.bin.part.etag", "other.part"],
+            &[E4B, E4B_DRAFT, "gemma-4-12b-it-Q4_K_M.gguf.part"],
+        );
+        let unused = unused(&dir, "small", "gemma-4-e4b");
+        assert_eq!(
+            names(&unused),
+            vec![("whisper", "ggml-medium.bin.part"), ("ai", "gemma-4-12b-it-Q4_K_M.gguf.part")],
+            "not the resume tag, not other files"
+        );
+        assert!(unused.iter().all(|m| m.partial));
+        assert!(delete(&dir, "small", "gemma-4-e4b", "whisper", "ggml-medium.bin.part").is_ok());
+        assert!(!dir.join("ggml-medium.bin.part").exists());
+        assert!(!dir.join("ggml-medium.bin.part.etag").exists(), "its tag goes too");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_part_that_is_being_downloaded_is_left_alone() {
+        // Only the downloader marks a part as active; one that is not
+        // marked is a leftover.
+        let dir = folder_with("rf_unused_models_active", &["ggml-small.bin", "ggml-base.bin.part"], &[E4B]);
+        assert!(!crate::downloader::downloading(&dir.join("ggml-base.bin.part")));
+        assert_eq!(names(&unused(&dir, "small", "gemma-4-e4b")), vec![("whisper", "ggml-base.bin.part")]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_model_with_other_hard_links_says_so() {
+        let dir = folder_with("rf_unused_models_links", &["ggml-small.bin", "ggml-base.bin", "ggml-tiny.bin"], &[E4B]);
+        let elsewhere = std::env::temp_dir().join("rf_unused_models_links_other.bin");
+        let _ = fs::remove_file(&elsewhere);
+        fs::hard_link(dir.join("ggml-base.bin"), &elsewhere).unwrap();
+        let unused = unused(&dir, "small", "gemma-4-e4b");
+        let base = unused.iter().find(|m| m.file == "ggml-base.bin").unwrap();
+        let tiny = unused.iter().find(|m| m.file == "ggml-tiny.bin").unwrap();
+        assert!(base.other_links, "deleting it frees no disk space");
+        assert!(!tiny.other_links);
+        assert!(!base.partial && !tiny.partial);
+        let _ = fs::remove_file(&elsewhere);
         let _ = fs::remove_dir_all(&dir);
     }
 

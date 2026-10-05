@@ -215,9 +215,17 @@ pub struct Meetings {
     /// Players started so far: the end of one that was replaced is not
     /// reported as the end of the new one.
     plays: AtomicU64,
+    /// The GPU is freed for a game (main.rs, Free GPU for games): Stop
+    /// transcribes the rest with Whisper alone, lets go of it right after,
+    /// and leaves the notes for "Write notes" (`NOTES_GAME`).
+    for_game: AtomicBool,
     events: Box<dyn Fn(Event) + Send + Sync>,
     this: Weak<Meetings>,
 }
+
+/// The notes' "error" while the GPU is freed for a game: no AI now, "Write
+/// notes" later.
+pub const NOTES_GAME: &str = "game";
 
 impl Meetings {
     /// The meetings in `<app_dir>\meetings`. Meetings a quit or crash cut
@@ -246,6 +254,7 @@ impl Meetings {
             status: Mutex::new(Status::default()),
             player: Mutex::new(None),
             plays: AtomicU64::new(0),
+            for_game: AtomicBool::new(false),
             events,
             this: this.clone(),
         });
@@ -500,6 +509,15 @@ impl Meetings {
         self.stop_if(None)
     }
 
+    /// Free GPU for games freed the GPU (true) or no longer holds it.
+    pub fn set_freed_for_game(&self, on: bool) {
+        self.for_game.store(on, SeqCst);
+    }
+
+    fn freed_for_game(&self) -> bool {
+        self.for_game.load(SeqCst)
+    }
+
     /// What the Free GPU hotkey has freed right now.
     fn freed(&self) -> Freed {
         Freed { ai: self.llm.released(), whisper: self.engine.released() }
@@ -636,6 +654,10 @@ impl Meetings {
             speakers::separate(audio, SpeakerCount::Auto, &app_dir, &mut |_, _| {})
         };
         let notes = |transcript: &str, language: &str| {
+            // Freed for a game: no AI now; "Write notes" writes them later.
+            if self.freed_for_game() {
+                return Err(NOTES_GAME.to_string());
+            }
             // Freed during the end steps: the AI is not started again.
             if !notes_allowed(ai_freed, self.llm.released()) || !notes_allowed(whisper_freed, self.engine.released()) {
                 return Err("gpu_freed".to_string());
@@ -656,7 +678,7 @@ impl Meetings {
             &mut |step| {
                 if step == Step::Speakers && !transcribed {
                     transcribed = true;
-                    self.unload_whisper(&config, &id);
+                    self.after_the_rest(&config, &id);
                 }
                 self.set_step(&id, step)
             },
@@ -665,11 +687,23 @@ impl Meetings {
         drop(whisper);
         if !transcribed {
             // Interrupted: also right after the transcription.
-            self.unload_whisper(&config, &id);
+            self.after_the_rest(&config, &id);
         }
         let state = lock(&meeting).state;
         startup_log::log(&format!("[meeting] {} end steps done: {:?}", id, state));
         self.end_step(&id);
+    }
+
+    /// The rest is transcribed: while the GPU is freed for a game, Whisper
+    /// goes again (it was loaded for the rest only); with the cloud engine
+    /// it is not kept either. Not while another meeting transcribes with it.
+    fn after_the_rest(&self, config: &Config, id: &str) {
+        if self.freed_for_game() && !self.whisper_in_use(id) {
+            self.engine.release();
+            startup_log::log(&format!("[meeting] {}: the GPU is freed for a game: Whisper unloaded again", id));
+            return;
+        }
+        self.unload_whisper(config, id);
     }
 
     /// With the cloud engine the local model is not kept, unless another
@@ -1451,6 +1485,39 @@ mod tests {
         assert_eq!(end_steps("m-000000000002", none), (State::Finished, Some("gpu_freed".into())), "pressed after Stop: the AI stays off");
         assert!(meetings.llm.released() && meetings.engine.released(), "nothing was loaded");
         assert!(meetings.open.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stop_during_a_game_leaves_the_ai_off_and_the_notes_for_later() {
+        let (app_dir, meetings, _) = setup("game");
+        // Free GPU for games freed both, as the hotkey would.
+        meetings.llm.release();
+        meetings.engine.release();
+        meetings.set_freed_for_game(true);
+        let both = Freed { ai: true, whisper: true };
+        let end_steps = |id: &str| {
+            let meeting = Arc::new(Mutex::new(saved(&app_dir, id, State::Finishing)));
+            meetings.open.lock().unwrap().insert(id.to_string(), meeting.clone());
+            let mut config = config(&app_dir);
+            // The AI's own step would say this: the notes were let through.
+            config.ai_model = Err("no_ai_model".into());
+            let whisper = config.whisper(&meetings.engine, "en");
+            let source = Tracks::saved(store::root(&app_dir).join(id));
+            meetings.end_steps_guarded(meeting.clone(), Worker::new(0, 0, &[]), whisper, source, config, both);
+            let m = meeting.lock().unwrap();
+            (m.state, m.notes_error.clone(), m.speakers_error.clone())
+        };
+        // Not "freed by the user before Stop" (that would start the AI for
+        // the notes): finished, the speakers step ran, the notes wait.
+        assert_eq!(
+            end_steps("m-000000000001"),
+            (State::Finished, Some(NOTES_GAME.to_string()), Some("no_model".to_string()))
+        );
+        assert!(meetings.llm.released(), "the AI was not started");
+        assert!(meetings.engine.released(), "Whisper stays unloaded after the rest");
+        // The game is over before Stop: the notes go through as before.
+        meetings.set_freed_for_game(false);
+        assert_eq!(end_steps("m-000000000002").1, Some("no_ai_model".to_string()));
     }
 
     #[test]

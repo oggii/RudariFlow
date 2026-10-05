@@ -37,6 +37,16 @@ pub struct Observation {
     /// The window `GameWatch::tracked` named before this look still runs:
     /// open, visible, not minimised, covering its monitor (`still_running`).
     pub tracked_running: bool,
+    /// main.rs holds the GPU freed for a game right now (`GameFree::holds`).
+    pub holds: bool,
+}
+
+impl Front {
+    /// The same program: by name, and by process when the name could not be
+    /// read ("?"), so two unreadable programs are not taken for one.
+    fn same_game(&self, other: &Front) -> bool {
+        self.game == other.game && (self.game != "?" || self.pid == other.pid)
+    }
 }
 
 /// What the watcher asks main.rs to do.
@@ -86,7 +96,7 @@ impl GameWatch {
             (Phase::Idle, None) => (Phase::Idle, None),
             (Phase::Idle, Some(front)) => (Phase::Seen { game: front.clone(), since: now }, None),
             (Phase::Seen { .. }, None) => (Phase::Idle, None),
-            (Phase::Seen { game, since }, Some(front)) if front.game == game.game => {
+            (Phase::Seen { game, since }, Some(front)) if front.same_game(&game) => {
                 // The newest window of the program (a game may make a new
                 // one when it changes the resolution).
                 let game = front.clone();
@@ -112,14 +122,16 @@ impl GameWatch {
             (Phase::Suspended { game, .. }, _) if seen.tracked_running => {
                 (Phase::Suspended { game, last_seen: now }, None)
             }
-            (Phase::Suspended { game, .. }, Some(front)) if front.game == game.game => {
+            (Phase::Suspended { game, .. }, Some(front)) if front.same_game(&game) => {
                 (Phase::Suspended { game: front.clone(), last_seen: now }, None)
             }
             // A different game while the one the user loaded for is gone.
             (Phase::Suspended { .. }, Some(other)) => (Phase::Seen { game: other.clone(), since: now }, None),
             (Phase::Suspended { game, last_seen }, None) => {
                 if now.saturating_duration_since(last_seen) >= LOAD_AFTER {
-                    (Phase::Idle, None)
+                    // Still freed for a game (a free that raced the hotkey's
+                    // load): the game is over, so load.
+                    (Phase::Idle, seen.holds.then_some(Action::LoadAgain))
                 } else {
                     (Phase::Suspended { game, last_seen }, None)
                 }
@@ -180,6 +192,8 @@ pub struct Rect {
 pub struct WindowInfo {
     pub visible: bool,
     pub minimized: bool,
+    /// Hidden by Windows although "visible", e.g. on another virtual desktop.
+    pub cloaked: bool,
     /// Maximised with a title bar: an ordinary window (with an auto-hidden
     /// taskbar it covers the monitor too).
     pub maximized_with_caption: bool,
@@ -197,6 +211,13 @@ pub struct WindowInfo {
 const BROWSERS: &[&str] = &[
     "chrome", "msedge", "firefox", "brave", "opera", "opera_gx", "vivaldi", "arc", "iexplore", "chromium",
     "waterfox", "librewolf", "floorp", "zen", "thorium", "browser", "yandex", "seamonkey", "palemoon",
+];
+
+/// Calls and remote desktops in fullscreen: a screen share or a remote PC
+/// is no game.
+const CALLS_AND_REMOTE: &[&str] = &[
+    "ms-teams", "teams", "zoom", "discord", "rustdesk", "mstsc", "msrdc", "parsecd", "parsec", "anydesk",
+    "teamviewer",
 ];
 
 /// Windows' own fullscreen surfaces: the desktop, task view, the lock
@@ -219,6 +240,11 @@ pub fn is_browser(exe: &str) -> bool {
     BROWSERS.contains(&exe)
 }
 
+/// A call or remote desktop app (`CALLS_AND_REMOTE`).
+pub fn is_call_or_remote(exe: &str) -> bool {
+    CALLS_AND_REMOTE.contains(&exe)
+}
+
 /// The window covers its whole monitor (fullscreen or borderless).
 pub fn covers_monitor(window: Rect, monitor: Rect) -> bool {
     monitor.right > monitor.left
@@ -232,18 +258,22 @@ pub fn covers_monitor(window: Rect, monitor: Rect) -> bool {
 /// A window in fullscreen: visible, not minimised, no ordinary maximised
 /// window, covering its monitor.
 fn fullscreen(window: &WindowInfo) -> bool {
-    window.visible && !window.minimized && !window.maximized_with_caption && covers_monitor(window.rect, window.monitor)
+    window.visible
+        && !window.cloaked
+        && !window.minimized
+        && !window.maximized_with_caption
+        && covers_monitor(window.rect, window.monitor)
 }
 
 /// The game in this foreground window, if it is one: in fullscreen, and
-/// none of RudariFlow's own windows (`own_pid`), the shell, a screen saver
-/// or a browser.
+/// none of RudariFlow's own windows (`own_pid`), the shell, a screen saver,
+/// a browser, a call or a remote desktop. Video players count.
 pub fn game_in(window: &WindowInfo, own_pid: u32) -> Option<String> {
     if window.pid == own_pid || SHELL_CLASSES.contains(&window.class.as_str()) {
         return None;
     }
     let exe = window.exe.as_str();
-    if SHELL_EXES.contains(&exe) || exe.ends_with(".scr") || is_browser(exe) {
+    if SHELL_EXES.contains(&exe) || exe.ends_with(".scr") || is_browser(exe) || is_call_or_remote(exe) {
         return None;
     }
     if !fullscreen(window) {
@@ -258,23 +288,42 @@ pub fn still_running(game: &Front, window: &WindowInfo) -> bool {
     window.pid == game.pid && fullscreen(window)
 }
 
+/// The program of the window last looked at, so its process is not opened
+/// every second: (window, process, name).
+static LAST_EXE: std::sync::Mutex<Option<(isize, u32, String)>> = std::sync::Mutex::new(None);
+
+fn exe_of(window: isize, pid: u32) -> String {
+    let mut last = LAST_EXE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((w, p, exe)) = last.as_ref() {
+        if *w == window && *p == pid {
+            return exe.clone();
+        }
+    }
+    let exe = crate::foreground_app::process_name(pid);
+    *last = Some((window, pid, exe.clone()));
+    exe
+}
+
 /// One look: the fullscreen app in front, and whether the game `watch`
-/// tracks still runs.
-pub fn look(watch: &GameWatch) -> Observation {
+/// tracks still runs (its process is not opened for that: `still_running`
+/// compares the process id). `holds`: see `Observation::holds`.
+pub fn look(watch: &GameWatch, holds: bool) -> Observation {
     let own_pid = std::process::id();
-    let front = imp::foreground_window().and_then(|(window, info)| {
+    let front = imp::foreground_window().and_then(|(window, mut info)| {
+        info.exe = exe_of(window, info.pid);
         game_in(&info, own_pid).map(|game| Front { game, window, pid: info.pid })
     });
     let tracked_running = watch
         .tracked()
         .is_some_and(|game| imp::window_info(game.window).is_some_and(|info| still_running(game, &info)));
-    Observation { front, tracked_running }
+    Observation { front, tracked_running, holds }
 }
 
 #[cfg(windows)]
 mod imp {
     use super::{Rect, WindowInfo};
     use windows_sys::Win32::Foundation::{HWND, RECT};
+    use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
     use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetClassNameW, GetForegroundWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, IsIconic,
@@ -296,7 +345,8 @@ mod imp {
         window_info(window).map(|info| (window, info))
     }
 
-    /// What `window` is, or `None` when it no longer exists.
+    /// What `window` is, or `None` when it no longer exists. `exe` stays
+    /// empty: the caller reads it when it needs it.
     pub fn window_info(window: isize) -> Option<WindowInfo> {
         let hwnd = window as HWND;
         // SAFETY: plain Win32 queries on a window handle (one that no
@@ -321,13 +371,21 @@ mod imp {
             let mut pid = 0u32;
             GetWindowThreadProcessId(hwnd, &mut pid);
             let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+            let mut cloaked: u32 = 0;
+            let cloaked_read = DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_CLOAKED as _,
+                &mut cloaked as *mut u32 as *mut core::ffi::c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
             Some(WindowInfo {
                 visible: IsWindowVisible(hwnd) != 0,
+                cloaked: cloaked_read == 0 && cloaked != 0,
                 minimized: IsIconic(hwnd) != 0,
                 maximized_with_caption: IsZoomed(hwnd) != 0 && style & WS_CAPTION == WS_CAPTION,
                 class: String::from_utf16_lossy(&class[..len.max(0) as usize]),
                 pid,
-                exe: crate::foreground_app::process_name(pid),
+                exe: String::new(),
                 rect: rect(window),
                 monitor: rect(info.rcMonitor),
             })
@@ -362,7 +420,7 @@ mod tests {
     /// A look: `front` in the foreground (`None`: no game there), and the
     /// tracked game's window running or not.
     fn look_at(front: Option<Front>, tracked_running: bool) -> Observation {
-        Observation { front, tracked_running }
+        Observation { front, tracked_running, holds: false }
     }
 
     /// The game in front, its window running.
@@ -605,6 +663,7 @@ mod tests {
     fn game_window() -> WindowInfo {
         WindowInfo {
             visible: true,
+            cloaked: false,
             minimized: false,
             maximized_with_caption: false,
             class: "UnrealWindow".to_string(),
@@ -679,5 +738,56 @@ mod tests {
         stops(&|w| w.rect = Rect { left: 200, top: 100, right: 1800, bottom: 1000 }, "switched to windowed");
         stops(&|w| w.maximized_with_caption = true, "an ordinary maximised window");
         stops(&|w| w.pid = 5555, "the handle now belongs to another program");
+        stops(&|w| w.cloaked = true, "moved to another virtual desktop");
+    }
+
+    #[test]
+    fn calls_and_remote_desktops_are_no_games_but_video_players_are() {
+        for exe in ["ms-teams", "teams", "zoom", "discord", "rustdesk", "mstsc", "msrdc", "parsecd", "anydesk", "teamviewer"] {
+            let mut w = game_window();
+            w.exe = exe.to_string();
+            assert_eq!(game_in(&w, 1), None, "{}", exe);
+        }
+        for exe in ["vlc", "mpv", "obs64", "snippingtool"] {
+            let mut w = game_window();
+            w.exe = exe.to_string();
+            assert!(game_in(&w, 1).is_some(), "{} counts, as the user chose", exe);
+        }
+        let mut cloaked = game_window();
+        cloaked.cloaked = true;
+        assert_eq!(game_in(&cloaked, 1), None, "on another virtual desktop");
+    }
+
+    #[test]
+    fn unreadable_programs_are_told_apart_by_their_process() {
+        let start = Instant::now();
+        let mut watch = GameWatch::new();
+        let unknown = |pid: u32| look_at(Some(Front { game: "?".into(), window: pid as isize, pid }), true);
+        // Two programs whose names could not be read take turns in front:
+        // neither is in front for 5 s.
+        for s in 0..20u64 {
+            let pid = if s % 2 == 0 { 100 } else { 200 };
+            assert_eq!(watch.observe(&unknown(pid), start + secs(s)), None, "second {}", s);
+        }
+        // One of them alone for 5 s frees.
+        assert_eq!(run(&mut watch, start, 20, 25, &unknown(100)), vec![(25, Action::FreeNow)]);
+    }
+
+    #[test]
+    fn a_suspension_that_ends_while_the_gpu_is_still_freed_loads() {
+        let start = Instant::now();
+        let mut watch = GameWatch::new();
+        run(&mut watch, start, 0, 10, &playing("game", 7));
+        watch.user_loaded(start + secs(10));
+        // The game is closed; main.rs still holds the GPU freed (a free
+        // that raced the hotkey's load): the models must not stay unloaded.
+        let held = Observation { front: None, tracked_running: false, holds: true };
+        assert_eq!(run(&mut watch, start, 11, 45, &held), vec![(40, Action::LoadAgain)]);
+        assert!(!watch.suspended());
+        // Not held: nothing to load.
+        let mut watch = GameWatch::new();
+        run(&mut watch, start, 0, 10, &playing("game", 7));
+        watch.user_loaded(start + secs(10));
+        assert!(run(&mut watch, start, 11, 45, &stopped()).is_empty());
     }
 }
