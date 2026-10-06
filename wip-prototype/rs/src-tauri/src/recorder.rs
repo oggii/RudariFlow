@@ -1,0 +1,1010 @@
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::ai_cleanup::AppContext;
+use crate::audio::{lock, samples_to_wav, AudioRecorder};
+use crate::cleanup::cleanup_text;
+use crate::dictionary;
+use crate::foreground_app;
+use crate::history::History;
+use crate::llm_server::LlmServer;
+use crate::mute;
+use crate::paste::{paste_text_timed, press_delete, press_submit};
+use crate::polish::polish;
+use crate::screen_context;
+use crate::selection::{self, Target};
+use crate::send_command::strip_send_command;
+use crate::settings::Settings;
+use crate::startup_log;
+use crate::transcribe_groq;
+use crate::voice_edit::{self, Edit};
+use crate::whisper_engine::WhisperEngine;
+
+/// Start of the error an Edit mode failure returns; the pill then says the
+/// text was left unchanged.
+const EDIT_FAILED: &str = "edit failed";
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub enum RecordingState {
+    Ready,
+    Recording,
+    Transcribing,
+}
+
+/// While a meeting records, the pill stays on screen between dictations as
+/// a small red dot that clicks go through (`Recorder::set_meeting_dot`).
+static MEETING_DOT: AtomicBool = AtomicBool::new(false);
+
+/// One change of the pill's window at a time (see `on_pill`).
+static PILL: Mutex<()> = Mutex::new(());
+
+/// Decide what the pill's window does and do it, as one step: `change`
+/// runs on the main thread (at once when called there) with `PILL` held.
+/// Dictations, notices and the meeting's dot change the window from
+/// several threads. Decided on one thread and applied on another, a
+/// meeting's stop that lands on a notice's end could leave the dot's
+/// click-through window on screen: each would rest the pill with what the
+/// other had just changed. Here every change sees what the one before it
+/// did, and the window follows in the same order. `change` must not call
+/// `on_pill` itself.
+fn on_pill(app: &AppHandle, change: impl FnOnce(&tauri::WebviewWindow) + Send + 'static) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(overlay) = handle.get_webview_window("overlay") else { return };
+        let _one = lock(&PILL);
+        change(&overlay);
+    });
+}
+
+/// The pill when no dictation runs: hidden, or the meeting's red dot. Only
+/// inside `on_pill`.
+fn rest_overlay(overlay: &tauri::WebviewWindow) {
+    if MEETING_DOT.load(Ordering::SeqCst) {
+        let _ = overlay.set_ignore_cursor_events(true);
+        let _ = overlay.eval("document.body.dataset.state = 'ready'; window.__meetingDot && window.__meetingDot(true);");
+        let _ = overlay.set_always_on_top(false);
+        let _ = overlay.set_always_on_top(true);
+        let _ = overlay.show();
+    } else {
+        // The dot's click-through ends with it (dragging a notice works again).
+        let _ = overlay.set_ignore_cursor_events(false);
+        if let Err(e) = overlay.hide() {
+            startup_log::log(&format!("[overlay] hide() failed: {}", e));
+        }
+    }
+}
+
+fn update_overlay(app: &AppHandle, state: &RecordingState) {
+    let Some(overlay) = app.get_webview_window("overlay") else {
+        startup_log::log("[overlay] no window handle");
+        return;
+    };
+
+    let was_visible = overlay.is_visible().unwrap_or(false);
+    let pos = overlay.outer_position().ok();
+    let size = overlay.outer_size().ok();
+    startup_log::log(&format!(
+        "[overlay] update_overlay state={:?} pre_visible={} pos={:?} size={:?}",
+        state, was_visible, pos, size
+    ));
+
+    let shown = state.clone();
+    on_pill(app, move |overlay| match shown {
+        RecordingState::Ready => rest_overlay(overlay),
+        RecordingState::Recording | RecordingState::Transcribing => {
+            // The meeting's dot lets clicks through; the pill's Cancel needs them.
+            let _ = overlay.set_ignore_cursor_events(false);
+            // Defensive: force always-on-top off then on, then show.
+            // This kicks Windows' compositor into re-stacking the window correctly
+            // after fullscreen apps / monitor switches have left it stale.
+            // We deliberately do NOT call set_focus() — stealing focus would break
+            // the auto-paste target since the user is typing in another app.
+            let _ = overlay.set_always_on_top(false);
+            let _ = overlay.set_always_on_top(true);
+            if let Err(e) = overlay.show() {
+                startup_log::log(&format!("[overlay] show() failed: {}", e));
+            }
+        }
+    });
+    let class = match state {
+        RecordingState::Ready => "ready",
+        RecordingState::Recording => "recording",
+        RecordingState::Transcribing => "transcribing",
+    };
+    let js = format!(
+        "document.body.dataset.state = '{}'; if (window.__overlayUpdate) window.__overlayUpdate('{}'); window.__rfPing && window.__rfPing('post-eval-{}');",
+        class, class, class
+    );
+    if let Err(e) = overlay.eval(&js) {
+        startup_log::log(&format!("[overlay] eval() failed: {}", e));
+    }
+
+    let post_visible = overlay.is_visible().unwrap_or(false);
+    startup_log::log(&format!(
+        "[overlay] update_overlay done state={:?} post_visible={}",
+        state, post_visible
+    ));
+}
+
+/// The pill shows the Whisper text with a "Polishing" label while the AI runs.
+fn show_polishing(app: &AppHandle) {
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.eval(
+            "document.body.dataset.state = 'polishing'; if (window.__overlayUpdate) window.__overlayUpdate('polishing');",
+        );
+    }
+}
+
+/// The pill's chip: how many words the dictation will edit, or none.
+fn emit_edit_target(app: &AppHandle, words: Option<usize>) {
+    let _ = app.emit("edit-target", words);
+}
+
+/// Screen terms of the recording `generation`, filled in the background.
+type ScreenSlot = Arc<Mutex<Option<(u64, Vec<String>)>>>;
+
+/// The last dictation pasted, until the field is read again to see what the
+/// user corrected: at the next hotkey press or after `LEARN_AFTER`.
+struct LastPaste {
+    generation: u64,
+    text: String,
+    exe: String,
+    dictionary: Vec<String>,
+    app_dir: PathBuf,
+}
+
+type LearnSlot = Arc<Mutex<Option<LastPaste>>>;
+
+const LEARN_AFTER: Duration = Duration::from_secs(20);
+
+/// A long dictation is transcribed in pieces while it goes on: once this
+/// much is recorded since the last cut, a piece is cut off...
+const PIECE_AT_SECS: f32 = 29.0;
+/// ...in the quietest spot from here on (a pause between sentences).
+const PIECE_CUT_FROM_SECS: f32 = 22.0;
+
+/// The pieces of the recording `generation` transcribed so far.
+#[derive(Default)]
+struct Pieces {
+    generation: u64,
+    /// Source frame where the audio not transcribed yet begins.
+    cut_frame: usize,
+    texts: Vec<String>,
+    /// The Whisper language of the pieces: the app rule's at the press, or
+    /// with "auto" the one the first piece detected, so the rest of the
+    /// dictation does not detect again on a few seconds.
+    language: String,
+}
+
+/// Step times of one dictation from the stop press on, logged as one
+/// "[timing]" line in startup.log.
+struct Laps {
+    kind: &'static str,
+    started: Instant,
+    last: Instant,
+    steps: Vec<String>,
+    audio_secs: Option<f32>,
+}
+
+impl Laps {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self { kind: "dictation", started: now, last: now, steps: Vec::new(), audio_secs: None }
+    }
+
+    /// The time since the previous step goes to `name`.
+    fn lap(&mut self, name: &str) {
+        let now = Instant::now();
+        self.steps.push(format!("{} {}", name, (now - self.last).as_millis()));
+        self.last = now;
+    }
+
+    /// Extra information for the line, without a time.
+    fn note(&mut self, text: String) {
+        self.steps.push(text);
+    }
+
+    /// A step measured by the callee; the next lap starts after it.
+    fn add(&mut self, name: &str, took: Duration) {
+        self.steps.push(format!("{} {}", name, took.as_millis()));
+        self.last += took;
+    }
+
+    fn log(&self) {
+        let audio = self.audio_secs.map(|s| format!(" ({:.1} s audio)", s)).unwrap_or_default();
+        startup_log::log(&format!(
+            "[timing] {} {} ms: {}{}",
+            self.kind,
+            self.started.elapsed().as_millis(),
+            self.steps.join(", "),
+            audio
+        ));
+    }
+}
+
+/// How long the release waits for the screen terms of a very short
+/// recording before it goes on without them.
+const SCREEN_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The selection the dictation edits, read on release; `None` means a normal
+/// dictation.
+async fn edit_selection(settings: &Settings, app_dir: &Path, ctx: &AppContext) -> Option<String> {
+    if !voice_edit::available(settings, app_dir, ctx) {
+        return None;
+    }
+    // The read at the press (capture_context) already waited for Chromium.
+    match tauri::async_runtime::spawn_blocking(selection::read_now).await {
+        Ok(Target::Selected(text)) => Some(text),
+        Ok(Target::None(reason)) => {
+            if reason != "nothing selected" {
+                startup_log::log(&format!("[edit] not editing: {}", reason));
+            }
+            None
+        }
+        Err(_) => None,
+    }
+}
+
+fn emit_audio_empty(app: &AppHandle, state: Arc<Mutex<RecordingState>>) {
+    show_notice(app, state, "audio-empty", 1700);
+}
+
+/// Payload of the `mic-error` notice.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+struct MicNotice {
+    /// The device is not there at all (unplugged, switched off, not back
+    /// after sleep), as opposed to failing to open.
+    missing: bool,
+    /// Short name of the chosen microphone; empty for the Windows default.
+    name: String,
+}
+
+/// "Mikrofon (Fast Track)" -> "Fast Track"; "default" -> "".
+fn mic_label(mic_name: &str) -> String {
+    if mic_name == "default" {
+        return String::new();
+    }
+    match (mic_name.find('('), mic_name.rfind(')')) {
+        (Some(open), Some(close)) if close > open + 1 => mic_name[open + 1..close].trim().to_string(),
+        _ => mic_name.trim().to_string(),
+    }
+}
+
+/// Counts the notices in the pill (one pill per app).
+static NOTICES: AtomicU64 = AtomicU64::new(0);
+/// The notice on screen until its time is up (0: none), so the meeting's
+/// dot coming or going does not cut it short (e.g. "stopped at 4 hours").
+static NOTICE_SHOWN: AtomicU64 = AtomicU64::new(0);
+
+/// Whether the timer of notice number `notice` hides the pill: only while it
+/// is the `latest` one, so a notice that follows gets its full time, and not
+/// once a recording has started (the pill shows the dictation then).
+fn hides_pill(notice: u64, latest: u64, state: &RecordingState) -> bool {
+    notice == latest && *state == RecordingState::Ready
+}
+
+/// Whether the meeting's dot coming or going puts the pill to rest now
+/// (the dot, or hidden): not during a dictation, which ends with the rest
+/// itself, and not while notice number `notice_shown` (0: none) is on
+/// screen, whose timer does it when its time is up.
+fn dot_rests_pill(state: &RecordingState, notice_shown: u64) -> bool {
+    *state == RecordingState::Ready && notice_shown == 0
+}
+
+/// Briefly show the overlay with a notice (`audio-empty`, `mic-error`) so a
+/// failed hotkey press is visible instead of silently doing nothing.
+fn show_notice(app: &AppHandle, state: Arc<Mutex<RecordingState>>, event: &str, hide_after_ms: u64) {
+    show_notice_with(app, state, event, (), hide_after_ms);
+}
+
+fn show_notice_with<P: serde::Serialize + Clone>(
+    app: &AppHandle,
+    state: Arc<Mutex<RecordingState>>,
+    event: &str,
+    payload: P,
+    hide_after_ms: u64,
+) {
+    let notice = NOTICES.fetch_add(1, Ordering::SeqCst) + 1;
+    on_pill(app, move |overlay| {
+        // The latest: two notices from two threads can arrive out of order.
+        NOTICE_SHOWN.fetch_max(notice, Ordering::SeqCst);
+        let _ = overlay.set_always_on_top(false);
+        let _ = overlay.set_always_on_top(true);
+        let _ = overlay.show();
+    });
+    let _ = app.emit(event, payload);
+    let app_clone = app.clone();
+    let state_clone = state.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(hide_after_ms)).await;
+        on_pill(&app_clone, move |overlay| {
+            let _ = NOTICE_SHOWN.compare_exchange(notice, 0, Ordering::SeqCst, Ordering::SeqCst);
+            // A later notice hides the pill itself, after its own full time. If
+            // a new recording started during the grace window, leave the overlay
+            // alone — don't hide it mid-dictation.
+            let current = lock(&state_clone).clone();
+            if hides_pill(notice, NOTICES.load(Ordering::SeqCst), &current) {
+                rest_overlay(overlay);
+            }
+        });
+    });
+}
+
+pub struct Recorder {
+    state: Arc<Mutex<RecordingState>>,
+    audio_recorder: Arc<Mutex<AudioRecorder>>,
+    /// Set while the microphone is being opened, so the state lock is never
+    /// held across device I/O.
+    starting: AtomicBool,
+    /// Screen context read when the recording started.
+    screen: ScreenSlot,
+    /// Counts recordings, so a slow read never lands in a later one.
+    generation: Arc<AtomicU64>,
+    /// Long dictations: pieces transcribed while recording. The lock is
+    /// held while a piece is transcribed, so the release waits for it.
+    pieces: Arc<tokio::sync::Mutex<Pieces>>,
+    /// Learning dictionary: the last dictation, until it is checked.
+    last_paste: LearnSlot,
+    /// The dictation runs while the GPU is freed for a game and Edit mode
+    /// would apply otherwise (AI cleanup and Edit mode on): with text
+    /// selected it pastes nothing (`set_edit_off_for_game`).
+    edit_off_for_game: AtomicBool,
+}
+
+/// Resets the recorder to Ready when dropped, including when transcription
+/// panics, so a crash can never leave the app stuck in Transcribing.
+struct ReadyOnDrop<'a> {
+    app: &'a AppHandle,
+    state: &'a Arc<Mutex<RecordingState>>,
+}
+
+impl Drop for ReadyOnDrop<'_> {
+    fn drop(&mut self) {
+        mute::restore();
+        *lock(self.state) = RecordingState::Ready;
+        let _ = self.app.emit("recording-state", RecordingState::Ready);
+        update_overlay(self.app, &RecordingState::Ready);
+    }
+}
+
+impl Recorder {
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(RecordingState::Ready)),
+            audio_recorder: Arc::new(Mutex::new(AudioRecorder::new())),
+            starting: AtomicBool::new(false),
+            screen: Arc::new(Mutex::new(None)),
+            generation: Arc::new(AtomicU64::new(0)),
+            pieces: Arc::new(tokio::sync::Mutex::new(Pieces::default())),
+            last_paste: Arc::new(Mutex::new(None)),
+            edit_off_for_game: AtomicBool::new(false),
+        }
+    }
+
+    /// Set when a dictation starts: the GPU is freed for a game, and with
+    /// the user's settings Edit mode would edit a selection. Such a
+    /// dictation with text selected shows "No editing while the GPU is
+    /// freed for a game" and pastes nothing, so it does not type over the
+    /// selection.
+    pub fn set_edit_off_for_game(&self, on: bool) {
+        self.edit_off_for_game.store(on, Ordering::SeqCst);
+    }
+
+    pub fn get_state(&self) -> RecordingState {
+        lock(&self.state).clone()
+    }
+
+    /// A meeting started (`on`) or ended: the pill shows a small red dot
+    /// while it records, also between dictations and with the window hidden.
+    pub fn set_meeting_dot(&self, app: &AppHandle, on: bool) {
+        let state = self.state.clone();
+        on_pill(app, move |overlay| {
+            MEETING_DOT.store(on, Ordering::SeqCst);
+            let _ = overlay.eval(format!("window.__meetingDot && window.__meetingDot({});", on));
+            let current = lock(&state).clone();
+            if dot_rests_pill(&current, NOTICE_SHOWN.load(Ordering::SeqCst)) {
+                rest_overlay(overlay);
+            }
+        });
+    }
+
+    /// Show a short notice in the pill, e.g. why "rewrite last" did not
+    /// start (`rewrite-failed` with "missing" or "needs-ai").
+    pub fn notice(&self, app: &AppHandle, event: &str, reason: &str) {
+        show_notice_with(app, self.state.clone(), event, reason.to_string(), 3200);
+    }
+
+    /// Called right after recording starts, in the background: shows the
+    /// Edit mode chip when text is selected (decided again on release) and
+    /// reads the screen context for this recording.
+    pub fn capture_context(&self, app: &AppHandle, settings: &Settings, app_dir: &Path) {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        *lock(&self.screen) = None;
+        // The next press: see what the user corrected in the last dictation.
+        if let Some(last) = lock(&self.last_paste).take() {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || learn_from_field(&app, last));
+        }
+        let ctx = foreground_app::current();
+        let edit = voice_edit::available(settings, app_dir, &ctx);
+        // Freed for a game, Edit mode is off, but a selection must still be
+        // found at the release (nothing is typed over it): this read wakes
+        // Chromium's and Electron's accessibility, as it does for an edit.
+        let wake_for_game = !edit
+            && self.edit_off_for_game.load(Ordering::SeqCst)
+            && voice_edit::available(&Settings { ai_cleanup: true, ..settings.clone() }, app_dir, &ctx);
+        let screen = settings.screen_context;
+        if !edit && !screen && !wake_for_game {
+            return;
+        }
+        let dictionary = dictionary::terms(&settings.custom_prompt);
+        let (app, slot) = (app.clone(), self.screen.clone());
+        tauri::async_runtime::spawn_blocking(move || {
+            if edit {
+                if let Target::Selected(text) = selection::read() {
+                    emit_edit_target(&app, Some(selection::word_count(&text)));
+                }
+            } else if wake_for_game {
+                let _ = selection::read();
+            }
+            if screen {
+                let started = std::time::Instant::now();
+                let text = screen_context::read_window_text(screen_context::MAX_CHARS).unwrap_or_default();
+                let terms = screen_context::terms(&text, &dictionary, screen_context::MAX_TERMS);
+                startup_log::log(&format!(
+                    "[screen] {} terms from {} chars in {} ms",
+                    terms.len(),
+                    text.chars().count(),
+                    started.elapsed().as_millis()
+                ));
+                *lock(&slot) = Some((generation, terms));
+            }
+        });
+    }
+
+    /// Learning dictionary: keep the dictation just pasted and read its
+    /// field again at the next press or after `LEARN_AFTER`, whichever
+    /// comes first.
+    fn remember_paste(&self, app: &AppHandle, settings: &Settings, app_dir: &Path, text: &str, exe: &str) {
+        if !settings.learn_dictionary || exe.is_empty() {
+            return;
+        }
+        let generation = self.generation.load(Ordering::SeqCst);
+        *lock(&self.last_paste) = Some(LastPaste {
+            generation,
+            text: text.to_string(),
+            exe: exe.to_string(),
+            dictionary: dictionary::terms(&settings.custom_prompt),
+            app_dir: app_dir.to_path_buf(),
+        });
+        let (app, slot) = (app.clone(), self.last_paste.clone());
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(LEARN_AFTER).await;
+            let last = {
+                let mut slot = lock(&slot);
+                match slot.as_ref() {
+                    Some(last) if last.generation == generation => slot.take(),
+                    _ => None,
+                }
+            };
+            if let Some(last) = last {
+                let _ = tauri::async_runtime::spawn_blocking(move || learn_from_field(&app, last)).await;
+            }
+        });
+    }
+
+    /// Long dictations: every `PIECE_AT_SECS` of recording, transcribe a
+    /// piece in the background, so the release only waits for the rest
+    /// (31 s took 785 ms after the release in one go). Call after
+    /// `capture_context`, which starts the recording's generation.
+    pub fn start_pieces(&self, settings: &Settings, app_dir: &Path, engine: &Arc<WhisperEngine>) {
+        if settings.engine != "local" {
+            return;
+        }
+        let generation = self.generation.load(Ordering::SeqCst);
+        let (state, audio, pieces, screen) =
+            (self.state.clone(), self.audio_recorder.clone(), self.pieces.clone(), self.screen.clone());
+        let (settings, app_dir, engine) = (settings.clone(), app_dir.to_path_buf(), engine.clone());
+        let generations = self.generation.clone();
+        let ctx = foreground_app::current();
+        tauri::async_runtime::spawn(async move {
+            let language = crate::ai_cleanup::whisper_language(&settings.ai_rules, &ctx, &settings.language).to_string();
+            *pieces.lock().await = Pieces { generation, language, ..Default::default() };
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if *lock(&state) != RecordingState::Recording || generations.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                let from = pieces.lock().await.cut_frame;
+                let recorded = lock(&audio).peek_16k(from);
+                if (recorded.len() as f32) < PIECE_AT_SECS * 16_000.0 {
+                    continue;
+                }
+                let cut = crate::audio::quiet_cut(&recorded, PIECE_CUT_FROM_SECS, PIECE_AT_SECS);
+                let frames_per_16k = lock(&audio).frames_per_16k();
+                let mut p = pieces.lock().await;
+                if p.generation != generation || *lock(&state) != RecordingState::Recording {
+                    return;
+                }
+                let terms = match lock(&screen).as_ref() {
+                    Some((g, terms)) if *g == generation => terms.clone(),
+                    _ => Vec::new(),
+                };
+                let started = Instant::now();
+                let language = p.language.clone();
+                match transcribe_samples(None, &settings, &app_dir, &engine, &recorded[..cut], &terms, &language).await {
+                    Ok((text, detected)) => {
+                        if language == "auto" {
+                            if let Some(code) = detected.as_deref().and_then(crate::whisper_engine::language_code) {
+                                p.language = code;
+                            }
+                        }
+                        startup_log::log(&format!(
+                            "[pieces] piece {} ({:.1} s) transcribed in {} ms while recording",
+                            p.texts.len() + 1,
+                            cut as f32 / 16_000.0,
+                            started.elapsed().as_millis()
+                        ));
+                        p.texts.push(text);
+                        p.cut_frame = from + (cut as f64 * frames_per_16k) as usize;
+                    }
+                    Err(e) => {
+                        // The release transcribes everything after the last cut.
+                        startup_log::log(&format!("[pieces] piece failed, the rest waits for the release: {}", e));
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
+    /// The screen terms of the current recording, waiting briefly when the
+    /// read is still running.
+    async fn take_screen_terms(&self, settings: &Settings) -> Vec<String> {
+        if !settings.screen_context {
+            return Vec::new();
+        }
+        let generation = self.generation.load(Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        loop {
+            if let Some((g, terms)) = lock(&self.screen).take() {
+                if g == generation {
+                    return terms;
+                }
+            }
+            if started.elapsed() >= SCREEN_WAIT {
+                startup_log::log("[screen] not ready, dictating without it");
+                return Vec::new();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Start capturing. With `mute_others`, other apps are muted until the
+    /// recording stops or is cancelled.
+    pub fn start_recording(&self, app: &AppHandle, mic_name: &str, mute_others: bool) -> Result<(), String> {
+        if *lock(&self.state) != RecordingState::Ready {
+            return Err("Already recording or transcribing".to_string());
+        }
+        if self
+            .starting
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("Microphone is still opening".to_string());
+        }
+
+        let opened = lock(&self.audio_recorder).start(app, mic_name);
+        let result = match opened {
+            Ok(()) => {
+                if mute_others {
+                    mute::mute_others();
+                }
+                *lock(&self.state) = RecordingState::Recording;
+                let _ = app.emit("recording-state", RecordingState::Recording);
+                update_overlay(app, &RecordingState::Recording);
+                Ok(())
+            }
+            Err(e) => {
+                startup_log::log(&format!("[recorder] start failed: {}", e));
+                // A missing device is named: in the logs it was a USB
+                // interface that was switched off (for 8 s to 40 min), so
+                // waiting longer would not help, telling which one does.
+                let notice = MicNotice { missing: e.contains("not found"), name: mic_label(mic_name) };
+                show_notice_with(app, self.state.clone(), "mic-error", notice, 3200);
+                Err(e)
+            }
+        };
+        self.starting.store(false, Ordering::SeqCst);
+        result
+    }
+
+    pub async fn stop_and_transcribe(
+        &self,
+        app: &AppHandle,
+        settings: &Settings,
+        app_dir: &PathBuf,
+        engine: &Arc<WhisperEngine>,
+        history: &History,
+        llm: &Arc<LlmServer>,
+    ) -> Result<String, String> {
+        let mut laps = Laps::new();
+        // The app the text will go into, read before anything else can take focus.
+        let mut ctx = foreground_app::current();
+        let selection = if *lock(&self.state) == RecordingState::Recording {
+            edit_selection(settings, app_dir, &ctx).await
+        } else {
+            None
+        };
+        // Freed for a game, `settings` has AI cleanup off; with it on, would
+        // this have been an edit?
+        let edit_blocked = selection.is_none()
+            && self.edit_off_for_game.load(Ordering::SeqCst)
+            && *lock(&self.state) == RecordingState::Recording
+            && edit_selection(&Settings { ai_cleanup: true, ..settings.clone() }, app_dir, &ctx).await.is_some();
+
+        // Stop recording
+        {
+            let mut state = lock(&self.state);
+            if *state != RecordingState::Recording {
+                return Err("Not currently recording".to_string());
+            }
+            *state = RecordingState::Transcribing;
+        }
+        // The microphone closes now, not after the wait for the screen words
+        // and for a piece of a long dictation (up to seconds on a CPU).
+        lock(&self.audio_recorder).stop_capture();
+        mute::restore();
+        let _ = app.emit("recording-state", RecordingState::Transcribing);
+        emit_edit_target(app, selection.as_deref().map(selection::word_count));
+        update_overlay(app, &RecordingState::Transcribing);
+
+        // Always reset state to Ready, regardless of success, failure or panic.
+        let ready = ReadyOnDrop { app, state: &self.state };
+        laps.lap("start");
+        if edit_blocked {
+            lock(&self.audio_recorder).discard();
+            drop(ready);
+            startup_log::log("[edit] text selected while the GPU is freed for a game: nothing pasted");
+            show_notice(app, self.state.clone(), "edit-game", 2600);
+            return Ok(String::new());
+        }
+
+        ctx.screen_terms = self.take_screen_terms(settings).await;
+        laps.lap("screen wait");
+        let result = self
+            .run_transcription_pipeline(app, settings, app_dir, engine, history, llm, &ctx, selection, &mut laps)
+            .await;
+        if let Err(e) = &result {
+            startup_log::log(&format!("[recorder] transcription failed: {}", e));
+        }
+        drop(ready);
+        laps.lap("ready");
+        laps.log();
+        if result.as_ref().is_err_and(|e| e.starts_with(EDIT_FAILED)) {
+            show_notice(app, self.state.clone(), "edit-failed", 2600);
+        }
+        result
+    }
+
+    async fn run_transcription_pipeline(
+        &self,
+        app: &AppHandle,
+        settings: &Settings,
+        app_dir: &PathBuf,
+        engine: &Arc<WhisperEngine>,
+        history: &History,
+        llm: &Arc<LlmServer>,
+        ctx: &AppContext,
+        selection: Option<String>,
+        laps: &mut Laps,
+    ) -> Result<String, String> {
+        // Whether the previous dictation stands right before the caret
+        // decides the space in front of the text; read while Whisper runs.
+        let last_dictation = history.last_text();
+        let look_back = last_dictation.as_ref().map_or(0, |t| t.trim().chars().count());
+        let before_caret = tauri::async_runtime::spawn_blocking(move || {
+            (look_back > 0).then(|| selection::text_before_caret(look_back)).flatten()
+        });
+        // A piece still being transcribed finishes first.
+        let mut pieces = self.pieces.lock().await;
+        let generation = self.generation.load(Ordering::SeqCst);
+        let in_pieces = pieces.generation == generation && !pieces.texts.is_empty();
+        let (taken, rest) = if in_pieces {
+            let (taken, rest) = lock(&self.audio_recorder).stop_and_take_with_rest(pieces.cut_frame);
+            (taken, Some(rest))
+        } else {
+            (lock(&self.audio_recorder).stop_and_take_samples(), None)
+        };
+        let done_pieces = std::mem::take(&mut pieces.texts);
+        let pieces_language = std::mem::take(&mut pieces.language);
+        pieces.generation = 0;
+        drop(pieces);
+        laps.lap("audio");
+        let samples = match taken {
+            Err(e) if e == "no_speech" => {
+                laps.kind = "no speech";
+                emit_audio_empty(app, self.state.clone());
+                return Ok(String::new());
+            }
+            other => other?,
+        };
+        laps.audio_secs = Some(samples.len() as f32 / 16_000.0);
+
+        let whisper_language = crate::ai_cleanup::whisper_language(&settings.ai_rules, ctx, &settings.language);
+        let (raw_text, language) = match rest {
+            // A long dictation: only the part after the last piece is left.
+            // The rest keeps the pieces' language (the app at the press).
+            Some(rest) => {
+                let (tail, language) = if rest.is_empty() {
+                    (String::new(), crate::whisper_engine::language_name(&pieces_language))
+                } else {
+                    transcribe_samples(Some(app), settings, app_dir, engine, &rest, &ctx.screen_terms, &pieces_language)
+                        .await?
+                };
+                laps.note(format!("pieces {} + rest {:.1} s", done_pieces.len(), rest.len() as f32 / 16_000.0));
+                let text = done_pieces.iter().chain(std::iter::once(&tail)).map(|t| t.trim()).filter(|t| !t.is_empty());
+                (text.collect::<Vec<_>>().join(" "), language)
+            }
+            None => {
+                transcribe_samples(Some(app), settings, app_dir, engine, &samples, &ctx.screen_terms, whisper_language)
+                    .await?
+            }
+        };
+        laps.lap("whisper");
+        // Only the screen terms the dictation (or the selection it edits)
+        // mentions go to the AI; each one costs prompt time.
+        let mut ctx = ctx.clone();
+        if !ctx.screen_terms.is_empty() {
+            let heard = match &selection {
+                Some(selected) => format!("{} {}", raw_text, selected),
+                None => raw_text.clone(),
+            };
+            let total = ctx.screen_terms.len();
+            ctx.screen_terms = screen_context::relevant_terms(&ctx.screen_terms, &heard);
+            laps.note(format!("screen terms {}/{}", ctx.screen_terms.len(), total));
+        }
+        let ctx = &ctx;
+        if let Some(selection) = selection {
+            laps.kind = "edit";
+            return self
+                .run_edit(app, settings, app_dir, history, llm, ctx, &selection, &raw_text, &samples, laps)
+                .await;
+        }
+        let cleaned = dictionary::apply_spelling(&cleanup_text(&raw_text), &dictionary::terms(&settings.custom_prompt));
+
+        let (text, submit) = match strip_send_command(&cleaned) {
+            Some(rest) if settings.send_command != "off" => (rest, true),
+            _ => (cleaned, false),
+        };
+        laps.lap("text");
+        let polished =
+            polish(settings, app_dir, llm, ctx, &text, language.as_deref(), || show_polishing(app)).await;
+        laps.lap("ai");
+        let text = polished.text;
+
+        let pasted = if text.is_empty() {
+            Ok(())
+        } else {
+            let before = before_caret.await.ok().flatten();
+            let spaced = selection::space_after_dictation(&text, before.as_deref(), last_dictation.as_deref());
+            paste_timed(&spaced, laps).await
+        };
+        if !text.is_empty() {
+            // Recorded even when the paste failed, so the text is not lost.
+            let model = model_label(settings);
+            let raw = polished.raw.as_deref();
+            if history.record(&text, raw, ctx, &samples, &model, &settings.history).is_some() {
+                let _ = app.emit("history-updated", ());
+            }
+            laps.lap("history");
+        }
+        pasted?;
+        if submit {
+            let key = settings.send_command.clone();
+            blocking(move || press_submit(&key)).await?;
+            laps.lap("send");
+        } else if !text.is_empty() {
+            self.remember_paste(app, settings, app_dir, &text, &ctx.exe);
+        }
+
+        Ok(text)
+    }
+
+    /// Edit mode: `spoken` says what to do with `selection`; the result
+    /// replaces it (or deletes it). On failure the selection stays as it was.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_edit(
+        &self,
+        app: &AppHandle,
+        settings: &Settings,
+        app_dir: &PathBuf,
+        history: &History,
+        llm: &Arc<LlmServer>,
+        ctx: &AppContext,
+        selection: &str,
+        raw_text: &str,
+        samples: &[f32],
+        laps: &mut Laps,
+    ) -> Result<String, String> {
+        let spoken = cleanup_text(raw_text);
+        if spoken.trim().is_empty() {
+            emit_audio_empty(app, self.state.clone());
+            return Ok(String::new());
+        }
+        let (result, _) =
+            voice_edit::edit(settings, app_dir, llm, ctx, selection, &spoken, || show_polishing(app)).await;
+        laps.lap("ai");
+        match result.map_err(|e| format!("{}: {}", EDIT_FAILED, e))? {
+            Edit::Delete => {
+                blocking(press_delete).await?;
+                laps.lap("delete");
+                Ok(String::new())
+            }
+            Edit::Replace(text) => {
+                let pasted = paste_timed(&text, laps).await;
+                let model = model_label(settings);
+                if history
+                    .record_edit(&text, selection, &spoken, ctx, samples, &model, &settings.history)
+                    .is_some()
+                {
+                    let _ = app.emit("history-updated", ());
+                }
+                laps.lap("history");
+                pasted?;
+                Ok(text)
+            }
+        }
+    }
+
+    pub fn cancel_recording(&self, app: &AppHandle) -> Result<(), String> {
+        {
+            let mut state = lock(&self.state);
+            if *state != RecordingState::Recording {
+                return Err("Not currently recording".to_string());
+            }
+            *state = RecordingState::Ready;
+        }
+        mute::restore();
+        lock(&self.audio_recorder).discard();
+        let _ = app.emit("recording-state", RecordingState::Ready);
+        update_overlay(app, &RecordingState::Ready);
+        Ok(())
+    }
+}
+
+/// Read the field the last dictation went into and keep the names the user
+/// corrected as dictionary suggestions. Only counts are logged.
+fn learn_from_field(app: &AppHandle, last: LastPaste) {
+    let Some((exe, field)) = selection::read_field() else {
+        return;
+    };
+    if exe != last.exe {
+        return;
+    }
+    let found = crate::learn::corrections(&last.text, &field);
+    let new = crate::learn::record(&last.app_dir, &found, &last.dictionary);
+    startup_log::log(&format!("[learn] {} corrected names, {} suggested", found.len(), new));
+    if new > 0 {
+        let _ = app.emit("dictionary-suggestions", crate::learn::suggestions(&last.app_dir));
+    }
+}
+
+/// Paste `text`: "paste" is the time until Ctrl+V went out, "restore" the
+/// wait for the previous clipboard.
+async fn paste_timed(text: &str, laps: &mut Laps) -> Result<(), String> {
+    let text = text.to_string();
+    let pasted = blocking(move || paste_text_timed(&text)).await;
+    if let Ok(to_keystroke) = &pasted {
+        laps.add("paste", *to_keystroke);
+    }
+    laps.lap("restore");
+    pasted.map(|_| ())
+}
+
+/// Run blocking work (Whisper, keystrokes with their pauses) on a blocking
+/// thread instead of holding an async worker for its whole duration.
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work).await.map_err(|e| format!("worker thread failed: {}", e))?
+}
+
+/// Model name stored with a history entry.
+pub fn model_label(settings: &Settings) -> String {
+    if settings.engine == "cloud" {
+        "groq".to_string()
+    } else {
+        settings.whisper_model.clone()
+    }
+}
+
+/// Transcribe 16 kHz mono samples with the engine chosen in `settings`.
+/// With `overlay`, the local engine streams partial text into the pill.
+/// `screen_terms` go into Whisper's prompt ahead of the dictionary;
+/// `language` is the Whisper language (an app rule's or the Engine setting).
+/// Also returns the spoken language when the engine reports it (local only).
+pub async fn transcribe_samples(
+    overlay: Option<&AppHandle>,
+    settings: &Settings,
+    app_dir: &PathBuf,
+    engine: &Arc<WhisperEngine>,
+    samples: &[f32],
+    screen_terms: &[String],
+    language: &str,
+) -> Result<(String, Option<String>), String> {
+    match settings.engine.as_str() {
+        "local" => {
+            let prompt = screen_context::whisper_prompt(screen_terms, &settings.custom_prompt);
+            let model_path =
+                app_dir.join(crate::whisper_engine::model_filename(&settings.whisper_model));
+            if !model_path.exists() {
+                return Err("Whisper model not found. Please download a model first.".to_string());
+            }
+            let engine = engine.clone();
+            let overlay = overlay.cloned();
+            let samples = samples.to_vec();
+            let (backend, language) = (settings.gpu_backend.clone(), language.to_string());
+            blocking(move || {
+                engine.ensure_loaded(&model_path, &backend)?;
+                engine.transcribe(overlay.as_ref(), &samples, &language, &prompt)
+            })
+            .await
+        }
+        "cloud" => {
+            // Words on screen are read to stay on this PC: Groq gets the
+            // dictionary only.
+            let prompt = screen_context::whisper_prompt(&[], &settings.custom_prompt);
+            // Groq takes a WAV upload.
+            let temp_path = app_dir.join("temp_recording.wav");
+            samples_to_wav(samples, &temp_path)?;
+            let text = transcribe_groq::transcribe_groq(
+                &settings.groq_api_key,
+                &temp_path,
+                language,
+                &prompt,
+            )
+            .await;
+            let _ = std::fs::remove_file(&temp_path);
+            text.map(|t| (t, None))
+        }
+        _ => Err(format!("Unknown engine: {}", settings.engine)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn microphone_labels_are_short() {
+        assert_eq!(mic_label("Mikrofon (Fast Track)"), "Fast Track");
+        assert_eq!(mic_label("Headset Microphone (2- Jabra Evolve2 65)"), "2- Jabra Evolve2 65");
+        assert_eq!(mic_label("USB Mic"), "USB Mic");
+        assert_eq!(mic_label("default"), "");
+    }
+
+    #[test]
+    fn test_initial_state_is_ready() {
+        let recorder = Recorder::new();
+        assert_eq!(recorder.get_state(), RecordingState::Ready);
+    }
+
+    #[test]
+    fn only_the_latest_notice_hides_the_pill() {
+        assert!(hides_pill(2, 2, &RecordingState::Ready));
+        assert!(!hides_pill(1, 2, &RecordingState::Ready), "a later notice keeps its full time");
+        assert!(!hides_pill(2, 2, &RecordingState::Recording), "never mid-dictation");
+        assert!(!hides_pill(2, 2, &RecordingState::Transcribing), "never mid-dictation");
+    }
+
+    #[test]
+    fn the_meeting_dot_leaves_a_dictation_and_a_notice_alone() {
+        assert!(dot_rests_pill(&RecordingState::Ready, 0), "between dictations: the dot, or hidden");
+        assert!(!dot_rests_pill(&RecordingState::Ready, 7), "\"stopped at 4 hours\" keeps its time");
+        assert!(!dot_rests_pill(&RecordingState::Recording, 0), "the pill shows the dictation");
+        assert!(!dot_rests_pill(&RecordingState::Transcribing, 0));
+        assert!(!dot_rests_pill(&RecordingState::Recording, 7));
+    }
+}

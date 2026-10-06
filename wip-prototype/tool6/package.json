@@ -1,0 +1,13 @@
+{
+  "name": "rudariflow-ui-check",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Renders RudariFlow's frontend with a mocked backend and checks layout, accessibility and wording. A development tool; not part of the app.",
+  "type": "module",
+  "scripts": {
+    "check": "node run.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

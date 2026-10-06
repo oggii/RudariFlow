@@ -1,0 +1,94 @@
+{
+ "new": [
+  {
+   "check": "clipped",
+   "page": "soundboard-devices",
+   "what": "select[device-cable]",
+   "detail": "\"Automatic (CABLE Input (VB-Audio Virtual Cable))\" needs 313 px, has 212 px",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600"
+   ]
+  },
+  {
+   "check": "clipped",
+   "page": "soundboard-devices",
+   "what": "select[device-headphones]",
+   "detail": "\"Automatic (Headphones (Logitech PRO X))\" needs 265 px, has 212 px",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900"
+   ]
+  },
+  {
+   "check": "clipped",
+   "page": "soundboard-devices",
+   "what": "select[device-microphone]",
+   "detail": "\"Automatic (Microphone (Fast Track))\" needs 229 px, has 212 px",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "popout",
+   "what": "span.label-hint",
+   "detail": "3 lines, 177 characters",
+   "where": [
+    "populated de 460x680",
+    "firstrun de 460x680"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "soundboard-devices",
+   "what": "span.label-hint",
+   "detail": "2 lines, 118 characters",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "soundboard",
+   "what": "span.label-hint",
+   "detail": "2 lines, 118 characters",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "files-result",
+   "what": "textarea#file-text",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600"
+   ]
+  }
+ ],
+ "known": []
+}

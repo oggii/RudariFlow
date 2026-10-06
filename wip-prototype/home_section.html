@@ -1,0 +1,177 @@
+        <section id="section-home" class="content-section active">
+          <div class="section-header home-header">
+            <div class="home-heading">
+              <h2 class="section-title" id="home-title" data-i18n="home_title_loading">Getting ready…</h2>
+              <span id="home-status" class="status-pill" data-tone="busy" aria-hidden="true">
+                <span class="status-dot"></span>
+                <span id="home-status-text"></span>
+              </span>
+            </div>
+            <p class="section-desc" id="home-how"></p>
+          </div>
+          <div id="home-notice" class="notice hidden" data-tone="warn" role="status">
+            <span class="notice-text" data-i18n="home_load_failed">The speech model did not load. Dictate once to try again, or choose another model.</span>
+            <button type="button" id="home-notice-open" class="btn-secondary" data-i18n="home_open_models">Open Models &amp; GPU</button>
+          </div>
+
+          <!-- The first run: shown while a microphone or a speech model is missing. -->
+          <div id="home-setup" class="card home-setup hidden">
+            <ol class="setup-steps">
+              <li class="setup-step" id="setup-mic">
+                <span class="setup-num" aria-hidden="true">1</span>
+                <div class="setup-main">
+                  <span class="label-text" id="setup-mic-label" data-i18n="setup_mic_title">Microphone</span>
+                  <span class="label-hint status-line" id="setup-mic-text"></span>
+                  <div id="setup-level" class="progress-track setup-level" role="meter" aria-labelledby="setup-mic-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <div id="setup-level-fill" class="progress-fill"></div>
+                  </div>
+                </div>
+                <div class="setup-action">
+                  <select id="setup-mic-select" class="hidden" aria-labelledby="setup-mic-label"></select>
+                  <button type="button" id="setup-mic-change" class="btn-secondary" data-i18n="setup_change">Change</button>
+                </div>
+              </li>
+              <li class="setup-step" id="setup-model">
+                <span class="setup-num" aria-hidden="true">2</span>
+                <div class="setup-main">
+                  <span class="label-text" data-i18n="setup_model_title">Speech model</span>
+                  <span class="label-hint status-line" id="setup-model-text"></span>
+                  <div id="setup-model-progress" class="progress hidden">
+                    <div class="progress-track"><div id="setup-model-fill" class="progress-fill"></div></div>
+                    <span id="setup-model-numbers" class="progress-text" role="status"></span>
+                  </div>
+                </div>
+                <div class="setup-action">
+                  <button type="button" id="setup-model-download" class="btn-primary" data-i18n="download">Download</button>
+                </div>
+              </li>
+              <li class="setup-step" id="setup-key">
+                <span class="setup-num" aria-hidden="true">3</span>
+                <div class="setup-main">
+                  <span class="label-text" id="setup-key-label" data-i18n="setup_key_title">Your dictation key</span>
+                  <span class="label-hint status-line" id="setup-key-text"></span>
+                </div>
+                <div class="setup-action hotkey-control">
+                  <button type="button" id="setup-hotkey-btn" class="hotkey-btn" aria-labelledby="setup-key-label setup-hotkey-text"><kbd id="setup-hotkey-text"></kbd></button>
+                </div>
+              </li>
+            </ol>
+          </div>
+
+          <!-- Optional, until its model is downloaded or the card is closed. -->
+          <div id="home-ai-card" class="card home-setup hidden">
+            <div class="setup-step">
+              <span class="setup-num" aria-hidden="true">+</span>
+              <div class="setup-main">
+                <span class="label-text" data-i18n="setup_ai_title">Optional: AI cleanup</span>
+                <span class="label-hint status-line" id="setup-ai-text"></span>
+                <div id="setup-ai-progress" class="progress hidden">
+                  <div class="progress-track"><div id="setup-ai-fill" class="progress-fill"></div></div>
+                  <span id="setup-ai-numbers" class="progress-text" role="status"></span>
+                </div>
+              </div>
+              <div class="setup-action">
+                <button type="button" id="setup-ai-download" class="btn-secondary" data-i18n="download">Download</button>
+                <button type="button" id="setup-ai-dismiss" class="btn-text" data-i18n="setup_ai_dismiss">Not now</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- The daily view. src/home.ts puts "Recent dictations" after the
+               quick switches in a narrow window and into the right column in
+               a wide one, so the Tab order follows the page. -->
+          <div id="home-daily" class="home-grid">
+            <div id="home-controls" class="home-col">
+              <div id="home-hotkeys" class="card">
+                <div class="setting-row">
+                  <div class="setting-label"><span class="label-text" id="home-key-dictate" data-i18n="home_key_dictate">Dictate</span></div>
+                  <div class="setting-control hotkey-control">
+                    <button type="button" id="home-hotkey-btn" class="hotkey-btn" aria-labelledby="home-key-dictate home-hotkey-text"><kbd id="home-hotkey-text"></kbd></button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div class="setting-label"><span class="label-text" id="home-key-paste" data-i18n="home_key_paste">Paste last</span></div>
+                  <div class="setting-control hotkey-control">
+                    <button type="button" id="home-paste-last-btn" class="hotkey-btn" aria-labelledby="home-key-paste home-paste-last-text"><kbd id="home-paste-last-text"></kbd></button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div class="setting-label"><span class="label-text" id="home-key-rewrite" data-i18n="home_key_rewrite">Rewrite last</span></div>
+                  <div class="setting-control hotkey-control">
+                    <button type="button" id="home-rewrite-last-btn" class="hotkey-btn" aria-labelledby="home-key-rewrite home-rewrite-last-text"><kbd id="home-rewrite-last-text"></kbd></button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div class="setting-label"><span class="label-text" id="home-key-gpu" data-i18n="free_gpu_label">Free GPU</span></div>
+                  <div class="setting-control hotkey-control">
+                    <button type="button" id="home-free-gpu-btn" class="hotkey-btn" aria-labelledby="home-key-gpu home-free-gpu-text"><kbd id="home-free-gpu-text"></kbd></button>
+                  </div>
+                </div>
+              </div>
+
+              <div id="home-switches" class="card">
+                <div class="setting-row">
+                  <div class="setting-label">
+                    <span class="label-text" id="home-ai-label" data-i18n="ai_enable_label">AI cleanup</span>
+                    <span class="label-hint status-line" id="home-ai-status"></span>
+                  </div>
+                  <div class="setting-control">
+                    <label class="switch">
+                      <input id="home-ai-toggle" type="checkbox" role="switch" aria-labelledby="home-ai-label" />
+                      <span class="switch-slider"></span>
+                    </label>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div class="setting-label"><span class="label-text" id="home-language-label" data-i18n="language_label">Language</span></div>
+                  <div class="setting-control">
+                    <select id="home-language-select" aria-labelledby="home-language-label"></select>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div class="setting-label"><span class="label-text" id="home-output-label" data-i18n="ai_output_label">Write in</span></div>
+                  <div class="setting-control">
+                    <select id="home-output-select" aria-labelledby="home-output-label"></select>
+                  </div>
+                </div>
+              </div>
+
+              <div id="home-loaded" class="card home-loaded">
+                <button type="button" class="home-loaded-row" data-reveal="model-select">
+                  <span class="home-loaded-name" data-i18n="home_loaded_speech">Speech model</span>
+                  <span class="home-loaded-value" id="home-loaded-speech"></span>
+                </button>
+                <button type="button" class="home-loaded-row" data-reveal="ai-model-select">
+                  <span class="home-loaded-name" data-i18n="home_loaded_ai">AI model</span>
+                  <span class="home-loaded-value" id="home-loaded-ai"></span>
+                </button>
+                <button type="button" class="home-loaded-row" data-reveal="mic-select">
+                  <span class="home-loaded-name" data-i18n="microphone_label">Microphone</span>
+                  <span class="home-loaded-value" id="home-loaded-mic"></span>
+                </button>
+              </div>
+
+              <form id="home-word-form" class="card home-word">
+                <label class="label-text" for="home-word-input" data-i18n="home_word_label">Add a word to the dictionary</label>
+                <div class="home-word-row">
+                  <input type="text" id="home-word-input" spellcheck="false" autocomplete="off" data-i18n-placeholder="dictionary_placeholder" placeholder="Add a word or name…" />
+                  <button type="submit" class="btn-secondary" data-i18n="dictionary_add">Add</button>
+                </div>
+                <span class="label-hint status-line" id="home-word-status" role="status"></span>
+              </form>
+            </div>
+
+            <div id="home-recent" class="card home-recent">
+              <div class="list-head">
+                <h3 class="list-title" data-i18n="home_recent_title">Recent dictations</h3>
+                <input type="search" id="history-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="home_recent_search" data-i18n-aria-label="home_recent_search" placeholder="Search text or app" aria-label="Search text or app" />
+              </div>
+              <p id="history-empty" class="empty-state hidden"></p>
+              <div id="history-list" class="list history-list"></div>
+              <div class="home-recent-foot">
+                <button type="button" id="history-more" class="btn-text hidden"></button>
+                <button type="button" id="history-less" class="btn-text hidden" data-i18n="home_recent_less">Show fewer</button>
+              </div>
+            </div>
+          </div>
+        </section>

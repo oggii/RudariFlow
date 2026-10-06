@@ -1,0 +1,986 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RudariFlow</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="titlebar" data-tauri-drag-region></div>
+      <div id="app-body">
+      <aside id="sidebar">
+        <div class="sidebar-header">
+          <img class="app-logo" src="/src/sidebar-logo.png" alt="RudariFlow" />
+          <div id="status-indicator" class="status-pill" role="status" aria-live="polite" data-tone="busy">
+            <span id="status-dot" class="status-dot" aria-hidden="true"></span>
+            <span id="status-text" data-i18n="status_loading">Loading models…</span>
+            <span id="status-marker" class="status-marker hidden" role="img"></span>
+          </div>
+        </div>
+        <nav id="sidebar-nav" data-i18n-aria-label="nav_label" aria-label="Sections">
+          <button type="button" class="nav-item" data-section="home" aria-current="page">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M2.5 7.5L8 3l5.5 4.5V13a.5.5 0 01-.5.5H9.8v-3.6H6.2v3.6H3a.5.5 0 01-.5-.5V7.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            </svg>
+            <span data-i18n="nav_home">Home</span>
+          </button>
+          <button type="button" class="nav-item" data-section="files">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M4 2h5.5L12.5 5v8.5a.5.5 0 01-.5.5H4a.5.5 0 01-.5-.5v-11A.5.5 0 014 2z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+              <path d="M9.5 2v3h3" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+              <path d="M6 8.5v3M8 7.5v5M10 9v2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            <span data-i18n="nav_files">Files</span>
+          </button>
+          <button type="button" class="nav-item" data-section="meetings">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="5.5" cy="5.5" r="2" stroke="currentColor" stroke-width="1.2"/>
+              <circle cx="10.5" cy="5.5" r="2" stroke="currentColor" stroke-width="1.2"/>
+              <path d="M2 12.5c0-1.9 1.6-3.5 3.5-3.5S9 10.6 9 12.5M8.6 9.4A3.5 3.5 0 0114 12.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            <span data-i18n="nav_meetings">Meetings</span>
+          </button>
+          <button type="button" class="nav-item" data-section="soundboard">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M2.5 6.2h2.3L8 3.5v9L4.8 9.8H2.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+              <path d="M10.5 6a2.8 2.8 0 010 4M12.3 4.3a5.2 5.2 0 010 7.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            <span data-i18n="nav_soundboard">Soundboard</span>
+          </button>
+          <button type="button" class="nav-item nav-settings" data-section="settings">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M2.5 5h5M11.5 5h2M2.5 11h2M8.5 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+              <circle cx="9.5" cy="5" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+              <circle cx="6.5" cy="11" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+            </svg>
+            <span data-i18n="nav_settings">Settings</span>
+          </button>
+        </nav>
+        <div class="sidebar-footer">
+          <span class="version-text" id="version-text"></span>
+          <a href="#" id="credit-link" class="credit-text">by oggi</a>
+        </div>
+      </aside>
+
+      <main id="content">
+        <section id="section-home" class="content-section active">
+          <div class="section-header home-header">
+            <div class="home-heading">
+              <h2 class="section-title" id="home-title" data-i18n="home_title_loading">Getting ready…</h2>
+              <span id="home-status" class="status-pill" data-tone="busy" aria-hidden="true">
+                <span class="status-dot"></span>
+                <span id="home-status-text"></span>
+              </span>
+            </div>
+            <p class="section-desc" id="home-how"></p>
+          </div>
+          <div id="home-notice" class="notice hidden" data-tone="warn" role="status">
+            <span class="notice-text" data-i18n="home_load_failed">The speech model did not load. Dictate once to try again, or choose another model.</span>
+            <button type="button" id="home-notice-open" class="btn-secondary" data-i18n="home_open_models">Open Models &amp; GPU</button>
+          </div>
+
+          <!-- The first run: shown while a microphone or a speech model is missing. -->
+          <div id="home-setup" class="card home-setup hidden">
+            <ol class="setup-steps">
+              <li class="setup-step" id="setup-mic">
+                <span class="setup-num" aria-hidden="true">1</span>
+                <div class="setup-main">
+                  <span class="label-text" id="setup-mic-label" data-i18n="setup_mic_title">Microphone</span>
+                  <span class="label-hint status-line" id="setup-mic-text"></span>
+                  <div id="setup-level" class="progress-track setup-level" role="meter" aria-labelledby="setup-mic-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <div id="setup-level-fill" class="progress-fill"></div>
+                  </div>
+                </div>
+                <div class="setup-action">
+                  <select id="setup-mic-select" class="hidden" aria-labelledby="setup-mic-label"></select>
+                  <button type="button" id="setup-mic-change" class="btn-secondary" data-i18n="setup_change">Change</button>
+                </div>
+              </li>
+              <li class="setup-step" id="setup-model">
+                <span class="setup-num" aria-hidden="true">2</span>
+                <div class="setup-main">
+                  <span class="label-text" data-i18n="setup_model_title">Speech model</span>
+                  <span class="label-hint status-line" id="setup-model-text"></span>
+                  <div id="setup-model-progress" class="progress hidden">
+                    <div class="progress-track"><div id="setup-model-fill" class="progress-fill"></div></div>
+                    <span id="setup-model-numbers" class="progress-text" role="status"></span>
+                  </div>
+                </div>
+                <div class="setup-action">
+                  <button type="button" id="setup-model-download" class="btn-primary" data-i18n="download">Download</button>
+                </div>
+              </li>
+              <li class="setup-step" id="setup-key">
+                <span class="setup-num" aria-hidden="true">3</span>
+                <div class="setup-main">
+                  <span class="label-text" id="setup-key-label" data-i18n="setup_key_title">Your dictation key</span>
+                  <span class="label-hint status-line" id="setup-key-text"></span>
+                </div>
+                <div class="setup-action hotkey-control">
+                  <button type="button" id="setup-hotkey-btn" class="hotkey-btn" aria-labelledby="setup-key-label setup-hotkey-text"><kbd id="setup-hotkey-text"></kbd></button>
+                </div>
+              </li>
+            </ol>
+          </div>
+
+          <!-- Optional, until its model is downloaded or the card is closed. -->
+          <div id="home-ai-card" class="card home-setup hidden">
+            <div class="setup-step">
+              <span class="setup-num" aria-hidden="true">+</span>
+              <div class="setup-main">
+                <span class="label-text" data-i18n="setup_ai_title">Optional: AI cleanup</span>
+                <span class="label-hint status-line" id="setup-ai-text"></span>
+                <div id="setup-ai-progress" class="progress hidden">
+                  <div class="progress-track"><div id="setup-ai-fill" class="progress-fill"></div></div>
+                  <span id="setup-ai-numbers" class="progress-text" role="status"></span>
+                </div>
+              </div>
+              <div class="setup-action">
+                <button type="button" id="setup-ai-download" class="btn-secondary" data-i18n="download">Download</button>
+                <button type="button" id="setup-ai-dismiss" class="btn-text" data-i18n="setup_ai_dismiss">Not now</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- The daily view. src/home.ts puts "Recent dictations" after the
+               quick switches in a narrow window and into the right column in
+               a wide one, so the Tab order follows the page. -->
+          <div id="home-daily" class="home-grid">
+            <div id="home-controls" class="home-col">
+              <div id="home-hotkeys" class="card">
+                <div class="setting-row">
+                  <div class="setting-label"><span class="label-text" id="home-key-dictate" data-i18n="home_key_dictate">Dictate</span></div>
+                  <div class="setting-control hotkey-control">
+                    <button type="button" id="home-hotkey-btn" class="hotkey-btn" aria-labelledby="home-key-dictate home-hotkey-text"><kbd id="home-hotkey-text"></kbd></button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div class="setting-label"><span class="label-text" id="home-key-paste" data-i18n="home_key_paste">Paste last</span></div>
+                  <div class="setting-control hotkey-control">
+                    <button type="button" id="home-paste-last-btn" class="hotkey-btn" aria-labelledby="home-key-paste home-paste-last-text"><kbd id="home-paste-last-text"></kbd></button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div class="setting-label"><span class="label-text" id="home-key-rewrite" data-i18n="home_key_rewrite">Rewrite last</span></div>
+                  <div class="setting-control hotkey-control">
+                    <button type="button" id="home-rewrite-last-btn" class="hotkey-btn" aria-labelledby="home-key-rewrite home-rewrite-last-text"><kbd id="home-rewrite-last-text"></kbd></button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div class="setting-label"><span class="label-text" id="home-key-gpu" data-i18n="free_gpu_label">Free GPU</span></div>
+                  <div class="setting-control hotkey-control">
+                    <button type="button" id="home-free-gpu-btn" class="hotkey-btn" aria-labelledby="home-key-gpu home-free-gpu-text"><kbd id="home-free-gpu-text"></kbd></button>
+                  </div>
+                </div>
+              </div>
+
+              <div id="home-switches" class="card">
+                <div class="setting-row">
+                  <div class="setting-label">
+                    <span class="label-text" id="home-ai-label" data-i18n="ai_enable_label">AI cleanup</span>
+                    <span class="label-hint status-line" id="home-ai-status"></span>
+                  </div>
+                  <div class="setting-control">
+                    <label class="switch">
+                      <input id="home-ai-toggle" type="checkbox" role="switch" aria-labelledby="home-ai-label" />
+                      <span class="switch-slider"></span>
+                    </label>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div class="setting-label"><span class="label-text" id="home-language-label" data-i18n="language_label">Language</span></div>
+                  <div class="setting-control">
+                    <select id="home-language-select" aria-labelledby="home-language-label"></select>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div class="setting-label"><span class="label-text" id="home-output-label" data-i18n="ai_output_label">Write in</span></div>
+                  <div class="setting-control">
+                    <select id="home-output-select" aria-labelledby="home-output-label"></select>
+                  </div>
+                </div>
+              </div>
+
+              <div id="home-loaded" class="card home-loaded">
+                <button type="button" class="home-loaded-row" data-reveal="model-select">
+                  <span class="home-loaded-name" data-i18n="home_loaded_speech">Speech model</span>
+                  <span class="home-loaded-value" id="home-loaded-speech"></span>
+                </button>
+                <button type="button" class="home-loaded-row" data-reveal="ai-model-select">
+                  <span class="home-loaded-name" data-i18n="home_loaded_ai">AI model</span>
+                  <span class="home-loaded-value" id="home-loaded-ai"></span>
+                </button>
+                <button type="button" class="home-loaded-row" data-reveal="mic-select">
+                  <span class="home-loaded-name" data-i18n="microphone_label">Microphone</span>
+                  <span class="home-loaded-value" id="home-loaded-mic"></span>
+                </button>
+              </div>
+
+              <form id="home-word-form" class="card home-word">
+                <label class="label-text" for="home-word-input" data-i18n="home_word_label">Add a word to the dictionary</label>
+                <div class="home-word-row">
+                  <input type="text" id="home-word-input" spellcheck="false" autocomplete="off" data-i18n-placeholder="dictionary_placeholder" placeholder="Add a word or name…" />
+                  <button type="submit" class="btn-secondary" data-i18n="dictionary_add">Add</button>
+                </div>
+                <span class="label-hint status-line" id="home-word-status" role="status"></span>
+              </form>
+            </div>
+
+            <div id="home-recent" class="card home-recent">
+              <div class="list-head">
+                <h3 class="list-title" data-i18n="home_recent_title">Recent dictations</h3>
+                <input type="search" id="history-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="home_recent_search" data-i18n-aria-label="home_recent_search" placeholder="Search text or app" aria-label="Search text or app" />
+              </div>
+              <p id="history-empty" class="empty-state hidden"></p>
+              <div id="history-list" class="list history-list"></div>
+              <div class="home-recent-foot">
+                <button type="button" id="history-more" class="btn-text hidden"></button>
+                <button type="button" id="history-less" class="btn-text hidden" data-i18n="home_recent_less">Show fewer</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="section-files" class="content-section">
+          <div class="section-header">
+            <h2 class="section-title" data-i18n="files_title">Files</h2>
+            <p class="section-desc" data-i18n="files_desc">Audio or video to text: voice messages, meetings, interviews. Runs on your PC with your Whisper model; the file stays where it is.</p>
+          </div>
+          <div id="file-drop" class="file-drop">
+            <svg class="file-drop-icon" width="22" height="22" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 10.5V3M5 5.5L8 2.5l3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M2.5 10v2.5c0 .6.4 1 1 1h9c.6 0 1-.4 1-1V10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            <span class="file-drop-title" data-i18n="files_drop">Drop an audio or video file here</span>
+            <span class="label-hint" data-i18n="files_formats">MP3, M4A, WAV, FLAC, WhatsApp voice messages (OGG), MP4, MOV, MKV, WebM</span>
+            <button id="file-choose" class="btn-secondary" data-i18n="files_choose">Choose file…</button>
+          </div>
+          <div class="settings-list files-options">
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="files_language_label">Language</span>
+                <span class="label-hint" data-i18n="files_language_hint">Auto-detect listens to the first minute and keeps that language for the whole file.</span>
+              </div>
+              <div class="setting-control">
+                <select id="file-language"></select>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text" data-i18n="files_speakers_label">Speakers</span>
+                <span class="label-hint" id="file-speakers-hint" data-i18n="files_speakers_hint">Who speaks when, for meetings and interviews. Off keeps voice messages fast.</span>
+              </div>
+              <div class="setting-control">
+                <select id="file-speakers">
+                  <option value="off" data-i18n="files_speakers_off">Off</option>
+                  <option value="auto" data-i18n="files_speakers_auto">Auto</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                  <option value="6">6</option>
+                  <option value="7">7</option>
+                  <option value="8">8</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div id="file-job" class="file-job hidden">
+            <div class="file-job-head">
+              <span id="file-name" class="file-name"></span>
+              <div class="file-job-actions">
+                <button id="file-cancel" class="btn-ghost hidden" data-i18n="files_cancel">Cancel</button>
+                <button id="file-clear" class="btn-ghost" data-i18n="files_clear" data-i18n-title="files_clear_title" title="Removes the transcript to start over. The audio file stays where it is.">Clear</button>
+              </div>
+            </div>
+            <div class="progress-track"><div class="progress-fill" id="file-progress-fill"></div></div>
+            <span id="file-status" class="label-hint file-status"></span>
+          </div>
+          <div id="file-result" class="file-result hidden">
+            <div class="file-toolbar">
+              <label class="file-times">
+                <input type="checkbox" id="file-times" />
+                <span data-i18n="files_times">Timestamps</span>
+              </label>
+              <div class="file-actions">
+                <button id="file-copy" class="btn-secondary" data-i18n="files_copy">Copy</button>
+                <div class="export-menu">
+                  <button id="file-export" class="btn-secondary" aria-expanded="false" aria-controls="file-export-list"><span data-i18n="files_export">Export</span> ▾</button>
+                  <div id="file-export-list" class="export-list hidden">
+                    <button data-kind="pdf" data-i18n="files_export_pdf">PDF…</button>
+                    <button data-kind="docx" data-i18n="files_export_docx">Word (.docx)…</button>
+                    <button data-kind="srt" data-i18n="files_export_srt">Subtitles (.srt)…</button>
+                    <button data-kind="vtt" data-i18n="files_export_vtt">Subtitles (.vtt)…</button>
+                    <button data-kind="txt" data-i18n="files_export_txt">Text (.txt)…</button>
+                  </div>
+                </div>
+                <button id="file-summarize" class="btn-secondary" data-i18n="files_summarize">Summarise with AI</button>
+              </div>
+            </div>
+            <div id="file-speakers-row" class="file-speakers hidden">
+              <span class="label-hint" data-i18n="files_speakers_names">Speakers:</span>
+              <div id="file-speaker-chips" class="file-speaker-chips"></div>
+            </div>
+            <div id="file-summary-box" class="file-summary hidden">
+              <div class="file-summary-head">
+                <span class="file-summary-title" data-i18n="files_summary">Summary</span>
+                <button id="file-summary-toggle" class="btn-ghost" aria-expanded="true" aria-controls="file-summary" data-i18n="files_summary_hide">Hide</button>
+                <button id="file-summary-copy" class="btn-ghost" data-i18n="files_copy">Copy</button>
+              </div>
+              <div id="file-summary" class="file-summary-text"></div>
+            </div>
+            <textarea id="file-text" class="file-text" spellcheck="false" data-i18n-aria-label="files_transcript" aria-label="Transcript"></textarea>
+          </div>
+        </section>
+        <section id="section-meetings" class="content-section">
+          <div class="mt-layout">
+            <div class="section-header">
+              <h2 class="section-title" data-i18n="mt_title">Meetings</h2>
+              <p class="section-desc" data-i18n="mt_desc">Record an online call on this PC (Teams, Zoom, Discord, Google Meet …): your microphone and what the PC plays, transcribed live, with notes when it ends. Everything stays on your PC.</p>
+            </div>
+            <div id="mt-start" class="mt-start">
+              <input id="mt-title" type="text" class="mt-title-input" spellcheck="false" autocomplete="off" maxlength="200" data-i18n-title="mt_title_label" title="Title" />
+              <button id="mt-start-btn" class="btn-primary" data-i18n="mt_start">Start meeting</button>
+            </div>
+            <p id="mt-start-error" class="label-hint mt-error hidden" role="alert"></p>
+            <div id="mt-bar" class="mt-bar hidden">
+              <span class="mt-bar-dot" aria-hidden="true"></span>
+              <span id="mt-bar-time" class="mt-bar-time"></span>
+              <button id="mt-bar-title" class="mt-bar-title"></button>
+              <button id="mt-stop-btn" class="btn-secondary mt-stop" data-i18n="mt_stop">Stop</button>
+            </div>
+            <div id="mt-announce" class="mt-sr-only" role="status"></div>
+            <div id="mt-warnings" class="mt-warnings" role="status"></div>
+            <div id="mt-reminder" class="mt-reminder hidden">
+              <span id="mt-reminder-text"></span>
+              <button id="mt-reminder-close" class="icon-btn" data-i18n-title="mt_reminder_dismiss" title="Don't show again">
+                <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              </button>
+            </div>
+            <div id="mt-finishing" class="mt-finishing" role="status"></div>
+            <div id="mt-view" class="mt-view hidden">
+              <div class="mt-view-head">
+                <button id="mt-back" class="btn-ghost mt-back" data-i18n="mt_back">← All meetings</button>
+                <div class="mt-view-actions">
+                  <button id="mt-copy" class="btn-secondary" data-i18n="mt_copy_all">Copy all</button>
+                  <div id="mt-export-menu" class="export-menu">
+                    <button id="mt-export" class="btn-secondary" aria-expanded="false" aria-controls="mt-export-list"><span data-i18n="files_export">Export</span> ▾</button>
+                    <div id="mt-export-list" class="export-list hidden">
+                      <button data-kind="pdf" data-i18n="files_export_pdf">PDF…</button>
+                      <button data-kind="docx" data-i18n="files_export_docx">Word (.docx)…</button>
+                      <button data-kind="srt" data-i18n="files_export_srt">Subtitles (.srt)…</button>
+                      <button data-kind="vtt" data-i18n="files_export_vtt">Subtitles (.vtt)…</button>
+                      <button data-kind="txt" data-i18n="files_export_txt">Text (.txt)…</button>
+                    </div>
+                  </div>
+                  <button type="button" id="mt-delete" class="btn-secondary">Delete</button>
+                </div>
+              </div>
+              <div class="mt-view-heading">
+                <h3 class="mt-view-title-wrap"><button id="mt-view-title" class="mt-view-title" data-i18n-title="mt_rename" title="Click to rename"></button></h3>
+                <span id="mt-view-meta" class="label-hint mt-view-meta"></span>
+              </div>
+              <div id="mt-hint" class="mt-hint hidden" role="status"></div>
+              <div class="mt-body">
+                <div id="mt-notes" class="mt-notes hidden"></div>
+                <div class="mt-main">
+                  <div id="mt-speakers" class="file-speakers mt-speakers hidden">
+                    <span class="label-hint" data-i18n="files_speakers_names">Speakers:</span>
+                    <div id="mt-speaker-chips" class="file-speaker-chips"></div>
+                  </div>
+                  <div class="mt-transcript-wrap">
+                    <div id="mt-transcript" class="mt-transcript" tabindex="0" role="region"></div>
+                    <button id="mt-live" class="btn-primary mt-live hidden" data-i18n="mt_jump_live">Jump to live</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="mt-library" class="mt-library">
+              <div class="mt-library-head">
+                <h3 class="mt-library-title" data-i18n="mt_library">Your meetings</h3>
+                <input id="mt-search" type="search" class="mt-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="mt_search" placeholder="Search titles and transcripts" />
+              </div>
+              <div id="mt-list" class="mt-list"></div>
+              <p id="mt-empty" class="empty-state hidden"></p>
+            </div>
+          </div>
+        </section>
+        <section id="section-soundboard" class="content-section">
+          <div class="sb-layout">
+            <div class="section-header">
+              <h2 class="section-title" data-i18n="sb_title">Soundboard</h2>
+              <p class="section-desc" data-i18n="sb_desc">Play sounds into Discord or a game with a hotkey. Your friends hear your voice and the sounds through a virtual microphone.</p>
+            </div>
+            <div id="sb-root"></div>
+          </div>
+        </section>
+        <section id="section-settings" class="content-section">
+          <div class="section-header">
+            <h2 class="section-title" data-i18n="settings_title">Settings</h2>
+          </div>
+          <div id="settings-tabs" class="tabs" role="tablist" data-i18n-aria-label="settings_title" aria-label="Settings">
+            <button type="button" role="tab" class="tab" id="tab-dictation" data-tab="dictation" aria-controls="panel-dictation" aria-selected="true" data-i18n="tab_dictation">Dictation</button>
+            <button type="button" role="tab" class="tab" id="tab-ai" data-tab="ai" aria-controls="panel-ai" aria-selected="false" tabindex="-1" data-i18n="tab_ai">AI cleanup</button>
+            <button type="button" role="tab" class="tab" id="tab-dictionary" data-tab="dictionary" aria-controls="panel-dictionary" aria-selected="false" tabindex="-1" data-i18n="tab_dictionary">Dictionary</button>
+            <button type="button" role="tab" class="tab" id="tab-models" data-tab="models" aria-controls="panel-models" aria-selected="false" tabindex="-1" data-i18n="tab_models">Models &amp; GPU</button>
+            <button type="button" role="tab" class="tab" id="tab-general" data-tab="general" aria-controls="panel-general" aria-selected="false" tabindex="-1" data-i18n="tab_general">General</button>
+          </div>
+
+          <!-- ── Dictation ─────────────────────────────────── -->
+          <div id="panel-dictation" class="tab-panel" role="tabpanel" aria-labelledby="tab-dictation">
+            <div class="card">
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="dictate_label">Dictate</span>
+                  <span class="label-hint" data-i18n="dictate_hint">Hold and speak, or press once to start and stop.</span>
+                </div>
+                <div class="setting-control">
+                  <div class="toggle-group" role="group" data-i18n-aria-label="mode_label" aria-label="How the key works">
+                    <button type="button" id="mode-ptt" class="toggle-btn" data-i18n="mode_ptt">Hold</button>
+                    <button type="button" id="mode-toggle" class="toggle-btn active" data-i18n="mode_toggle">Toggle</button>
+                  </div>
+                  <button type="button" id="hotkey-btn" class="hotkey-btn"><kbd id="hotkey-text"></kbd></button>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="paste_last_label">Paste last dictation</span>
+                  <span class="label-hint" data-i18n="paste_last_hint">Pastes your last dictation again, e.g. after the wrong window.</span>
+                </div>
+                <div class="setting-control hotkey-control">
+                  <button type="button" id="paste-last-btn" class="hotkey-btn"><kbd id="paste-last-text"></kbd></button>
+                  <button type="button" id="paste-last-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
+                    <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="rewrite_last_label">Rewrite last dictation</span>
+                  <span class="label-hint"><span data-i18n="rewrite_last_hint">Say how to change it: “shorter”, “more formal”.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="rewrite-last-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint hint-long" id="rewrite-last-more" data-i18n="rewrite_last_more" hidden>Selects your last dictation and changes it the way you say. Needs AI cleanup and Edit mode.</span>
+                </div>
+                <div class="setting-control hotkey-control">
+                  <button type="button" id="rewrite-last-btn" class="hotkey-btn"><kbd id="rewrite-last-text"></kbd></button>
+                  <button type="button" id="rewrite-last-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
+                    <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="microphone_label">Microphone</span>
+                  <span class="label-hint" data-i18n="microphone_hint">The microphone you dictate with.</span>
+                </div>
+                <div class="setting-control">
+                  <select id="mic-select"></select>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="volume_label">Start and stop sounds</span>
+                  <span class="label-hint" data-i18n="volume_hint">How loud the soft sound at the start and the end is.</span>
+                </div>
+                <div class="setting-control">
+                  <input id="volume-slider" type="range" min="0" max="1" step="0.05" />
+                </div>
+              </div>
+            </div>
+            <details class="fold" data-fold="dictation">
+              <summary data-i18n="advanced">Advanced</summary>
+              <div class="fold-body">
+                <div class="card">
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="free_gpu_label">Free GPU</span>
+                      <span class="label-hint"><span data-i18n="free_gpu_hint">Unloads the models so a game gets the graphics card.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="free-gpu-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="free-gpu-more" data-i18n="free_gpu_more" hidden>Press again to load them; a dictation also loads them, the first one takes a few seconds longer.</span>
+                    </div>
+                    <div class="setting-control hotkey-control">
+                      <button type="button" id="free-gpu-btn" class="hotkey-btn"><kbd id="free-gpu-text"></kbd></button>
+                      <button type="button" id="free-gpu-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
+                        <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="meeting_hotkey_label">Start / stop a meeting</span>
+                      <span class="label-hint" data-i18n="meeting_hotkey_hint">Starts a meeting, or stops the one that records.</span>
+                    </div>
+                    <div class="setting-control hotkey-control">
+                      <button type="button" id="meeting-hotkey-btn" class="hotkey-btn"><kbd id="meeting-hotkey-text"></kbd></button>
+                      <button type="button" id="meeting-hotkey-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
+                        <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="mute_audio_label">Mute other apps while recording</span>
+                      <span class="label-hint" data-i18n="mute_audio_hint">Music and videos go quiet while you dictate.</span>
+                    </div>
+                    <div class="setting-control">
+                      <label class="switch">
+                        <input id="mute-audio-toggle" type="checkbox" />
+                        <span class="switch-slider"></span>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="send_command_label">Voice command “send it”</span>
+                      <span class="label-hint"><span data-i18n="send_command_hint">End with “Send it.” to press Enter after pasting.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="send-command-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="send-command-more" data-i18n="send_command_more" hidden>Say it as its own sentence, for example in chats. German: “Abschicken.”</span>
+                    </div>
+                    <div class="setting-control">
+                      <select id="send-command-select">
+                        <option value="off" data-i18n="send_command_off">Off</option>
+                        <option value="enter" data-i18n="send_command_enter">Press Enter</option>
+                        <option value="ctrl+enter" data-i18n="send_command_ctrl_enter">Press Ctrl+Enter</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- ── AI cleanup ────────────────────────────────── -->
+          <div id="panel-ai" class="tab-panel" role="tabpanel" aria-labelledby="tab-ai" hidden>
+            <p class="section-desc panel-lead" data-i18n="ai_desc">A language model on this computer turns your dictation into polished text. Nothing leaves your PC.</p>
+            <div class="card">
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="ai_enable_label">AI cleanup</span>
+                  <span class="label-hint ai-status status-line" id="ai-status-line" role="status"></span>
+                </div>
+                <div class="setting-control">
+                  <button type="button" id="ai-download-main" class="btn-secondary hidden" data-i18n="download">Download</button>
+                  <label class="switch">
+                    <input id="ai-toggle" type="checkbox" />
+                    <span class="switch-slider"></span>
+                  </label>
+                </div>
+              </div>
+              <div id="ai-download-progress" class="progress download-progress hidden">
+                <div class="progress-track"><div class="progress-fill" id="ai-progress-fill"></div></div>
+                <span class="progress-text" id="ai-progress-text" role="status"></span>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="ai_style_label">Style</span>
+                  <span class="label-hint" data-i18n="ai_style_hint">Polished smooths your sentences, Light keeps your wording</span>
+                </div>
+                <div class="setting-control">
+                  <div class="toggle-group" role="group" data-i18n-aria-label="ai_style_label" aria-label="Style">
+                    <button type="button" id="ai-style-polished" class="toggle-btn" data-i18n="ai_style_polished">Polished</button>
+                    <button type="button" id="ai-style-light" class="toggle-btn" data-i18n="ai_style_light">Light</button>
+                  </div>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="ai_output_label">Write in</span>
+                  <span class="label-hint"><span data-i18n="ai_output_hint">Translates every dictation into this language.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-output-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint hint-long" id="ai-output-more" data-i18n="ai_output_more" hidden>Only while AI cleanup runs; apps set to No AI keep the spoken language.</span>
+                  <span class="label-hint ai-output-warn hidden" id="ai-output-skip"></span>
+                  <span class="label-hint ai-output-warn hidden" id="ai-output-warn" data-i18n="ai_output_warn">Set Models &amp; GPU → Language to Auto-detect, so Whisper hears other languages correctly before they are translated.</span>
+                </div>
+                <div class="setting-control">
+                  <select id="ai-output-select"></select>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="ai_edit_label">Edit mode</span>
+                  <span class="label-hint"><span data-i18n="ai_edit_hint">Select text, hold your hotkey and say what to change.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-edit-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint hint-long" id="ai-edit-more" data-i18n="ai_edit_more" hidden>Say “shorter”, “more formal”, “in Turkish”, or the new text. Works where the app shares its text, not in terminals or address bars. Ctrl+Z undoes it.</span>
+                </div>
+                <div class="setting-control">
+                  <label class="switch">
+                    <input id="ai-edit-toggle" type="checkbox" />
+                    <span class="switch-slider"></span>
+                  </label>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="ai_instructions_label">Instructions for all apps</span>
+                  <span class="label-hint" data-i18n="ai_instructions_hint">How the AI should write everywhere</span>
+                </div>
+                <div class="setting-control">
+                  <textarea id="ai-instructions" class="field-textarea" rows="2" maxlength="1000"
+                    data-i18n-placeholder="ai_instructions_placeholder"
+                    placeholder="e.g. Use ss instead of ß. Always use du, never Sie."></textarea>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="list-head">
+                <h3 class="list-title" data-i18n="ai_rules_title">Rules per app</h3>
+              </div>
+              <p class="label-hint"><span data-i18n="ai_rules_desc">Instructions and the spoken language for one app or website.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-rules-more" data-i18n="hint_more">More</button></p>
+              <p class="label-hint hint-long" id="ai-rules-more" data-i18n="ai_rules_more" hidden>A rule matches the program name or a word in the window title, e.g. “whatsapp” also covers WhatsApp Web. The language is what Whisper hears in this app, also with AI cleanup off. No AI pastes the plain Whisper text.</p>
+              <div id="ai-rule-list" class="list rule-list"></div>
+              <p id="ai-rule-empty" class="empty-state hidden" data-i18n="ai_rules_empty">No rules yet.</p>
+              <div class="card-foot">
+                <button type="button" id="ai-rule-add" class="btn-secondary" data-i18n="ai_rules_add">Add rule</button>
+              </div>
+              <datalist id="ai-open-apps"></datalist>
+            </div>
+            <details class="fold" data-fold="ai">
+              <summary data-i18n="advanced">Advanced</summary>
+              <div class="fold-body">
+                <div class="card">
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="ai_model_label">AI model</span>
+                      <span class="label-hint" data-i18n="ai_model_hint">Downloaded once, then it runs offline on your graphics card</span>
+                      <span class="label-hint status-line" id="ai-model-note"></span>
+                    </div>
+                    <div class="setting-control">
+                      <div class="model-row ai-model-row">
+                        <select id="ai-model-select"></select>
+                        <button type="button" id="ai-download-btn" class="btn-primary" data-i18n="download">Download</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="list-head">
+                    <h3 class="list-title" id="ai-test-title" data-i18n="ai_test_title">Try it</h3>
+                  </div>
+                  <div class="ai-test">
+                    <textarea id="ai-test-input" class="field-textarea" rows="3" aria-labelledby="ai-test-title"
+                      data-i18n-placeholder="ai_test_placeholder"
+                      placeholder="Type a sentence the way you would say it, fillers included"></textarea>
+                    <div class="ai-test-controls">
+                      <input type="text" id="ai-test-app" list="ai-open-apps" spellcheck="false"
+                        data-i18n-placeholder="ai_test_app_placeholder" data-i18n-aria-label="ai_test_app_placeholder" placeholder="App (optional)" aria-label="App (optional)" />
+                      <button type="button" id="ai-test-run" class="btn-primary" data-i18n="ai_test_run">Try</button>
+                    </div>
+                    <div id="ai-test-result" class="ai-test-result hidden">
+                      <p id="ai-test-output"></p>
+                      <span class="label-hint" id="ai-test-meta"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- ── Dictionary ────────────────────────────────── -->
+          <div id="panel-dictionary" class="tab-panel" role="tabpanel" aria-labelledby="tab-dictionary" hidden>
+            <p class="section-desc panel-lead" data-i18n="dictionary_desc">Words Whisper should know: names, brands and jargon. Your text gets exactly this spelling, even when Whisper hears them slightly differently.</p>
+            <div id="dict-suggest" class="card dict-suggest hidden">
+              <div class="list-head">
+                <h3 class="list-title" data-i18n="learn_title">Suggested from your corrections</h3>
+              </div>
+              <div id="dict-suggest-list" class="list dict-list"></div>
+            </div>
+            <div class="card">
+              <div class="list-head">
+                <h3 class="list-title"><span data-i18n="dict_words_title">Words</span> <span id="dict-count" class="list-count"></span></h3>
+                <input type="search" id="dict-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="dict_search" data-i18n-aria-label="dict_search" placeholder="Search words" aria-label="Search words" />
+              </div>
+              <form id="dict-form" class="dict-add">
+                <input type="text" id="dict-input" spellcheck="false" autocomplete="off"
+                  data-i18n-placeholder="dictionary_placeholder" data-i18n-aria-label="dictionary_placeholder" placeholder="Add a word or name…" aria-label="Add a word or name…" />
+                <button type="submit" class="btn-secondary dict-add-btn" data-i18n="dictionary_add">Add</button>
+              </form>
+              <p class="label-hint dict-tip" data-i18n="dictionary_tip">Tip: paste a list, separated by commas or one per line, to add many at once.</p>
+              <p id="dict-long" class="notice dict-long hidden" data-tone="warn" data-i18n="dictionary_long">Long list: Whisper reads about the last 100 entries, so the newest count first.</p>
+              <div id="dict-list" class="list dict-list"></div>
+              <p id="dict-no-match" class="empty-state hidden" data-i18n="dict_no_match">No word matches.</p>
+              <p id="dict-empty" class="empty-state dict-empty hidden" data-i18n="dictionary_empty">No words yet. Add names, brands or terms Whisper gets wrong.</p>
+            </div>
+            <div class="card">
+              <div class="list-head">
+                <h3 class="list-title" data-i18n="replacements_title">Replacements</h3>
+                <input type="search" id="replacement-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="replacement_search" data-i18n-aria-label="replacement_search" placeholder="Search replacements" aria-label="Search replacements" />
+              </div>
+              <p class="label-hint"><span data-i18n="replacements_desc">Say a short phrase, get longer text.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="replacements-more" data-i18n="hint_more">More</button></p>
+              <p class="label-hint hint-long" id="replacements-more" data-i18n="replacements_more" hidden>Good for email addresses, links and signatures. {date}, {time}, {weekday}, {year} and {iso_date} in the text are filled in when it is pasted.</p>
+              <div id="replacement-cols" class="list-cols replacement-cols hidden" aria-hidden="true">
+                <span data-i18n="replacement_from_label">When I say</span>
+                <span data-i18n="replacement_to_label">Insert</span>
+              </div>
+              <div id="replacement-list" class="list replacement-list"></div>
+              <p id="replacement-no-match" class="empty-state hidden" data-i18n="replacement_no_match">No replacement matches.</p>
+              <p id="replacement-empty" class="empty-state hidden" data-i18n="replacements_empty">No replacements yet.</p>
+              <div class="card-foot">
+                <button type="button" id="replacement-add" class="btn-secondary" data-i18n="replacements_add">Add replacement</button>
+              </div>
+            </div>
+            <div class="card">
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="swiss_spelling_label">Swiss spelling</span>
+                  <span class="label-hint" data-i18n="swiss_spelling_hint">ss instead of ß in every dictation, with or without AI</span>
+                </div>
+                <div class="setting-control">
+                  <label class="switch">
+                    <input id="swiss-toggle" type="checkbox" />
+                    <span class="switch-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <details class="fold" data-fold="dictionary">
+              <summary data-i18n="advanced">Advanced</summary>
+              <div class="fold-body">
+                <div class="card">
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="screen_context_label">Words on screen</span>
+                      <span class="label-hint"><span data-i18n="screen_context_hint">Names in the window you dictate into help with spelling.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="screen-context-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="screen-context-more" data-i18n="screen_context_more" hidden>Whisper and the AI use them. They are read on your PC when you press the hotkey and never saved.</span>
+                    </div>
+                    <div class="setting-control">
+                      <label class="switch">
+                        <input id="screen-toggle" type="checkbox" />
+                        <span class="switch-slider"></span>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="learn_label">Learn from corrections</span>
+                      <span class="label-hint"><span data-i18n="learn_hint">Names you correct right after dictating are suggested.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="learn-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="learn-more" data-i18n="learn_more" hidden>Only the corrected word is kept, never your text.</span>
+                    </div>
+                    <div class="setting-control">
+                      <label class="switch">
+                        <input id="learn-toggle" type="checkbox" />
+                        <span class="switch-slider"></span>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="dict_io_label">Import and export</span>
+                      <span class="label-hint" data-i18n="dict_io_hint">A text file with one entry per line, or separated by commas.</span>
+                      <span id="dict-io-status" class="label-hint status-line" role="status"></span>
+                    </div>
+                    <div class="setting-control">
+                      <button type="button" id="dict-import" class="btn-secondary" data-i18n="dictionary_import">Import…</button>
+                      <button type="button" id="dict-export" class="btn-secondary" data-i18n="dictionary_export">Export…</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- ── Models & GPU ──────────────────────────────── -->
+          <div id="panel-models" class="tab-panel" role="tabpanel" aria-labelledby="tab-models" hidden>
+            <div class="card">
+              <div class="setting-row" id="local-settings">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="model_label">Speech model</span>
+                  <span class="label-hint" data-i18n="model_hint">Larger models are more accurate and need more memory.</span>
+                  <span class="label-hint status-line" id="model-note"></span>
+                </div>
+                <div class="setting-control">
+                  <div class="model-row">
+                    <select id="model-select">
+                      <option value="tiny">Tiny</option>
+                      <option value="base">Base</option>
+                      <option value="small" selected>Small</option>
+                      <option value="medium">Medium</option>
+                      <option value="large-v3">Large v3</option>
+                      <option value="large-v3-turbo">Large v3 Turbo</option>
+                      <option value="large-v3-turbo-q8_0">Large v3 Turbo q8</option>
+                      <option value="large-v3-turbo-q5_0">Large v3 Turbo q5</option>
+                    </select>
+                    <button type="button" id="download-btn" class="btn-primary" data-i18n="download">Download</button>
+                  </div>
+                </div>
+              </div>
+              <div id="download-progress" class="progress download-progress hidden">
+                <div id="progress-bar"><div id="progress-fill"></div></div>
+                <span class="progress-text" id="download-numbers" role="status"></span>
+              </div>
+              <div id="engine-cloud-note" class="notice hidden">
+                <span class="notice-text" data-i18n="cloud_note">The cloud engine (Groq) transcribes. Change it under Advanced.</span>
+              </div>
+              <div class="setting-row" id="language-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="language_label">Language</span>
+                  <span class="label-hint" data-i18n="language_hint">Auto-detect, or the language you dictate in.</span>
+                </div>
+                <div class="setting-control">
+                  <select id="language-select"></select>
+                </div>
+              </div>
+            </div>
+            <details class="fold" data-fold="models">
+              <summary data-i18n="advanced">Advanced</summary>
+              <div class="fold-body">
+                <div class="card">
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="engine_label">Engine</span>
+                      <span class="label-hint" data-i18n="engine_hint">Local runs on this PC, Cloud needs an API key.</span>
+                    </div>
+                    <div class="setting-control">
+                      <div class="toggle-group" role="group" data-i18n-aria-label="engine_label" aria-label="Engine">
+                        <button type="button" id="engine-local" class="toggle-btn active" data-i18n="engine_local">Local Whisper</button>
+                        <button type="button" id="engine-cloud" class="toggle-btn" data-i18n="engine_cloud">Groq Cloud</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="setting-row hidden" id="cloud-settings">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="groq_label">Groq API Key</span>
+                      <span class="label-hint" data-i18n="groq_hint">Get your key from console.groq.com</span>
+                    </div>
+                    <div class="setting-control">
+                      <input type="password" id="groq-key" placeholder="gsk_..." />
+                    </div>
+                  </div>
+                  <div class="setting-row" id="gpu-backend-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="gpu_backend_label">GPU backend</span>
+                      <span class="label-hint" data-i18n="gpu_backend_hint">Auto: NVIDIA CUDA, otherwise Vulkan (AMD / Intel), otherwise CPU</span>
+                      <span class="label-hint status-line" id="gpu-detected"></span>
+                    </div>
+                    <div class="setting-control">
+                      <select id="gpu-backend-select">
+                        <option value="auto" data-i18n="gpu_backend_auto">Auto</option>
+                        <option value="cuda" data-i18n="gpu_backend_cuda">NVIDIA CUDA</option>
+                        <option value="vulkan" data-i18n="gpu_backend_vulkan">Vulkan (AMD / Intel / NVIDIA)</option>
+                        <option value="cpu" data-i18n="gpu_backend_cpu">CPU only</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="pc_check_label">PC check</span>
+                      <span class="label-hint"><span data-i18n="pc_check_hint">Measures this PC (about 20 seconds) and uses the fastest setup.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="pc-check-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="pc-check-more" data-i18n="pc_check_more" hidden>Whisper on your graphics card with and without flash attention, and the speed of the AI.</span>
+                    </div>
+                    <div class="setting-control">
+                      <button type="button" id="pc-check-btn" class="btn-secondary" data-i18n="pc_check_run">Run check</button>
+                    </div>
+                  </div>
+                  <div id="pc-check-result" class="pc-check-result hidden">
+                    <pre id="pc-check-report"></pre>
+                    <button type="button" id="pc-check-copy" class="btn-secondary" data-i18n="pc_check_copy">Copy report</button>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="game_free_label">Free GPU for games</span>
+                      <span class="label-hint"><span data-i18n="game_free_hint">Unloads the models while a game or video runs in fullscreen.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="game-free-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="game-free-more" data-i18n="game_free_more" hidden>When a fullscreen app (a game or a video player) is in front for 5 seconds, Whisper and the AI model are unloaded, as with the Free GPU hotkey. Meanwhile a dictation loads only Whisper and is pasted without AI cleanup, and Edit mode is off. The models load again 30 seconds after the game is closed, minimised or no longer fullscreen, not when you just use another window or monitor. Browsers, calls (Teams, Zoom, Discord) and remote desktops in fullscreen do not count.</span>
+                      <span class="label-hint ai-status status-line hidden" id="game-free-status" data-tone="warn" data-i18n="game_free_now">Freed for a game: dictations run without AI cleanup until it ends.</span>
+                    </div>
+                    <div class="setting-control">
+                      <label class="switch">
+                        <input id="game-free-toggle" type="checkbox" />
+                        <span class="switch-slider"></span>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="idle_unload_label">Unload when idle</span>
+                      <span class="label-hint"><span data-i18n="idle_unload_hint">Frees the graphics card after this long without a dictation.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="idle-unload-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="idle-unload-more" data-i18n="idle_unload_more" hidden>On mains power. The next dictation loads the models again and takes a few seconds longer. On battery it is always 10 minutes.</span>
+                    </div>
+                    <div class="setting-control">
+                      <select id="idle-unload-select">
+                        <option value="0" data-i18n="idle_unload_never">Never</option>
+                        <option value="15" data-i18n="idle_unload_15">After 15 minutes</option>
+                        <option value="30" data-i18n="idle_unload_30">After 30 minutes</option>
+                        <option value="60" data-i18n="idle_unload_60">After 1 hour</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="list-head">
+                    <h3 class="list-title" data-i18n="unused_models_title">Unused models</h3>
+                  </div>
+                  <p class="label-hint" data-i18n="unused_models_desc">Downloaded Whisper and AI models that no setting uses. They only take disk space; delete the ones you no longer need.</p>
+                  <div id="unused-model-list" class="list unused-model-list"></div>
+                  <p id="unused-model-empty" class="empty-state hidden" data-i18n="unused_models_empty">No unused models.</p>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- ── General ───────────────────────────────────── -->
+          <div id="panel-general" class="tab-panel" role="tabpanel" aria-labelledby="tab-general" hidden>
+            <div class="card">
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="ui_language_label">Display Language</span>
+                  <span class="label-hint" data-i18n="ui_language_hint">The language of this window, the pill and the tray menu.</span>
+                </div>
+                <div class="setting-control">
+                  <select id="ui-language-select">
+                    <option value="en">English</option>
+                    <option value="de">Deutsch</option>
+                  </select>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="autostart_label">Start with Windows</span>
+                  <span class="label-hint" data-i18n="autostart_hint">Starts RudariFlow in the tray when you log in.</span>
+                </div>
+                <div class="setting-control">
+                  <label class="switch">
+                    <input id="autostart-toggle" type="checkbox" />
+                    <span class="switch-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="history_mode_label">Keep history</span>
+                  <span class="label-hint"><span data-i18n="history_mode_hint">The last 200 texts and 50 recordings are kept.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="history-mode-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint hint-long" id="history-mode-more" data-i18n="history_mode_more" hidden>Recordings let you re-run a dictation with another model.</span>
+                </div>
+                <div class="setting-control">
+                  <select id="history-mode-select">
+                    <option value="audio" data-i18n="history_mode_audio">Text and recordings</option>
+                    <option value="text" data-i18n="history_mode_text">Text only</option>
+                    <option value="off" data-i18n="history_mode_off">Off</option>
+                  </select>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="history_stored_label">Stored on this PC</span>
+                  <span id="history-count" class="label-hint status-line"></span>
+                </div>
+                <div class="setting-control">
+                  <button type="button" id="history-clear" class="btn-secondary">Delete history</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+      </div>
+    </div>
+    <dialog id="mt-quit" class="mt-modal" aria-labelledby="mt-quit-question" aria-describedby="mt-quit-hint">
+      <div class="mt-modal-box">
+        <p id="mt-quit-question" class="mt-modal-question" data-i18n="mt_quit_question">Stop the meeting and quit?</p>
+        <p id="mt-quit-hint" class="label-hint" data-i18n="mt_quit_hint">The meeting is kept as interrupted; Finish in the Meetings tab transcribes the rest and writes the notes.</p>
+        <div class="mt-modal-actions">
+          <button id="mt-quit-cancel" class="btn-secondary" data-i18n="files_cancel">Cancel</button>
+          <button id="mt-quit-ok" class="btn-primary" data-i18n="mt_quit_ok">Stop and quit</button>
+        </div>
+      </div>
+    </dialog>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

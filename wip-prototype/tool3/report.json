@@ -1,0 +1,869 @@
+{
+ "new": [
+  {
+   "check": "clipped",
+   "page": "home",
+   "what": "span.history-meta",
+   "detail": "\"23:45 · 0:06 · large-v3-turbo-q8_0 · whatsapp.r…\" needs 253 px, has 212 px",
+   "where": [
+    "populated de 900x600"
+   ]
+  },
+  {
+   "check": "clipped",
+   "page": "settings-ai",
+   "what": "select.rule-language",
+   "detail": "\"German (Deutsch)\" needs 115 px, has 86 px",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600"
+   ]
+  },
+  {
+   "check": "clipped",
+   "page": "settings-models",
+   "what": "select#model-select",
+   "detail": "\"Large v3 Turbo q8 (~870 MB) — same text as Turb…\" needs 485 px, has 186 px",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "clipped",
+   "page": "soundboard-devices",
+   "what": "select[device-cable]",
+   "detail": "\"Automatic (CABLE Input (VB-Audio Virtual Cable))\" needs 313 px, has 212 px",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600"
+   ]
+  },
+  {
+   "check": "clipped",
+   "page": "soundboard-devices",
+   "what": "select[device-headphones]",
+   "detail": "\"Automatic (Headphones (Logitech PRO X))\" needs 265 px, has 212 px",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900"
+   ]
+  },
+  {
+   "check": "clipped",
+   "page": "soundboard-devices",
+   "what": "select[device-microphone]",
+   "detail": "\"Automatic (Microphone (Fast Track))\" needs 229 px, has 212 px",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "popout",
+   "what": "span.label-hint",
+   "detail": "3 lines, 177 characters",
+   "where": [
+    "populated de 460x680",
+    "firstrun de 460x680"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "settings-ai",
+   "what": "span.label-hint[ai_edit_hint]",
+   "detail": "2 lines, 204 characters",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "settings-ai",
+   "what": "span.label-hint[ai_output_hint]",
+   "detail": "2 lines, 118 characters",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "settings-dictation",
+   "what": "span.label-hint[free_gpu_hint]",
+   "detail": "2 lines, 174 characters",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "settings-dictation",
+   "what": "span.label-hint[rewrite_last_hint]",
+   "detail": "2 lines, 131 characters",
+   "where": [
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "settings-dictionary",
+   "what": "span.label-hint[screen_context_hint]",
+   "detail": "2 lines, 138 characters",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "settings-general",
+   "what": "span.label-hint[history_mode_hint]",
+   "detail": "2 lines, 135 characters",
+   "where": [
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "settings-models",
+   "what": "span.label-hint[game_free_hint]",
+   "detail": "4 lines, 470 characters",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "settings-models",
+   "what": "span.label-hint[idle_unload_hint]",
+   "detail": "2 lines, 215 characters",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "settings-models",
+   "what": "span.label-hint[pc_check_hint]",
+   "detail": "2 lines, 138 characters",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "soundboard-devices",
+   "what": "span.label-hint",
+   "detail": "2 lines, 118 characters",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900"
+   ]
+  },
+  {
+   "check": "hint-lines",
+   "page": "soundboard",
+   "what": "span.label-hint",
+   "detail": "2 lines, 118 characters",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "files-result",
+   "what": "select#file-language",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "files-result",
+   "what": "select#file-speakers",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "files-result",
+   "what": "textarea#file-text",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "files",
+   "what": "select#file-language",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "files",
+   "what": "select#file-speakers",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-ai",
+   "what": "input.rule-app",
+   "detail": "only a placeholder",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-ai",
+   "what": "input#ai-edit-toggle",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-ai",
+   "what": "input#ai-test-app",
+   "detail": "only a placeholder",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-ai",
+   "what": "input#ai-toggle",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-ai",
+   "what": "select#ai-model-select",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-ai",
+   "what": "select#ai-output-select",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-ai",
+   "what": "textarea.rule-instructions",
+   "detail": "only a placeholder",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-ai",
+   "what": "textarea#ai-instructions",
+   "detail": "only a placeholder",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-ai",
+   "what": "textarea#ai-test-input",
+   "detail": "only a placeholder",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-dictation",
+   "what": "input#mute-audio-toggle",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-dictation",
+   "what": "select#send-command-select",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-dictionary",
+   "what": "input.replacement-from",
+   "detail": "only a placeholder",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-dictionary",
+   "what": "input#dict-input",
+   "detail": "only a placeholder",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-dictionary",
+   "what": "input#learn-toggle",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-dictionary",
+   "what": "input#screen-toggle",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-dictionary",
+   "what": "input#swiss-toggle",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-dictionary",
+   "what": "textarea.replacement-to",
+   "detail": "only a placeholder",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-general",
+   "what": "input#autostart-toggle",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-general",
+   "what": "input#volume-slider",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-general",
+   "what": "select#history-mode-select",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-general",
+   "what": "select#mic-select",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-general",
+   "what": "select#ui-language-select",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-models",
+   "what": "input#game-free-toggle",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-models",
+   "what": "select#gpu-backend-select",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-models",
+   "what": "select#idle-unload-select",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-models",
+   "what": "select#language-select",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  },
+  {
+   "check": "name",
+   "page": "settings-models",
+   "what": "select#model-select",
+   "detail": "no label, aria-label or title",
+   "where": [
+    "populated en 2560x1392",
+    "populated en 1600x900",
+    "populated en 900x600",
+    "populated de 2560x1392",
+    "populated de 1600x900",
+    "populated de 900x600",
+    "firstrun en 2560x1392",
+    "firstrun en 1600x900",
+    "firstrun en 900x600",
+    "firstrun de 2560x1392",
+    "firstrun de 1600x900",
+    "firstrun de 900x600"
+   ]
+  }
+ ],
+ "known": []
+}

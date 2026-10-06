@@ -1,0 +1,192 @@
+/* Settings: five tabs; each has a card of the common rows and an Advanced
+   fold with the rest. The rows, cards, tabs, folds and list rows are
+   components.css; this is what only Settings needs. */
+
+/* The button row at the foot of a card ("Add rule"). */
+.card-foot {
+  padding: var(--s2) 0 var(--s3);
+}
+
+/* A hint or a notice that stands in a card by itself, under its heading. */
+.card > .label-hint {
+  padding-bottom: var(--s2);
+}
+
+.card > .notice {
+  margin: var(--s2) 0;
+}
+
+/* "(12 words)" after a list's title. */
+.list-count {
+  font-weight: 400;
+  color: var(--text-2);
+}
+
+/* ── Models ─────────────────────────────────────────── */
+
+/* A model's dropdown with its Download button. */
+.model-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.model-row select {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 160px;
+  max-width: min(320px, 100%);
+}
+
+/* A download's bar and numbers, under the row that started it. */
+.download-progress {
+  padding: 0 0 var(--s3);
+  border-bottom: 1px solid var(--line);
+}
+
+/* The PC check's report. */
+.pc-check-result {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s2);
+  padding: var(--s2) 0 var(--s3);
+  border-bottom: 1px solid var(--line);
+}
+
+.unused-model-name {
+  overflow-wrap: anywhere;
+}
+
+.unused-model-error {
+  color: var(--text-danger);
+}
+
+/* ── Dictionary: words ──────────────────────────────── */
+
+.dict-add {
+  display: flex;
+  gap: var(--s2);
+  padding-bottom: var(--s2);
+}
+
+.dict-add input {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+}
+
+/* Short rows, several side by side where there is room. */
+#dict-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  column-gap: var(--s5);
+}
+
+#dict-list .list-row {
+  align-items: center;
+  padding: var(--s1) 0;
+}
+
+.dict-term {
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* The suggestions stand out until they are dealt with. */
+.dict-suggest {
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+/* ── Dictionary: replacements ───────────────────────── */
+
+/* "When I say" → "Insert": the same three columns for the headings and every row. */
+.replacement-cols,
+.replacement-fields {
+  flex: 1 1 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16px minmax(0, 1.6fr);
+  align-items: start;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.replacement-cols {
+  /* The width of a row's Delete. */
+  margin-right: 72px;
+  padding-top: var(--s2);
+  font-size: var(--fs-s);
+  color: var(--text-2);
+}
+
+.replacement-cols span:last-child {
+  grid-column: 3;
+}
+
+.replacement-fields input,
+.replacement-to {
+  width: 100%;
+  max-width: none;
+}
+
+.replacement-arrow {
+  padding-top: 7px;
+  color: var(--text-2);
+  text-align: center;
+}
+
+/* A text box that grows with its text. */
+.replacement-to,
+.rule-instructions {
+  min-height: 34px;
+  field-sizing: content;
+  resize: none;
+  overflow: hidden;
+}
+
+/* ── AI cleanup: rules per app ──────────────────────── */
+
+.rule-fields {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+/* The app, its language and "No AI" on one line; they wrap when it gets narrow. */
+.rule-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s3);
+}
+
+.rule-app {
+  flex: 1 1 160px;
+  max-width: none;
+}
+
+.rule-language {
+  flex: 0 1 240px;
+  width: auto;
+  min-width: 200px;
+}
+
+.rule-instructions {
+  width: 100%;
+}
+
+.rule-off {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 24px;
+  font-size: var(--fs-s);
+  color: var(--text-2);
+  white-space: nowrap;
+  cursor: pointer;
+}

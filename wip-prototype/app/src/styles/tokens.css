@@ -1,0 +1,88 @@
+/* Design tokens (look B: calm and airy dark). The one source for colours,
+   shape, space, type and motion; components.css and the pages use these
+   names only. The font is shipped with the app: nothing is fetched. */
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces: the window, a card, a control on a card, a control hovered or pressed. */
+  --bg: #101014;
+  --surface: #17171d;
+  --surface-2: #1e1e26;
+  --surface-3: #272731;
+
+  /* Text. Every --text* has 4.5:1 or more on every surface above
+     (tools/ui-check checks it). */
+  --text: #ececf1;
+  --text-2: #a3a3af;
+  --text-accent: #9aa0ff;
+  --text-ok: #3ddc84;
+  --text-warn: #ffb347;
+  --text-danger: #ff7b7b;
+
+  /* The accent, what is written on it, and the tinted grounds. */
+  --accent: #7c83ff;
+  --accent-hover: #8f95ff;
+  --on-accent: #0c0c12;
+  --accent-bg: color-mix(in srgb, var(--accent) 16%, transparent);
+  --ok-bg: #12251a;
+  --warn-bg: #2a2010;
+  --danger-bg: #2a1418;
+
+  /* Lines: --line divides rows, --line-strong is the edge of a field (3:1). */
+  --line: #2a2a35;
+  --line-strong: #6f6f80;
+  --focus: #a5aaff;
+
+  /* Shape: cards 14 px, controls 8 px. */
+  --radius-card: 14px;
+  --radius: 8px;
+  --radius-s: 6px;
+
+  /* Space: 4-8-12-16-24. */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+
+  /* Type: 12 / 14 / 16 / 22, body 14. */
+  --fs-s: 12px;
+  --fs: 14px;
+  --fs-l: 16px;
+  --fs-xl: 22px;
+  --font: "IBM Plex Sans", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  /* Motion: a page change and a fold opening, nothing else. */
+  --ease: 150ms ease-out;
+
+  /* Names from before the redesign, so the older page rules get the new
+     look. New rules use the names above. */
+  --sidebar-bg: var(--bg);
+  --surface-hover: var(--surface-2);
+  --surface-active: var(--surface-3);
+  --text-secondary: var(--text-2);
+  --text-tertiary: var(--text-2);
+  --accent-subtle: var(--accent-bg);
+  --green: var(--text-ok);
+  --red: var(--text-danger);
+  --yellow: var(--text-warn);
+  --border: var(--line);
+  --border-strong: var(--line-strong);
+  --radius-lg: var(--radius-card);
+  /* Hover and focus change at once. */
+  --transition: 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

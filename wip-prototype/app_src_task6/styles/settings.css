@@ -1,0 +1,53 @@
+/* Settings: five tabs; each has a card of the common rows and an Advanced
+   fold with the rest. The rows, cards, tabs and folds are components.css;
+   this is what only Settings needs. */
+
+/* The button row at the foot of a card ("Add rule"). */
+.card-foot {
+  padding: var(--s2) 0 var(--s3);
+}
+
+/* A hint or a notice that stands in a card by itself, under its heading. */
+.card > .label-hint {
+  padding-bottom: var(--s2);
+}
+
+.card > .notice {
+  margin: var(--s2) 0;
+}
+
+/* "(12 words)" after a list's title. */
+.list-count {
+  font-weight: 400;
+  color: var(--text-2);
+}
+
+/* A model's dropdown with its Download button. */
+.model-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  width: auto;
+  max-width: none;
+}
+
+.model-row select {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 160px;
+  max-width: min(320px, 100%);
+}
+
+/* A download's bar and numbers, under the row that started it. */
+.download-progress {
+  padding: 0 0 var(--s3);
+  border-bottom: 1px solid var(--line);
+}
+
+/* The PC check's report. */
+.pc-check-result {
+  padding: var(--s2) 0 var(--s3);
+  border-bottom: 1px solid var(--line);
+}

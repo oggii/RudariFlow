@@ -1,0 +1,1679 @@
+/* RudariFlow's styles. The order matters: tokens, the shared components,
+   the window, then the pages (which add layout to the components). */
+@import "./styles/tokens.css";
+@import "./styles/components.css";
+@import "./styles/shell.css";
+@import "./styles/home.css";
+
+/* The Files tab uses the whole window: the transcript takes the height. */
+#section-files {
+  max-width: none;
+}
+
+/* The Soundboard may grow wide (two columns, see "Soundboard layout"). */
+#section-soundboard {
+  max-width: none;
+  container: sbmain / inline-size;
+}
+#section-soundboard .sb-layout {
+  max-width: 680px;
+  margin: 0 auto;
+}
+
+#section-files.active {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+#section-files .file-result:not(.hidden) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#section-files .file-text {
+  flex: 1;
+  min-height: 260px;
+  resize: none;
+}
+
+.file-summary.collapsed .file-summary-text {
+  display: none;
+}
+
+/* ── Model Row ──────────────────────────────────────── */
+
+.model-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  max-width: 280px;
+}
+
+.model-row select {
+  flex: 1;
+  max-width: none;
+}
+
+/* ── Unused models (Engine tab) ─────────────────────── */
+
+.unused-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 16px;
+}
+.unused-model-list:empty {
+  display: none;
+}
+
+.unused-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 10px 14px;
+}
+
+.unused-model-info {
+  min-width: 0;
+}
+
+.unused-model-name {
+  display: block;
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.unused-model-error {
+  color: var(--red);
+}
+
+/* ── Replacements ───────────────────────────────────── */
+
+.replacement-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.replacement-list:empty {
+  display: none;
+}
+
+.replacement-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.6fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+
+.replacement-row input[type="text"] {
+  max-width: none;
+}
+
+.replacement-arrow {
+  color: var(--text-secondary);
+  padding-top: 7px;
+}
+
+.replacement-to {
+  width: 100%;
+  min-height: 33px;
+  field-sizing: content;
+  resize: none;
+  overflow: hidden;
+  font: inherit;
+  line-height: 1.4;
+  padding: 7px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  transition: border-color var(--transition);
+}
+.replacement-to:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+.replacement-row .icon-btn {
+  margin-top: 3px;
+}
+
+/* ── History: the count and Clear history (Settings > General) ── */
+
+.history-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: var(--s3) 0;
+}
+
+/* ── Files ──────────────────────────────────────────── */
+
+.file-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 22px 16px 18px;
+  margin-bottom: 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  text-align: center;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.file-drop.dragging {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+.file-drop-icon {
+  color: var(--text-secondary);
+}
+.file-drop-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.file-drop .btn-secondary {
+  margin-top: 6px;
+}
+
+.files-options {
+  margin-bottom: 16px;
+}
+
+.file-job {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 12px;
+}
+.file-job-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 28px;
+}
+.file-name {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-job-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.file-status {
+  margin-top: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.file-status[data-tone="ok"] { color: var(--green); }
+.file-status[data-tone="error"] { color: var(--red); }
+
+.file-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 24px;
+}
+.file-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.file-times {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.file-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.export-menu {
+  position: relative;
+}
+
+.export-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.export-list button {
+  font: inherit;
+  text-align: left;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.export-list button:hover,
+.export-list button:focus-visible {
+  background: var(--bg);
+}
+.file-text {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  padding: 12px 14px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.file-summary {
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  padding: 10px 14px 12px;
+}
+.file-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.file-summary-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.file-summary-text {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.file-summary-text[data-tone="error"] { color: var(--red); }
+
+/* ── AI cleanup ─────────────────────────────────────── */
+
+.subsection-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 28px 0 4px;
+}
+
+.subsection-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  margin-bottom: 12px;
+  max-width: 560px;
+}
+
+.ai-status[data-tone="ok"] { color: var(--green); }
+.ai-status[data-tone="warn"] { color: var(--yellow); }
+.ai-status[data-tone="error"] { color: var(--red); }
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ai-model-row {
+  max-width: 440px;
+}
+
+.download-progress {
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.progress-track {
+  height: 3px;
+  background: var(--surface);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.field-textarea {
+  width: 100%;
+  min-height: 56px;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.45;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  transition: border-color var(--transition);
+}
+.field-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+.rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.rule-list:empty {
+  display: none;
+}
+
+.rule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 2fr) auto auto auto;
+  align-items: start;
+  gap: 8px;
+}
+
+.rule-row input[type="text"] {
+  max-width: none;
+}
+
+.rule-instructions {
+  width: 100%;
+  min-height: 33px;
+  field-sizing: content;
+  resize: none;
+  overflow: hidden;
+  font: inherit;
+  line-height: 1.4;
+  padding: 7px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  transition: border-color var(--transition), opacity var(--transition);
+}
+.rule-instructions:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+.rule-instructions:disabled {
+  opacity: 0.4;
+}
+
+.pc-check-result {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 0 0 12px;
+}
+.pc-check-result pre {
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  color: var(--text-secondary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.rule-language {
+  width: 132px;
+  height: 33px;
+}
+
+.rule-off {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 33px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rule-off input {
+  accent-color: var(--accent);
+}
+
+.rule-row .icon-btn {
+  margin-top: 3px;
+}
+
+.ai-test {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 32px;
+}
+
+.ai-test-controls {
+  display: flex;
+  gap: 8px;
+}
+.ai-test-controls input[type="text"] {
+  flex: 1;
+  max-width: 240px;
+}
+
+.ai-test-result {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ai-test-result p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+#ai-test-meta[data-tone="warn"] { color: var(--yellow); }
+#ai-test-meta[data-tone="error"] { color: var(--red); }
+
+/* ── Dictionary ─────────────────────────────────────── */
+
+.dict-options {
+  margin-bottom: 16px;
+}
+
+.dict-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.dict-add {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dict-add input[type="text"] {
+  flex: 1;
+  max-width: none;
+  background: var(--bg);
+}
+
+.dict-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dict-add-btn svg {
+  width: 11px;
+  height: 11px;
+}
+
+.dict-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 12px 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.dict-row:last-child {
+  border-bottom: none;
+}
+.dict-row:hover {
+  background: var(--surface-hover);
+}
+
+.dict-term {
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.dict-empty {
+  padding: 16px;
+}
+
+.dict-suggest {
+  margin-bottom: 12px;
+  border-color: var(--accent);
+}
+.dict-suggest-title {
+  margin: 0;
+  padding: 10px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.dict-suggest-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dict-suggest-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.dict-io {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+#dict-io-status[data-tone="error"] {
+  color: var(--red);
+}
+
+.dict-tip {
+  margin: 10px 0 0;
+}
+
+.dict-long {
+  color: var(--yellow);
+}
+
+.ai-output-warn {
+  color: var(--yellow);
+}
+
+/* ── Files: speakers ────────────────────────────────── */
+
+.file-speakers {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.file-speaker-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.speaker-chip,
+.speaker-chip-input {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.speaker-chip {
+  cursor: pointer;
+}
+
+.speaker-chip:hover {
+  border-color: var(--accent);
+}
+
+.speaker-chip-input {
+  width: 140px;
+  outline: none;
+  border-color: var(--accent);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ── Soundboard ─────────────────────────────────────── */
+
+.sb {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border-radius: var(--radius-lg);
+  outline: 1px dashed transparent;
+  outline-offset: 6px;
+  transition: outline-color var(--transition);
+}
+.sb.dragging {
+  outline-color: var(--accent);
+}
+.sb-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* Soundboard layout: with room (main content area >= 900 px) the settings sit
+   in a left column and the sound library in a wide right column. The page
+   scrolls as one; the pop-out and narrow windows keep one column. */
+@container sbmain (min-width: 900px) {
+  #section-soundboard .sb-layout {
+    max-width: 1800px;
+    display: grid;
+    grid-template-columns: minmax(360px, 460px) minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    column-gap: 40px;
+    align-items: start;
+  }
+  #section-soundboard .section-header {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  /* The board root dissolves so its two groups are grid items. */
+  #section-soundboard #sb-root {
+    display: contents;
+  }
+  #section-soundboard .sb-col-settings {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  #section-soundboard .sb-col-library,
+  #section-soundboard #sb-root > .sb-popped {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+  /* The narrower settings column: long hints wrap instead of running under the controls. */
+  #section-soundboard .sb-col-settings .setting-row {
+    gap: 16px;
+  }
+  #section-soundboard .sb-col-settings .setting-label {
+    min-width: 0;
+  }
+  #section-soundboard .sb-col-settings .setting-control {
+    flex: 0 0 auto;
+  }
+  /* Drop target outline moves to the whole layout (the root has no box). */
+  #section-soundboard .sb-layout:has(.sb.dragging) {
+    outline: 1px dashed var(--accent);
+    outline-offset: 6px;
+    border-radius: var(--radius-lg);
+  }
+}
+.sb-control {
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: 8px;
+}
+.sb-control > .switch,
+.sb-control > .hotkey-control {
+  flex-shrink: 0;
+}
+.sb-status {
+  margin-top: 6px;
+}
+.sb-status[data-tone="on"] { color: var(--green); }
+.sb-status[data-tone="error"] { color: var(--red); }
+.sb-slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.sb-slider input[type="range"] {
+  width: 140px;
+  min-width: 60px;
+  flex-shrink: 1;
+}
+.sb-slider-value {
+  min-width: 40px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.sb-devices {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 10px 14px;
+}
+.sb-devices > summary {
+  min-height: 24px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.sb-devices > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.sb-devices[open] > summary {
+  margin-bottom: 14px;
+}
+.sb-hint {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--accent-subtle);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.sb-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.sb-toolbar .sb-search {
+  flex: 1;
+  min-width: 140px;
+  max-width: none;
+}
+.sb-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.sb-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+.sb-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.sb-notice {
+  font-size: 12px;
+  white-space: pre-line;
+  color: var(--text-secondary);
+}
+.sb-notice[data-tone="ok"] { color: var(--green); }
+.sb-notice[data-tone="error"] { color: var(--red); }
+.sb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 24px;
+}
+.sb-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "play main side"
+    ". controls controls";
+  align-items: center;
+  gap: 6px 12px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.sb-row.playing {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+.sb-play {
+  grid-area: play;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--surface-hover);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color var(--transition);
+}
+.sb-play svg {
+  width: 12px;
+  height: 12px;
+}
+.sb-play:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.sb-play:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.sb-main {
+  grid-area: main;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.sb-name {
+  align-self: flex-start;
+  max-width: 100%;
+  min-height: 24px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb-play:focus-visible,
+.sb-name:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.sb-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.sb-progress-fill {
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width 100ms linear;
+}
+.sb-progress-fill.no-slide {
+  transition: none;
+}
+.sb-side {
+  grid-area: side;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Loop on: the accent, also on a playing row's tinted background. */
+.sb-loop[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.sb-length {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.sb-delete.armed {
+  color: var(--red);
+}
+.sb-controls {
+  grid-area: controls;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.sb-controls select {
+  width: auto;
+  min-width: 140px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  font-size: 12px;
+}
+.sb-controls .sb-slider input[type="range"] {
+  width: 110px;
+}
+.sb-note {
+  font-size: 11px;
+  color: var(--yellow);
+}
+/* A sound's hotkey while the sound hotkeys are switched off. */
+.sb-hotkey.off .hotkey-btn:not(.capturing) kbd {
+  opacity: 0.5;
+}
+.sb-popped {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+/* Narrow windows (the pop-out): label above its control. */
+@media (max-width: 700px) {
+  .sb .setting-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .sb-control {
+    justify-content: flex-start;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sb,
+  .sb-play,
+  .sb-progress-fill {
+    transition: none;
+  }
+}
+
+/* The soundboard in its own window (soundboard.html). */
+body.sb-page {
+  overflow-y: auto;
+}
+.sb-page-main {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 20px 20px 0;
+}
+.sb-page-main > .section-title {
+  margin-bottom: 16px;
+}
+.sb-page .setting-row {
+  gap: 16px;
+}
+.sb-page .setting-label {
+  min-width: 0;
+}
+.sb-page .sb-slider input[type="range"] {
+  width: 110px;
+}
+
+/* ── Meetings ───────────────────────────────────────── */
+
+/* The tab takes the window's height: an open meeting's transcript scrolls in
+   its own box, which is what "Jump to live" follows. The column is as wide
+   as the other tabs'; an open meeting gets more, and with room its notes
+   stand beside the transcript (see the container query below). */
+#section-meetings {
+  max-width: none;
+  container: mtmain / inline-size;
+}
+#section-meetings.active {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.mt-layout {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 600px;
+  min-height: 0;
+  margin: 0 auto;
+}
+#section-meetings.mt-open .mt-layout {
+  max-width: 760px;
+}
+/* An open meeting has the tab to itself; "All meetings" leads back. */
+#section-meetings.mt-open .section-header,
+#section-meetings.mt-open .mt-start,
+#section-meetings.mt-open .mt-error,
+#section-meetings.mt-recording .mt-start {
+  display: none;
+}
+#section-meetings .btn-primary:focus-visible,
+.mt-modal .btn-primary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Read out, not shown: "Recording started". */
+.mt-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.mt-start {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+#section-meetings .mt-title-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+}
+.mt-error {
+  color: var(--red);
+  margin-bottom: 8px;
+}
+
+.mt-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 14px;
+  margin-bottom: 8px;
+  background: rgba(229, 72, 77, 0.1);
+  border: 1px solid rgba(229, 72, 77, 0.45);
+  border-radius: var(--radius-lg);
+}
+.mt-bar-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+  box-shadow: 0 0 6px rgba(229, 72, 77, 0.5);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.mt-bar-time {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.mt-bar-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  opacity: 0.75;
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mt-bar-title:hover {
+  opacity: 1;
+}
+.mt-bar-title:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.mt-stop {
+  flex-shrink: 0;
+}
+.mt-warning {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--yellow);
+  margin-bottom: 4px;
+}
+.mt-reminder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.mt-finishing-line,
+.mt-hint-row[data-tone="busy"] .mt-hint-text {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.mt-finishing-line {
+  margin-bottom: 6px;
+}
+/* The sidebar's "Transcribing" dot: something is being worked on. */
+.mt-finishing-line::before,
+.mt-hint-row[data-tone="busy"] .mt-hint-text::before {
+  content: "";
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--yellow);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.mt-view {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+.mt-view-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mt-back {
+  margin-left: -8px;
+}
+.mt-view-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+/* Copy, Export and Delete are off while there is nothing to act on yet. */
+#section-meetings .btn-secondary:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+#section-meetings .btn-secondary:disabled:hover {
+  background: var(--surface);
+}
+.mt-view-heading {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.mt-view-title-wrap {
+  max-width: calc(100% + 8px);
+  margin-left: -8px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+/* The title is a button (click or Enter renames it); the input that takes
+   its place has the same box, so nothing moves. */
+.mt-view-title,
+.mt-title-edit {
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+.mt-view-title {
+  cursor: text;
+  overflow-wrap: anywhere;
+}
+.mt-view-title:hover {
+  background: var(--surface-hover);
+}
+.mt-view-title:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.mt-view-title-wrap:has(.mt-title-edit) {
+  align-self: stretch;
+}
+.mt-title-edit {
+  width: 100%;
+  max-width: none;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+  background: var(--surface);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+  outline: none;
+}
+.mt-view-meta {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.mt-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mt-hint-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.mt-hint-text {
+  flex: 1 1 260px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mt-hint-row button {
+  flex-shrink: 0;
+}
+.mt-hint-row .icon-btn {
+  width: 24px;
+  height: 24px;
+  margin: -2px -4px -2px 0;
+}
+.mt-hint-row[data-tone="warn"] {
+  color: var(--text);
+  background: rgba(245, 166, 35, 0.07);
+  border-color: rgba(245, 166, 35, 0.4);
+}
+.mt-hint-row[data-tone="busy"] { color: var(--text); }
+.mt-hint-row[data-tone="ok"] { color: var(--green); }
+.mt-hint-row[data-tone="error"] { color: var(--red); }
+
+/* Notes above the transcript; the transcript takes the height that is left
+   (0px, not 0: a percentage would count as the content's height here). */
+.mt-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+.mt-main {
+  flex: 1 1 0px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 320px;
+}
+/* Under its notes the transcript is as high as the window: scrolled down
+   to it, it fills the page. */
+#section-meetings.mt-has-notes .mt-main {
+  min-height: max(320px, calc(100vh - 110px));
+}
+.mt-speakers {
+  margin-bottom: 0;
+}
+.mt-notes {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px 16px 14px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: var(--radius-lg);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.mt-notes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.mt-notes-head h4 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.mt-notes-head .btn-ghost {
+  margin-right: -8px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.mt-notes-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+}
+.mt-notes ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 18px;
+  line-height: 1.55;
+}
+.mt-notes li {
+  overflow-wrap: anywhere;
+}
+.mt-notes ul.mt-checklist {
+  list-style: none;
+  padding-left: 0;
+}
+.mt-checklist label {
+  display: flex;
+  align-items: flex-start;
+  min-height: 24px;
+  gap: 8px;
+  cursor: pointer;
+}
+.mt-checklist input {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
+  accent-color: var(--accent);
+  color-scheme: dark;
+  cursor: pointer;
+}
+.mt-checklist input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.mt-checklist input:checked + span {
+  color: var(--text-secondary);
+  text-decoration: line-through;
+}
+
+/* The box is positioned inside its wrap, so its height is the wrap's
+   whatever the paragraphs need. */
+.mt-transcript-wrap {
+  position: relative;
+  flex: 1 1 0px;
+  min-height: 260px;
+}
+.mt-transcript {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.mt-transcript:empty::before {
+  content: attr(data-empty);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.mt-transcript:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.mt-transcript::-webkit-scrollbar {
+  width: 6px;
+}
+.mt-transcript::-webkit-scrollbar-track {
+  background: transparent;
+}
+.mt-transcript::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+.mt-para {
+  flex-shrink: 0;
+}
+.mt-para-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+.mt-para-time {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.mt-para-who {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+/* Lighter than the accent: readable at this size on the surface. */
+.mt-para[data-track="you"] .mt-para-who {
+  color: color-mix(in srgb, var(--accent) 55%, #fff);
+}
+/* Under the time, past the play button. */
+.mt-para-text {
+  padding-left: 32px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.mt-play {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--surface-hover);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color var(--transition);
+}
+.mt-play svg {
+  width: 10px;
+  height: 10px;
+}
+.mt-play svg:last-child,
+.mt-play[data-playing="true"] svg:first-child {
+  display: none;
+}
+.mt-play[data-playing="true"] svg:last-child {
+  display: block;
+}
+.mt-play[data-playing="true"] {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+.mt-play:hover:not([aria-disabled="true"]) {
+  border-color: var(--accent);
+}
+.mt-play[aria-disabled="true"] {
+  opacity: 0.35;
+  cursor: default;
+}
+.mt-play:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.mt-live {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+
+.mt-library-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 33px;
+  margin: 20px 0 10px;
+}
+.mt-library-title {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.mt-search {
+  flex: 0 1 280px;
+  min-width: 0;
+  padding: 7px 12px;
+  background: var(--surface);
+  color: var(--text);
+  color-scheme: dark;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  font-family: var(--font);
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--transition);
+}
+.mt-search:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+.mt-search::placeholder {
+  color: var(--text-2);
+}
+.mt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+}
+.mt-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 12px;
+  padding: 10px 14px;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+.mt-item:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+.mt-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.mt-item-title,
+.mt-item-meta {
+  grid-column: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mt-item-title {
+  font-weight: 500;
+}
+.mt-item-meta {
+  font-variant-numeric: tabular-nums;
+}
+.mt-badge {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--accent-subtle);
+  color: var(--text);
+}
+.mt-badge[data-state="recording"] {
+  background: rgba(229, 72, 77, 0.18);
+  color: var(--red);
+}
+.mt-badge[data-state="interrupted"] {
+  background: rgba(245, 166, 35, 0.16);
+  color: var(--yellow);
+}
+
+/* A modal <dialog> (showModal): the page behind is inert and dimmed by the
+   backdrop. The dialog has no padding of its own, so a click on it is a
+   click beside the box. */
+.mt-modal {
+  max-width: min(400px, calc(100vw - 32px));
+  margin: auto;
+  padding: 0;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+.mt-modal::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+.mt-modal-box {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mt-modal-question {
+  font-size: 14px;
+  font-weight: 600;
+}
+.mt-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* Room for two columns: the notes beside the transcript, which then has the
+   window's height. */
+@container mtmain (min-width: 1040px) {
+  #section-meetings.mt-open.mt-has-notes .mt-layout {
+    max-width: 1320px;
+  }
+  #section-meetings.mt-has-notes .mt-body {
+    flex-direction: row;
+    gap: 20px;
+  }
+  #section-meetings.mt-has-notes .mt-notes {
+    flex: 0 0 clamp(340px, 36%, 460px);
+    align-self: flex-start;
+  }
+  #section-meetings.mt-has-notes .mt-main {
+    min-height: 320px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mt-bar-dot,
+  .mt-finishing-line::before,
+  .mt-hint-row[data-tone="busy"] .mt-hint-text::before {
+    animation: none;
+  }
+}

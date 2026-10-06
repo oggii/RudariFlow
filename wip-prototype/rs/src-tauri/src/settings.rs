@@ -1,0 +1,634 @@
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+
+use crate::ai_cleanup::AppRule;
+use crate::replacements::Replacement;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Settings {
+    pub microphone: String,
+    pub engine: String,
+    #[serde(rename = "whisperModel")]
+    pub whisper_model: String,
+    #[serde(rename = "groqApiKey")]
+    pub groq_api_key: String,
+    #[serde(rename = "recordingMode")]
+    pub recording_mode: String,
+    pub hotkey: String,
+    #[serde(rename = "gpuBackend", default = "default_gpu_backend")]
+    pub gpu_backend: String,
+    #[serde(default = "default_language")]
+    pub language: String,
+    #[serde(rename = "uiLanguage", default)]
+    pub ui_language: String,
+    #[serde(default = "default_volume")]
+    pub volume: f32,
+    #[serde(default)]
+    pub autostart: bool,
+    #[serde(rename = "customPrompt", default)]
+    pub custom_prompt: String,
+    /// Spoken phrases expanded into longer text after transcription.
+    #[serde(default)]
+    pub replacements: Vec<Replacement>,
+    /// Key pressed after a dictation that ends with "send it":
+    /// "off", "enter" or "ctrl+enter".
+    #[serde(rename = "sendCommand", default = "default_send_command")]
+    pub send_command: String,
+    /// "off", "text" (transcripts only) or "audio" (transcripts and recordings).
+    #[serde(default = "default_history")]
+    pub history: String,
+    /// Keyboard chord that pastes the last transcript again; empty = none.
+    #[serde(rename = "pasteLastHotkey", default = "default_paste_last_hotkey")]
+    pub paste_last_hotkey: String,
+    /// Selects the last dictation in the focused field, then records what to
+    /// change about it (Edit mode). Empty = off.
+    #[serde(rename = "rewriteLastHotkey", default)]
+    pub rewrite_last_hotkey: String,
+    /// Frees the GPU (unloads Whisper, stops the AI server); the next press
+    /// loads them again. Empty = off, the default: a global chord is taken
+    /// from every app, games included.
+    #[serde(rename = "freeGpuHotkey", default)]
+    pub free_gpu_hotkey: String,
+    /// Whisper flash attention: "auto" (on for CUDA, off for Vulkan), "on"
+    /// or "off", as the PC check found fastest on this PC.
+    #[serde(rename = "whisperFlashAttn", default = "default_auto")]
+    pub whisper_flash_attn: String,
+    /// Mute other apps while recording.
+    #[serde(rename = "muteAudio", default)]
+    pub mute_audio: bool,
+    /// Polish dictations with the local language model.
+    #[serde(rename = "aiCleanup", default)]
+    pub ai_cleanup: bool,
+    /// Id from `ai_models::MODELS`.
+    #[serde(rename = "aiModel", default = "default_ai_model")]
+    pub ai_model: String,
+    /// "polished" or "light".
+    #[serde(rename = "aiStyle", default = "default_ai_style")]
+    pub ai_style: String,
+    /// Instructions for all apps.
+    #[serde(rename = "aiInstructions", default)]
+    pub ai_instructions: String,
+    #[serde(rename = "aiRules", default)]
+    pub ai_rules: Vec<AppRule>,
+    /// Swiss spelling: ss instead of ß in every dictation.
+    #[serde(rename = "swissSpelling", default)]
+    pub swiss_spelling: bool,
+    /// "Write in": Whisper language code the AI writes everything in
+    /// (translating if needed); empty = the language that was spoken.
+    #[serde(rename = "aiOutputLanguage", default)]
+    pub ai_output_language: String,
+    /// Edit mode: with text selected, the hotkey edits it by voice (needs
+    /// AI cleanup).
+    #[serde(rename = "editMode", default = "default_true")]
+    pub edit_mode: bool,
+    /// Screen context: names and terms visible in the window help Whisper
+    /// and the AI spell them.
+    #[serde(rename = "screenContext", default = "default_true")]
+    pub screen_context: bool,
+    /// Suggest dictionary entries from names the user corrects by hand
+    /// after a dictation.
+    #[serde(rename = "learnDictionary", default = "default_true")]
+    pub learn_dictionary: bool,
+    /// Files tab: "off", "auto" or "2" … "8" speakers to separate.
+    #[serde(rename = "fileSpeakers", default = "default_file_speakers")]
+    pub file_speakers: String,
+    /// Starts and stops a meeting (Meetings tab). Empty = off, the default.
+    #[serde(rename = "meetingHotkey", default)]
+    pub meeting_hotkey: String,
+    /// The meeting bar's reminder to tell the others is dismissed for good.
+    #[serde(rename = "meetingReminderOff", default)]
+    pub meeting_reminder_off: bool,
+    /// The headphones hint was shown in a meeting once.
+    #[serde(rename = "meetingHeadphonesSeen", default)]
+    pub meeting_headphones_seen: bool,
+    /// Free the GPU while a fullscreen app (a game) is in the foreground
+    /// (src/game_watch.rs). Off by default.
+    #[serde(rename = "freeGpuForGames", default)]
+    pub free_gpu_for_games: bool,
+    /// On mains power, unload the models after this many minutes without
+    /// dictation: 0 (never, the default), 15, 30 or 60. On battery it is
+    /// always 10 minutes (`power::IDLE_UNLOAD`).
+    #[serde(rename = "idleUnloadMinutes", default)]
+    pub idle_unload_minutes: u32,
+}
+
+/// The choices of "Unload when idle" (minutes; 0 = never).
+pub const IDLE_UNLOAD_CHOICES: [u32; 4] = [0, 15, 30, 60];
+
+fn default_auto() -> String {
+    "auto".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_volume() -> f32 {
+    0.4
+}
+
+fn default_gpu_backend() -> String {
+    "auto".to_string()
+}
+
+fn default_language() -> String {
+    "auto".to_string()
+}
+
+fn default_send_command() -> String {
+    "off".to_string()
+}
+
+fn default_history() -> String {
+    "audio".to_string()
+}
+
+fn default_paste_last_hotkey() -> String {
+    "Alt+Shift+V".to_string()
+}
+
+fn default_ai_model() -> String {
+    crate::ai_models::DEFAULT_MODEL.to_string()
+}
+
+fn default_ai_style() -> String {
+    "polished".to_string()
+}
+
+fn default_file_speakers() -> String {
+    "off".to_string()
+}
+
+/// Ctrl+A, C, V, X, Z, Y and S: as a global hotkey one of these would stop
+/// working in every app (and Ctrl+V would catch RudariFlow's own paste).
+pub fn is_windows_shortcut(hotkey: &str) -> bool {
+    let mut ctrl = false;
+    let mut others = 0;
+    let mut key = String::new();
+    for token in hotkey.split('+').map(|t| t.trim().to_ascii_lowercase()) {
+        match token.as_str() {
+            "cmdorctrl" | "commandorcontrol" | "ctrl" | "control" => ctrl = true,
+            "shift" | "alt" | "option" | "super" | "win" | "meta" | "cmd" | "command" => others += 1,
+            _ => key = token,
+        }
+    }
+    let key = key.strip_prefix("key").unwrap_or(&key);
+    ctrl && others == 0 && matches!(key, "a" | "c" | "v" | "x" | "z" | "y" | "s")
+}
+
+impl Settings {
+    /// `whisper_flash_attn` for the engine: `None` = per API.
+    pub fn flash_attn_pref(&self) -> Option<bool> {
+        match self.whisper_flash_attn.as_str() {
+            "on" => Some(true),
+            "off" => Some(false),
+            _ => None,
+        }
+    }
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            microphone: "default".to_string(),
+            engine: "local".to_string(),
+            whisper_model: "small".to_string(),
+            groq_api_key: String::new(),
+            recording_mode: "toggle".to_string(),
+            hotkey: "CmdOrCtrl+Shift+Space".to_string(),
+            gpu_backend: "auto".to_string(),
+            language: "auto".to_string(),
+            ui_language: String::new(),
+            volume: 0.4,
+            autostart: false,
+            custom_prompt: String::new(),
+            replacements: Vec::new(),
+            send_command: default_send_command(),
+            history: default_history(),
+            paste_last_hotkey: default_paste_last_hotkey(),
+            rewrite_last_hotkey: String::new(),
+            free_gpu_hotkey: String::new(),
+            whisper_flash_attn: default_auto(),
+            mute_audio: false,
+            ai_cleanup: false,
+            ai_model: default_ai_model(),
+            ai_style: default_ai_style(),
+            ai_instructions: String::new(),
+            ai_rules: Vec::new(),
+            swiss_spelling: false,
+            ai_output_language: String::new(),
+            edit_mode: true,
+            screen_context: true,
+            learn_dictionary: true,
+            file_speakers: default_file_speakers(),
+            meeting_hotkey: String::new(),
+            meeting_reminder_off: false,
+            meeting_headphones_seen: false,
+            free_gpu_for_games: false,
+            idle_unload_minutes: 0,
+        }
+    }
+}
+
+impl Settings {
+    pub fn config_path(app_dir: &PathBuf) -> PathBuf {
+        app_dir.join("config.json")
+    }
+
+    pub fn load(app_dir: &PathBuf) -> Self {
+        let path = Self::config_path(app_dir);
+        let Ok(contents) = fs::read_to_string(&path) else {
+            return Self::default();
+        };
+        let mut settings: Self = match serde_json::from_str(&contents) {
+            Ok(s) => s,
+            Err(_) => return Self::default(),
+        };
+        // Migration: pre-0.2.0 used `useGpu: bool`. Map it onto gpuBackend.
+        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&contents) {
+            if !raw.get("gpuBackend").is_some() {
+                if let Some(use_gpu) = raw.get("useGpu").and_then(|v| v.as_bool()) {
+                    settings.gpu_backend = if use_gpu { "auto".to_string() } else { "cpu".to_string() };
+                }
+            }
+        }
+        // Accepted values are auto / cuda / vulkan / cpu. Anything else (e.g. a
+        // "gpu" value from a pre-release build) behaves like and becomes auto.
+        if !matches!(settings.gpu_backend.as_str(), "auto" | "cuda" | "vulkan" | "cpu") {
+            settings.gpu_backend = "auto".to_string();
+        }
+        // An empty microphone (saved by the settings UI before it listed
+        // "default") means the system default input.
+        if settings.microphone.trim().is_empty() {
+            settings.microphone = "default".to_string();
+        }
+        if !matches!(settings.send_command.as_str(), "off" | "enter" | "ctrl+enter") {
+            settings.send_command = default_send_command();
+        }
+        if !matches!(settings.history.as_str(), "off" | "text" | "audio") {
+            settings.history = default_history();
+        }
+        if crate::ai_models::find(&settings.ai_model).is_none() {
+            settings.ai_model = default_ai_model();
+        }
+        if !matches!(settings.ai_style.as_str(), "polished" | "light") {
+            settings.ai_style = default_ai_style();
+        }
+        if crate::whisper_engine::language_name(&settings.ai_output_language).is_none() {
+            settings.ai_output_language = String::new();
+        }
+        if !IDLE_UNLOAD_CHOICES.contains(&settings.idle_unload_minutes) {
+            settings.idle_unload_minutes = 0;
+        }
+        settings
+    }
+
+    pub fn save(&self, app_dir: &PathBuf) -> Result<(), String> {
+        let path = Self::config_path(app_dir);
+        fs::create_dir_all(app_dir).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        fs::write(&path, json).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env::temp_dir;
+
+    #[test]
+    fn test_default_settings() {
+        let settings = Settings::default();
+        assert_eq!(settings.microphone, "default");
+        assert_eq!(settings.engine, "local");
+        assert_eq!(settings.whisper_model, "small");
+        assert_eq!(settings.groq_api_key, "");
+        assert_eq!(settings.recording_mode, "toggle");
+        assert_eq!(settings.hotkey, "CmdOrCtrl+Shift+Space");
+    }
+
+    #[test]
+    fn test_save_and_load() {
+        let dir = temp_dir().join("typr_test_settings");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut settings = Settings::default();
+        settings.engine = "cloud".to_string();
+        settings.groq_api_key = "test-key-123".to_string();
+
+        settings.save(&dir).unwrap();
+        let loaded = Settings::load(&dir);
+
+        assert_eq!(loaded.engine, "cloud");
+        assert_eq!(loaded.groq_api_key, "test-key-123");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_missing_file_returns_default() {
+        let dir = temp_dir().join("typr_test_missing");
+        let _ = fs::remove_dir_all(&dir);
+        let settings = Settings::load(&dir);
+        assert_eq!(settings, Settings::default());
+    }
+
+    #[test]
+    fn test_load_corrupt_json_returns_default() {
+        let dir = temp_dir().join("typr_test_corrupt");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("config.json"), "not json").unwrap();
+
+        let settings = Settings::load(&dir);
+        assert_eq!(settings, Settings::default());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn windows_editing_shortcuts_are_not_hotkeys() {
+        for reserved in ["CmdOrCtrl+A", "Ctrl+C", "CmdOrCtrl+V", "control+x", "CmdOrCtrl+Z", "CmdOrCtrl+KeyY", "Ctrl+S"] {
+            assert!(is_windows_shortcut(reserved), "{}", reserved);
+        }
+        for free in ["CmdOrCtrl+Shift+A", "Alt+Shift+F10", "CmdOrCtrl+Space", "Mouse4", "Shift+Mouse5", "CmdOrCtrl+B", "Alt+V", ""] {
+            assert!(!is_windows_shortcut(free), "{}", free);
+        }
+    }
+
+    #[test]
+    fn test_unknown_gpu_backend_becomes_auto() {
+        let dir = temp_dir().join("typr_test_gpu_backend");
+        let _ = fs::remove_dir_all(&dir);
+
+        for (saved, expected) in [("gpu", "auto"), ("cuda", "cuda"), ("vulkan", "vulkan"), ("cpu", "cpu")] {
+            let mut settings = Settings::default();
+            settings.gpu_backend = saved.to_string();
+            settings.save(&dir).unwrap();
+            assert_eq!(Settings::load(&dir).gpu_backend, expected);
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_custom_prompt_default_empty() {
+        let s = Settings::default();
+        assert_eq!(s.custom_prompt, "");
+    }
+
+    #[test]
+    fn test_custom_prompt_roundtrip() {
+        let dir = temp_dir().join("typr_test_prompt");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut settings = Settings::default();
+        settings.custom_prompt = "Tauri whisper.cpp ggml".to_string();
+        settings.save(&dir).unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!(loaded.custom_prompt, "Tauri whisper.cpp ggml");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_custom_prompt_missing_field_loads_as_empty() {
+        let dir = temp_dir().join("typr_test_prompt_missing");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let pre_v3 = r#"{
+            "microphone": "default",
+            "engine": "local",
+            "whisperModel": "small",
+            "groqApiKey": "",
+            "recordingMode": "toggle",
+            "hotkey": "CmdOrCtrl+Shift+Space",
+            "gpuBackend": "auto",
+            "language": "auto",
+            "uiLanguage": "",
+            "volume": 0.4,
+            "autostart": false
+        }"#;
+        fs::write(dir.join("config.json"), pre_v3).unwrap();
+
+        let loaded = Settings::load(&dir);
+        assert_eq!(loaded.custom_prompt, "");
+        assert!(loaded.replacements.is_empty());
+        assert_eq!(loaded.send_command, "off");
+        assert_eq!(loaded.history, "audio");
+        assert_eq!(loaded.paste_last_hotkey, "Alt+Shift+V");
+        assert!(!loaded.mute_audio);
+        assert!(!loaded.ai_cleanup);
+        assert_eq!(loaded.ai_model, crate::ai_models::DEFAULT_MODEL);
+        assert_eq!(loaded.ai_style, "polished");
+        assert!(loaded.ai_rules.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_new_fields_roundtrip() {
+        let dir = temp_dir().join("typr_test_v06_fields");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut settings = Settings::default();
+        settings.replacements = vec![Replacement { from: "my email".into(), to: "a@b.ch".into() }];
+        settings.send_command = "ctrl+enter".to_string();
+        settings.history = "off".to_string();
+        settings.paste_last_hotkey = String::new();
+        settings.mute_audio = true;
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir), settings);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_ai_fields_roundtrip_and_fallbacks() {
+        let dir = temp_dir().join("typr_test_ai_fields");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut settings = Settings::default();
+        settings.ai_cleanup = true;
+        settings.ai_model = "gemma-4-12b".to_string();
+        settings.ai_style = "light".to_string();
+        settings.ai_instructions = "Use ss instead of ß.".to_string();
+        settings.ai_rules = vec![AppRule { app: "whatsapp".into(), instructions: "lowercase".into(), ..Default::default() }];
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir), settings);
+
+        settings.ai_model = "gpt-9".to_string();
+        settings.ai_style = "shouty".to_string();
+        settings.save(&dir).unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!(loaded.ai_model, crate::ai_models::DEFAULT_MODEL);
+        assert_eq!(loaded.ai_style, "polished");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_output_language_roundtrip_and_fallback() {
+        let dir = temp_dir().join("typr_test_output_language");
+        let _ = fs::remove_dir_all(&dir);
+        let mut settings = Settings::default();
+        assert_eq!(settings.ai_output_language, "");
+        settings.ai_output_language = "en".to_string();
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).ai_output_language, "en");
+        settings.ai_output_language = "klingon".to_string();
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).ai_output_language, "");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_empty_microphone_loads_as_default() {
+        let dir = temp_dir().join("typr_test_empty_mic");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut settings = Settings::default();
+        settings.microphone = String::new();
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).microphone, "default");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_speakers_default_to_off() {
+        let pre_v3 = r#"{
+            "microphone": "default",
+            "engine": "local",
+            "whisperModel": "small",
+            "groqApiKey": "",
+            "recordingMode": "toggle",
+            "hotkey": "CmdOrCtrl+Shift+Space",
+            "gpuBackend": "auto",
+            "language": "auto",
+            "uiLanguage": "",
+            "volume": 0.4,
+            "autostart": false
+        }"#;
+        let s: Settings = serde_json::from_str(pre_v3).unwrap();
+        assert_eq!(s.file_speakers, "off");
+    }
+
+    #[test]
+    fn test_unknown_send_command_and_history_fall_back() {
+        let dir = temp_dir().join("typr_test_v06_invalid");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut settings = Settings::default();
+        settings.send_command = "shift+enter".to_string();
+        settings.history = "forever".to_string();
+        settings.save(&dir).unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!(loaded.send_command, "off");
+        assert_eq!(loaded.history, "audio");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn free_gpu_hotkey_is_off_by_default_and_kept() {
+        assert_eq!(Settings::default().free_gpu_hotkey, "");
+        let before_0_13 = r#"{
+            "microphone": "default",
+            "engine": "local",
+            "whisperModel": "small",
+            "groqApiKey": "",
+            "recordingMode": "toggle",
+            "hotkey": "Mouse5"
+        }"#;
+        let s: Settings = serde_json::from_str(before_0_13).unwrap();
+        assert_eq!(s.free_gpu_hotkey, "");
+
+        let dir = temp_dir().join("typr_test_free_gpu_hotkey");
+        let _ = fs::remove_dir_all(&dir);
+        let mut settings = Settings::default();
+        settings.free_gpu_hotkey = "Ctrl+Mouse5".to_string();
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).free_gpu_hotkey, "Ctrl+Mouse5");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn meeting_settings_are_off_by_default_and_kept() {
+        let s = Settings::default();
+        assert_eq!((s.meeting_hotkey.as_str(), s.meeting_reminder_off, s.meeting_headphones_seen), ("", false, false));
+        let before_meetings = r#"{
+            "microphone": "default",
+            "engine": "local",
+            "whisperModel": "small",
+            "groqApiKey": "",
+            "recordingMode": "toggle",
+            "hotkey": "Mouse5"
+        }"#;
+        let s: Settings = serde_json::from_str(before_meetings).unwrap();
+        assert_eq!((s.meeting_hotkey.as_str(), s.meeting_reminder_off), ("", false));
+
+        let dir = temp_dir().join("typr_test_meeting_settings");
+        let _ = fs::remove_dir_all(&dir);
+        let settings = Settings {
+            meeting_hotkey: "Ctrl+Alt+M".to_string(),
+            meeting_reminder_off: true,
+            meeting_headphones_seen: true,
+            ..Settings::default()
+        };
+        settings.save(&dir).unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!(
+            (loaded.meeting_hotkey.as_str(), loaded.meeting_reminder_off, loaded.meeting_headphones_seen),
+            ("Ctrl+Alt+M", true, true)
+        );
+        let json = fs::read_to_string(Settings::config_path(&dir)).unwrap();
+        for key in ["\"meetingHotkey\"", "\"meetingReminderOff\"", "\"meetingHeadphonesSeen\""] {
+            assert!(json.contains(key), "{}", key);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gpu_management_settings_are_off_by_default_and_kept() {
+        let s = Settings::default();
+        assert_eq!((s.free_gpu_for_games, s.idle_unload_minutes), (false, 0));
+        // A config.json from 0.15 has neither field.
+        let before = r#"{
+            "microphone": "default",
+            "engine": "local",
+            "whisperModel": "small",
+            "groqApiKey": "",
+            "recordingMode": "toggle",
+            "hotkey": "Mouse5",
+            "freeGpuHotkey": "Ctrl+Mouse5"
+        }"#;
+        let s: Settings = serde_json::from_str(before).unwrap();
+        assert_eq!((s.free_gpu_for_games, s.idle_unload_minutes, s.free_gpu_hotkey.as_str()), (false, 0, "Ctrl+Mouse5"));
+
+        let dir = temp_dir().join("typr_test_gpu_management");
+        let _ = fs::remove_dir_all(&dir);
+        let settings = Settings { free_gpu_for_games: true, idle_unload_minutes: 30, ..Settings::default() };
+        settings.save(&dir).unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!((loaded.free_gpu_for_games, loaded.idle_unload_minutes), (true, 30));
+        let json = fs::read_to_string(Settings::config_path(&dir)).unwrap();
+        assert!(json.contains("\"freeGpuForGames\": true"), "{}", json);
+        assert!(json.contains("\"idleUnloadMinutes\": 30"), "{}", json);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_idle_unload_time_that_is_no_choice_becomes_never() {
+        let dir = temp_dir().join("typr_test_idle_unload_choice");
+        let _ = fs::remove_dir_all(&dir);
+        for minutes in [0, 15, 30, 60] {
+            Settings { idle_unload_minutes: minutes, ..Settings::default() }.save(&dir).unwrap();
+            assert_eq!(Settings::load(&dir).idle_unload_minutes, minutes);
+        }
+        Settings { idle_unload_minutes: 7, ..Settings::default() }.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).idle_unload_minutes, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
