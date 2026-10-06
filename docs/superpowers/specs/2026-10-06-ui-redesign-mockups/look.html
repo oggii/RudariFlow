@@ -1,0 +1,85 @@
+<style>
+  .v { --bg:#0b0b0d; --side:#0e0e11; --card:#131317; --line:#23232a; --text:#ececf1; --mute:#a3a3af; --accent:#6b6ff5; --key:#1c1c22; --ok:#3ddc84; --okbg:#12251a; --r:10px; --pad:12px; --fs:13px; --h:18px; --gap:12px;
+       background:var(--bg); color:var(--text); border-radius:12px; display:flex; min-height:400px; font:var(--fs)/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif; overflow:hidden; border:1px solid var(--line); text-align:left; }
+  .v.airy { --bg:#101014; --side:#101014; --card:#17171d; --line:#22222b; --r:14px; --pad:16px; --fs:14px; --h:22px; --gap:16px; --accent:#7c83ff; }
+  .v.light { --bg:#f6f6f8; --side:#efeff3; --card:#ffffff; --line:#dedee6; --text:#17171c; --mute:#5d5d6b; --accent:#4b50e6; --key:#f0f0f5; --ok:#12813f; --okbg:#e3f6ea; }
+  .v .side { width:150px; background:var(--side); border-right:1px solid var(--line); padding:14px 8px; display:flex; flex-direction:column; gap:2px; flex:none; }
+  .v.airy .side { border-right:0; }
+  .v .logo { font-weight:700; padding:2px 10px 12px; letter-spacing:-.01em; }
+  .v .item { padding:7px 10px; border-radius:8px; color:var(--mute); }
+  .v .item.on { background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--text); font-weight:600; }
+  .v .sp { flex:1; }
+  .v .main { flex:1; padding:calc(var(--pad) + 8px) calc(var(--pad) + 10px); }
+  .v .h { font-size:var(--h); font-weight:650; letter-spacing:-.01em; display:flex; align-items:center; gap:10px; }
+  .v .sub { color:var(--mute); margin:2px 0 var(--gap); }
+  .v .pill { background:var(--okbg); color:var(--ok); border-radius:20px; padding:2px 10px; font-size:12px; font-weight:600; }
+  .v .two { display:grid; grid-template-columns:5fr 6fr; gap:var(--gap); }
+  .v .card { background:var(--card); border:1px solid var(--line); border-radius:var(--r); padding:calc(var(--pad) - 8px) var(--pad); margin-bottom:var(--gap); }
+  .v.airy .card { border-color:transparent; box-shadow:0 1px 0 rgba(255,255,255,.03) inset; }
+  .v .row { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:calc(var(--pad) - 4px) 0; border-bottom:1px solid var(--line); }
+  .v .row:last-child { border-bottom:0; }
+  .v .key { font:12px ui-monospace,Consolas,monospace; background:var(--key); border:1px solid var(--line); border-radius:6px; padding:2px 8px; white-space:nowrap; }
+  .v .sw { width:32px; height:18px; border-radius:10px; background:var(--accent); position:relative; display:inline-block; flex:none; }
+  .v .sw::after { content:""; position:absolute; right:2px; top:2px; width:14px; height:14px; border-radius:50%; background:#fff; }
+  .v .mute { color:var(--mute); }
+  .v .search { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:4px 10px; color:var(--mute); font-size:12px; width:150px; }
+  .stack > .option { display:block; margin-bottom:18px; }
+</style>
+
+<h2>The look</h2>
+<p class="subtitle">Same Home page in three styles. This sets the style for the whole app (all tabs get the same rows, lists, buttons and delete pattern). Click one; details in the terminal.</p>
+
+<div class="options stack" style="display:block">
+
+<div class="option" data-choice="look-refined-dark" onclick="toggleSelect(this)">
+  <div class="letter" style="margin-bottom:8px">A</div>
+  <div class="content"><h3>Refined dark — today's identity, tidied</h3>
+    <p class="subtitle">Keeps the current colours and density; fixes contrast, spacing and consistency. Smallest visual change.</p>
+    <div class="v">
+      <div class="side"><div class="logo">rudariflow</div><div class="item on">Home</div><div class="item">Files</div><div class="item">Meetings</div><div class="item">Soundboard</div><div class="sp"></div><div class="item">Settings</div></div>
+      <div class="main">
+        <div class="h">Ready to dictate <span class="pill">● Ready</span></div><div class="sub">Hold <span class="key">Mouse5</span> and speak.</div>
+        <div class="two"><div>
+          <div class="card"><div class="row"><span>Dictate</span><span class="key">Mouse5</span></div><div class="row"><span>Paste last</span><span class="key">Alt+Shift+V</span></div><div class="row"><span>Rewrite last</span><span class="key">Mouse4</span></div></div>
+          <div class="card"><div class="row"><span>AI cleanup</span><span class="sw"></span></div><div class="row"><span>Language</span><span class="mute">Auto ▾</span></div></div>
+        </div><div class="card" style="margin:0"><div class="row" style="border:0"><b>Recent dictations</b><span class="search">Search…</span></div><div class="row"><span>Können wir das Meeting auf Donnerstag …</span><span class="mute">2 min</span></div><div class="row"><span>Please send me the updated offer …</span><span class="mute">14 min</span></div><div class="row"><span>Danke, das passt so.</span><span class="mute">1 h</span></div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="option" data-choice="look-airy-dark" onclick="toggleSelect(this)">
+  <div class="letter" style="margin-bottom:8px">B</div>
+  <div class="content"><h3>Calm &amp; airy dark — bigger type, more room, softer surfaces</h3>
+    <p class="subtitle">Larger text and headings, more whitespace, rounder cards without hard borders. Feels calmer; shows a little less per screen.</p>
+    <div class="v airy">
+      <div class="side"><div class="logo">rudariflow</div><div class="item on">Home</div><div class="item">Files</div><div class="item">Meetings</div><div class="item">Soundboard</div><div class="sp"></div><div class="item">Settings</div></div>
+      <div class="main">
+        <div class="h">Ready to dictate <span class="pill">● Ready</span></div><div class="sub">Hold <span class="key">Mouse5</span> and speak.</div>
+        <div class="two"><div>
+          <div class="card"><div class="row"><span>Dictate</span><span class="key">Mouse5</span></div><div class="row"><span>Paste last</span><span class="key">Alt+Shift+V</span></div><div class="row"><span>Rewrite last</span><span class="key">Mouse4</span></div></div>
+          <div class="card"><div class="row"><span>AI cleanup</span><span class="sw"></span></div><div class="row"><span>Language</span><span class="mute">Auto ▾</span></div></div>
+        </div><div class="card" style="margin:0"><div class="row" style="border:0"><b>Recent dictations</b><span class="search">Search…</span></div><div class="row"><span>Können wir das Meeting auf Donnerstag …</span><span class="mute">2 min</span></div><div class="row"><span>Please send me the updated offer …</span><span class="mute">14 min</span></div><div class="row"><span>Danke, das passt so.</span><span class="mute">1 h</span></div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="option" data-choice="look-light-and-dark" onclick="toggleSelect(this)">
+  <div class="letter" style="margin-bottom:8px">C</div>
+  <div class="content"><h3>Light <em>and</em> dark — follows Windows (or you choose)</h3>
+    <p class="subtitle">Adds a light theme next to the dark one (shown: light). Style like A. More work: every tab, the pill and the pop-out need both themes.</p>
+    <div class="v light">
+      <div class="side"><div class="logo">rudariflow</div><div class="item on">Home</div><div class="item">Files</div><div class="item">Meetings</div><div class="item">Soundboard</div><div class="sp"></div><div class="item">Settings</div></div>
+      <div class="main">
+        <div class="h">Ready to dictate <span class="pill">● Ready</span></div><div class="sub">Hold <span class="key">Mouse5</span> and speak.</div>
+        <div class="two"><div>
+          <div class="card"><div class="row"><span>Dictate</span><span class="key">Mouse5</span></div><div class="row"><span>Paste last</span><span class="key">Alt+Shift+V</span></div><div class="row"><span>Rewrite last</span><span class="key">Mouse4</span></div></div>
+          <div class="card"><div class="row"><span>AI cleanup</span><span class="sw"></span></div><div class="row"><span>Language</span><span class="mute">Auto ▾</span></div></div>
+        </div><div class="card" style="margin:0"><div class="row" style="border:0"><b>Recent dictations</b><span class="search">Search…</span></div><div class="row"><span>Können wir das Meeting auf Donnerstag …</span><span class="mute">2 min</span></div><div class="row"><span>Please send me the updated offer …</span><span class="mute">14 min</span></div><div class="row"><span>Danke, das passt so.</span><span class="mute">1 h</span></div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>

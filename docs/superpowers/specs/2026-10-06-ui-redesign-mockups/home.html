@@ -1,0 +1,140 @@
+<style>
+  .rf { background:#0b0b0d; color:#e9e9ee; border-radius:10px; display:flex; min-height:430px; font:13px/1.4 system-ui,sans-serif; overflow:hidden; border:1px solid #26262b; text-align:left; }
+  .rf-side { width:150px; background:#0e0e11; border-right:1px solid #1e1e23; padding:12px 8px; display:flex; flex-direction:column; gap:2px; flex:none; }
+  .rf-logo { font-weight:700; padding:2px 8px 10px; }
+  .rf-item { padding:7px 10px; border-radius:6px; color:#a9a9b3; }
+  .rf-item.on { background:#1c1c22; color:#fff; box-shadow:inset 2px 0 0 #6b6ff5; }
+  .rf-spacer { flex:1; }
+  .rf-main { flex:1; padding:18px 22px; }
+  .rf-h { font-size:18px; font-weight:650; }
+  .rf-sub { color:#9a9aa6; font-size:12px; margin:2px 0 14px; }
+  .rf-ok { color:#3ddc84; } .rf-warn { color:#ffb347; } .rf-mute { color:#9a9aa6; }
+  .rf-card { background:#131317; border:1px solid #23232a; border-radius:10px; padding:12px 14px; margin-bottom:12px; }
+  .rf-row { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:7px 0; border-bottom:1px solid #1c1c22; }
+  .rf-row:last-child { border-bottom:0; }
+  .rf-key { font:12px ui-monospace,monospace; background:#1c1c22; border:1px solid #2c2c34; border-radius:6px; padding:2px 8px; color:#d6d6e6; white-space:nowrap; }
+  .rf-sw { width:30px; height:16px; border-radius:9px; background:#6b6ff5; position:relative; display:inline-block; flex:none; }
+  .rf-sw::after { content:""; position:absolute; right:2px; top:2px; width:12px; height:12px; border-radius:50%; background:#fff; }
+  .rf-tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:12px; }
+  .rf-tile { background:#131317; border:1px solid #23232a; border-radius:10px; padding:10px 12px; }
+  .rf-tile b { display:block; font-weight:600; margin-bottom:6px; }
+  .rf-pill { display:inline-flex; align-items:center; gap:6px; background:#12251a; color:#3ddc84; border:1px solid #1d3b29; border-radius:20px; padding:2px 10px; font-size:12px; }
+  .rf-chip { display:inline-block; background:#1c1c22; border:1px solid #2c2c34; border-radius:20px; padding:1px 9px; font-size:11px; color:#b9b9c6; margin-right:6px; }
+  .rf-search { background:#0f0f13; border:1px solid #2a2a31; border-radius:7px; padding:5px 10px; color:#7c7c88; font-size:12px; width:200px; }
+  .rf-btn { background:#6b6ff5; color:#fff; border-radius:7px; padding:5px 12px; font-size:12px; font-weight:600; white-space:nowrap; }
+  .rf-btn.ghost { background:#1c1c22; color:#d6d6e6; border:1px solid #2c2c34; font-weight:500; }
+  .rf-two { display:grid; grid-template-columns: 5fr 6fr; gap:14px; }
+  .rf-step { display:flex; gap:10px; align-items:flex-start; padding:8px 0; border-bottom:1px solid #1c1c22; }
+  .rf-step:last-child { border-bottom:0; }
+  .rf-num { width:20px; height:20px; border-radius:50%; background:#1c1c22; border:1px solid #2c2c34; text-align:center; font-size:11px; line-height:19px; flex:none; }
+  .rf-num.done { background:#12251a; border-color:#1d3b29; color:#3ddc84; }
+  .section-gap { margin:26px 0 8px; }
+</style>
+
+<h2>The Home page</h2>
+<p class="subtitle">Two layouts for the everyday view, plus what a newcomer sees. Click the layout you prefer; comments in the terminal.</p>
+
+<div class="options" style="display:block">
+
+<div class="option" data-choice="home-1-stacked" onclick="toggleSelect(this)" style="display:block;margin-bottom:18px">
+  <div class="letter" style="margin-bottom:8px">1</div>
+  <div class="content">
+    <h3>Stacked: status → hotkeys → quick switches → recent</h3>
+    <div class="rf" style="margin-top:8px">
+      <div class="rf-side">
+        <div class="rf-logo">rudariflow</div>
+        <div class="rf-item on">Home</div><div class="rf-item">Files</div><div class="rf-item">Meetings</div><div class="rf-item">Soundboard</div>
+        <div class="rf-spacer"></div><div class="rf-item">Settings</div>
+      </div>
+      <div class="rf-main">
+        <div class="rf-h">Ready to dictate <span class="rf-pill" style="margin-left:8px;vertical-align:2px">● Ready</span></div>
+        <div class="rf-sub">Hold <span class="rf-key">Mouse5</span> and speak. &nbsp;·&nbsp; Whisper Large v3 Turbo on RTX 5080 &nbsp;·&nbsp; AI cleanup: Gemma 4 E4B &nbsp;·&nbsp; Microphone: Scarlett Solo</div>
+        <div class="rf-tiles">
+          <div class="rf-tile"><b>Dictate</b><span class="rf-key">Mouse5</span></div>
+          <div class="rf-tile"><b>Paste last</b><span class="rf-key">Alt+Shift+V</span></div>
+          <div class="rf-tile"><b>Rewrite last</b><span class="rf-key">Mouse4</span></div>
+          <div class="rf-tile"><b>Free GPU</b><span class="rf-mute" style="font-size:12px">Not set · <u>Set</u></span></div>
+        </div>
+        <div class="rf-card">
+          <div class="rf-row"><span>AI cleanup <span class="rf-mute">— removes fillers, fixes punctuation</span></span><span class="rf-sw"></span></div>
+          <div class="rf-row"><span>Language</span><span class="rf-mute">Auto-detect ▾</span></div>
+          <div class="rf-row"><span>Write in</span><span class="rf-mute">English ▾</span></div>
+        </div>
+        <div class="rf-card">
+          <div class="rf-row" style="border:0;padding-top:0"><b>Recent dictations</b><span class="rf-search">Search…</span></div>
+          <div class="rf-row"><span>Können wir das Meeting auf Donnerstag verschieben? <span class="rf-chip">Outlook</span></span><span class="rf-mute">2 min &nbsp; Copy</span></div>
+          <div class="rf-row"><span>Please send me the updated offer by Friday. <span class="rf-chip">Chrome</span></span><span class="rf-mute">14 min &nbsp; Copy</span></div>
+          <div class="rf-row"><span class="rf-mute">Show all (200)</span><span></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="option" data-choice="home-2-two-columns" onclick="toggleSelect(this)" style="display:block;margin-bottom:18px">
+  <div class="letter" style="margin-bottom:8px">2</div>
+  <div class="content">
+    <h3>Two columns on wide windows: controls left, dictations right</h3>
+    <div class="rf" style="margin-top:8px">
+      <div class="rf-side">
+        <div class="rf-logo">rudariflow</div>
+        <div class="rf-item on">Home</div><div class="rf-item">Files</div><div class="rf-item">Meetings</div><div class="rf-item">Soundboard</div>
+        <div class="rf-spacer"></div><div class="rf-item">Settings</div>
+      </div>
+      <div class="rf-main">
+        <div class="rf-h">Ready to dictate <span class="rf-pill" style="margin-left:8px;vertical-align:2px">● Ready</span></div>
+        <div class="rf-sub">Hold <span class="rf-key">Mouse5</span> and speak.</div>
+        <div class="rf-two">
+          <div>
+            <div class="rf-card">
+              <div class="rf-row"><span>Dictate</span><span class="rf-key">Mouse5</span></div>
+              <div class="rf-row"><span>Paste last</span><span class="rf-key">Alt+Shift+V</span></div>
+              <div class="rf-row"><span>Rewrite last</span><span class="rf-key">Mouse4</span></div>
+              <div class="rf-row"><span>Free GPU</span><span class="rf-mute">Not set · <u>Set</u></span></div>
+            </div>
+            <div class="rf-card">
+              <div class="rf-row"><span>AI cleanup</span><span class="rf-sw"></span></div>
+              <div class="rf-row"><span>Language</span><span class="rf-mute">Auto ▾</span></div>
+              <div class="rf-row"><span>Write in</span><span class="rf-mute">English ▾</span></div>
+            </div>
+            <div class="rf-card" style="font-size:12px">
+              <div class="rf-row"><span class="rf-mute">Whisper</span><span class="rf-ok">Large v3 Turbo · RTX 5080</span></div>
+              <div class="rf-row"><span class="rf-mute">AI model</span><span class="rf-ok">Gemma 4 E4B · ready</span></div>
+              <div class="rf-row"><span class="rf-mute">Microphone</span><span>Scarlett Solo</span></div>
+            </div>
+          </div>
+          <div class="rf-card" style="margin:0">
+            <div class="rf-row" style="border:0;padding-top:0"><b>Recent dictations</b><span class="rf-search">Search…</span></div>
+            <div class="rf-row"><span>Können wir das Meeting auf Donnerstag verschieben?</span><span class="rf-mute">2 min</span></div>
+            <div class="rf-row"><span>Please send me the updated offer by Friday.</span><span class="rf-mute">14 min</span></div>
+            <div class="rf-row"><span>Danke, das passt so. Ich melde mich morgen.</span><span class="rf-mute">1 h</span></div>
+            <div class="rf-row"><span>Add the export button next to Copy all.</span><span class="rf-mute">2 h</span></div>
+            <div class="rf-row"><span>Bitte die Rechnung an die neue Adresse schicken.</span><span class="rf-mute">Yesterday</span></div>
+            <div class="rf-row"><span class="rf-mute">Show all (200)</span><span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<h3 class="section-gap">First run (same page, before anything is set up) — not a choice, just to show it</h3>
+<div class="rf">
+  <div class="rf-side">
+    <div class="rf-logo">rudariflow</div>
+    <div class="rf-item on">Home</div><div class="rf-item">Files</div><div class="rf-item">Meetings</div><div class="rf-item">Soundboard</div>
+    <div class="rf-spacer"></div><div class="rf-item">Settings</div>
+  </div>
+  <div class="rf-main">
+    <div class="rf-h">Welcome — three steps to your first dictation <span class="rf-pill" style="margin-left:8px;vertical-align:2px;background:#2a2010;color:#ffb347;border-color:#4a3718">● Setup needed</span></div>
+    <div class="rf-sub">The status says what is missing instead of "Ready".</div>
+    <div class="rf-card">
+      <div class="rf-step"><span class="rf-num done">✓</span><div style="flex:1"><b>Microphone</b><div class="rf-mute">Scarlett Solo USB — level OK</div></div><span class="rf-btn ghost">Change</span></div>
+      <div class="rf-step"><span class="rf-num">2</span><div style="flex:1"><b>Speech model</b><div class="rf-mute">Recommended for your RTX 5080: Large v3 Turbo (874 MB)</div></div><span class="rf-btn">Download</span></div>
+      <div class="rf-step"><span class="rf-num">3</span><div style="flex:1"><b>Your dictation key</b><div class="rf-mute">Hold it, speak, release — the text is typed where your cursor is.</div></div><span class="rf-key">Ctrl+Shift+Space</span> <span class="rf-btn ghost">Change</span></div>
+      <div class="rf-step"><span class="rf-num">+</span><div style="flex:1"><b>Optional: AI cleanup</b><div class="rf-mute">Removes filler words and fixes punctuation, fully on your PC (Gemma 4, 5 GB).</div></div><span class="rf-btn ghost">Download</span></div>
+    </div>
+  </div>
+</div>

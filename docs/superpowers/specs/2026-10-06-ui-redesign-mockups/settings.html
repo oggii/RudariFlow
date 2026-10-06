@@ -1,0 +1,111 @@
+<style>
+  .rf { background:#0b0b0d; color:#e9e9ee; border-radius:10px; display:flex; min-height:470px; font:13px/1.4 system-ui,sans-serif; overflow:hidden; border:1px solid #26262b; text-align:left; }
+  .rf-side { width:150px; background:#0e0e11; border-right:1px solid #1e1e23; padding:12px 8px; display:flex; flex-direction:column; gap:2px; flex:none; }
+  .rf-logo { font-weight:700; padding:2px 8px 10px; }
+  .rf-item { padding:7px 10px; border-radius:6px; color:#a9a9b3; }
+  .rf-item.on { background:#1c1c22; color:#fff; box-shadow:inset 2px 0 0 #6b6ff5; }
+  .rf-spacer { flex:1; }
+  .rf-main { flex:1; padding:18px 22px; }
+  .rf-h { font-size:18px; font-weight:650; margin-bottom:10px; }
+  .rf-tabs { display:flex; gap:18px; border-bottom:1px solid #24242a; margin-bottom:14px; color:#9a9aa6; }
+  .rf-tabs span { padding:0 0 8px; }
+  .rf-tabs .on { color:#fff; box-shadow:inset 0 -2px 0 #6b6ff5; }
+  .rf-sub2 { width:150px; flex:none; border-right:1px solid #1e1e23; padding-right:10px; margin-right:18px; }
+  .rf-sub2 div { padding:6px 10px; border-radius:6px; color:#a9a9b3; }
+  .rf-sub2 .on { background:#1c1c22; color:#fff; }
+  .rf-mute { color:#9a9aa6; } .rf-ok { color:#3ddc84; }
+  .rf-card { background:#131317; border:1px solid #23232a; border-radius:10px; padding:4px 14px; margin-bottom:12px; }
+  .rf-row { display:flex; justify-content:space-between; align-items:center; gap:14px; padding:10px 0; border-bottom:1px solid #1c1c22; }
+  .rf-row:last-child { border-bottom:0; }
+  .rf-row small { display:block; color:#9a9aa6; font-size:12px; }
+  .rf-row small u { color:#b9b9ff; text-decoration:none; }
+  .rf-key { font:12px ui-monospace,monospace; background:#1c1c22; border:1px solid #2c2c34; border-radius:6px; padding:2px 8px; color:#d6d6e6; white-space:nowrap; }
+  .rf-sel { background:#1c1c22; border:1px solid #2c2c34; border-radius:6px; padding:3px 10px; color:#d6d6e6; white-space:nowrap; font-size:12px; }
+  .rf-sw { width:30px; height:16px; border-radius:9px; background:#6b6ff5; position:relative; display:inline-block; flex:none; }
+  .rf-sw::after { content:""; position:absolute; right:2px; top:2px; width:12px; height:12px; border-radius:50%; background:#fff; }
+  .rf-sw.off { background:#34343c; } .rf-sw.off::after { right:auto; left:2px; }
+  .rf-adv { color:#b9b9c6; padding:8px 2px; font-weight:600; }
+  .rf-btn { background:#1c1c22; color:#d6d6e6; border:1px solid #2c2c34; border-radius:7px; padding:4px 12px; font-size:12px; white-space:nowrap; }
+  .note { background:var(--bg-secondary); border:1px solid var(--border); border-radius:10px; padding:12px 16px; margin:18px 0; }
+  .note li { margin:4px 0 4px 18px; }
+</style>
+
+<h2>Settings: one place for everything you set once</h2>
+<p class="subtitle">Two ways to organise it. Both use the same five groups, one-line hints with "More", and an "Advanced" fold per group.</p>
+
+<div class="options" style="display:block">
+
+<div class="option" data-choice="settings-top-tabs" onclick="toggleSelect(this)" style="display:block;margin-bottom:18px">
+  <div class="letter" style="margin-bottom:8px">1</div>
+  <div class="content">
+    <h3>Tabs along the top</h3>
+    <div class="rf" style="margin-top:8px">
+      <div class="rf-side">
+        <div class="rf-logo">rudariflow</div>
+        <div class="rf-item">Home</div><div class="rf-item">Files</div><div class="rf-item">Meetings</div><div class="rf-item">Soundboard</div>
+        <div class="rf-spacer"></div><div class="rf-item on">Settings</div>
+      </div>
+      <div class="rf-main">
+        <div class="rf-h">Settings</div>
+        <div class="rf-tabs"><span class="on">Dictation</span><span>AI cleanup</span><span>Dictionary</span><span>Models &amp; GPU</span><span>General</span></div>
+        <div class="rf-card">
+          <div class="rf-row"><span>Dictate<small>Hold and speak, or press once to start and stop.</small></span><span><span class="rf-sel">Hold ▾</span> <span class="rf-key">Mouse5</span></span></div>
+          <div class="rf-row"><span>Paste last dictation</span><span class="rf-key">Alt+Shift+V</span></div>
+          <div class="rf-row"><span>Rewrite last dictation<small>Say how to change it: "shorter", "more formal". <u>More</u></small></span><span class="rf-key">Mouse4</span></div>
+          <div class="rf-row"><span>Microphone</span><span class="rf-sel">Scarlett Solo USB ▾</span></div>
+          <div class="rf-row"><span>Sounds when recording starts and stops</span><span class="rf-sw"></span></div>
+        </div>
+        <div class="rf-adv">▾ Advanced</div>
+        <div class="rf-card">
+          <div class="rf-row"><span>Free GPU hotkey<small>Unloads the models so a game gets the graphics card. <u>More</u></small></span><span class="rf-mute">Not set · <u>Set</u></span></div>
+          <div class="rf-row"><span>Meeting hotkey</span><span class="rf-mute">Not set · <u>Set</u></span></div>
+          <div class="rf-row"><span>Mute other apps while recording</span><span class="rf-sw off"></span></div>
+          <div class="rf-row"><span>"Send it" voice command<small>End with "Send it." to press Enter after pasting. <u>More</u></small></span><span class="rf-sw off"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="option" data-choice="settings-side-list" onclick="toggleSelect(this)" style="display:block;margin-bottom:18px">
+  <div class="letter" style="margin-bottom:8px">2</div>
+  <div class="content">
+    <h3>A second list inside Settings (like Windows / macOS settings)</h3>
+    <div class="rf" style="margin-top:8px">
+      <div class="rf-side">
+        <div class="rf-logo">rudariflow</div>
+        <div class="rf-item">Home</div><div class="rf-item">Files</div><div class="rf-item">Meetings</div><div class="rf-item">Soundboard</div>
+        <div class="rf-spacer"></div><div class="rf-item on">Settings</div>
+      </div>
+      <div class="rf-main" style="display:flex">
+        <div class="rf-sub2">
+          <div class="on">Dictation</div><div>AI cleanup</div><div>Dictionary</div><div>Models &amp; GPU</div><div>General</div>
+        </div>
+        <div style="flex:1">
+          <div class="rf-h">Dictation</div>
+          <div class="rf-card">
+            <div class="rf-row"><span>Dictate<small>Hold and speak, or press once to start and stop.</small></span><span><span class="rf-sel">Hold ▾</span> <span class="rf-key">Mouse5</span></span></div>
+            <div class="rf-row"><span>Paste last dictation</span><span class="rf-key">Alt+Shift+V</span></div>
+            <div class="rf-row"><span>Rewrite last dictation</span><span class="rf-key">Mouse4</span></div>
+            <div class="rf-row"><span>Microphone</span><span class="rf-sel">Scarlett Solo USB ▾</span></div>
+            <div class="rf-row"><span>Sounds when recording starts and stops</span><span class="rf-sw"></span></div>
+          </div>
+          <div class="rf-adv">▸ Advanced <span class="rf-mute" style="font-weight:400">· 4 more settings</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<div class="note">
+  <b>What goes where (both options)</b>
+  <ul>
+    <li><b>Dictation</b> — all hotkeys, hold/toggle, microphone, start/stop sounds. <i>Advanced:</i> Free GPU + meeting hotkeys, mute other apps, "Send it".</li>
+    <li><b>AI cleanup</b> — on/off, style, Write in, Edit mode, rules per app. <i>Advanced:</i> AI model choice (E4B/E2B), "Try it" test box.</li>
+    <li><b>Dictionary</b> — your words and your replacements on one page with search; suggestions from corrections; Swiss spelling.</li>
+    <li><b>Models &amp; GPU</b> — speech model with download state, language. <i>Advanced:</i> local/cloud engine, GPU backend, PC check, Free GPU for games, unload when idle, unused models.</li>
+    <li><b>General</b> — display language, start with Windows, history (keep text / audio / off), version.</li>
+  </ul>
+</div>
