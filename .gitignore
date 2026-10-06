@@ -49,3 +49,8 @@ WhatsApp Audio*
 
 # whisper-rs-sys unpacked and patched by scripts/setup-whisper-patch.ps1
 src-tauri/vendor/
+
+# tools/ui-check: its build, screenshots and last report
+tools/ui-check/.build/
+tools/ui-check/shots/
+tools/ui-check/report.json

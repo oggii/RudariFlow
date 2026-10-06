@@ -14,7 +14,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "ui-check": "node tools/ui-check/run.mjs",
+    "test:unit": "node --test \"tests/unit/*.test.ts\""
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",
