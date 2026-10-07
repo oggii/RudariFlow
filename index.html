@@ -444,456 +444,537 @@
             <button type="button" role="tab" class="tab" id="tab-models" data-tab="models" aria-controls="panel-models" aria-selected="false" tabindex="-1" data-i18n="tab_models">Models &amp; GPU</button>
             <button type="button" role="tab" class="tab" id="tab-general" data-tab="general" aria-controls="panel-general" aria-selected="false" tabindex="-1" data-i18n="tab_general">General</button>
           </div>
+
+          <!-- ── Dictation ─────────────────────────────────── -->
           <div id="panel-dictation" class="tab-panel" role="tabpanel" aria-labelledby="tab-dictation">
-          <div class="settings-list">
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="recording_mode_label">Recording Mode</span>
-                <span class="label-hint" data-i18n="recording_mode_hint">Toggle starts/stops, Push to Talk records while held</span>
+            <div class="card">
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="dictate_label">Dictate</span>
+                  <span class="label-hint" data-i18n="dictate_hint">Hold and speak, or press once to start and stop.</span>
+                </div>
+                <div class="setting-control">
+                  <div class="toggle-group" role="group" data-i18n-aria-label="mode_label" aria-label="How the key works">
+                    <button type="button" id="mode-ptt" class="toggle-btn" data-i18n="mode_ptt">Hold</button>
+                    <button type="button" id="mode-toggle" class="toggle-btn active" data-i18n="mode_toggle">Toggle</button>
+                  </div>
+                  <button type="button" id="hotkey-btn" class="hotkey-btn"><kbd id="hotkey-text"></kbd></button>
+                </div>
               </div>
-              <div class="setting-control">
-                <div class="toggle-group">
-                  <button id="mode-toggle" class="toggle-btn active" data-i18n="mode_toggle">Toggle</button>
-                  <button id="mode-ptt" class="toggle-btn" data-i18n="mode_ptt">Push to Talk</button>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="paste_last_label">Paste last dictation</span>
+                  <span class="label-hint" data-i18n="paste_last_hint">Pastes your last dictation again, e.g. after the wrong window.</span>
+                </div>
+                <div class="setting-control hotkey-control">
+                  <button type="button" id="paste-last-btn" class="hotkey-btn"><kbd id="paste-last-text"></kbd></button>
+                  <button type="button" id="paste-last-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
+                    <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="rewrite_last_label">Rewrite last dictation</span>
+                  <span class="label-hint"><span data-i18n="rewrite_last_hint">Say how to change it: “shorter”, “more formal”.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="rewrite-last-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint hint-long" id="rewrite-last-more" data-i18n="rewrite_last_more" hidden>Selects your last dictation and changes it the way you say. Needs AI cleanup and Edit mode.</span>
+                </div>
+                <div class="setting-control hotkey-control">
+                  <button type="button" id="rewrite-last-btn" class="hotkey-btn"><kbd id="rewrite-last-text"></kbd></button>
+                  <button type="button" id="rewrite-last-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
+                    <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="microphone_label">Microphone</span>
+                  <span class="label-hint" data-i18n="microphone_hint">The microphone you dictate with.</span>
+                </div>
+                <div class="setting-control">
+                  <select id="mic-select"></select>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="volume_label">Start and stop sounds</span>
+                  <span class="label-hint" data-i18n="volume_hint">How loud the soft sound at the start and the end is.</span>
+                </div>
+                <div class="setting-control">
+                  <input id="volume-slider" type="range" min="0" max="1" step="0.05" />
                 </div>
               </div>
             </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="hotkey_label">Hotkey</span>
-                <span class="label-hint" data-i18n="hotkey_hint">Global keyboard shortcut to trigger recording</span>
+            <details class="fold" data-fold="dictation">
+              <summary data-i18n="advanced">Advanced</summary>
+              <div class="fold-body">
+                <div class="card">
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="free_gpu_label">Free GPU</span>
+                      <span class="label-hint"><span data-i18n="free_gpu_hint">Unloads the models so a game gets the graphics card.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="free-gpu-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="free-gpu-more" data-i18n="free_gpu_more" hidden>Press again to load them; a dictation also loads them, the first one takes a few seconds longer.</span>
+                    </div>
+                    <div class="setting-control hotkey-control">
+                      <button type="button" id="free-gpu-btn" class="hotkey-btn"><kbd id="free-gpu-text"></kbd></button>
+                      <button type="button" id="free-gpu-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
+                        <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="meeting_hotkey_label">Start / stop a meeting</span>
+                      <span class="label-hint" data-i18n="meeting_hotkey_hint">Starts a meeting, or stops the one that records.</span>
+                    </div>
+                    <div class="setting-control hotkey-control">
+                      <button type="button" id="meeting-hotkey-btn" class="hotkey-btn"><kbd id="meeting-hotkey-text"></kbd></button>
+                      <button type="button" id="meeting-hotkey-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
+                        <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="mute_audio_label">Mute other apps while recording</span>
+                      <span class="label-hint" data-i18n="mute_audio_hint">Music and videos go quiet while you dictate.</span>
+                    </div>
+                    <div class="setting-control">
+                      <label class="switch">
+                        <input id="mute-audio-toggle" type="checkbox" />
+                        <span class="switch-slider"></span>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="send_command_label">Voice command “send it”</span>
+                      <span class="label-hint"><span data-i18n="send_command_hint">End with “Send it.” to press Enter after pasting.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="send-command-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="send-command-more" data-i18n="send_command_more" hidden>Say it as its own sentence, for example in chats. German: “Abschicken.”</span>
+                    </div>
+                    <div class="setting-control">
+                      <select id="send-command-select">
+                        <option value="off" data-i18n="send_command_off">Off</option>
+                        <option value="enter" data-i18n="send_command_enter">Press Enter</option>
+                        <option value="ctrl+enter" data-i18n="send_command_ctrl_enter">Press Ctrl+Enter</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div class="setting-control">
-                <button id="hotkey-btn" class="hotkey-btn"><kbd id="hotkey-text">Cmd+Shift+D</kbd></button>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="paste_last_label">Paste last transcript</span>
-                <span class="label-hint" data-i18n="paste_last_hint">Pastes your last dictation again, for example when it landed in the wrong window</span>
-              </div>
-              <div class="setting-control hotkey-control">
-                <button id="paste-last-btn" class="hotkey-btn"><kbd id="paste-last-text"></kbd></button>
-                <button id="paste-last-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
-                  <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-                </button>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="rewrite_last_label">Rewrite last dictation</span>
-                <span class="label-hint" data-i18n="rewrite_last_hint">Selects your last dictation and changes it the way you say, e.g. "more formal" or "shorter". Needs AI cleanup and Edit mode.</span>
-              </div>
-              <div class="setting-control hotkey-control">
-                <button id="rewrite-last-btn" class="hotkey-btn"><kbd id="rewrite-last-text"></kbd></button>
-                <button id="rewrite-last-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
-                  <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-                </button>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="free_gpu_label">Free GPU</span>
-                <span class="label-hint" data-i18n="free_gpu_hint">Unloads Whisper and the AI model to free your graphics card, e.g. for a game. Press again to load them; a dictation also loads them, the first one takes a few seconds longer.</span>
-              </div>
-              <div class="setting-control hotkey-control">
-                <button id="free-gpu-btn" class="hotkey-btn"><kbd id="free-gpu-text"></kbd></button>
-                <button id="free-gpu-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
-                  <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-                </button>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="meeting_hotkey_label">Start / stop a meeting</span>
-                <span class="label-hint" data-i18n="meeting_hotkey_hint">Starts a meeting in the Meetings tab, or stops the one that records.</span>
-              </div>
-              <div class="setting-control hotkey-control">
-                <button id="meeting-hotkey-btn" class="hotkey-btn"><kbd id="meeting-hotkey-text"></kbd></button>
-                <button id="meeting-hotkey-clear" class="icon-btn" data-i18n-title="paste_last_clear" title="Turn off">
-                  <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-                </button>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="send_command_label">Voice command "send it"</span>
-                <span class="label-hint" data-i18n="send_command_hint">End with "Send it." as its own sentence to submit, for example in chats. German: "Abschicken."</span>
-              </div>
-              <div class="setting-control">
-                <select id="send-command-select">
-                  <option value="off" data-i18n="send_command_off">Off</option>
-                  <option value="enter" data-i18n="send_command_enter">Press Enter</option>
-                  <option value="ctrl+enter" data-i18n="send_command_ctrl_enter">Press Ctrl+Enter</option>
-                </select>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="mute_audio_label">Mute other apps while recording</span>
-                <span class="label-hint" data-i18n="mute_audio_hint">Music and videos go quiet while you dictate and come back afterwards</span>
-              </div>
-              <div class="setting-control">
-                <label class="switch">
-                  <input id="mute-audio-toggle" type="checkbox" />
-                  <span class="switch-slider"></span>
-                </label>
-              </div>
-            </div>
+            </details>
           </div>
-          </div>
+
+          <!-- ── AI cleanup ────────────────────────────────── -->
           <div id="panel-ai" class="tab-panel" role="tabpanel" aria-labelledby="tab-ai" hidden>
-          <p class="section-desc panel-lead" data-i18n="ai_desc">A language model on this computer turns your dictation into polished text. Nothing leaves your PC.</p>
-          <div class="settings-list">
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="ai_enable_label">AI cleanup</span>
-                <span class="label-hint ai-status" id="ai-status-line"></span>
+            <p class="section-desc panel-lead" data-i18n="ai_desc">A language model on this computer turns your dictation into polished text. Nothing leaves your PC.</p>
+            <div class="card">
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="ai_enable_label">AI cleanup</span>
+                  <span class="label-hint ai-status status-line" id="ai-status-line" role="status"></span>
+                </div>
+                <div class="setting-control">
+                  <button type="button" id="ai-download-main" class="btn-secondary hidden" data-i18n="download">Download</button>
+                  <label class="switch">
+                    <input id="ai-toggle" type="checkbox" />
+                    <span class="switch-slider"></span>
+                  </label>
+                </div>
               </div>
-              <div class="setting-control">
-                <label class="switch">
-                  <input id="ai-toggle" type="checkbox" />
-                  <span class="switch-slider"></span>
-                </label>
+              <div id="ai-download-progress" class="progress download-progress hidden">
+                <div class="progress-track"><div class="progress-fill" id="ai-progress-fill"></div></div>
+                <span class="progress-text" id="ai-progress-text" role="status"></span>
               </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="ai_model_label">Model</span>
-                <span class="label-hint" id="ai-model-note"></span>
-                <span class="label-hint" data-i18n="ai_model_hint">Downloaded once, then it runs offline on your graphics card</span>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="ai_style_label">Style</span>
+                  <span class="label-hint" data-i18n="ai_style_hint">Polished smooths your sentences, Light keeps your wording.</span>
+                </div>
+                <div class="setting-control">
+                  <div class="toggle-group" role="group" data-i18n-aria-label="ai_style_label" aria-label="Style">
+                    <button type="button" id="ai-style-polished" class="toggle-btn" data-i18n="ai_style_polished">Polished</button>
+                    <button type="button" id="ai-style-light" class="toggle-btn" data-i18n="ai_style_light">Light</button>
+                  </div>
+                </div>
               </div>
-              <div class="setting-control">
-                <div class="model-row ai-model-row">
-                  <select id="ai-model-select"></select>
-                  <button id="ai-download-btn" class="btn-primary" data-i18n="download">Download</button>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="ai_output_label">Write in</span>
+                  <span class="label-hint"><span data-i18n="ai_output_hint">Translates every dictation into this language.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-output-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint hint-long" id="ai-output-more" data-i18n="ai_output_more" hidden>Only while AI cleanup runs; apps set to No AI keep the spoken language.</span>
+                  <span class="label-hint ai-output-warn hidden" id="ai-output-skip"></span>
+                  <span class="label-hint ai-output-warn hidden" id="ai-output-warn" data-i18n="ai_output_warn">Set the Language to Auto-detect (Settings › Models &amp; GPU), so Whisper hears other languages correctly before they are translated.</span>
+                </div>
+                <div class="setting-control">
+                  <select id="ai-output-select"></select>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="ai_edit_label">Edit mode</span>
+                  <span class="label-hint"><span data-i18n="ai_edit_hint">Select text, hold your hotkey and say what to change.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-edit-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint hint-long" id="ai-edit-more" data-i18n="ai_edit_more" hidden>Say “shorter”, “more formal”, “in Turkish”, or the new text. Works where the app shares its text, not in terminals or address bars. Ctrl+Z undoes it.</span>
+                </div>
+                <div class="setting-control">
+                  <label class="switch">
+                    <input id="ai-edit-toggle" type="checkbox" />
+                    <span class="switch-slider"></span>
+                  </label>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="ai_instructions_label">Instructions for all apps</span>
+                  <span class="label-hint" data-i18n="ai_instructions_hint">How the AI should write everywhere.</span>
+                </div>
+                <div class="setting-control">
+                  <textarea id="ai-instructions" class="field-textarea" rows="2" maxlength="1000"
+                    data-i18n-placeholder="ai_instructions_placeholder"
+                    placeholder="e.g. Use ss instead of ß. Always use du, never Sie."></textarea>
                 </div>
               </div>
             </div>
-            <div id="ai-download-progress" class="download-progress hidden">
-              <div class="progress-track"><div class="progress-fill" id="ai-progress-fill"></div></div>
-              <span class="label-hint" id="ai-progress-text"></span>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="ai_style_label">Style</span>
-                <span class="label-hint" data-i18n="ai_style_hint">Polished smooths your sentences, Light keeps your wording</span>
+            <div class="card">
+              <div class="list-head">
+                <h3 class="list-title" data-i18n="ai_rules_title">Rules per app</h3>
               </div>
-              <div class="setting-control">
-                <div class="toggle-group">
-                  <button id="ai-style-polished" class="toggle-btn" data-i18n="ai_style_polished">Polished</button>
-                  <button id="ai-style-light" class="toggle-btn" data-i18n="ai_style_light">Light</button>
+              <p class="label-hint"><span data-i18n="ai_rules_desc">Instructions and the spoken language for one app or website.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-rules-more" data-i18n="hint_more">More</button></p>
+              <p class="label-hint hint-long" id="ai-rules-more" data-i18n="ai_rules_more" hidden>A rule matches the program name or a word in the window title, e.g. “whatsapp” also covers WhatsApp Web. The language is what Whisper hears in this app, also with AI cleanup off. No AI pastes the plain Whisper text.</p>
+              <div id="ai-rule-list" class="rule-list"></div>
+              <p id="ai-rule-empty" class="empty-state hidden" data-i18n="ai_rules_empty">No rules yet.</p>
+              <div class="card-foot">
+                <button type="button" id="ai-rule-add" class="btn-secondary" data-i18n="ai_rules_add">Add rule</button>
+              </div>
+              <datalist id="ai-open-apps"></datalist>
+            </div>
+            <details class="fold" data-fold="ai">
+              <summary data-i18n="advanced">Advanced</summary>
+              <div class="fold-body">
+                <div class="card">
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="ai_model_label">AI model</span>
+                      <span class="label-hint" data-i18n="ai_model_hint">Downloaded once, then it runs offline on your graphics card.</span>
+                      <span class="label-hint status-line" id="ai-model-note"></span>
+                    </div>
+                    <div class="setting-control">
+                      <div class="model-row ai-model-row">
+                        <select id="ai-model-select"></select>
+                        <button type="button" id="ai-download-btn" class="btn-primary" data-i18n="download">Download</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="list-head">
+                    <h3 class="list-title" id="ai-test-title" data-i18n="ai_test_title">Try it</h3>
+                  </div>
+                  <div class="ai-test">
+                    <textarea id="ai-test-input" class="field-textarea" rows="3" aria-labelledby="ai-test-title"
+                      data-i18n-placeholder="ai_test_placeholder"
+                      placeholder="Type a sentence the way you would say it, fillers included"></textarea>
+                    <div class="ai-test-controls">
+                      <input type="text" id="ai-test-app" list="ai-open-apps" spellcheck="false"
+                        data-i18n-placeholder="ai_test_app_placeholder" data-i18n-aria-label="ai_test_app_placeholder" placeholder="App (optional)" aria-label="App (optional)" />
+                      <button type="button" id="ai-test-run" class="btn-primary" data-i18n="ai_test_run">Try</button>
+                    </div>
+                    <div id="ai-test-result" class="ai-test-result hidden">
+                      <p id="ai-test-output"></p>
+                      <span class="label-hint" id="ai-test-meta"></span>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="ai_output_label">Write in</span>
-                <span class="label-hint" data-i18n="ai_output_hint">Translates every dictation into this language. Only while AI cleanup runs; apps set to No AI keep the spoken language.</span>
-                <span class="label-hint ai-output-warn hidden" id="ai-output-skip"></span>
-                <span class="label-hint ai-output-warn hidden" id="ai-output-warn" data-i18n="ai_output_warn">Set Engine → Language to Auto-detect, so Whisper hears other languages correctly before they are translated.</span>
-              </div>
-              <div class="setting-control">
-                <select id="ai-output-select"></select>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="ai_edit_label">Edit mode</span>
-                <span class="label-hint" data-i18n="ai_edit_hint">Select text, hold your hotkey and say what to change.</span>
-              </div>
-              <div class="setting-control">
-                <label class="switch">
-                  <input id="ai-edit-toggle" type="checkbox" />
-                  <span class="switch-slider"></span>
-                </label>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="ai_instructions_label">Instructions for all apps</span>
-                <span class="label-hint" data-i18n="ai_instructions_hint">How the AI should write everywhere</span>
-              </div>
-              <div class="setting-control">
-                <textarea id="ai-instructions" class="field-textarea" rows="2" maxlength="1000"
-                  data-i18n-placeholder="ai_instructions_placeholder"
-                  placeholder="e.g. Use ss instead of ß. Always use du, never Sie."></textarea>
-              </div>
-            </div>
+            </details>
           </div>
 
-          <h3 class="subsection-title" data-i18n="ai_rules_title">Rules per app</h3>
-          <p class="subsection-desc" data-i18n="ai_rules_desc">Instructions and the spoken language for one app or website. A rule matches the program name or a word in the window title, e.g. "whatsapp" also covers WhatsApp Web.</p>
-          <div id="ai-rule-list" class="rule-list"></div>
-          <p id="ai-rule-empty" class="empty-state hidden" data-i18n="ai_rules_empty">No rules yet.</p>
-          <button id="ai-rule-add" class="btn-secondary" data-i18n="ai_rules_add">Add rule</button>
-          <datalist id="ai-open-apps"></datalist>
-
-          <h3 class="subsection-title" data-i18n="ai_test_title">Try it</h3>
-          <div class="ai-test">
-            <textarea id="ai-test-input" class="field-textarea" rows="3"
-              data-i18n-placeholder="ai_test_placeholder"
-              placeholder="Type a sentence the way you would say it, fillers included"></textarea>
-            <div class="ai-test-controls">
-              <input type="text" id="ai-test-app" list="ai-open-apps" spellcheck="false"
-                data-i18n-placeholder="ai_test_app_placeholder" placeholder="App (optional)" />
-              <button id="ai-test-run" class="btn-primary" data-i18n="ai_test_run">Try</button>
-            </div>
-            <div id="ai-test-result" class="ai-test-result hidden">
-              <p id="ai-test-output"></p>
-              <span class="label-hint" id="ai-test-meta"></span>
-            </div>
-          </div>
-          </div>
+          <!-- ── Dictionary ────────────────────────────────── -->
           <div id="panel-dictionary" class="tab-panel" role="tabpanel" aria-labelledby="tab-dictionary" hidden>
-          <p class="section-desc panel-lead"><span data-i18n="dictionary_desc">Words Whisper should know: names, brands and jargon. Your text gets exactly this spelling, even when Whisper hears them slightly differently.</span> <span id="dict-count"></span></p>
-          <div class="settings-list dict-options">
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="swiss_spelling_label">Swiss spelling</span>
-                <span class="label-hint" data-i18n="swiss_spelling_hint">ss instead of ß in every dictation, with or without AI</span>
+            <p class="section-desc panel-lead" data-i18n="dictionary_desc">Words Whisper should know: names, brands and jargon. Your text gets exactly this spelling, even when Whisper hears them slightly differently.</p>
+            <div id="dict-suggest" class="card dict-suggest hidden">
+              <div class="list-head">
+                <h3 class="list-title" data-i18n="learn_title">Suggested from your corrections</h3>
               </div>
-              <div class="setting-control">
-                <label class="switch">
-                  <input id="swiss-toggle" type="checkbox" />
-                  <span class="switch-slider"></span>
-                </label>
+              <div id="dict-suggest-list" class="list dict-list"></div>
+            </div>
+            <div class="card">
+              <div class="list-head">
+                <h3 class="list-title"><span data-i18n="dict_words_title">Words</span> <span id="dict-count" class="list-count"></span></h3>
+              </div>
+              <form id="dict-form" class="dict-add">
+                <input type="text" id="dict-input" spellcheck="false" autocomplete="off"
+                  data-i18n-placeholder="dictionary_placeholder" data-i18n-aria-label="dictionary_placeholder" placeholder="Add a word or name…" aria-label="Add a word or name…" />
+                <button type="submit" class="btn-secondary dict-add-btn" data-i18n="dictionary_add">Add</button>
+              </form>
+              <p class="label-hint dict-tip" data-i18n="dictionary_tip">Tip: paste a list, separated by commas or one per line, to add many at once.</p>
+              <p id="dict-long" class="notice dict-long hidden" data-tone="warn" data-i18n="dictionary_long">Long list: Whisper reads about the last 100 entries, so the newest count first.</p>
+              <div id="dict-list" class="dict-list"></div>
+              <p id="dict-empty" class="empty-state dict-empty hidden" data-i18n="dictionary_empty">No words yet. Add names, brands or terms Whisper gets wrong.</p>
+            </div>
+            <div class="card">
+              <div class="list-head">
+                <h3 class="list-title" data-i18n="replacements_title">Replacements</h3>
+              </div>
+              <p class="label-hint"><span data-i18n="replacements_desc">Say a short phrase, get longer text.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="replacements-more" data-i18n="hint_more">More</button></p>
+              <p class="label-hint hint-long" id="replacements-more" data-i18n="replacements_more" hidden>Good for email addresses, links and signatures. {date}, {time}, {weekday}, {year} and {iso_date} in the text are filled in when it is pasted.</p>
+              <div id="replacement-list" class="replacement-list"></div>
+              <p id="replacement-empty" class="empty-state hidden" data-i18n="replacements_empty">No replacements yet.</p>
+              <div class="card-foot">
+                <button type="button" id="replacement-add" class="btn-secondary" data-i18n="replacements_add">Add replacement</button>
               </div>
             </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="screen_context_label">Words on screen</span>
-                <span class="label-hint" data-i18n="screen_context_hint">Names and terms in the window you dictate into help Whisper and the AI spell them.</span>
-              </div>
-              <div class="setting-control">
-                <label class="switch">
-                  <input id="screen-toggle" type="checkbox" />
-                  <span class="switch-slider"></span>
-                </label>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="learn_label">Learn from corrections</span>
-                <span class="label-hint" data-i18n="learn_hint">Names you correct right after dictating are suggested here.</span>
-              </div>
-              <div class="setting-control">
-                <label class="switch">
-                  <input id="learn-toggle" type="checkbox" />
-                  <span class="switch-slider"></span>
-                </label>
-              </div>
-            </div>
-          </div>
-          <div id="dict-suggest" class="dict-card dict-suggest hidden">
-            <p class="dict-suggest-title" data-i18n="learn_title">Suggested from your corrections</p>
-            <div id="dict-suggest-list" class="dict-list"></div>
-          </div>
-          <div class="dict-card">
-            <form id="dict-form" class="dict-add">
-              <input type="text" id="dict-input" spellcheck="false" autocomplete="off"
-                data-i18n-placeholder="dictionary_placeholder" placeholder="Add a word or name…" />
-              <button type="submit" class="btn-secondary dict-add-btn">
-                <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                <span data-i18n="dictionary_add">Add</span>
-              </button>
-            </form>
-            <div id="dict-list" class="dict-list"></div>
-            <p id="dict-empty" class="empty-state dict-empty hidden" data-i18n="dictionary_empty">No words yet. Add names, brands or terms Whisper gets wrong.</p>
-          </div>
-          <div class="dict-io">
-            <button id="dict-import" class="btn-secondary" data-i18n="dictionary_import">Import…</button>
-            <button id="dict-export" class="btn-secondary" data-i18n="dictionary_export">Export…</button>
-            <span id="dict-io-status" class="label-hint"></span>
-          </div>
-          <p class="subsection-desc dict-tip" data-i18n="dictionary_tip">Tip: paste a list, separated by commas or one per line, to add many at once.</p>
-          <p id="dict-long" class="subsection-desc dict-long hidden" data-i18n="dictionary_long">Long list: Whisper reads about the last 100 entries, so the newest count first.</p>
-          <h3 class="subsection-title" data-i18n="replacements_title">Replacements</h3>
-          <p class="subsection-desc" data-i18n="replacements_desc">Say a short phrase, get longer text. Good for email addresses, links and signatures. {date}, {time}, {weekday}, {year} and {iso_date} in the text are filled in when it is pasted.</p>
-          <div id="replacement-list" class="replacement-list"></div>
-          <p id="replacement-empty" class="empty-state hidden" data-i18n="replacements_empty">No replacements yet.</p>
-          <button id="replacement-add" class="btn-secondary" data-i18n="replacements_add">Add replacement</button>
-          </div>
-          <div id="panel-models" class="tab-panel" role="tabpanel" aria-labelledby="tab-models" hidden>
-          <div class="settings-list">
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="engine_label">Transcription Engine</span>
-                <span class="label-hint" data-i18n="engine_hint">Local runs on-device, Cloud requires an API key</span>
-              </div>
-              <div class="setting-control">
-                <div class="toggle-group">
-                  <button id="engine-local" class="toggle-btn active" data-i18n="engine_local">Local Whisper</button>
-                  <button id="engine-cloud" class="toggle-btn" data-i18n="engine_cloud">Groq Cloud</button>
+            <div class="card">
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="swiss_spelling_label">Swiss spelling</span>
+                  <span class="label-hint" data-i18n="swiss_spelling_hint">ss instead of ß in every dictation, with or without AI.</span>
+                </div>
+                <div class="setting-control">
+                  <label class="switch">
+                    <input id="swiss-toggle" type="checkbox" />
+                    <span class="switch-slider"></span>
+                  </label>
                 </div>
               </div>
             </div>
-            <div class="setting-row" id="gpu-backend-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="gpu_backend_label">GPU Backend</span>
-                <span class="label-hint" data-i18n="gpu_backend_hint">Auto: NVIDIA CUDA, otherwise Vulkan (AMD / Intel), otherwise CPU</span>
-                <span class="label-hint" id="gpu-detected"></span>
-              </div>
-              <div class="setting-control">
-                <select id="gpu-backend-select">
-                  <option value="auto" data-i18n="gpu_backend_auto">Auto</option>
-                  <option value="cuda" data-i18n="gpu_backend_cuda">NVIDIA CUDA</option>
-                  <option value="vulkan" data-i18n="gpu_backend_vulkan">Vulkan (AMD / Intel / NVIDIA)</option>
-                  <option value="cpu" data-i18n="gpu_backend_cpu">CPU only</option>
-                </select>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="pc_check_label">PC check</span>
-                <span class="label-hint" data-i18n="pc_check_hint">Measures Whisper on your graphics card with and without flash attention, and the AI speed (about 20 seconds), then uses the fastest setup.</span>
-              </div>
-              <div class="setting-control">
-                <button id="pc-check-btn" class="btn-secondary" data-i18n="pc_check_run">Run check</button>
-              </div>
-            </div>
-            <div id="pc-check-result" class="pc-check-result hidden">
-              <pre id="pc-check-report"></pre>
-              <button id="pc-check-copy" class="btn-secondary" data-i18n="pc_check_copy">Copy report</button>
-            </div>
-            <div class="setting-row" id="language-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="language_label">Language</span>
-                <span class="label-hint" data-i18n="language_hint">Auto-detect or pick a preferred language</span>
-              </div>
-              <div class="setting-control">
-                <select id="language-select"></select>
-              </div>
-            </div>
-            <div class="setting-row" id="local-settings">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="model_label">Model Size</span>
-                <span class="label-hint" data-i18n="model_hint">Larger models are more accurate but use more resources</span>
-              </div>
-              <div class="setting-control">
-                <div class="model-row">
-                  <select id="model-select">
-                    <option value="tiny" data-i18n="model_tiny">Tiny (~75 MB) — fastest, lowest accuracy</option>
-                    <option value="base" data-i18n="model_base">Base (~142 MB)</option>
-                    <option value="small" selected data-i18n="model_small">Small (~466 MB) — recommended default</option>
-                    <option value="medium" data-i18n="model_medium">Medium (~1.5 GB)</option>
-                    <option value="large-v3" data-i18n="model_large_v3">Large v3 (~2.9 GB) — highest accuracy</option>
-                    <option value="large-v3-turbo" data-i18n="model_large_v3_turbo">Large v3 Turbo (~1.5 GB) — large quality, ~8x faster</option>
-                    <option value="large-v3-turbo-q8_0" data-i18n="model_large_v3_turbo_q8">Large v3 Turbo q8 (~870 MB) — same text as Turbo, faster, half the memory</option>
-                    <option value="large-v3-turbo-q5_0" data-i18n="model_large_v3_turbo_q5">Large v3 Turbo q5 (~574 MB) — saves ~0.3 GB of graphics memory over q8, same speed</option>
-                  </select>
-                  <button id="download-btn" class="btn-primary" data-i18n="download">Download</button>
+            <details class="fold" data-fold="dictionary">
+              <summary data-i18n="advanced">Advanced</summary>
+              <div class="fold-body">
+                <div class="card">
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="screen_context_label">Words on screen</span>
+                      <span class="label-hint"><span data-i18n="screen_context_hint">Names in the window you dictate into help with spelling.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="screen-context-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="screen-context-more" data-i18n="screen_context_more" hidden>Whisper and the AI use them. They are read on your PC when you press the hotkey and never saved.</span>
+                    </div>
+                    <div class="setting-control">
+                      <label class="switch">
+                        <input id="screen-toggle" type="checkbox" />
+                        <span class="switch-slider"></span>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="learn_label">Learn from corrections</span>
+                      <span class="label-hint"><span data-i18n="learn_hint">Names you correct right after dictating are suggested.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="learn-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="learn-more" data-i18n="learn_more" hidden>Only the corrected word is kept, never your text.</span>
+                    </div>
+                    <div class="setting-control">
+                      <label class="switch">
+                        <input id="learn-toggle" type="checkbox" />
+                        <span class="switch-slider"></span>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="dict_io_label">Import and export</span>
+                      <span class="label-hint" data-i18n="dict_io_hint">A text file with one entry per line, or separated by commas.</span>
+                      <span id="dict-io-status" class="label-hint status-line" role="status"></span>
+                    </div>
+                    <div class="setting-control">
+                      <button type="button" id="dict-import" class="btn-secondary" data-i18n="dictionary_import">Import…</button>
+                      <button type="button" id="dict-export" class="btn-secondary" data-i18n="dictionary_export">Export…</button>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div id="download-progress" class="hidden">
-              <div id="progress-bar"><div id="progress-fill"></div></div>
-            </div>
-            <div class="setting-row hidden" id="cloud-settings">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="groq_label">Groq API Key</span>
-                <span class="label-hint" data-i18n="groq_hint">Get your key from console.groq.com</span>
-              </div>
-              <div class="setting-control">
-                <input type="password" id="groq-key" placeholder="gsk_..." />
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="game_free_label">Free GPU for games</span>
-                <span class="label-hint" data-i18n="game_free_hint">When a fullscreen app (a game or a video player) is in front for 5 seconds, Whisper and the AI model are unloaded, as with the Free GPU hotkey. Meanwhile a dictation loads only Whisper and is pasted without AI cleanup, and Edit mode is off. The models load again 30 seconds after the game is closed, minimised or no longer fullscreen, not when you just use another window or monitor. Browsers, calls (Teams, Zoom, Discord) and remote desktops in fullscreen do not count.</span>
-                <span class="label-hint ai-status hidden" id="game-free-status" data-tone="warn" data-i18n="game_free_now">Freed for a game: dictations run without AI cleanup until it ends.</span>
-              </div>
-              <div class="setting-control">
-                <label class="switch">
-                  <input id="game-free-toggle" type="checkbox" />
-                  <span class="switch-slider"></span>
-                </label>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="idle_unload_label">Unload when idle</span>
-                <span class="label-hint" data-i18n="idle_unload_hint">On mains power, unload Whisper and the AI model after this long without a dictation, to free the graphics card. The next dictation loads them again and takes a few seconds longer. On battery it is always 10 minutes.</span>
-              </div>
-              <div class="setting-control">
-                <select id="idle-unload-select">
-                  <option value="0" data-i18n="idle_unload_never">Never</option>
-                  <option value="15" data-i18n="idle_unload_15">After 15 minutes</option>
-                  <option value="30" data-i18n="idle_unload_30">After 30 minutes</option>
-                  <option value="60" data-i18n="idle_unload_60">After 1 hour</option>
-                </select>
-              </div>
-            </div>
+            </details>
           </div>
 
-          <h3 class="subsection-title" data-i18n="unused_models_title">Unused models</h3>
-          <p class="subsection-desc" data-i18n="unused_models_desc">Downloaded Whisper and AI models that no setting uses. They only take disk space; delete the ones you no longer need.</p>
-          <div id="unused-model-list" class="unused-model-list"></div>
-          <p id="unused-model-empty" class="empty-state hidden" data-i18n="unused_models_empty">No unused models.</p>
+          <!-- ── Models & GPU ──────────────────────────────── -->
+          <div id="panel-models" class="tab-panel" role="tabpanel" aria-labelledby="tab-models" hidden>
+            <div class="card">
+              <div class="setting-row" id="local-settings">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="model_label">Speech model</span>
+                  <span class="label-hint" data-i18n="model_hint">Larger models are more accurate and need more memory.</span>
+                  <span class="label-hint status-line" id="model-note"></span>
+                </div>
+                <div class="setting-control">
+                  <div class="model-row">
+                    <select id="model-select">
+                      <option value="tiny">Tiny</option>
+                      <option value="base">Base</option>
+                      <option value="small" selected>Small</option>
+                      <option value="medium">Medium</option>
+                      <option value="large-v3">Large v3</option>
+                      <option value="large-v3-turbo">Large v3 Turbo</option>
+                      <option value="large-v3-turbo-q8_0">Large v3 Turbo q8</option>
+                      <option value="large-v3-turbo-q5_0">Large v3 Turbo q5</option>
+                    </select>
+                    <button type="button" id="download-btn" class="btn-primary" data-i18n="download">Download</button>
+                  </div>
+                </div>
+              </div>
+              <div id="download-progress" class="progress download-progress hidden">
+                <div id="progress-bar"><div id="progress-fill"></div></div>
+                <span class="progress-text" id="download-numbers" role="status"></span>
+              </div>
+              <div id="engine-cloud-note" class="notice hidden">
+                <span class="notice-text" data-i18n="cloud_note">The cloud engine (Groq) transcribes. Change it under Advanced.</span>
+              </div>
+              <div class="setting-row" id="language-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="language_label">Language</span>
+                  <span class="label-hint" data-i18n="language_hint">Auto-detect, or the language you dictate in.</span>
+                </div>
+                <div class="setting-control">
+                  <select id="language-select"></select>
+                </div>
+              </div>
+            </div>
+            <details class="fold" data-fold="models">
+              <summary data-i18n="advanced">Advanced</summary>
+              <div class="fold-body">
+                <div class="card">
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="engine_label">Engine</span>
+                      <span class="label-hint" data-i18n="engine_hint">Local runs on this PC, Cloud needs an API key.</span>
+                    </div>
+                    <div class="setting-control">
+                      <div class="toggle-group" role="group" data-i18n-aria-label="engine_label" aria-label="Engine">
+                        <button type="button" id="engine-local" class="toggle-btn active" data-i18n="engine_local">Local Whisper</button>
+                        <button type="button" id="engine-cloud" class="toggle-btn" data-i18n="engine_cloud">Groq Cloud</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="setting-row hidden" id="cloud-settings">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="groq_label">Groq API Key</span>
+                      <span class="label-hint" data-i18n="groq_hint">Get your key from console.groq.com.</span>
+                    </div>
+                    <div class="setting-control">
+                      <input type="password" id="groq-key" placeholder="gsk_..." />
+                    </div>
+                  </div>
+                  <div class="setting-row" id="gpu-backend-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="gpu_backend_label">GPU backend</span>
+                      <span class="label-hint" data-i18n="gpu_backend_hint">Auto: NVIDIA CUDA, otherwise Vulkan (AMD / Intel), otherwise CPU.</span>
+                      <span class="label-hint status-line" id="gpu-detected"></span>
+                    </div>
+                    <div class="setting-control">
+                      <select id="gpu-backend-select">
+                        <option value="auto" data-i18n="gpu_backend_auto">Auto</option>
+                        <option value="cuda" data-i18n="gpu_backend_cuda">NVIDIA CUDA</option>
+                        <option value="vulkan" data-i18n="gpu_backend_vulkan">Vulkan (AMD / Intel / NVIDIA)</option>
+                        <option value="cpu" data-i18n="gpu_backend_cpu">CPU only</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="pc_check_label">PC check</span>
+                      <span class="label-hint"><span data-i18n="pc_check_hint">Measures this PC (about 20 seconds) and uses the fastest setup.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="pc-check-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="pc-check-more" data-i18n="pc_check_more" hidden>Whisper on your graphics card with and without flash attention, and the speed of the AI.</span>
+                    </div>
+                    <div class="setting-control">
+                      <button type="button" id="pc-check-btn" class="btn-secondary" data-i18n="pc_check_run">Run check</button>
+                    </div>
+                  </div>
+                  <div id="pc-check-result" class="pc-check-result hidden">
+                    <pre id="pc-check-report"></pre>
+                    <button type="button" id="pc-check-copy" class="btn-secondary" data-i18n="pc_check_copy">Copy report</button>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="game_free_label">Free GPU for games</span>
+                      <span class="label-hint"><span data-i18n="game_free_hint">Unloads the models while a game or video runs in fullscreen.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="game-free-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="game-free-more" data-i18n="game_free_more" hidden>When a fullscreen app (a game or a video player) is in front for 5 seconds, Whisper and the AI model are unloaded, as with the Free GPU hotkey. Meanwhile a dictation loads only Whisper and is pasted without AI cleanup, and Edit mode is off. The models load again 30 seconds after the game is closed, minimised or no longer fullscreen, not when you just use another window or monitor. Browsers, calls (Teams, Zoom, Discord) and remote desktops in fullscreen do not count.</span>
+                      <span class="label-hint ai-status status-line hidden" id="game-free-status" data-tone="warn" data-i18n="game_free_now">Freed for a game: dictations run without AI cleanup until it ends.</span>
+                    </div>
+                    <div class="setting-control">
+                      <label class="switch">
+                        <input id="game-free-toggle" type="checkbox" />
+                        <span class="switch-slider"></span>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div class="setting-label">
+                      <span class="label-text" data-i18n="idle_unload_label">Unload when idle</span>
+                      <span class="label-hint"><span data-i18n="idle_unload_hint">Frees the graphics card after this long without a dictation.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="idle-unload-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="idle-unload-more" data-i18n="idle_unload_more" hidden>On mains power. The next dictation loads the models again and takes a few seconds longer. On battery it is always 10 minutes.</span>
+                    </div>
+                    <div class="setting-control">
+                      <select id="idle-unload-select">
+                        <option value="0" data-i18n="idle_unload_never">Never</option>
+                        <option value="15" data-i18n="idle_unload_15">After 15 minutes</option>
+                        <option value="30" data-i18n="idle_unload_30">After 30 minutes</option>
+                        <option value="60" data-i18n="idle_unload_60">After 1 hour</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="list-head">
+                    <h3 class="list-title" data-i18n="unused_models_title">Unused models</h3>
+                  </div>
+                  <p class="label-hint" data-i18n="unused_models_desc">Downloaded Whisper and AI models that no setting uses. They only take disk space; delete the ones you no longer need.</p>
+                  <div id="unused-model-list" class="list unused-model-list"></div>
+                  <p id="unused-model-empty" class="empty-state hidden" data-i18n="unused_models_empty">No unused models.</p>
+                </div>
+              </div>
+            </details>
           </div>
+
+          <!-- ── General ───────────────────────────────────── -->
           <div id="panel-general" class="tab-panel" role="tabpanel" aria-labelledby="tab-general" hidden>
-          <div class="settings-list">
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="microphone_label">Microphone</span>
-                <span class="label-hint" data-i18n="microphone_hint">Select your preferred input device</span>
+            <div class="card">
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="ui_language_label">Display Language</span>
+                  <span class="label-hint" data-i18n="ui_language_hint">The language of this window, the pill and the tray menu.</span>
+                </div>
+                <div class="setting-control">
+                  <select id="ui-language-select">
+                    <option value="en">English</option>
+                    <option value="de">Deutsch</option>
+                  </select>
+                </div>
               </div>
-              <div class="setting-control">
-                <select id="mic-select"></select>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="ui_language_label">Display Language</span>
-                <span class="label-hint" data-i18n="ui_language_hint">Language used for the app interface</span>
-              </div>
-              <div class="setting-control">
-                <select id="ui-language-select">
-                  <option value="en">English</option>
-                  <option value="de">Deutsch</option>
-                </select>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="volume_label">Notification Volume</span>
-                <span class="label-hint" data-i18n="volume_hint">Soft sound when starting/stopping recording</span>
-              </div>
-              <div class="setting-control">
-                <input id="volume-slider" type="range" min="0" max="1" step="0.05" />
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="autostart_label">Start with Windows</span>
+                  <span class="label-hint" data-i18n="autostart_hint">Starts RudariFlow in the tray when you log in.</span>
+                </div>
+                <div class="setting-control">
+                  <label class="switch">
+                    <input id="autostart-toggle" type="checkbox" />
+                    <span class="switch-slider"></span>
+                  </label>
+                </div>
               </div>
             </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="autostart_label">Start with computer</span>
-                <span class="label-hint" data-i18n="autostart_hint">Launch RudariFlow automatically when you log in</span>
+            <div class="card">
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="history_mode_label">Keep history</span>
+                  <span class="label-hint"><span data-i18n="history_mode_hint">The last 200 texts and 50 recordings are kept.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="history-mode-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint hint-long" id="history-mode-more" data-i18n="history_mode_more" hidden>Recordings let you re-run a dictation with another model.</span>
+                </div>
+                <div class="setting-control">
+                  <select id="history-mode-select">
+                    <option value="audio" data-i18n="history_mode_audio">Text and recordings</option>
+                    <option value="text" data-i18n="history_mode_text">Text only</option>
+                    <option value="off" data-i18n="history_mode_off">Off</option>
+                  </select>
+                </div>
               </div>
-              <div class="setting-control">
-                <label class="switch">
-                  <input id="autostart-toggle" type="checkbox" />
-                  <span class="switch-slider"></span>
-                </label>
+              <div class="setting-row">
+                <div class="setting-label">
+                  <span class="label-text" data-i18n="history_stored_label">Stored on this PC</span>
+                  <span id="history-count" class="label-hint status-line"></span>
+                </div>
+                <div class="setting-control">
+                  <button type="button" id="history-clear" class="btn-secondary" data-i18n="history_clear">Clear history</button>
+                </div>
               </div>
             </div>
-            <div class="setting-row">
-              <div class="setting-label">
-                <span class="label-text" data-i18n="history_mode_label">Keep history</span>
-                <span class="label-hint" data-i18n="history_mode_hint">Recordings allow re-running a dictation with another model. The last 200 texts and 50 recordings are kept.</span>
-              </div>
-              <div class="setting-control">
-                <select id="history-mode-select">
-                  <option value="audio" data-i18n="history_mode_audio">Text and recordings</option>
-                  <option value="text" data-i18n="history_mode_text">Text only</option>
-                  <option value="off" data-i18n="history_mode_off">Off</option>
-                </select>
-              </div>
-            </div>
-          </div>
-          <div class="history-toolbar">
-            <span id="history-count" class="label-hint"></span>
-            <button id="history-clear" class="btn-secondary" data-i18n="history_clear">Clear history</button>
-          </div>
           </div>
         </section>
       </main>
@@ -902,7 +983,7 @@
     <dialog id="mt-quit" class="mt-modal" aria-labelledby="mt-quit-question" aria-describedby="mt-quit-hint">
       <div class="mt-modal-box">
         <p id="mt-quit-question" class="mt-modal-question" data-i18n="mt_quit_question">Stop the meeting and quit?</p>
-        <p id="mt-quit-hint" class="label-hint" data-i18n="mt_quit_hint">The meeting is kept as interrupted; Finish in the Meetings tab transcribes the rest and writes the notes.</p>
+        <p id="mt-quit-hint" class="label-hint" data-i18n="mt_quit_hint">The meeting is kept as interrupted; Finish under Meetings transcribes the rest and writes the notes.</p>
         <div class="mt-modal-actions">
           <button id="mt-quit-cancel" class="btn-secondary" data-i18n="files_cancel">Cancel</button>
           <button id="mt-quit-ok" class="btn-primary" data-i18n="mt_quit_ok">Stop and quit</button>

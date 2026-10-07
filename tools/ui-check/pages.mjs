@@ -413,7 +413,7 @@ async function firstRun(page, run) {
   let now = await stepsNow(page);
   out.push(...expect(now.states === "done,todo,done" && now.marks === "✓2✓", "the microphone and the key are done, the speech model is to do", JSON.stringify(now)));
   out.push(...expect(now.primary.join() === "setup-model-download" && !now.resting, "Download is the page's one primary button", JSON.stringify(now.primary)));
-  out.push(...expect(/RTX 5080/.test(now.model) && /Large\sv3\sTurbo\sq8\s\(~870\sMB\)$/.test(now.model), "the speech model is the one for this PC's graphics card, named with its size", now.model));
+  out.push(...expect(/RTX 5080/.test(now.model) && /Large\sv3\sTurbo\sq8\s·\s870\sMB$/.test(now.model), "the speech model is the one for this PC's graphics card, named with its size", now.model));
   out.push(...expect(/Realtek/.test(now.mic) && !now.retry, "the microphone is named", JSON.stringify(now)));
   const card = await page.evaluate(() => [document.getElementById("home-ai-card").checkVisibility(), document.getElementById("setup-ai-text").textContent]);
   out.push(...expect(card[0] && /Gemma\s4\sE4B, 5\.0\sGB/.test(card[1]), "the optional AI cleanup card names its model and size", JSON.stringify(card)));
@@ -791,7 +791,7 @@ async function firstRun(page, run) {
   await until(page, () => document.getElementById("setup-model").dataset.state === "problem");
   out.push(...expect((await logged(page)) === 1, "the failed download is written to the log once"));
   now = await stepsNow(page);
-  out.push(...expect(now.states === "done,problem,done" && /Large\sv3\sTurbo\sq8\s\(~870\sMB\)/.test(now.model) && now.model.length > 60 && !now.bar && !now.resting && now.primary.join() === "setup-model-download" && /^setup/.test(await statusNow(page)), "a download that fails is said beside its step, with the model and its size, and the button is the way to try again", JSON.stringify(now)));
+  out.push(...expect(now.states === "done,problem,done" && /Large\sv3\sTurbo\sq8\s·\s870\sMB/.test(now.model) && now.model.length > 60 && !now.bar && !now.resting && now.primary.join() === "setup-model-download" && /^setup/.test(await statusNow(page)), "a download that fails is said beside its step, with the model and its size, and the button is the way to try again", JSON.stringify(now)));
   out.push(...expect(now.button === (de ? "Wiederholen" : "Retry") && now.focus === "setup-model-download", "the button reads Retry after a failed download and keeps the keyboard focus", JSON.stringify([now.button, now.focus])));
   await place("the download failed");
   // Again, to the end, and again pressed twice: every status from the press to Ready.
@@ -1238,6 +1238,63 @@ export const PAGES = [
   { id: "meetings", open: (page) => section(page, "meetings") },
   { id: "soundboard", open: (page) => section(page, "soundboard") },
   ...TABS.map((tab) => ({ id: `settings-${tab}`, open: (page) => settings(page, tab) })),
+  // The same tabs with Advanced open (General has no fold).
+  ...TABS.filter((tab) => tab !== "general").map((tab) => ({
+    id: `settings-${tab}-advanced`,
+    open: async (page) => {
+      await settings(page, tab);
+      await page.evaluate((t) => (document.querySelector(`details.fold[data-fold="${t}"]`).open = true), tab);
+      await wait(page);
+    },
+    probe:
+      tab !== "models"
+        ? undefined
+        : async (page) => {
+            const out = [];
+            // "More" opens the long hint in place.
+            const more = page.locator("#panel-models .hint-more").first();
+            await more.click();
+            const opened = await page.evaluate(() => {
+              const b = document.querySelector("#panel-models .hint-more");
+              return [b.getAttribute("aria-expanded"), !document.getElementById(b.getAttribute("aria-controls")).hidden];
+            });
+            out.push(...expect(opened[0] === "true" && opened[1], "More opens the long hint", JSON.stringify(opened)));
+            await more.click();
+            // In place: in every row of every tab, neither "More" nor the row's control moves when the long text opens.
+            const moved = await page.evaluate(async () => {
+              const out = [];
+              const top = (el) => Math.round(el.getBoundingClientRect().top * 10) / 10;
+              for (const panel of document.querySelectorAll(".tab-panel")) {
+                const hidden = panel.hidden;
+                panel.hidden = false;
+                for (const fold of panel.querySelectorAll("details.fold")) fold.dataset.was = String(fold.open);
+                for (const fold of panel.querySelectorAll("details.fold")) fold.open = true;
+                for (const b of panel.querySelectorAll(".setting-row .hint-more")) {
+                  const control = b.closest(".setting-row").querySelector(".setting-control > *");
+                  const before = [top(b), top(control)];
+                  b.click();
+                  const after = [top(b), top(control)];
+                  const shows = !document.getElementById(b.getAttribute("aria-controls")).hidden;
+                  b.click();
+                  if (!shows || before[0] !== after[0] || before[1] !== after[1]) out.push(`${b.getAttribute("aria-controls")}: ${before} -> ${after}`);
+                }
+                for (const fold of panel.querySelectorAll("details.fold")) fold.open = fold.dataset.was === "true";
+                for (const fold of panel.querySelectorAll("details.fold")) delete fold.dataset.was;
+                panel.hidden = hidden;
+              }
+              return out;
+            });
+            out.push(...expect(moved.length === 0, "More opens the long text without moving its row's control", moved.join("; ")));
+            // The fold stays open over a new start.
+            await page.reload({ waitUntil: "networkidle" });
+            await wait(page, 500);
+            const kept = await page.evaluate(() => [document.querySelector('details.fold[data-fold="models"]').open, document.querySelector('details.fold[data-fold="general"]') === null]);
+            out.push(...expect(kept[0] === true, "an open Advanced fold is remembered", JSON.stringify(kept)));
+            // A window that still needs its setup starts on Home: back to the tab, for the screenshot.
+            await settings(page, "models");
+            return out;
+          },
+  })),
   {
     id: "files-result",
     scenarios: ["populated"],

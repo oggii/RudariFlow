@@ -4,6 +4,7 @@
 @import "./styles/components.css";
 @import "./styles/shell.css";
 @import "./styles/home.css";
+@import "./styles/settings.css";
 
 /* The Files tab uses the whole window: the transcript takes the height. */
 #section-files {
@@ -442,7 +443,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding-bottom: 32px;
+  padding-bottom: var(--s3);
 }
 
 .ai-test-controls {

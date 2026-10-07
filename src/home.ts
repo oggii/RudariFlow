@@ -12,6 +12,7 @@ import { prefs, reveal, updatePrefs } from "./shell";
 import { currentSpeech, currentStatus, onStatus } from "./status-view";
 import { type Status } from "./status.ts";
 import { header, idleFor, meterMay, meterStep, modelStep, recommend, setup, sizeText, METER_SILENT_MS, type Gpu, type MeterNow, type Recommendation, type Setup } from "./setup.ts";
+import { modelLabel, speechModel } from "./models.ts";
 
 export interface HomeHost {
   /** "push-to-talk" or "toggle". */
@@ -91,12 +92,6 @@ function renderHeader(now: Status, s: Setup) {
 
 // ── What is loaded ────────────────────────────────────
 
-/** The speech model's name as its dropdown shows it, without the "downloaded" mark. */
-function speechModelName(id: string): string {
-  const option = document.querySelector<HTMLOptionElement>(`#model-select option[value="${CSS.escape(id)}"]`);
-  return (option?.dataset.baseText ?? option?.textContent ?? id).replace(/\s*✓$/, "");
-}
-
 function renderLoaded() {
   const speech = currentSpeech();
   const speechLine = $("home-loaded-speech");
@@ -112,8 +107,7 @@ function renderLoaded() {
       failed: t("home_speech_failed"),
       unloaded: speech.downloaded ? t("home_speech_unloaded") : t("home_speech_missing"),
     };
-    // The name alone: the dropdown's size and note ("(~870 MB) …") belong to the choice, not to this line.
-    speechLine.textContent = `${speechModelName(speech.model).replace(/\s*\(.*$/, "")} · ${state[speech.load]}`;
+    speechLine.textContent = `${speechModel(speech.model).name} · ${state[speech.load]}`;
     // A value is plain text. Only what is missing or failed is tinted, in all three lines.
     speechLine.dataset.tone = speech.load === "failed" || !speech.downloaded ? "warn" : "";
   }
@@ -175,11 +169,10 @@ function currentSetup(): Setup {
   return setup({ speech: currentSpeech(), microphones: host.microphones(), aiDownloaded: host.ai().downloaded, aiDismissed: prefs.aiCardDismissed });
 }
 
-/** A speech model as a step names it: "Large v3 Turbo q8 (~870 MB)" with its
- *  size, "Large v3 Turbo q8" without. The dropdown's note after it is left out. */
+/** A speech model as a step names it: "Large v3 Turbo q8 · 870 MB" with its
+ *  size, "Large v3 Turbo q8" without (src/models.ts). */
 function modelNamed(id: string, size: boolean): string {
-  const label = speechModelName(id);
-  return whole((size ? (/^[^(]*(\([^)]*\))?/.exec(label)?.[0] ?? label) : label.replace(/\s*\(.*$/, "")).trim());
+  return whole(size ? modelLabel(id) : speechModel(id).name);
 }
 
 /** A name that stays on one line: a line breaks before it, not inside it. */

@@ -17,7 +17,9 @@ import { mountBoard } from "./soundboard/board";
 import { announceRoute, currentRoute, go, initShell, onRoute, startOn } from "./shell";
 import { setDownload } from "./activity";
 import { currentSpeech, initStatus, onStatus, refreshSpeech, renderStatus } from "./status-view";
-import { setup } from "./setup.ts";
+import { setup, sizeText } from "./setup.ts";
+import { initHints, nameRows } from "./rows";
+import { modelLabel, speechModel } from "./models.ts";
 
 interface Settings {
   microphone: string;
@@ -113,6 +115,7 @@ const soundboard = mountBoard(document.getElementById("sb-root")!, { popOut: fal
 
 // Sections and Settings tabs (src/shell.ts); what a page needs when it is shown.
 initShell();
+initHints();
 onRoute((now) => {
   // Home's setup listens to the microphone only while it is on screen.
   renderHome();
@@ -197,6 +200,7 @@ async function loadSettings() {
   }
   uiLanguageSelect.value = currentSettings.uiLanguage;
   setLang(currentSettings.uiLanguage);
+  nameRows();
   populateLanguageSelect(languageSelect, getLang(), t("language_auto"));
 
   // Volume
@@ -290,18 +294,26 @@ async function refreshDetectedGpus() {
   }
 }
 
+/** A segmented choice: the chosen button is `active` and pressed. */
+function choose(button: HTMLElement, on: boolean) {
+  button.classList.toggle("active", on);
+  button.setAttribute("aria-pressed", String(on));
+}
+
 function setEngine(engine: string) {
   currentSettings.engine = engine;
-  engineLocal.classList.toggle("active", engine === "local");
-  engineCloud.classList.toggle("active", engine === "cloud");
+  choose(engineLocal, engine === "local");
+  choose(engineCloud, engine === "cloud");
   localSettings.classList.toggle("hidden", engine !== "local");
   cloudSettings.classList.toggle("hidden", engine !== "cloud");
+  // The speech model's row is gone with the cloud engine: say where the engine is.
+  document.getElementById("engine-cloud-note")!.classList.toggle("hidden", engine !== "cloud");
 }
 
 function setRecordingMode(mode: string) {
   currentSettings.recordingMode = mode;
-  modeToggle.classList.toggle("active", mode === "toggle");
-  modePtt.classList.toggle("active", mode === "push-to-talk");
+  choose(modeToggle, mode === "toggle");
+  choose(modePtt, mode === "push-to-talk");
   // Home says how to dictate: "Hold …" or "Press …".
   renderHome();
 }
@@ -312,27 +324,31 @@ async function isCurrentModelDownloaded(): Promise<boolean> {
   });
 }
 
+/** The Download button shows only while the chosen model is missing (a
+ *  downloaded one has its tick in the list), with the model's note under the label. */
 async function refreshModelStatusUI() {
   const downloaded = await isCurrentModelDownloaded();
-  if (downloaded) {
-    downloadBtn.textContent = "\u2713";
-    downloadBtn.removeAttribute("data-i18n");
-  } else {
-    downloadBtn.setAttribute("data-i18n", "download");
-    downloadBtn.textContent = t("download");
-  }
-  (downloadBtn as HTMLButtonElement).disabled = downloaded;
+  downloadBtn.setAttribute("data-i18n", "download");
+  downloadBtn.textContent = t("download");
+  downloadBtn.classList.toggle("hidden", downloaded);
+  // A download that runs keeps its button resting (this is also called on a language change).
+  (downloadBtn as HTMLButtonElement).disabled = downloadInFlight;
+  renderModelNote();
   await refreshModelDropdownLabels();
 }
 
+/** The one line about the model the dropdown is on. */
+function renderModelNote() {
+  const note = speechModel(modelSelect.value).note;
+  document.getElementById("model-note")!.textContent = note ? t(note) : "";
+}
+
+/** "Large v3 Turbo q8 · 870 MB ✓": name, size, and a tick when it is downloaded. */
 async function refreshModelDropdownLabels() {
   const opts = Array.from(modelSelect.options) as HTMLOptionElement[];
   await Promise.all(opts.map(async (o) => {
     const ok = await invoke<boolean>("check_model_downloaded", { modelSize: o.value });
-    const key = o.getAttribute("data-i18n");
-    const base = key ? t(key) : (o.dataset.baseText ?? o.textContent ?? "");
-    if (!o.dataset.baseText) o.dataset.baseText = base;
-    o.textContent = ok ? `${base} \u2713` : base;
+    o.textContent = ok ? `${modelLabel(o.value)} \u2713` : modelLabel(o.value);
   }));
 }
 
@@ -348,8 +364,7 @@ async function downloadCurrentModel(): Promise<boolean> {
   let ok = false;
   try {
     await invoke("download_model", { modelSize: modelSelect.value });
-    downloadBtn.textContent = "\u2713";
-    downloadBtn.removeAttribute("data-i18n");
+    downloadBtn.classList.add("hidden");
     ok = true;
     return true;
   } catch (e) {
@@ -570,8 +585,10 @@ pcCheckCopy.addEventListener("click", async () => {
 uiLanguageSelect.addEventListener("change", async () => {
   setLang(uiLanguageSelect.value);
   populateLanguageSelect(languageSelect, getLang(), t("language_auto"));
+  nameRows();
   renderMicOptions();
   renderHotkeys();
+  await refreshModelStatusUI();
   await saveSettings();
   await refreshHistory();
   await renderAiSettings();
@@ -611,6 +628,8 @@ let lastSavedModel = "";
  *  first. True when it is there and saved. */
 async function chooseModel(): Promise<boolean> {
   const previousSaved = lastSavedModel || currentSettings.whisperModel;
+  // The note follows the dropdown at once, also through the download of a model that is missing.
+  renderModelNote();
   if (await isCurrentModelDownloaded()) {
     await refreshModelStatusUI();
     await saveSettings();
@@ -679,8 +698,13 @@ listen<string>("recording-state", (event) => {
 
 // Listen for download progress
 listen<DownloadProgress>("download-progress", (event) => {
-  const { percent } = event.payload;
+  const { percent, downloaded, total } = event.payload;
   progressFill.style.width = `${percent}%`;
+  // Always the numbers too: percent and size.
+  document.getElementById("download-numbers")!.textContent = t("progress_numbers")
+    .replace("{percent}", String(Math.round(percent)))
+    .replace("{done}", sizeText(downloaded))
+    .replace("{total}", sizeText(total));
   if (downloadInFlight) setDownload("speech", percent);
 });
 

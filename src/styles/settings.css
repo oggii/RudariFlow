@@ -1,0 +1,95 @@
+/* Settings: five tabs; each has a card of the common rows and an Advanced
+   fold with the rest. The rows, cards, tabs and folds are components.css;
+   this is what only Settings needs. */
+
+/* The button row at the foot of a card ("Add rule"). */
+.card-foot {
+  padding: var(--s2) 0 var(--s3);
+}
+
+/* One column on the left edge every page shares. It grows with the window
+   up to 1080 px of rows: wider than that, a label and its control at the
+   other end of the row no longer read as one. */
+#section-settings {
+  max-width: calc(1080px + 2 * var(--s5));
+}
+
+/* The paragraph that opens a tab is as wide as the cards under it. */
+.panel-lead {
+  max-width: none;
+}
+
+/* A row's label is its top, and the control stands beside the label and
+   its one line of hint. So a control keeps its place when "More" opens the
+   long text, when a hint takes two lines and when a state line comes or goes. */
+.tab-panel .setting-row {
+  align-items: flex-start;
+}
+
+.tab-panel .setting-control {
+  min-height: calc((var(--fs) + var(--fs-s)) * 1.45);
+}
+
+/* A download's bar belongs to the row above it: no dividing line between the two. */
+.setting-row:has(+ .download-progress:not(.hidden)) {
+  border-bottom-color: transparent;
+}
+
+/* A model's dropdown is as wide as its longest name, also with the Download
+   button beside it (where the row is short, the button stands under it).
+   Said with the row, so it holds against the page rules of 0.16.0 that
+   style.css still has for `.model-row` and `.ai-model-row` until Task 7. */
+.setting-control .model-row {
+  width: auto;
+  max-width: none;
+}
+
+.setting-control .model-row select {
+  flex: 0 1 auto;
+  max-width: min(320px, 100%);
+}
+
+/* A hint or a notice that stands in a card by itself, under its heading. */
+.card > .label-hint {
+  padding-bottom: var(--s2);
+}
+
+.card > .notice {
+  margin: var(--s2) 0;
+}
+
+/* "(12 words)" after a list's title. */
+.list-count {
+  font-weight: 400;
+  color: var(--text-2);
+}
+
+/* A model's dropdown with its Download button. */
+.model-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  width: auto;
+  max-width: none;
+}
+
+.model-row select {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 160px;
+  max-width: min(320px, 100%);
+}
+
+/* A download's bar and numbers, under the row that started it. */
+.download-progress {
+  padding: 0 0 var(--s3);
+  border-bottom: 1px solid var(--line);
+}
+
+/* The PC check's report. */
+.pc-check-result {
+  padding: var(--s2) 0 var(--s3);
+  border-bottom: 1px solid var(--line);
+}

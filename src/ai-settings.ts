@@ -7,6 +7,7 @@ import { t, getLang } from "./i18n";
 import { populateLanguageSelect } from "./languages";
 import { onRoute } from "./shell";
 import { setDownload } from "./activity";
+import { sizeText } from "./setup.ts";
 
 export interface AppRule {
   app: string;
@@ -79,6 +80,8 @@ const statusLine = $("ai-status-line");
 const modelSelect = $<HTMLSelectElement>("ai-model-select");
 const modelNote = $("ai-model-note");
 const downloadBtn = $<HTMLButtonElement>("ai-download-btn");
+/** The same download, next to the switch it unlocks (the model's own row is under Advanced). */
+const downloadMain = $<HTMLButtonElement>("ai-download-main");
 const progress = $("ai-download-progress");
 const progressFill = $("ai-progress-fill");
 const progressText = $("ai-progress-text");
@@ -193,6 +196,8 @@ function renderStatus() {
 
   downloadBtn.classList.toggle("hidden", downloaded);
   downloadBtn.disabled = downloading;
+  downloadMain.classList.toggle("hidden", downloaded || !status.installed);
+  downloadMain.disabled = downloading;
   modelSelect.disabled = downloading;
   progress.classList.toggle("hidden", !downloading);
   toggle.disabled = !downloaded || !status.installed;
@@ -295,6 +300,7 @@ async function fetchModel() {
   progressText.textContent = "";
   progress.classList.remove("hidden");
   downloadBtn.disabled = true;
+  downloadMain.disabled = true;
   modelSelect.disabled = true;
   say(t("ai_status_downloading"), "", "downloading");
   downloadInFlight = true;
@@ -331,8 +337,13 @@ function renderOutputSkip() {
 }
 
 function setStyle(style: string) {
-  stylePolished.classList.toggle("active", style !== "light");
-  styleLight.classList.toggle("active", style === "light");
+  for (const [button, on] of [
+    [stylePolished, style !== "light"],
+    [styleLight, style === "light"],
+  ] as const) {
+    button.classList.toggle("active", on);
+    button.setAttribute("aria-pressed", String(on));
+  }
 }
 
 // ── Rules ─────────────────────────────────────────────
@@ -466,6 +477,7 @@ export function initAiSettings(h: AiSettingsHost) {
   });
 
   downloadBtn.addEventListener("click", download);
+  downloadMain.addEventListener("click", download);
 
   for (const [button, style] of [
     [stylePolished, "polished"],
@@ -519,7 +531,10 @@ export function initAiSettings(h: AiSettingsHost) {
     const { downloaded, total, percent } = event.payload;
     progress.classList.remove("hidden");
     progressFill.style.width = `${percent}%`;
-    progressText.textContent = total ? `${gb(downloaded)} / ${gb(total)} GB` : "";
+    // Always the numbers: percent and size.
+    progressText.textContent = total
+      ? t("progress_numbers").replace("{percent}", String(Math.round(percent))).replace("{done}", sizeText(downloaded)).replace("{total}", sizeText(total))
+      : `${Math.round(percent)} %`;
     // A progress event that arrives after the download ended must not bring it back into the status.
     if (downloadInFlight) setDownload("ai", percent);
   });

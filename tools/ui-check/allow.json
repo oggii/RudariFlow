@@ -2,11 +2,8 @@
  { "check": "name", "page": "files*", "what": "*", "until": 8 },
  { "check": "name", "page": "*", "what": "*.rule-*", "until": 7 },
  { "check": "name", "page": "*", "what": "*.replacement-*", "until": 7 },
- { "check": "name", "page": "*", "what": "*", "until": 6 },
  { "check": "hint-lines", "page": "soundboard*", "what": "*", "until": 8 },
  { "check": "hint-lines", "page": "popout*", "what": "*", "until": 8 },
- { "check": "hint-lines", "page": "*", "what": "*", "until": 6 },
  { "check": "clipped", "page": "soundboard*", "what": "*", "until": 8 },
- { "check": "clipped", "page": "*", "what": "select.rule-language", "until": 7 },
- { "check": "clipped", "page": "*", "what": "select#*model-select", "until": 6 }
+ { "check": "clipped", "page": "*", "what": "select.rule-language", "until": 7 }
 ]
