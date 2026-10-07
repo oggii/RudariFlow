@@ -145,6 +145,10 @@
         background: rgba(20, 20, 22, 0.92);
         border-radius: 999px;
         border: 1px solid rgba(255, 255, 255, 0.08);
+        /* A long notice takes two lines. */
+        padding: 0 18px;
+        line-height: 1.25;
+        text-align: center;
         opacity: 0;
         pointer-events: none;
         transition: opacity 200ms ease;
@@ -340,6 +344,7 @@
           mt_limit: "Meeting stopped at 4 hours", mt_no_model: "Download a Whisper model first",
           mt_disk_full: "Not enough disk space for a meeting", mt_pc_check: "Wait for the PC check to finish",
           mt_failed: "The meeting could not start",
+          no_model: "No speech model yet. Open RudariFlow to download one.", cancel: "Cancel recording",
         },
         de: {
           audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar", polishing: "Überarbeitung",
@@ -354,12 +359,31 @@
           mt_limit: "Meeting nach 4 Stunden beendet", mt_no_model: "Zuerst ein Whisper-Modell herunterladen",
           mt_disk_full: "Zu wenig Speicherplatz für ein Meeting", mt_pc_check: "Erst den PC-Check abwarten",
           mt_failed: "Das Meeting konnte nicht starten",
+          no_model: "Noch kein Sprachmodell. Öffne RudariFlow und lade eines herunter.", cancel: "Aufnahme abbrechen",
         },
       };
+      // The pill speaks the app's Display Language (Settings > General);
+      // before the first settings were saved, Windows' language.
+      let uiLanguage = "";
       function pickLang() {
-        const nav = (navigator.language || "en").toLowerCase();
-        return nav.startsWith("de") ? "de" : "en";
+        const lang = (uiLanguage || navigator.language || "en").toLowerCase();
+        return lang.startsWith("de") ? "de" : "en";
       }
+      function applyLanguage(lang) {
+        uiLanguage = String(lang || "");
+        const cancel = document.getElementById("cancel");
+        cancel.title = NOTICE_TEXT[pickLang()].cancel;
+        cancel.setAttribute("aria-label", cancel.title);
+      }
+      invoke("get_settings").then((s) => applyLanguage(s && s.uiLanguage)).catch(() => applyLanguage(""));
+      listen("ui-language", (event) => applyLanguage(event.payload));
+
+      // A dictation could not start: "no_model" (no speech model downloaded yet).
+      listen("speech-notice", (event) => {
+        const text = { no_model: NOTICE_TEXT[pickLang()].no_model }[event.payload];
+        diag(`speech-notice received (${event.payload})`);
+        if (text) showNotice(text, 3200);
+      });
 
       listen("audio-empty", () => {
         diag("audio-empty received");

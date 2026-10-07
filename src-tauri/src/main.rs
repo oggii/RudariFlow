@@ -29,7 +29,7 @@ use rudariflow_lib::send_command::strip_send_command;
 use rudariflow_lib::settings::Settings;
 use rudariflow_lib::startup_log;
 use rudariflow_lib::voice_edit::{self, Edit};
-use rudariflow_lib::whisper_engine::WhisperEngine;
+use rudariflow_lib::whisper_engine::{LoadState, WhisperEngine};
 use rudariflow_lib::{ai_cleanup, file_transcribe, media, screen_context};
 use rudariflow_lib::soundboard::library::{Board, Devices};
 use rudariflow_lib::soundboard::{self, engine, AddResult, BoardState, Soundboard, Status};
@@ -61,6 +61,8 @@ struct AppState {
     soundboard: Arc<Soundboard>,
     /// Meeting mode: the meeting that records, the ones finishing, ▶.
     meetings: Arc<Meetings>,
+    /// The microphone's level for the first-run setup on Home.
+    mic_meter: audio::MicMeter,
 }
 
 /// State of the Free GPU hotkey.
@@ -250,6 +252,89 @@ async fn load_whisper(state: &AppState) -> bool {
             false
         }
     }
+}
+
+/// The speech model's state for the window's status (`speech_status`, and
+/// "speech-status" whenever it changes).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SpeechStatus {
+    /// "local" or "cloud".
+    engine: String,
+    /// The selected Whisper model, e.g. "small".
+    model: String,
+    /// The selected model's file is there.
+    downloaded: bool,
+    load: LoadState,
+    /// Unloaded by Free GPU, for a game or when idle; the next dictation
+    /// loads it.
+    freed: bool,
+    /// The cloud engine has an API key.
+    cloud_key: bool,
+    /// Where the model runs while it is loaded; empty otherwise.
+    device: String,
+}
+
+/// `SpeechStatus` from its parts. The cloud engine loads nothing for a
+/// dictation (a meeting's local model is not the dictation's): it is never
+/// "loaded", "failed" or "freed".
+fn speech_status_of(settings: &Settings, downloaded: bool, load: LoadState, freed: bool, device: String) -> SpeechStatus {
+    let local = settings.engine == "local";
+    let load = if local { load } else { LoadState::Unloaded };
+    SpeechStatus {
+        engine: settings.engine.clone(),
+        model: settings.whisper_model.clone(),
+        downloaded,
+        load,
+        freed: local && freed && load == LoadState::Unloaded,
+        cloud_key: !settings.groq_api_key.trim().is_empty(),
+        device: if load == LoadState::Loaded { device } else { String::new() },
+    }
+}
+
+fn speech_status_now(state: &AppState) -> SpeechStatus {
+    let settings = state.settings.lock().unwrap().clone();
+    let downloaded = state.app_dir.join(rudariflow_lib::whisper_engine::model_filename(&settings.whisper_model)).exists();
+    let freed = state.whisper_engine.released()
+        || state.gpu.idle_unloaded.load(Ordering::SeqCst)
+        || state.whisper_engine.loaded_once();
+    speech_status_of(&settings, downloaded, state.whisper_engine.load_state(), freed, state.whisper_engine.device())
+}
+
+/// Wakes `watch_speech_status`.
+static SPEECH_CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// The speech model's state may be another now: have the window told
+/// ("speech-status"). Only a wake-up, nothing is read or sent here: the
+/// engine calls this with its lock held.
+fn emit_speech_status() {
+    SPEECH_CHANGED.notify_one();
+}
+
+/// Send "speech-status" when the speech model's state changed. One task
+/// does it and reads what is true when it runs: changes come from several
+/// threads close together (loading, then failed), and events sent from
+/// each of them could overtake each other and leave the window with the
+/// older state. A wake-up that changed nothing sends nothing.
+fn watch_speech_status(handle: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut sent: Option<SpeechStatus> = None;
+        loop {
+            SPEECH_CHANGED.notified().await;
+            let status = speech_status_now(handle.state::<AppState>().inner());
+            if sent.as_ref() != Some(&status) {
+                let _ = handle.emit("speech-status", status.clone());
+                sent = Some(status);
+            }
+        }
+    });
+}
+
+/// Why a dictation cannot start with these settings: "no_model" while the
+/// local engine's model is not downloaded. The pill then says so
+/// ("speech-notice") instead of a recording that ends in nothing.
+fn dictation_blocked(settings: &Settings, model_downloaded: bool) -> Option<&'static str> {
+    (settings.engine == "local" && !model_downloaded).then_some("no_model")
 }
 
 /// Start the AI server in the background when the settings use it.
@@ -469,6 +554,7 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     };
     let warm_prompt = polish::system_prompt(&settings);
     let language_changed = state.settings.lock().unwrap().ui_language != settings.ui_language;
+    let ui_language = settings.ui_language.clone();
     let games = settings.free_gpu_for_games;
     // A meeting that records writes its notes with AI cleanup and the AI
     // model as they are at Stop. Off this thread: a meeting that starts
@@ -479,8 +565,12 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     // Off: the watcher loads the models again if it freed them for a game.
     state.game.set_enabled(games);
     if language_changed {
+        // The tray's items, and the pill (it has its own small table).
         show_meeting_state(&app, true);
+        let _ = app.emit("ui-language", ui_language);
     }
+    // The engine, the model or the cloud key may be another now.
+    emit_speech_status();
     if engine_invalidate {
         state.whisper_engine.invalidate();
         // Load the new model or backend now, not at the next dictation;
@@ -518,6 +608,38 @@ fn get_recording_state(state: State<AppState>) -> RecordingState {
     state.recorder.get_state()
 }
 
+/// The speech model for the window's status: which, downloaded, loaded.
+#[tauri::command]
+fn speech_status(state: State<AppState>) -> SpeechStatus {
+    speech_status_now(&state)
+}
+
+/// First-run setup on Home: send the microphone's level ("mic-level") until
+/// `mic_meter_stop`, at most `MIC_METER_MAX`. Returns the device's name.
+#[tauri::command]
+async fn mic_meter_start(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    let mic = state.settings.lock().unwrap().microphone.clone();
+    let handle = app.clone();
+    let (name, run) = tauri::async_runtime::spawn_blocking(move || handle.state::<AppState>().mic_meter.start(&handle, &mic))
+        .await
+        .map_err(|e| e.to_string())??;
+    // A window that never says stop (hidden, crashed page) does not keep
+    // the microphone open.
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(MIC_METER_MAX).await;
+        app.state::<AppState>().mic_meter.stop_run(run);
+    });
+    Ok(name)
+}
+
+#[tauri::command]
+fn mic_meter_stop(state: State<AppState>) {
+    state.mic_meter.stop();
+}
+
+/// The longest the setup's microphone meter runs without a new start.
+const MIC_METER_MAX: std::time::Duration = std::time::Duration::from_secs(120);
+
 #[tauri::command]
 fn check_model_downloaded(state: State<AppState>, model_size: String) -> bool {
     let model_file = rudariflow_lib::whisper_engine::model_filename(&model_size);
@@ -533,7 +655,18 @@ async fn download_model(
     let url = rudariflow_lib::whisper_engine::model_download_url(&model_size);
     let model_file = rudariflow_lib::whisper_engine::model_filename(&model_size);
     let dest = state.app_dir.join(&model_file);
-    downloader::download_model(app, &url, &dest, "download-progress").await
+    downloader::download_model(app.clone(), &url, &dest, "download-progress").await?;
+    // The model the settings use is there now: load it, so the status says
+    // Ready before the first dictation (not after a Free GPU press: then
+    // the next use loads it).
+    let selected = state.settings.lock().unwrap().whisper_model == model_size;
+    if selected && !state.whisper_engine.released() {
+        tauri::async_runtime::spawn(async move {
+            load_whisper(app.state::<AppState>().inner()).await;
+        });
+    }
+    emit_speech_status();
+    Ok(())
 }
 
 #[tauri::command]
@@ -2407,6 +2540,27 @@ static TRAY_MEETING: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
 /// written on the main thread only (`show_meeting_state`).
 static MEETING_SHOWN: AtomicBool = AtomicBool::new(false);
 
+/// The tray's "Show RudariFlow" and "Quit" items; their texts follow the
+/// Display Language like the meeting item's.
+static TRAY_SHOW: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
+static TRAY_QUIT: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
+
+fn tray_show_text(german: bool) -> &'static str {
+    if german {
+        "RudariFlow anzeigen"
+    } else {
+        "Show RudariFlow"
+    }
+}
+
+fn tray_quit_text(german: bool) -> &'static str {
+    if german {
+        "Beenden"
+    } else {
+        "Quit"
+    }
+}
+
 fn tray_meeting_text(german: bool, recording: bool) -> &'static str {
     match (german, recording) {
         (false, false) => "Start meeting",
@@ -2441,6 +2595,14 @@ fn show_meeting_state(app: &AppHandle, language: bool) {
             let german = state.settings.lock().unwrap().ui_language == "de";
             if let Some(item) = TRAY_MEETING.get() {
                 let _ = item.set_text(tray_meeting_text(german, recording));
+            }
+            if language {
+                if let Some(item) = TRAY_SHOW.get() {
+                    let _ = item.set_text(tray_show_text(german));
+                }
+                if let Some(item) = TRAY_QUIT.get() {
+                    let _ = item.set_text(tray_quit_text(german));
+                }
             }
         }
         if changed {
@@ -2831,6 +2993,16 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
             // the microphone opens.
             let starting = state.recorder.get_state() == RecordingState::Ready;
             if starting {
+                // No speech model yet: say so in the pill and record nothing.
+                // The settings lock is not held while the disk is asked.
+                let model = rudariflow_lib::whisper_engine::model_filename(&state.settings.lock().unwrap().whisper_model);
+                let downloaded = state.app_dir.join(model).exists();
+                let blocked = dictation_blocked(&state.settings.lock().unwrap(), downloaded);
+                if let Some(reason) = blocked {
+                    startup_log::log(&format!("[hotkey] no dictation: {}", reason));
+                    state.recorder.notice(&handle, "speech-notice", reason);
+                    return;
+                }
                 dictation_started(state.inner());
             }
             // Background warmup: kick off model load in parallel
@@ -3063,6 +3235,7 @@ fn main() {
     let history = Arc::new(History::load(&app_dir));
     let soundboard = Soundboard::new(&app_dir, Box::new(soundboard_event));
     let whisper_engine = Arc::new(WhisperEngine::new());
+    whisper_engine.on_load_change(Box::new(emit_speech_status));
     let llm = Arc::new(LlmServer::new(
         llama_dir(),
         app_dir.join("llm-server.log"),
@@ -3121,12 +3294,16 @@ fn main() {
             game: GameFree::new(initial_games),
             soundboard,
             meetings,
+            mic_meter: audio::MicMeter::new(),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
             list_microphones,
             get_recording_state,
+            speech_status,
+            mic_meter_start,
+            mic_meter_stop,
             check_model_downloaded,
             download_model,
             toggle_recording,
@@ -3256,6 +3433,7 @@ fn main() {
                 }
             });
             watch_idle(app.handle().clone());
+            watch_speech_status(app.handle().clone());
             watch_games(app.handle().clone());
             // The CUDA runtime and Vulkan loader DLLs are load-time imports and
             // are installed next to rudariflow.exe (see tauri.conf.json).
@@ -3416,12 +3594,14 @@ fn main() {
             }
 
             // System tray.
-            let show_item = MenuItem::with_id(app, "show", "Show RudariFlow", true, None::<&str>)?;
+            let show_item = MenuItem::with_id(app, "show", tray_show_text(initial_german), true, None::<&str>)?;
             let meeting_item =
                 MenuItem::with_id(app, "meeting", tray_meeting_text(initial_german, false), true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", tray_quit_text(initial_german), true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &meeting_item, &quit_item])?;
             let _ = TRAY_MEETING.set(meeting_item);
+            let _ = TRAY_SHOW.set(show_item);
+            let _ = TRAY_QUIT.set(quit_item);
 
             let _tray = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
@@ -3796,6 +3976,47 @@ mod tests {
         assert_eq!(taken_by(&all, &HotkeyAction::Meeting, "F13"), Some(HotkeyAction::Sound("s-a".into())));
         assert_eq!(owner_label(&HotkeyAction::Meeting, &board), "meeting");
         assert_eq!(app_hotkey_owner(&hotkeys(&s), "Ctrl+Alt+M"), Some(HotkeyAction::Meeting), "a board key never takes it");
+    }
+
+    #[test]
+    fn the_tray_menu_follows_the_display_language() {
+        assert_eq!((tray_show_text(false), tray_quit_text(false)), ("Show RudariFlow", "Quit"));
+        assert_eq!((tray_show_text(true), tray_quit_text(true)), ("RudariFlow anzeigen", "Beenden"));
+    }
+
+    #[test]
+    fn the_speech_status_says_what_a_dictation_needs() {
+        let local = Settings::default();
+        let ready = speech_status_of(&local, true, LoadState::Loaded, false, "NVIDIA GeForce RTX 5080 (CUDA)".into());
+        assert_eq!(
+            (ready.engine.as_str(), ready.model.as_str(), ready.downloaded, ready.load, ready.freed, ready.device.as_str()),
+            ("local", "small", true, LoadState::Loaded, false, "NVIDIA GeForce RTX 5080 (CUDA)")
+        );
+        // Freed counts only while nothing is loaded (the idle flag outlives a reload).
+        assert!(!speech_status_of(&local, true, LoadState::Loaded, true, "CPU".into()).freed);
+        let freed = speech_status_of(&local, true, LoadState::Unloaded, true, "stale".into());
+        assert!(freed.freed);
+        assert_eq!(freed.device, "", "no device while nothing is loaded");
+        // The cloud engine: its key counts; the local model's state does not show.
+        let cloud = Settings { engine: "cloud".into(), groq_api_key: " gsk_x ".into(), ..Settings::default() };
+        let c = speech_status_of(&cloud, false, LoadState::Failed, true, "CPU".into());
+        assert_eq!((c.cloud_key, c.load, c.freed, c.device.as_str()), (true, LoadState::Unloaded, false, ""));
+        assert!(!speech_status_of(&Settings { groq_api_key: "  ".into(), ..cloud }, false, LoadState::Unloaded, false, String::new()).cloud_key);
+        // The window reads camelCase and lower-case states.
+        let json = serde_json::to_string(&ready).unwrap();
+        for part in ["\"cloudKey\":false", "\"load\":\"loaded\"", "\"downloaded\":true"] {
+            assert!(json.contains(part), "{} in {}", part, json);
+        }
+    }
+
+    #[test]
+    fn a_dictation_without_a_speech_model_is_not_started() {
+        let local = Settings::default();
+        assert_eq!(dictation_blocked(&local, false), Some("no_model"));
+        assert_eq!(dictation_blocked(&local, true), None);
+        // The cloud engine needs no local model.
+        let cloud = Settings { engine: "cloud".into(), ..Settings::default() };
+        assert_eq!(dictation_blocked(&cloud, false), None);
     }
 
     #[test]

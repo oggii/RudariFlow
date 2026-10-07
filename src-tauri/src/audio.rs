@@ -1,6 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{WavSpec, WavWriter};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -232,22 +232,33 @@ struct OpenedStream {
     channels: u16,
 }
 
+/// The input device `mic_name` names; "default" is Windows' own.
+fn input_device(mic_name: &str) -> Result<cpal::Device, String> {
+    let host = cpal::default_host();
+    if mic_name == "default" {
+        host.default_input_device().ok_or("No default input device found".to_string())
+    } else {
+        host.input_devices()
+            .map_err(|e| e.to_string())?
+            .find(|d| d.name().map(|n| n == mic_name).unwrap_or(false))
+            .ok_or(format!("Microphone '{}' not found", mic_name))
+    }
+}
+
+/// The level a meter shows for one chunk of samples: its RMS, boosted so a
+/// quiet voice still moves the meter, at most 1.
+pub(crate) fn meter_level(data: &[f32]) -> f32 {
+    let sum_sq: f32 = data.iter().map(|s| s * s).sum();
+    let rms = (sum_sq / data.len().max(1) as f32).sqrt();
+    (rms * 4.0).min(1.0)
+}
+
 fn open_stream(
     app: &AppHandle,
     mic_name: &str,
     samples: Arc<Mutex<Vec<f32>>>,
 ) -> Result<OpenedStream, String> {
-    let host = cpal::default_host();
-
-    let device = if mic_name == "default" {
-        host.default_input_device()
-            .ok_or("No default input device found")?
-    } else {
-        host.input_devices()
-            .map_err(|e| e.to_string())?
-            .find(|d| d.name().map(|n| n == mic_name).unwrap_or(false))
-            .ok_or(format!("Microphone '{}' not found", mic_name))?
-    };
+    let device = input_device(mic_name)?;
     let device_name = device.name().unwrap_or_else(|_| mic_name.to_string());
 
     // Use the device's default config instead of forcing 16kHz
@@ -277,12 +288,7 @@ fn open_stream(
                 let last = last_emit_ms.load(Ordering::Relaxed);
                 if now_ms.saturating_sub(last) >= 33 {
                     last_emit_ms.store(now_ms, Ordering::Relaxed);
-                    // RMS over this chunk (mono mix if multi-channel).
-                    let sum_sq: f32 = data.iter().map(|s| s * s).sum();
-                    let rms = (sum_sq / data.len().max(1) as f32).sqrt();
-                    // Boost so quiet voice still moves the meter; cap at 1.
-                    let level = (rms * 4.0).min(1.0);
-                    let _ = app_handle.emit("audio-level", level);
+                    let _ = app_handle.emit("audio-level", meter_level(data));
                 }
             },
             |err| {
@@ -299,6 +305,163 @@ fn open_stream(
         sample_rate,
         channels,
     })
+}
+
+/// The microphone's level for the first-run setup on Home: "mic-level"
+/// events (0 to 1, about 30 a second) while it runs. Nothing is recorded:
+/// each chunk is measured and dropped.
+pub struct MicMeter {
+    state: Mutex<MeterState>,
+}
+
+struct MeterState {
+    /// Counts starts and stops, and changes only with the lock held: a
+    /// stream that opens late for an earlier start is dropped, and the time
+    /// limit of an earlier start stops nothing.
+    run: u64,
+    stream: Option<MeterStream>,
+}
+
+/// An open meter. Dropping it closes the microphone and ends the thread
+/// that sends the level.
+struct MeterStream {
+    _stream: SendStream,
+    open: Arc<AtomicBool>,
+}
+
+impl Drop for MeterStream {
+    fn drop(&mut self) {
+        self.open.store(false, Ordering::SeqCst);
+    }
+}
+
+/// How often the level is sent.
+const METER_EVERY: Duration = Duration::from_millis(33);
+
+impl Default for MicMeter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MicMeter {
+    pub fn new() -> Self {
+        Self { state: Mutex::new(MeterState { run: 0, stream: None }) }
+    }
+
+    /// The number of the start or stop that came last.
+    pub fn run(&self) -> u64 {
+        lock(&self.state).run
+    }
+
+    /// Open `mic_name` ("default": Windows' own input) and send its level
+    /// until `stop`. Returns the device's name and this start's number.
+    /// Like a recording's start, the device is opened on a thread of its
+    /// own with a time limit: a sleeping USB interface can take seconds.
+    /// A meter that runs already is closed first.
+    pub fn start(&self, app: &AppHandle, mic_name: &str) -> Result<(String, u64), String> {
+        let run = {
+            let mut state = lock(&self.state);
+            state.run += 1;
+            close_meter(state.stream.take());
+            state.run
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (app, mic) = (app.clone(), mic_name.to_string());
+        std::thread::Builder::new()
+            .name("rf-mic-meter".into())
+            .spawn(move || {
+                // If the caller already timed out, the stream comes back in
+                // the send error and is dropped here, closing the device.
+                let _ = tx.send(open_meter(&app, &mic));
+            })
+            .map_err(|e| e.to_string())?;
+        let (stream, name) = match rx.recv_timeout(MIC_OPEN_TIMEOUT) {
+            Ok(opened) => opened?,
+            Err(_) => return Err(format!("Microphone '{}' did not respond within {} s", mic_name, MIC_OPEN_TIMEOUT.as_secs())),
+        };
+        let mut state = lock(&self.state);
+        // Stopped, or started again, while the device opened: this stream goes.
+        if state.run != run {
+            drop(state);
+            close_meter(Some(stream));
+            return Err("stopped".to_string());
+        }
+        state.stream = Some(stream);
+        Ok((name, run))
+    }
+
+    /// Close the microphone. Fine when the meter is not running.
+    pub fn stop(&self) {
+        let mut state = lock(&self.state);
+        state.run += 1;
+        close_meter(state.stream.take());
+    }
+
+    /// `stop` for the time limit of start number `run`: nothing when a start
+    /// or a stop came since.
+    pub fn stop_run(&self, run: u64) {
+        let mut state = lock(&self.state);
+        if state.run == run {
+            state.run += 1;
+            close_meter(state.stream.take());
+        }
+    }
+
+    pub fn running(&self) -> bool {
+        lock(&self.state).stream.is_some()
+    }
+}
+
+/// Close a meter's stream off-thread, like a recording's (`release_stream`):
+/// dropping a WASAPI stream joins its audio thread.
+fn close_meter(stream: Option<MeterStream>) {
+    if let Some(stream) = stream {
+        let _ = std::thread::Builder::new().name("rf-mic-close".into()).spawn(move || drop(stream));
+    }
+}
+
+fn open_meter(app: &AppHandle, mic_name: &str) -> Result<(MeterStream, String), String> {
+    let device = input_device(mic_name)?;
+    let name = device.name().unwrap_or_else(|_| mic_name.to_string());
+    let config = device.default_input_config().map_err(|e| format!("Failed to get default input config: {}", e))?;
+    let config = cpal::StreamConfig {
+        channels: config.channels(),
+        sample_rate: config.sample_rate(),
+        buffer_size: cpal::BufferSize::Default,
+    };
+    // The loudest chunk since the last event, as the bits of an f32 from 0
+    // to 1 (they sort as the numbers do). The audio callback only measures
+    // and stores: no event, no allocation and no lock on the audio thread.
+    let loudest = Arc::new(AtomicU32::new(0));
+    let heard = loudest.clone();
+    let stream = device
+        .build_input_stream(
+            &config,
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                heard.fetch_max(meter_level(data).to_bits(), Ordering::Relaxed);
+            },
+            |err| startup_log::log(&format!("[audio] meter stream error: {}", err)),
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+    stream.play().map_err(|e| e.to_string())?;
+    let open = Arc::new(AtomicBool::new(true));
+    // From here on an early return drops `meter`, which closes the device.
+    let meter = MeterStream { _stream: SendStream(stream), open: open.clone() };
+    let app = app.clone();
+    // Sends the level; ends within `METER_EVERY` of the stream's drop.
+    std::thread::Builder::new()
+        .name("rf-mic-level".into())
+        .spawn(move || loop {
+            std::thread::sleep(METER_EVERY);
+            if !open.load(Ordering::SeqCst) {
+                break;
+            }
+            let _ = app.emit("mic-level", f32::from_bits(loudest.swap(0, Ordering::Relaxed)));
+        })
+        .map_err(|e| e.to_string())?;
+    Ok((meter, name))
 }
 
 /// Interleaved frames at `rate` as mono 16 kHz.
@@ -469,6 +632,49 @@ pub fn loud_ms(samples: &[f32], sample_rate: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_meter_level_is_zero_for_silence_and_capped_for_loud() {
+        assert_eq!(meter_level(&[]), 0.0);
+        assert_eq!(meter_level(&[0.0; 480]), 0.0);
+        // A quiet voice (RMS 0.05) still moves the meter.
+        let quiet = meter_level(&[0.05; 480]);
+        assert!((quiet - 0.2).abs() < 1e-4, "{}", quiet);
+        assert_eq!(meter_level(&[0.9; 480]), 1.0);
+    }
+
+    #[test]
+    fn the_loudest_meter_level_wins_as_bits() {
+        // The meter keeps the loudest chunk with `fetch_max` on the level's
+        // bits: they have to sort as the levels do.
+        let levels = [0.0, 0.01, 0.05, 0.2, 0.9].map(|sample| meter_level(&[sample; 8]));
+        for pair in levels.windows(2) {
+            assert!(pair[0] < pair[1] && pair[0].to_bits() < pair[1].to_bits(), "{:?}", pair);
+        }
+        assert_eq!(f32::from_bits(0), 0.0, "nothing heard since the last event");
+        // Never above 1 and never not a number, whatever the device delivers.
+        assert_eq!(meter_level(&[-0.5; 8]), 1.0);
+        assert_eq!(meter_level(&[f32::NAN; 8]), 1.0);
+        assert_eq!(meter_level(&[f32::INFINITY; 8]), 1.0);
+    }
+
+    #[test]
+    fn a_meter_that_is_not_running_stops_quietly() {
+        let meter = MicMeter::new();
+        assert!(!meter.running());
+        assert_eq!(meter.run(), 0);
+        meter.stop();
+        meter.stop();
+        assert!(!meter.running());
+        assert_eq!(meter.run(), 2, "each stop counts, so an earlier start's time limit stops nothing");
+        // The time limit of start 1: a stop came since, it does nothing.
+        meter.stop_run(1);
+        assert_eq!(meter.run(), 2);
+        // The time limit of the run that is the last one: it stops, once.
+        meter.stop_run(2);
+        meter.stop_run(2);
+        assert_eq!(meter.run(), 3);
+    }
 
     #[test]
     fn speech_spans_split_at_long_pauses_only() {
