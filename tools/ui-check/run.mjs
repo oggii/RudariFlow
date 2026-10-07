@@ -17,7 +17,9 @@
 // belong to a later task; a full run also fails when an entry of allow.json
 // no longer matches anything (remove it). Exit code 2: the run could not
 // start (no build, a --pages filter that names no page, a --task that is no
-// number).
+// number, an argument it does not know, nothing opened). Exit code 1 also
+// when allow.json still holds an entry of an earlier task (until < N): the
+// list only shrinks.
 import { chromium } from "playwright";
 import { execFileSync } from "node:child_process";
 import http from "node:http";
@@ -48,6 +50,13 @@ const stop = (message) => {
   console.error(`ui-check: ${message}`);
   process.exit(2);
 };
+// A mistyped argument (--task=2, --tsak 2) must not run as if it were not there.
+const WITH_VALUE = ["pages", "scenario", "lang", "size", "root", "task"];
+const BARE = ["no-build", "no-shots"];
+for (let i = 0; i < args.length; i++) {
+  if (WITH_VALUE.some((name) => args[i] === `--${name}`)) i++;
+  else if (!BARE.some((name) => args[i] === `--${name}`)) stop(`unknown argument "${args[i]}"`);
+}
 const pagePatterns = flag("pages") ? (option("pages") ?? "").split(",") : null;
 const pageFilter = pagePatterns?.map(glob);
 const wanted = (id) => !pageFilter || pageFilter.some((re) => re.test(id));
@@ -295,7 +304,7 @@ fs.writeFileSync(
   JSON.stringify({ new: byCheck(fresh).map((f) => ({ ...f, where: [...f.where] })), known: byCheck(known).map((f) => ({ ...f, where: [...f.where] })) }, null, 1),
 );
 
-console.log(`\nui-check: ${findings.size} findings, ${known.length} known (allow.json), ${fresh.length} new${flag("no-shots") ? "" : `; ${shots} screenshots in ${SHOTS}`}`);
+console.log(`\nui-check${TASK === null ? "" : ` (task ${TASK})`}: ${findings.size} findings, ${known.length} known (allow.json), ${fresh.length} new${flag("no-shots") ? "" : `; ${shots} screenshots in ${SHOTS}`}`);
 if (past.length) console.log(`--task ${TASK}: ${past.length} of ${allow.length} allow.json entries are past their task (until <= ${TASK}) and were ignored; delete them once nothing is new`);
 if (known.length) {
   const tally = {};
@@ -311,5 +320,11 @@ if (stale.length) {
   console.log("\nallow.json entries that match nothing any more (remove them):");
   for (const r of stale) console.log(`  ${JSON.stringify({ check: r.check, page: r.page, what: r.what, until: r.until })}`);
 }
+// An entry of an earlier task should have been deleted when that task ended.
+const leftover = TASK === null ? [] : past.filter((a) => a.until < TASK);
+if (leftover.length) {
+  console.log(`\nallow.json entries of an earlier task than ${TASK} (they should be gone; remove them):`);
+  for (const a of leftover) console.log(`  ${JSON.stringify(a)}`);
+}
 console.log(`\ndetails: ${path.join(here, "report.json")}`);
-process.exit(fresh.length || stale.length ? 1 : 0);
+process.exit(fresh.length || stale.length || leftover.length ? 1 : 0);

@@ -346,7 +346,7 @@ In `index.html` and in `soundboard.html` delete the three `<link>` lines that na
 
 `npx tsc --noEmit` clean. `npx vite build` clean, and `grep -rl "fonts.g" dist index.html soundboard.html src` prints nothing, `ls dist/assets | grep -c ibm-plex` is above 0. `npm run test:unit`: 0 tests.
 
-`node tools/ui-check/run.mjs --no-shots`: expected `72 findings, 72 known (allow.json), 0 new` (clipped 6, contrast 1, hint-lines 19, name 32, sidebar 3, tab 10, target 1) and exit 1 only because seven entries "match nothing any more": the seven with `"until": 2`. Delete those seven lines from `allow.json` (15 remain), run again: exit 0.
+`node tools/ui-check/run.mjs --no-shots --task 2`: expected exit 0 with `75 findings, 75 known (allow.json), 0 new` (clipped 9, contrast 1, hint-lines 19, name 32, sidebar 3, tab 10, target 1; measured as 72 before the tool was hardened, plus the three `clipped` texts of the old sidebar) and the line that seven entries are past their task: the seven with `"until": 2`. Delete those seven from `allow.json` (18 remain), run again with `--task 2`: exit 0, no stale entry.
 
 Screenshots for the reviewer: `node tools/ui-check/run.mjs --no-build --pages "general,engine,ai,soundboard,files" --lang en --size 1600x900`. The ten old pages must look like the old layout in the new colours, type and controls: nothing unstyled, nothing overlapping.
 
@@ -581,7 +581,7 @@ In `tools/ui-check/contract.json` set `removedIds` to the seven entries of `$P/t
 
 `npx tsc --noEmit` clean; `npx vite build` clean; `npm run test:unit`: `tests 23`, `fail 0` (status 9, setup 7, prefs 4, route 3).
 
-`node tools/ui-check/run.mjs --no-shots`: `50 findings, 50 known` (clipped 6, hint-lines 12, name 32), 0 new, and four stale entries, the four with `"until": 3`; delete them (11 remain), run again: exit 0. The run includes: the sidebar fits 900×600, Tab reaches the five nav buttons and they show focus, the status probe (ready, recording, a meeting's marker, the remembered section and tab), the left-edge probe, both pill probes, the 39 round-trip changes on the moved controls.
+`node tools/ui-check/run.mjs --no-shots --task 3`: `50 findings, 50 known` (clipped 6, hint-lines 12, name 32), 0 new, and seven entries past their task, the seven with `"until": 3`; delete them (11 remain), run again: exit 0. The run includes: the sidebar fits 900×600, Tab reaches the five nav buttons and they show focus, the status probe (ready, recording, a meeting's marker, the remembered section and tab), the left-edge probe, both pill probes, the 39 round-trip changes on the moved controls.
 
 Screenshots: `--pages "shell,home,settings-*" --size 1600x900` and `--size 900x600`, `--pages "pill-*"`. The logo is one line, the status pill sits under it, Settings is at the bottom above the version; the five tabs hold the old pages' rows (not yet regrouped: that is Task 6); Home is a heading and the old history list.
 
@@ -643,7 +643,7 @@ Expected: `merged` for `ai-settings.ts`, `dictionary.ts`, `i18n.ts`, `main.ts`, 
 
 `npx tsc --noEmit` clean; `npx vite build` clean; `npm run test:unit`: `tests 27` (+ search 4).
 
-`node tools/ui-check/run.mjs --no-shots`: `49 findings, 49 known`, one stale entry (`span.history-meta`, `"until": 4`); delete it (10 remain); exit 0. The `home` probe checks: two columns from 900 px of content and the recent dictations after the quick switches below it; Home's AI switch, Language and a hotkey set on Home change the setting and show in Settings at once; "Add a word" lands in the dictionary; the search finds a dictation by its app. `home-all` checks Show all (50), Show more (+50), the end of the list, Show fewer (8).
+`node tools/ui-check/run.mjs --no-shots --task 4`: `49 findings, 49 known`, one stale entry (`span.history-meta`, `"until": 4`); delete it (10 remain); exit 0. The `home` probe checks: two columns from 900 px of content and the recent dictations after the quick switches below it; Home's AI switch, Language and a hotkey set on Home change the setting and show in Settings at once; "Add a word" lands in the dictionary; the search finds a dictation by its app. `home-all` checks Show all (50), Show more (+50), the end of the list, Show fewer (8).
 
 Screenshots: `--pages "home,home-all,settings-general" --size 1600x900`, `--size 900x600`, and `--lang de --size 900x600`: compare with `mockups/home.html` option 2 and `look.html` option B; in German the history's second line wraps and loses nothing (audit, German defect 2). With the first-run data set Home shows the daily view with empty lists and the status "Setup needed: no speech model"; the steps come with Task 5.
 
@@ -693,7 +693,7 @@ Everything in Task 4 Step 2's list, taken from `$P/app_src_task5/` (`home.ts`, `
 
 - [ ] **Step 3: Verify**
 
-`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 27`. `node tools/ui-check/run.mjs --no-shots`: `49 findings, 49 known`, exit 0 (no entry has `"until": 5`). The first-run branch of the `home` probe checks: the steps show instead of the daily view; `mic_meter_start` is called and the level bar follows `mic-level`; Download asks for the model `recommend` suggests for the graphics card (`large-v3-turbo-q8_0` in the mock); the progress reads "43 % · 374 MB of 870 MB"; leaving Home calls `mic_meter_stop`. The `shell` probe: the first run starts on Home with the status kind `setup`.
+`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 27`. `node tools/ui-check/run.mjs --no-shots --task 5`: `49 findings, 49 known`, exit 0 (no entry has `"until": 5`). The first-run branch of the `home` probe checks: the steps show instead of the daily view; `mic_meter_start` is called and the level bar follows `mic-level`; Download asks for the model `recommend` suggests for the graphics card (`large-v3-turbo-q8_0` in the mock); the progress reads "43 % · 374 MB of 870 MB"; leaving Home calls `mic_meter_stop`. The `shell` probe: the first run starts on Home with the status kind `setup`.
 
 Screenshots: `--pages home --scenario firstrun`, both sizes and both languages; compare with the first-run mockup in `mockups/home.html`.
 
@@ -754,7 +754,7 @@ Seven texts still name tabs that no longer exist (the prototype never changed th
 
 `npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 29` (+ models 2).
 
-`node tools/ui-check/run.mjs --no-shots`: `17 findings, 17 known` (name 9: the rule rows, the replacement rows, the Files transcript; clipped 5: the rule-language selects, the Soundboard's device selects; hint-lines 3: the Soundboard), three stale entries (`name *`, `hint-lines *`, `select#*model-select`, all `"until": 6`); delete them (7 remain); exit 0. The run covers: every tab and every tab with Advanced open at three sizes in both languages; every hint on one line at 1600 px (two below); every control named; the `settings-models-advanced` probe (More opens the long hint in place, an open fold is remembered over a new start); the `shell` probe (the tab is remembered); and `roundtrip`: all 32 values shown, all 39 changes saved, among them every hotkey from its new place.
+`node tools/ui-check/run.mjs --no-shots --task 6`: `17 findings, 17 known` (name 9: the rule rows, the replacement rows, the Files transcript; clipped 5: the rule-language selects, the Soundboard's device selects; hint-lines 3: the Soundboard), three stale entries (`name *`, `hint-lines *`, `select#*model-select`, all `"until": 6`); delete them (7 remain); exit 0. The run covers: every tab and every tab with Advanced open at three sizes in both languages; every hint on one line at 1600 px (two below); every control named; the `settings-models-advanced` probe (More opens the long hint in place, an open fold is remembered over a new start); the `shell` probe (the tab is remembered); and `roundtrip`: all 32 values shown, all 39 changes saved, among them every hotkey from its new place.
 
 Screenshots: `--pages "settings-*" --size 1600x900`, `--size 900x600`, and `--lang de --size 900x600`; compare with `mockups/settings.html` option 1 and the spec's table row by row.
 
@@ -816,7 +816,7 @@ function renderSuggestions(now: Suggestion[] = suggestions) {
 
 `npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 33` (+ arm 4).
 
-`node tools/ui-check/run.mjs --no-shots`: `7 findings, 7 known` (clipped 3 and hint-lines 3 on the Soundboard, name 1 on the Files transcript), three stale entries (`*.rule-*`, `*.replacement-*`, `select.rule-language`, all `"until": 7`); delete them (4 remain); exit 0. The `settings-dictionary` probe checks: the first click on Delete only arms, Esc disarms, a click elsewhere disarms, the second click deletes; the suggestions are in the Display Language; the word search finds "Zürich" for "zurich"; the replacement search hides rows and a save while searching keeps the hidden ones; a replacement needs two clicks. `grep -rn "armedDelete\|armedTimer\|_delete_confirm\|replacement_remove" src` prints nothing.
+`node tools/ui-check/run.mjs --no-shots --task 7`: `7 findings, 7 known` (clipped 3 and hint-lines 3 on the Soundboard, name 1 on the Files transcript), three stale entries (`*.rule-*`, `*.replacement-*`, `select.rule-language`, all `"until": 7`); delete them (4 remain); exit 0. The `settings-dictionary` probe checks: the first click on Delete only arms, Esc disarms, a click elsewhere disarms, the second click deletes; the suggestions are in the Display Language; the word search finds "Zürich" for "zurich"; the replacement search hides rows and a save while searching keeps the hidden ones; a replacement needs two clicks. `grep -rn "armedDelete\|armedTimer\|_delete_confirm\|replacement_remove" src` prints nothing.
 
 Screenshots: `--pages "settings-dictionary*,settings-ai,home,meetings-open,soundboard" --size 1600x900` and `--lang de --size 900x600`: one row design, "Delete" / "Löschen" everywhere; the rule-language select shows "Sprache wie eingestellt" whole (audit, German defect 3).
 
@@ -904,7 +904,7 @@ Expected: `merged` for `files.ts`, `i18n.ts`, `rows.ts`, `soundboard/board.ts`; 
 
 `npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 33`.
 
-`node tools/ui-check/run.mjs --no-shots`: `0 findings`, four stale entries (the last four); set `tools/ui-check/allow.json` to `[]`; run again: `0 findings, 0 known, 0 new`, exit 0. (Measured on a scratch copy with every correction of this plan.) The run covers: the Soundboard probes (the panel is open only where it has its own column, the switch always shows, the first sound is on the first screen also at 900×600, the panel's state is remembered, the pop-out opens on the sounds with its settings closed); `files-loaded` and `files-result`; every pill probe.
+`node tools/ui-check/run.mjs --no-shots --task 8`: `0 findings`, four stale entries (the last four); set `tools/ui-check/allow.json` to `[]`; run again: `0 findings, 0 known, 0 new`, exit 0. (Measured on a scratch copy with every correction of this plan.) The run covers: the Soundboard probes (the panel is open only where it has its own column, the switch always shows, the first sound is on the first screen also at 900×600, the panel's state is remembered, the pop-out opens on the sounds with its settings closed); `files-loaded` and `files-result`; every pill probe.
 
 Meetings gets no code in this task (its hotkey row moved in Task 6, its Delete in Task 7). Look at `--pages "meetings*"` in both languages at both sizes: the new look, the structure of 0.16.0.
 
@@ -1019,7 +1019,7 @@ Under `## [Unreleased]` add:
 
 - [ ] **Step 5: Verify and commit**
 
-`npx tsc --noEmit`, `npx vite build`, `npm run test:unit` (33), `node tools/ui-check/run.mjs --no-shots` (0 findings, `allow.json` is `[]`). `git status --short` shows only the three docs and the deletion.
+`npx tsc --noEmit`, `npx vite build`, `npm run test:unit` (33), `node tools/ui-check/run.mjs --no-shots --task 9` (0 findings, `allow.json` is `[]`). `git status --short` shows only the three docs and the deletion.
 
 ```bash
 git add README.md README.de.md CHANGELOG.md
