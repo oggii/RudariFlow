@@ -309,7 +309,7 @@
               <span id="file-name" class="file-name"></span>
               <div class="file-job-actions">
                 <button id="file-cancel" class="btn-ghost hidden" data-i18n="files_cancel">Cancel</button>
-                <button id="file-clear" class="btn-ghost" data-i18n="files_clear" data-i18n-title="files_clear_title" title="Removes the transcript to start over. The audio file stays where it is.">Clear</button>
+                <button type="button" id="file-clear" class="btn-ghost" data-i18n-title="files_clear_title" title="Removes the transcript to start over. The audio file stays where it is.">Clear</button>
               </div>
             </div>
             <div class="progress-track"><div class="progress-fill" id="file-progress-fill"></div></div>
@@ -392,7 +392,7 @@
                       <button data-kind="txt" data-i18n="files_export_txt">Text (.txt)…</button>
                     </div>
                   </div>
-                  <button id="mt-delete" class="btn-secondary" data-i18n="mt_delete">Delete</button>
+                  <button type="button" id="mt-delete" class="btn-secondary">Delete</button>
                 </div>
               </div>
               <div class="mt-view-heading">
@@ -639,7 +639,7 @@
               </div>
               <p class="label-hint"><span data-i18n="ai_rules_desc">Instructions and the spoken language for one app or website.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-rules-more" data-i18n="hint_more">More</button></p>
               <p class="label-hint hint-long" id="ai-rules-more" data-i18n="ai_rules_more" hidden>A rule matches the program name or a word in the window title, e.g. “whatsapp” also covers WhatsApp Web. The language is what Whisper hears in this app, also with AI cleanup off. No AI pastes the plain Whisper text.</p>
-              <div id="ai-rule-list" class="rule-list"></div>
+              <div id="ai-rule-list" class="list rule-list" role="list"></div>
               <p id="ai-rule-empty" class="empty-state hidden" data-i18n="ai_rules_empty">No rules yet.</p>
               <div class="card-foot">
                 <button type="button" id="ai-rule-add" class="btn-secondary" data-i18n="ai_rules_add">Add rule</button>
@@ -698,11 +698,12 @@
               <div class="list-head">
                 <h3 class="list-title" data-i18n="learn_title">Suggested from your corrections</h3>
               </div>
-              <div id="dict-suggest-list" class="list dict-list"></div>
+              <div id="dict-suggest-list" class="list dict-list" role="list"></div>
             </div>
             <div class="card">
               <div class="list-head">
                 <h3 class="list-title"><span data-i18n="dict_words_title">Words</span> <span id="dict-count" class="list-count"></span></h3>
+                <input type="search" id="dict-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="dict_search" data-i18n-aria-label="dict_search" placeholder="Search words" aria-label="Search words" />
               </div>
               <form id="dict-form" class="dict-add">
                 <input type="text" id="dict-input" spellcheck="false" autocomplete="off"
@@ -711,16 +712,29 @@
               </form>
               <p class="label-hint dict-tip" data-i18n="dictionary_tip">Tip: paste a list, separated by commas or one per line, to add many at once.</p>
               <p id="dict-long" class="notice dict-long hidden" data-tone="warn" data-i18n="dictionary_long">Long list: Whisper reads about the last 100 entries, so the newest count first.</p>
-              <div id="dict-list" class="dict-list"></div>
+              <div id="dict-list" class="list dict-list" role="list"></div>
+              <p id="dict-no-match" class="empty-state hidden" data-i18n="dict_no_match">No word matches.</p>
+              <!-- Read out, not shown: what the search found. -->
+              <p id="dict-live" class="sr-only" role="status"></p>
               <p id="dict-empty" class="empty-state dict-empty hidden" data-i18n="dictionary_empty">No words yet. Add names, brands or terms Whisper gets wrong.</p>
             </div>
             <div class="card">
               <div class="list-head">
                 <h3 class="list-title" data-i18n="replacements_title">Replacements</h3>
+                <input type="search" id="replacement-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="replacement_search" data-i18n-aria-label="replacement_search" placeholder="Search replacements" aria-label="Search replacements" />
               </div>
               <p class="label-hint"><span data-i18n="replacements_desc">Say a short phrase, get longer text.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="replacements-more" data-i18n="hint_more">More</button></p>
               <p class="label-hint hint-long" id="replacements-more" data-i18n="replacements_more" hidden>Good for email addresses, links and signatures. {date}, {time}, {weekday}, {year} and {iso_date} in the text are filled in when it is pasted.</p>
-              <div id="replacement-list" class="replacement-list"></div>
+              <!-- One grid for the headings and the rows (styles/settings.css). -->
+              <div class="replacement-table">
+                <div id="replacement-cols" class="list-cols replacement-cols hidden" aria-hidden="true">
+                  <span data-i18n="replacement_from_label">When I say</span>
+                  <span data-i18n="replacement_to_label">Insert</span>
+                </div>
+                <div id="replacement-list" class="list replacement-list" role="list"></div>
+              </div>
+              <p id="replacement-no-match" class="empty-state hidden" data-i18n="replacement_no_match">No replacement matches.</p>
+              <p id="replacement-live" class="sr-only" role="status"></p>
               <p id="replacement-empty" class="empty-state hidden" data-i18n="replacements_empty">No replacements yet.</p>
               <div class="card-foot">
                 <button type="button" id="replacement-add" class="btn-secondary" data-i18n="replacements_add">Add replacement</button>
@@ -918,8 +932,8 @@
                     <h3 class="list-title" data-i18n="unused_models_title">Unused models</h3>
                   </div>
                   <p class="label-hint" data-i18n="unused_models_desc">Downloaded Whisper and AI models that no setting uses. They only take disk space; delete the ones you no longer need.</p>
-                  <div id="unused-model-list" class="list unused-model-list"></div>
-                  <p id="unused-model-empty" class="empty-state hidden" data-i18n="unused_models_empty">No unused models.</p>
+                  <div id="unused-model-list" class="list unused-model-list" role="list"></div>
+                  <p id="unused-model-empty" class="empty-state hidden" tabindex="-1" data-i18n="unused_models_empty">No unused models.</p>
                 </div>
               </div>
             </details>
@@ -974,7 +988,7 @@
                   <span id="history-count" class="label-hint status-line"></span>
                 </div>
                 <div class="setting-control">
-                  <button type="button" id="history-clear" class="btn-secondary" data-i18n="history_clear">Clear history</button>
+                  <button type="button" id="history-clear" class="btn-secondary">Delete history</button>
                 </div>
               </div>
             </div>

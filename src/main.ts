@@ -21,6 +21,8 @@ import { setDownload } from "./activity";
 import { currentSpeech, initStatus, onStatus, refreshSpeech, renderStatus } from "./status-view";
 import { setup } from "./setup.ts";
 import { initHints, nameRows } from "./rows";
+import { deleteButton, repaintDeletes } from "./confirm-delete";
+import { initReplacements, readReplacements, renderReplacements, type Replacement } from "./replacements";
 import { modelLabel, speechModel } from "./models.ts";
 
 interface Settings {
@@ -63,11 +65,6 @@ interface Settings {
   idleUnloadMinutes: number;
 }
 
-interface Replacement {
-  from: string;
-  to: string;
-}
-
 interface MicDevice {
   name: string;
   is_default: boolean;
@@ -108,9 +105,6 @@ const gameFreeStatus = document.getElementById("game-free-status")!;
 const idleUnloadSelect = document.getElementById("idle-unload-select") as HTMLSelectElement;
 const unusedModelList = document.getElementById("unused-model-list")!;
 const unusedModelEmpty = document.getElementById("unused-model-empty")!;
-const replacementList = document.getElementById("replacement-list")!;
-const replacementEmpty = document.getElementById("replacement-empty")!;
-const replacementAdd = document.getElementById("replacement-add") as HTMLButtonElement;
 const historyModeSelect = document.getElementById("history-mode-select") as HTMLSelectElement;
 // The Soundboard tab; the same component runs in the pop-out window.
 const soundboard = mountBoard(document.getElementById("sb-root")!, { popOut: false });
@@ -582,62 +576,53 @@ const DELETE_ERRORS: Record<string, string> = {
   busy: "unused_model_busy",
 };
 
-/// One unused model with a Delete button that asks once more (click again
-/// within 3 s, like Clear history).
+/// One unused model as a list row: its file, what it is and its size, and Delete.
 function unusedModelRow(m: ModelFile): HTMLElement {
   const row = document.createElement("div");
-  row.className = "unused-model-row";
+  row.className = "list-row unused-model-row";
+  row.setAttribute("role", "listitem");
   const info = document.createElement("div");
-  info.className = "unused-model-info";
+  info.className = "list-main";
   const name = document.createElement("span");
-  name.className = "unused-model-name";
+  name.className = "list-primary unused-model-name";
   name.textContent = m.file;
   const meta = document.createElement("span");
-  meta.className = "label-hint";
+  meta.className = "list-secondary";
   const parts = [t(m.kind === "ai" ? "unused_model_ai" : "unused_model_whisper")];
   if (m.partial) parts.push(t("unused_model_partial"));
   parts.push(m.otherLinks ? `${formatSize(m.bytes)} (${t("unused_model_links")})` : formatSize(m.bytes));
   meta.textContent = parts.join(" \u00b7 ");
   const error = document.createElement("span");
-  error.className = "label-hint unused-model-error hidden";
+  error.className = "list-secondary unused-model-error hidden";
+  error.setAttribute("role", "alert");
   info.append(name, meta, error);
 
-  const del = document.createElement("button");
-  del.className = "btn-secondary";
-  del.textContent = t("unused_model_delete");
-  let armed: number | undefined;
-  const disarm = () => {
-    window.clearTimeout(armed);
-    armed = undefined;
-    del.classList.remove("armed");
-    del.textContent = t("unused_model_delete");
-  };
-  del.addEventListener("click", async () => {
-    if (armed === undefined) {
-      del.classList.add("armed");
-      // With other links nothing is freed: no size is promised.
-      del.textContent = m.otherLinks
-        ? t("unused_model_confirm_plain")
-        : t("unused_model_confirm").replace("{size}", formatSize(m.bytes));
-      armed = window.setTimeout(disarm, 3000);
-      return;
-    }
-    disarm();
-    del.disabled = true;
-    try {
-      await invoke<number>("delete_unused_model", { kind: m.kind, file: m.file });
+  // While the file is deleted the button rests (src/confirm-delete.ts). A
+  // delete that fails says why in the row, and the file stays in the list.
+  const del = deleteButton(
+    `model-${m.kind}-${m.file}`,
+    async () => {
+      error.classList.add("hidden");
+      try {
+        await invoke<number>("delete_unused_model", { kind: m.kind, file: m.file });
+      } catch (err) {
+        const code = String(err);
+        const key = DELETE_ERRORS[code];
+        error.textContent = key ? t(key) : t("unused_model_failed").replace("{error}", code);
+        error.classList.remove("hidden");
+        return;
+      }
       await renderUnusedModels();
       if (m.kind === "ai") await renderAiSettings();
       else await refreshModelDropdownLabels();
-    } catch (err) {
-      const code = String(err);
-      const key = DELETE_ERRORS[code];
-      error.textContent = key ? t(key) : t("unused_model_failed").replace("{error}", code);
-      error.classList.remove("hidden");
-      del.disabled = false;
-    }
-  });
-  row.append(info, del);
+    },
+    // After the last file the sentence that says so takes the focus.
+    { name: m.file, after: () => unusedModelEmpty },
+  );
+  const actions = document.createElement("div");
+  actions.className = "list-actions";
+  actions.append(del);
+  row.append(info, actions);
   return row;
 }
 
@@ -711,6 +696,8 @@ uiLanguageSelect.addEventListener("change", async () => {
   renderFiles();
   void soundboard.refresh();
   void renderMeetings();
+  renderReplacements();
+  repaintDeletes();
   renderStatus();
 });
 
@@ -944,69 +931,6 @@ for (const view of hotkeyViews) {
   });
 }
 
-// ── Replacements ──────────────────────────────────────
-
-function renderReplacements() {
-  replacementList.innerHTML = "";
-  for (const r of currentSettings.replacements ?? []) addReplacementRow(r);
-  replacementEmpty.classList.toggle("hidden", replacementList.children.length > 0);
-}
-
-function addReplacementRow(r: Replacement): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "replacement-row";
-
-  const from = document.createElement("input");
-  from.type = "text";
-  from.className = "replacement-from";
-  from.value = r.from;
-  from.placeholder = t("replacement_from_placeholder");
-  from.spellcheck = false;
-
-  const arrow = document.createElement("span");
-  arrow.className = "replacement-arrow";
-  arrow.textContent = "\u2192";
-
-  const to = document.createElement("textarea");
-  to.className = "replacement-to";
-  to.rows = 1;
-  to.value = r.to;
-  to.placeholder = t("replacement_to_placeholder");
-  to.spellcheck = false;
-
-  const remove = document.createElement("button");
-  remove.className = "icon-btn";
-  remove.title = t("replacement_remove");
-  remove.setAttribute("aria-label", t("replacement_remove"));
-  remove.innerHTML =
-    '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
-  remove.addEventListener("click", () => {
-    row.remove();
-    replacementEmpty.classList.toggle("hidden", replacementList.children.length > 0);
-    saveSettings();
-  });
-
-  from.addEventListener("change", () => saveSettings());
-  to.addEventListener("change", () => saveSettings());
-
-  row.append(from, arrow, to, remove);
-  replacementList.appendChild(row);
-  return row;
-}
-
-function readReplacements(): Replacement[] {
-  return Array.from(replacementList.querySelectorAll<HTMLElement>(".replacement-row")).map((row) => ({
-    from: (row.querySelector(".replacement-from") as HTMLInputElement).value,
-    to: (row.querySelector(".replacement-to") as HTMLTextAreaElement).value,
-  }));
-}
-
-replacementAdd.addEventListener("click", () => {
-  const row = addReplacementRow({ from: "", to: "" });
-  replacementEmpty.classList.add("hidden");
-  (row.querySelector(".replacement-from") as HTMLInputElement).focus();
-});
-
 // Credit link -> opens 0ggi.ch in default browser
 document.getElementById("credit-link")?.addEventListener("click", async (e) => {
   e.preventDefault();
@@ -1020,6 +944,7 @@ document.getElementById("credit-link")?.addEventListener("click", async (e) => {
 // The AI's state is part of the status, and Home shows both.
 initAiSettings({ settings: () => currentSettings, save: saveSettings, changed: renderStatus });
 initHistory({ mode: () => historyModeSelect.value });
+initReplacements({ replacements: () => currentSettings.replacements, save: saveSettings });
 initDictionary({ settings: () => currentSettings, save: saveSettings });
 initFiles({
   settings: () => currentSettings,

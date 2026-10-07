@@ -471,6 +471,48 @@ input[type="checkbox"] {
   color: var(--text-danger);
 }
 
+/* A delete button (src/confirm-delete.ts) is as wide as the wider of its two
+   texts, "Delete" and "Delete?": both lie in it unseen, each on a row
+   without height, so arming it moves nothing beside it. */
+[data-delete-id] {
+  display: inline-grid;
+  justify-items: center;
+  align-content: center;
+  gap: 0;
+}
+
+[data-delete-id]::before,
+[data-delete-id]::after {
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+[data-delete-id]::before {
+  content: attr(data-delete-rest) / "";
+}
+
+[data-delete-id]::after {
+  content: attr(data-delete-ask) / "";
+}
+
+/* The line that tells a screen reader of an armed button stands at the end of
+   the page (src/confirm-delete.ts). Fixed, so its one pixel does not make
+   the window's page one pixel higher than the window. */
+#delete-live {
+  position: fixed;
+  top: 0;
+  left: 0;
+}
+
+/* While its delete runs the button rests. Not `disabled`: it keeps the
+   keyboard focus until the row goes. */
+[data-delete-id][aria-disabled="true"],
+[data-delete-id][aria-disabled="true"]:is(:hover, :active) {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* A link inside a sentence. 24 px to hit; the negative margin keeps the
    line's height. */
 .link-btn {

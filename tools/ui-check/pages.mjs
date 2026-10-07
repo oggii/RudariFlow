@@ -1624,6 +1624,509 @@ async function settingsHold(run) {
   }
 }
 
+// ── The one way to delete (Task 7) ────────────────────
+
+/** Longer than the guard of src/arm.ts: a second click this long after the first is an answer to "Delete?". */
+const ANSWER = 340;
+
+/** From now on the mocked backend's command `cmd` fails (`null`: all of them work again). */
+const breakCommand = (page, cmd) =>
+  page.evaluate((cmd) => {
+    const real = (window.__invoke ??= window.__TAURI_INTERNALS__.invoke);
+    window.__TAURI_INTERNALS__.invoke = cmd ? (c, a) => (c === cmd ? Promise.reject("it broke") : real(c, a)) : real;
+  }, cmd);
+
+/** The delete buttons `sel` finds, as they show, and where the keyboard focus is. */
+const deletes = (page, sel) =>
+  page.evaluate((sel) => {
+    const all = [...document.querySelectorAll(sel)].filter((b) => b.getClientRects().length);
+    const at = document.activeElement;
+    return {
+      n: all.length,
+      armed: all.flatMap((b, i) => (b.classList.contains("armed") ? [i] : [])),
+      texts: all.map((b) => b.textContent),
+      names: all.map((b) => b.getAttribute("aria-label") ?? ""),
+      widths: all.map((b) => Math.round(b.getBoundingClientRect().width * 10) / 10),
+      focus: all.indexOf(at),
+      at: at?.id || at?.dataset?.key || at?.dataset?.action || at?.className || at?.tagName,
+      live: document.getElementById("delete-live")?.textContent ?? "",
+    };
+  }, sel);
+
+/**
+ * One delete of the app against the rule (the spec's "Delete: one pattern"; src/confirm-delete.ts).
+ *   what       the list, for the report
+ *   buttons    selector of the list's delete buttons
+ *   elsewhere  selector of something else to click
+ *   cmd        the backend's command a delete sends (none: the page deletes by itself, and nothing can fail)
+ *   left       how many things the list holds (default: its delete buttons)
+ *   stays      the mocked backend keeps the thing: only the command is counted
+ *   labels     { en, de }: [at rest, armed] when they are not "Delete" and "Delete?"
+ *   named      the button is named after what it deletes
+ *   redraw     draws the list again, as a backend event does
+ *   told       how a failure shows when the list says it itself (default: on the button and in the live line)
+ *   settles    also wait for the button to read "Delete" again after a failure (2.5 s: once is enough)
+ *   gone       the delete closes the page the button is on: one delete, no second one from the keyboard
+ *   landed     where the focus must be after a delete from the keyboard (default: on a Delete of the list)
+ * In German only the wording is looked at: the rule does not depend on the language.
+ * The findings go into `out` as they are made: a step that cannot go on (a button that is gone because
+ * something was deleted too early) throws, and what was found until then is kept.
+ */
+async function deleteRule(page, lang, spec, out = []) {
+  const say = (ok, what, detail) => out.push(...expect(ok, `${spec.what}: ${what}`, detail === undefined ? "" : JSON.stringify(detail)));
+  const [rest, ask] = spec.labels?.[lang] ?? (lang === "de" ? ["Löschen", "Löschen?"] : ["Delete", "Delete?"]);
+  const button = (i) => page.locator(`${spec.buttons}:visible`).nth(i);
+  const sent = () => (spec.cmd ? page.evaluate((cmd) => window.__MOCK__.calls.filter((c) => c.cmd === cmd).length, spec.cmd) : 0);
+  const sends = spec.cmd ? 1 : 0;
+  const now = async () => {
+    const s = await deletes(page, spec.buttons);
+    return { ...s, left: spec.left ? await spec.left() : s.n, sent: await sent() };
+  };
+  const esc = () => page.keyboard.press("Escape");
+
+  const start = await now();
+  const untouched = (s) => s.left === start.left && s.sent === start.sent;
+  say(start.n > 0 && start.armed.length === 0 && start.texts.every((t) => t === rest), `every button reads "${rest}"`, start.texts);
+  const name = spec.named ? start.names[0].slice(rest.length + 2) : "";
+  if (spec.named) say(start.names.every((n) => n.startsWith(`${rest}: `) && n.length > rest.length + 2), "every button is named after what it deletes", start.names);
+
+  // The first click arms: the look, the words, the name, the live line. Nothing is deleted.
+  await button(0).click();
+  let s = await now();
+  say(s.armed.join() === "0" && s.texts[0] === ask && s.focus === 0 && untouched(s), `the first click only arms ("${ask}")`, s);
+  say(s.widths[0] === start.widths[0], "arming does not change the button's width", [start.widths[0], s.widths[0]]);
+  say(s.live !== "" && (!spec.named || (s.names[0] === `${ask} ${name}` && s.live.includes(name))), "a screen reader hears that the button is armed and for what", [s.names[0], s.live]);
+  await esc();
+  s = await now();
+  say(s.armed.length === 0 && s.texts[0] === rest && s.live === "" && s.focus === 0 && untouched(s), "Esc disarms", s);
+  if (lang !== "en") return out;
+
+  // A double-click is one movement of the hand, and so is a second click right after the first.
+  await button(0).dblclick();
+  await wait(page, 150);
+  s = await now();
+  say(s.armed.join() === "0" && untouched(s), "a double-click deletes nothing and leaves the button armed", s);
+  await esc();
+  await button(0).click();
+  await button(0).click();
+  await wait(page, 150);
+  s = await now();
+  say(s.armed.join() === "0" && untouched(s), "a second click right after the first deletes nothing", s);
+  // A click elsewhere disarms.
+  await page.click(spec.elsewhere);
+  s = await now();
+  say(s.armed.length === 0 && s.texts[0] === rest && untouched(s), "a click elsewhere disarms", s);
+  // So does the focus when it leaves.
+  await button(0).click();
+  await page.keyboard.press("Shift+Tab");
+  s = await now();
+  say(s.armed.length === 0 && s.focus !== 0 && untouched(s), "the focus leaving disarms", s);
+  // Arming another button disarms the first.
+  if (start.n > 1) {
+    await button(0).click();
+    await button(1).click();
+    s = await now();
+    say(s.armed.join() === "1" && s.texts[0] === rest && untouched(s), "arming another button disarms the first", s);
+    await esc();
+  }
+  // The list is drawn again while a button is armed: the new button is armed and has the focus.
+  if (spec.redraw) {
+    await button(0).click();
+    await spec.redraw();
+    await wait(page, 200);
+    s = await now();
+    say(s.armed.join() === "0" && s.focus === 0 && s.texts[0] === ask && untouched(s), "drawn again while armed, the button is still armed and has the focus", s);
+    await esc();
+  }
+  // The keyboard: Enter arms; Enter again at once, or held down, does nothing more.
+  await button(0).focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
+  await wait(page, 100);
+  s = await now();
+  say(s.armed.join() === "0" && untouched(s), "Enter arms, and Enter again at once deletes nothing", s);
+  await esc();
+  await page.keyboard.down("Enter");
+  for (let i = 0; i < 12; i++) {
+    await wait(page, 40);
+    await page.keyboard.down("Enter");
+  }
+  await page.keyboard.up("Enter");
+  await wait(page, 100);
+  s = await now();
+  say(s.armed.join() === "0" && untouched(s), "Enter held down arms and deletes nothing", s);
+  await esc();
+
+  // A delete that fails says so, and the thing stays.
+  if (spec.cmd) {
+    await awaitError(page, /delete "[^"]*" failed|command failed/);
+    await breakCommand(page, spec.cmd);
+    await button(0).click();
+    await wait(page, ANSWER);
+    await button(0).click();
+    await wait(page, 300);
+    s = await deletes(page, spec.buttons);
+    const left = spec.left ? await spec.left() : s.n;
+    const told = spec.told ? await spec.told() : s.texts[0] !== rest && s.texts[0] !== ask && s.live.startsWith(s.texts[0]) && (!spec.named || s.names[0] === `${s.texts[0]}: ${name}`);
+    say(told && left === start.left && s.armed.length === 0, "a delete that fails says so and the thing stays", { ...s, left });
+    say(s.focus === 0, "after a delete that failed the focus is on the button again", s);
+    if (spec.redraw) {
+      // Also in what the list is drawn from.
+      await spec.redraw();
+      await wait(page, 150);
+      const drawn = await deletes(page, spec.buttons);
+      say((spec.left ? await spec.left() : drawn.n) === start.left, "the thing is still there when the list is drawn again after the failure", drawn.n);
+    }
+    await breakCommand(page, null);
+    await logged(page);
+    if (spec.settles) {
+      // The button and its name say "Delete" again after a moment.
+      await wait(page, 2600);
+      s = await now();
+      say(s.texts[0] === rest && s.live === "" && (!spec.named || s.names[0] === `${rest}: ${name}`), "the button reads Delete again a moment after a failure", s);
+    }
+  }
+  const before = await now();
+
+  // The second click deletes: one thing, once.
+  await button(0).click();
+  await wait(page, ANSWER);
+  await button(0).click();
+  await wait(page, 350);
+  s = await now();
+  say(s.sent === before.sent + sends && (spec.stays || s.left === before.left - 1) && s.armed.length === 0, "the second click deletes", [before.left, s.left, before.sent, s.sent]);
+  if (spec.gone) return out;
+  // And from the keyboard: Enter, then Space. The focus is handed on.
+  await button(0).focus();
+  await page.keyboard.press("Enter");
+  await wait(page, ANSWER);
+  await page.keyboard.press("Space");
+  await wait(page, 350);
+  const end = await now();
+  say(end.sent === s.sent + sends && (spec.stays || end.left === s.left - 1), "Enter and then Space delete", [s.left, end.left, s.sent, end.sent]);
+  say(spec.landed ? await spec.landed() : end.focus >= 0, "after a delete from the keyboard the focus is on the row that moved up", end);
+  return out;
+}
+
+/** Whether `text` shows somewhere under `scope` (a failure's reason in a page's own notice). */
+const written =
+  (page, text, scope = "section.active") =>
+  () =>
+    page.evaluate(([text, scope]) => [...document.querySelectorAll(`${scope} *`)].some((el) => el.children.length === 0 && el.getClientRects().length > 0 && el.textContent.includes(text)), [text, scope]);
+
+/** Arm the first delete button `sel` finds, with a real click: the armed look is measured and in the pictures. */
+async function armFirst(page, sel) {
+  await page.keyboard.press("Escape");
+  // As the mouse arms it: a button that still has the focus from the keyboard would keep its ring.
+  await page.evaluate(() => document.activeElement?.blur?.());
+  await page.locator(`${sel}:visible`).first().click();
+  await wait(page, 150);
+}
+
+/** The pages with a button armed: [id, how to get there, the button]. */
+const ARMED = [
+  ["home", (page) => section(page, "home"), "#history-list [data-delete-id]"],
+  ["settings-dictionary", (page) => settings(page, "dictionary"), "#dict-list [data-delete-id]"],
+  ["settings-ai", (page) => settings(page, "ai"), "#ai-rule-list [data-delete-id]"],
+  [
+    "settings-models",
+    async (page) => {
+      await page.evaluate(() => (document.querySelector('details.fold[data-fold="models"]').open = true));
+      await settings(page, "models");
+    },
+    "#unused-model-list [data-delete-id]",
+  ],
+  ["settings-general", (page) => settings(page, "general"), "#history-clear"],
+  ["soundboard", (page) => section(page, "soundboard"), "#sb-root .sb-delete"],
+  [
+    "meetings-open",
+    async (page) => {
+      await section(page, "meetings");
+      await page.click(".mt-item");
+      await wait(page, 500);
+    },
+    "#mt-delete",
+  ],
+];
+
+/** Every delete of the main window against the rule, one list after the other. */
+async function deletesProbe(page, run) {
+  const out = [];
+  // A step that waits for something that is not there gives up soon and says so.
+  page.setDefaultTimeout(5000);
+  try {
+    await everyDelete(page, run.lang, out);
+  } catch (e) {
+    out.push(...expect(false, "the check of the deletes could not go on", String(e).split("\n").slice(0, 3).join(" ")));
+  }
+  page.setDefaultTimeout(30_000);
+  // A new start: the lists are whole again for the pages that follow.
+  await again(page);
+  return out;
+}
+
+async function everyDelete(page, lang, out) {
+  const rule = (spec) => deleteRule(page, lang, spec, out);
+  const count = (sel) => () => page.locator(sel).count();
+  const savedNow = () => page.evaluate(() => window.__MOCK__.settings());
+  const title = "section.active .section-title";
+  const enter = async () => {
+    await page.keyboard.press("Enter");
+    await wait(page, ANSWER);
+    await page.keyboard.press("Enter");
+    await wait(page, 300);
+  };
+
+  // What reads the armed button out stands outside the layout: the page is as high as the window, not a pixel more.
+  const high = await page.evaluate(() => [!!document.getElementById("delete-live"), document.documentElement.scrollHeight, window.innerHeight]);
+  out.push(...expect(high[0] && high[1] === high[2], "the line that is read out does not make the page higher than the window", JSON.stringify(high)));
+
+  // Home's recordings first, while the history is whole.
+  if (lang === "en") out.push(...(await playProbe(page)));
+
+  // Settings > Dictionary: a word, a replacement.
+  await settings(page, "dictionary");
+  await rule({
+    what: "a dictionary word",
+    buttons: "#dict-list [data-delete-id]",
+    elsewhere: "#dict-input",
+    cmd: "save_settings",
+    named: true,
+    settles: true,
+    redraw: () => page.evaluate(() => document.getElementById("dict-search").dispatchEvent(new Event("input"))),
+  });
+  if (lang === "en") {
+    const words = (await savedNow()).customPrompt;
+    out.push(...expect(words.split(", ").length === 10 && !/Gemma|Groq/.test(words), "the two deleted words are gone from the settings and the others are kept", words));
+  }
+  await rule({
+    what: "a replacement",
+    buttons: "#replacement-list [data-delete-id]",
+    elsewhere: "#replacement-search",
+    cmd: "save_settings",
+    named: true,
+    left: async () => (await savedNow()).replacements.length,
+  });
+  if (lang === "en") {
+    // The last replacement goes: "Add replacement" takes the focus, and the list says that it is empty.
+    await page.locator("#replacement-list [data-delete-id]").first().focus();
+    await enter();
+    const last = await page.evaluate(() => [document.activeElement.id, document.querySelectorAll(".replacement-row").length, !document.getElementById("replacement-empty").classList.contains("hidden")]);
+    out.push(...expect(last[0] === "replacement-add" && last[1] === 0 && last[2], "after the last replacement the focus is on Add replacement", JSON.stringify(last)));
+  }
+
+  // Settings > AI cleanup: a rule.
+  await settings(page, "ai");
+  await rule({
+    what: "an app rule",
+    buttons: "#ai-rule-list [data-delete-id]",
+    elsewhere: title,
+    cmd: "save_settings",
+    named: true,
+    left: async () => (await savedNow()).aiRules.length,
+  });
+
+  // Settings > Models & GPU > Advanced: an unused model. The mocked backend keeps the file.
+  await page.evaluate(() => (document.querySelector('details.fold[data-fold="models"]').open = true));
+  await settings(page, "models");
+  await rule({
+    what: "an unused model",
+    buttons: "#unused-model-list [data-delete-id]",
+    elsewhere: title,
+    cmd: "delete_unused_model",
+    named: true,
+    stays: true,
+    told: () => page.evaluate(() => [...document.querySelectorAll(".unused-model-error")].some((el) => el.getClientRects().length > 0 && el.textContent.includes("it broke"))),
+  });
+
+  // Home: a dictation.
+  await section(page, "home");
+  await rule({
+    what: "a dictation",
+    buttons: "#history-list [data-delete-id]",
+    elsewhere: "#history-search",
+    cmd: "history_delete",
+    named: true,
+    left: count("#history-list .history-item"),
+    redraw: () => page.evaluate(() => window.__MOCK__.emit("history-updated", null)),
+    // Home hands the focus on itself: to the first action of the row that moved up.
+    landed: () => page.evaluate(() => document.activeElement === document.querySelector("#history-list .history-item .history-actions button")),
+  });
+
+  // Settings > General: the whole history. The mocked backend keeps it, until the last step.
+  await settings(page, "general");
+  await rule({
+    what: "Delete history",
+    buttons: "#history-clear",
+    elsewhere: title,
+    cmd: "history_clear",
+    labels: { en: ["Delete history", "Delete all?"], de: ["Verlauf löschen", "Alles löschen?"] },
+    stays: true,
+  });
+  if (lang === "en") {
+    // With the history gone the button goes too: the row above takes the focus.
+    await page.evaluate(() => {
+      const real = window.__TAURI_INTERNALS__.invoke;
+      let gone = false;
+      window.__TAURI_INTERNALS__.invoke = (c, a) => (c === "history_list" && gone ? Promise.resolve([]) : ((gone ||= c === "history_clear"), real(c, a)));
+    });
+    await page.focus("#history-clear");
+    await enter();
+    const end = await page.evaluate(() => [document.activeElement.id, document.getElementById("history-clear").classList.contains("hidden"), document.querySelectorAll("#history-list .history-item").length]);
+    out.push(...expect(end[0] === "history-mode-select" && end[1] && end[2] === 0, "after Delete history the list is empty and the focus is on the row above", JSON.stringify(end)));
+    // The mocked backend has kept the history: the last dictation of the list is deleted from the keyboard. The
+    // focus goes to the sentence that says the list is empty, and the live line does not say it a second time.
+    await breakCommand(page, null);
+    await section(page, "home");
+    await page.evaluate(() => window.__MOCK__.emit("history-updated", null));
+    await wait(page, 200);
+    await page.evaluate(async () => {
+      for (const row of [...document.querySelectorAll("#history-list .history-item")].slice(1)) await window.__TAURI_INTERNALS__.invoke("history_delete", { id: Number(row.dataset.id) });
+      window.__MOCK__.emit("history-updated", null);
+    });
+    await wait(page, 200);
+    await page.focus("#history-list [data-delete-id]");
+    await enter();
+    const last = await page.evaluate(() => [document.querySelectorAll("#history-list .history-item").length, document.activeElement.id, document.getElementById("history-empty").textContent !== "", document.getElementById("history-live").textContent]);
+    out.push(...expect(last[0] === 0 && last[1] === "history-empty" && last[2] && last[3] === "", "after the last dictation the focus is on the sentence that says the list is empty, which is not said twice", JSON.stringify(last)));
+  }
+
+  // Meetings: the open meeting. A failure is said in the meeting's own notice.
+  await section(page, "meetings");
+  await page.click(".mt-item");
+  await wait(page, 400);
+  await rule({
+    what: "a meeting",
+    buttons: "#mt-delete",
+    elsewhere: "#mt-view-meta",
+    cmd: "meeting_delete",
+    stays: true,
+    gone: true,
+    told: written(page, "it broke"),
+  });
+  if (lang === "en") out.push(...expect(await page.evaluate(() => document.getElementById("mt-view").classList.contains("hidden") && document.activeElement.classList.contains("mt-item")), "after its delete the meeting is closed and the focus is in the library"));
+
+  // Files: Clear empties the page of a transcript that is kept nowhere else. It keeps its word (no file is deleted).
+  await section(page, "files");
+  await page.click("#file-choose");
+  await wait(page, 500);
+  await rule({
+    what: "a file's transcript",
+    buttons: "#file-clear",
+    elsewhere: "#file-name",
+    labels: { en: ["Clear", "Clear?"], de: ["Leeren", "Leeren?"] },
+    left: () => page.evaluate(() => (document.getElementById("file-text").value ? 1 : 0)),
+    gone: true,
+  });
+  if (lang === "en") out.push(...expect(await page.evaluate(() => document.activeElement.id === "file-choose"), "after Clear the focus is on Choose file"));
+
+  // Soundboard: a sound, a category. The mocked backend keeps both; a failure is said in the board's notice.
+  await section(page, "soundboard");
+  const board = () => page.evaluate(() => window.__MOCK__.emit("soundboard-changed", null));
+  await rule({
+    what: "a sound",
+    buttons: "#sb-root .sb-delete",
+    elsewhere: title,
+    cmd: "soundboard_remove",
+    named: true,
+    stays: true,
+    redraw: board,
+    told: written(page, "it broke"),
+  });
+  await page.click("#sb-root .sb-chip:nth-child(2)");
+  await wait(page, 200);
+  await rule({
+    what: "a sound category",
+    buttons: '#sb-root [data-delete-id^="category-"]',
+    elsewhere: title,
+    cmd: "soundboard_category_remove",
+    named: true,
+    stays: true,
+    redraw: board,
+    told: written(page, "it broke"),
+  });
+
+  // Nothing else in the window deletes at one click: every button that says "Delete" has the rule.
+  const bare = await page.evaluate(() => [...document.querySelectorAll("button")].filter((b) => /^(Delete|Löschen|Remove|Entfernen|Clear|Leeren)/.test(b.textContent.trim()) && !b.dataset.deleteId).map((b) => b.id || b.className));
+  out.push(...expect(bare.length === 0, "every Delete button of the window has the rule", bare.join(", ")));
+}
+
+/** Home's recordings: of two Play clicks only the one clicked last plays, and it can be stopped. */
+async function playProbe(page) {
+  const out = [];
+  await page.evaluate(() => {
+    const real = window.__TAURI_INTERNALS__.invoke;
+    // A recording takes a moment to arrive.
+    window.__TAURI_INTERNALS__.invoke = (c, a) => (c === "history_audio" ? new Promise((done) => setTimeout(() => done(new ArrayBuffer(64)), 200)) : real(c, a));
+    window.__sound = { played: 0, sounding: new Set() };
+    HTMLMediaElement.prototype.play = function () {
+      window.__sound.played++;
+      window.__sound.sounding.add(this);
+      return Promise.resolve();
+    };
+    HTMLMediaElement.prototype.pause = function () {
+      window.__sound.sounding.delete(this);
+    };
+  });
+  const plays = page.locator('#history-list [data-action="play"]');
+  const label = await plays.first().textContent();
+  const state = async () => {
+    const s = await page.evaluate(() => ({ played: window.__sound.played, sounding: window.__sound.sounding.size }));
+    const texts = await plays.allTextContents();
+    return { ...s, stop: texts.flatMap((t, i) => (t !== label ? [i] : [])) };
+  };
+  // A double-click on Play: one recording plays, and its button stops it.
+  await plays.first().dblclick();
+  await wait(page, 500);
+  let s = await state();
+  out.push(...expect(s.played === 1 && s.sounding === 1 && s.stop.join() === "0", "a double-click on Play plays one recording", JSON.stringify(s)));
+  await plays.first().click();
+  await wait(page, 100);
+  s = await state();
+  out.push(...expect(s.sounding === 0 && s.stop.length === 0, "the recording a double-click started can be stopped", JSON.stringify(s)));
+  // Play in two rows, one right after the other: only the second plays.
+  await plays.nth(0).click();
+  await plays.nth(1).click();
+  await wait(page, 500);
+  s = await state();
+  out.push(...expect(s.played === 2 && s.sounding === 1 && s.stop.join() === "1", "of two Play clicks only the one clicked last plays", JSON.stringify(s)));
+  await plays.nth(1).click();
+  await wait(page, 100);
+  s = await state();
+  out.push(...expect(s.sounding === 0 && s.stop.length === 0, "and its button stops it", JSON.stringify(s)));
+  return out;
+}
+
+/** The pop-out is the same board in a window of its own: its delete follows the rule there too. */
+async function popoutDeletes(page, run) {
+  const out = [];
+  page.setDefaultTimeout(5000);
+  try {
+    await deleteRule(
+      page,
+      run.lang,
+      {
+        what: "a sound in the pop-out",
+        buttons: ".sb-delete",
+        elsewhere: ".sb-length",
+        cmd: "soundboard_remove",
+        named: true,
+        stays: true,
+        redraw: () => page.evaluate(() => window.__MOCK__.emit("soundboard-changed", null)),
+        told: written(page, "it broke", "body"),
+      },
+      out,
+    );
+  } catch (e) {
+    out.push(...expect(false, "the check of the pop-out's delete could not go on", String(e).split("\n").slice(0, 3).join(" ")));
+  }
+  page.setDefaultTimeout(30_000);
+  // A new start: the board is as it was for the page that follows.
+  await page.reload({ waitUntil: "networkidle" });
+  await wait(page, 500);
+  return out;
+}
+
 const pill = (id, script, probe) => ({
   id: `pill-${id}`,
   url: "/src/overlay.html",
@@ -1640,6 +2143,86 @@ const pill = (id, script, probe) => ({
   },
   probe,
 });
+
+/** The Dictionary tab: the searches, and the one way to delete. */
+async function dictionaryProbe(page, run) {
+  const out = [];
+  if (await page.evaluate(() => window.__MOCK_CFG__.scenario === "firstrun")) return out;
+  const words = () => page.locator("#dict-list .dict-row").count();
+  const saved = () => page.evaluate(() => window.__MOCK__.settings());
+  const first = page.locator("#dict-list .dict-row [data-delete-id]").first();
+  // Nothing deletes on a single click; Esc disarms; the second click deletes.
+  await first.click();
+  out.push(...expect((await words()) === 12 && (await first.getAttribute("class")).includes("armed"), "the first click on Delete only arms it"));
+  // The suggestions are in the Display Language too.
+  const add = await page.evaluate(() => [document.documentElement.lang, document.querySelector("#dict-suggest-list button").textContent]);
+  out.push(...expect(add[1] === (add[0] === "de" ? "Hinzufügen" : "Add"), "the suggestions follow the Display Language", JSON.stringify(add)));
+  await page.keyboard.press("Escape");
+  out.push(...expect(!(await first.getAttribute("class")).includes("armed"), "Esc disarms Delete"));
+  await first.click();
+  await page.click("#dict-input");
+  out.push(...expect(!(await first.getAttribute("class")).includes("armed") && (await words()) === 12, "a click elsewhere disarms Delete"));
+  await first.click();
+  // Not at once: a second click right after the first is a double-click, which deletes nothing.
+  await wait(page, ANSWER);
+  await first.click();
+  await wait(page, 150);
+  out.push(...expect((await words()) === 11, "the second click deletes the word", String(await words())));
+  // The word search ignores case and accents.
+  await page.fill("#dict-search", "zurich");
+  await wait(page, 100);
+  out.push(...expect((await words()) === 1, "the word search finds Zürich for zurich", String(await words())));
+  // The count says how many of the words show, and a search that finds nothing says so.
+  const count = () => page.evaluate(() => [document.getElementById("dict-count").textContent, !document.getElementById("dict-no-match").classList.contains("hidden"), !document.getElementById("dict-empty").classList.contains("hidden")]);
+  const found = await count();
+  await page.fill("#dict-search", "qqq");
+  await wait(page, 100);
+  const none = await count();
+  out.push(...expect(/^1 \D+ 11$/.test(found[0]) && !found[1] && /^0 \D+ 11$/.test(none[0]) && none[1] && !none[2] && (await words()) === 0, "the word count follows the search, and no match says so", JSON.stringify([found, none])));
+  if (run.size === BEHAVIOUR) {
+    // What a search found is said once the typing rests, for both lists.
+    await page.fill("#dict-search", "o");
+    await page.fill("#replacement-search", "qqq");
+    await wait(page, 900);
+    const said = await page.evaluate(() => [document.getElementById("dict-live").textContent, document.getElementById("replacement-live").textContent, document.getElementById("replacement-no-match").textContent]);
+    const some = await words();
+    out.push(...expect(some > 0 && some < 11 && new RegExp(`^${some} \\D+ 11 `).test(said[0]) && said[1] === said[2] && said[1] !== "", "a screen reader hears what the two searches found", JSON.stringify([some, ...said])));
+    await page.fill("#replacement-search", "");
+  }
+  await page.fill("#dict-search", "");
+  // The replacement search hides rows and loses none of them.
+  await page.fill("#replacement-search", "signat");
+  await wait(page, 100);
+  const shown = await page.locator("#replacement-list .replacement-row:not(.hidden)").count();
+  out.push(...expect(shown === 1, "the replacement search shows the rows it finds", String(shown)));
+  await page.evaluate(() => {
+    const to = document.querySelector("#replacement-list .replacement-row:not(.hidden) .replacement-to");
+    to.value = "Best regards";
+    to.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await wait(page, 150);
+  out.push(...expect((await saved()).replacements.length === 3, "a save while searching keeps the hidden replacements", String((await saved()).replacements.length)));
+  await page.fill("#replacement-search", "");
+  // The headings stand over their columns, whatever the width of Delete in this language.
+  const cols = await page.evaluate(() => {
+    const left = (el) => Math.round(el.getBoundingClientRect().left);
+    const heads = [...document.querySelectorAll("#replacement-cols span")].map(left);
+    const row = document.querySelector("#replacement-list .replacement-row");
+    return [heads, [left(row.querySelector(".replacement-from")), left(row.querySelector(".replacement-to"))]];
+  });
+  out.push(...expect(cols[0].join() === cols[1].join(), "the replacements' headings stand over their columns", JSON.stringify(cols)));
+  const del = page.locator("#replacement-list .replacement-row [data-delete-id]").first();
+  await del.click();
+  out.push(...expect((await saved()).replacements.length === 3, "one click deletes no replacement"));
+  await wait(page, ANSWER);
+  await del.click();
+  await wait(page, 150);
+  out.push(...expect((await saved()).replacements.length === 2, "the second click deletes the replacement"));
+  await page.reload({ waitUntil: "networkidle" });
+  await wait(page, 500);
+  await settings(page, "dictionary");
+  return out;
+}
 
 export const PAGES = [
   {
@@ -1847,8 +2430,9 @@ export const PAGES = [
       const second = await row(1);
       await page.focus("#history-list .history-item:first-child .history-actions button:last-child");
       await page.keyboard.press("Enter");
-      // From Task 7 on the first press only arms Delete.
-      if (await page.evaluate(() => document.activeElement.classList.contains("armed"))) await page.keyboard.press("Enter");
+      // The first press only arms Delete; the second one answers it (not at once: src/arm.ts).
+      await wait(page, ANSWER);
+      await page.keyboard.press("Enter");
       await wait(page, 200);
       const after = await page.evaluate(() => {
         const at = document.activeElement;
@@ -1931,7 +2515,7 @@ export const PAGES = [
   { id: "files", open: (page) => section(page, "files") },
   { id: "meetings", open: (page) => section(page, "meetings") },
   { id: "soundboard", open: (page) => section(page, "soundboard") },
-  ...TABS.map((tab) => ({ id: `settings-${tab}`, open: (page) => settings(page, tab) })),
+  ...TABS.map((tab) => ({ id: `settings-${tab}`, open: (page) => settings(page, tab), probe: tab === "dictionary" ? dictionaryProbe : undefined })),
   // The same tabs with Advanced open (General has no fold).
   ...TABS.filter((tab) => tab !== "general").map((tab) => ({
     id: `settings-${tab}-advanced`,
@@ -1958,6 +2542,10 @@ export const PAGES = [
             const moved = await page.evaluate(async () => {
               const out = [];
               const top = (el) => Math.round(el.getBoundingClientRect().top * 10) / 10;
+              // From the page's top. The keyboard walk before this leaves a page that scrolls at its end, and a
+              // row above the window's top (of another tab, shown here for the measuring) then moves up by what
+              // opens in it: the browser keeps the place of what is on screen. Nobody can press "More" up there.
+              document.getElementById("content").scrollTop = 0;
               for (const panel of document.querySelectorAll(".tab-panel")) {
                 const hidden = panel.hidden;
                 panel.hidden = false;
@@ -2087,6 +2675,45 @@ export const PAGES = [
       // The long reason: the state line beside the switch and the model's note both carry it.
       await failNow(page, "ai", DISK_FULL);
     },
+  },
+  // The one way to delete. First every list with a button armed: "Delete?" is measured like any other state
+  // and is in the pictures, in both languages. Then every delete of the window against the rule, which changes
+  // the lists and ends in a new start.
+  ...ARMED.map(([id, open, button], i) => ({
+    id: `${id}-armed`,
+    scenarios: ["populated"],
+    sizes: ["1600x900", "900x600"],
+    // The page before leaves a failed download on its row.
+    fresh: i === 0,
+    open: async (page) => {
+      await open(page);
+      await armFirst(page, button);
+    },
+    // The keyboard walk took the focus from the button, which disarms it: armed again for the picture.
+    probe: async (page) => {
+      await armFirst(page, button);
+      const armed = await page.evaluate((sel) => [...document.querySelectorAll(sel)].filter((b) => b.classList.contains("armed")).length, button);
+      return expect(armed === 1, "one button is armed", String(armed));
+    },
+  })),
+  {
+    id: "deletes",
+    scenarios: ["populated"],
+    sizes: [BEHAVIOUR],
+    fresh: true,
+    checks: false,
+    open: (page) => again(page),
+    probe: deletesProbe,
+  },
+  {
+    id: "popout-deletes",
+    url: "/soundboard.html",
+    scope: "body",
+    scenarios: ["populated"],
+    sizes: ["460x680"],
+    checks: false,
+    open: (page) => wait(page),
+    probe: popoutDeletes,
   },
   {
     id: "files-result",

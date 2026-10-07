@@ -1,11 +1,12 @@
 // The dictation history: "Recent dictations" on Home (search over text and
 // app; the newest few, "Show all" in chunks of 50), and its count and
-// "Clear history" in Settings > General. The entries are the backend's
+// "Delete history" in Settings > General. The entries are the backend's
 // (`history_list`); nothing here changes what is kept.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { t } from "./i18n";
 import { shown } from "./search.ts";
+import { confirmDelete, deleteButton } from "./confirm-delete";
 
 export interface HistoryHost {
   /** "Keep history": "audio", "text" or "off". */
@@ -45,6 +46,8 @@ let pages = 1;
 let playing: { audio: HTMLAudioElement; url: string; id: number; btn: HTMLButtonElement } | null = null;
 /** Dictations a Re-run is out for. */
 const rerunning = new Set<number>();
+/** Counts the clicks on Play: of two recordings asked for, only the one asked for last plays. */
+let playAsked = 0;
 
 function stopPlayback() {
   if (!playing) return;
@@ -158,9 +161,14 @@ function renderEntry(e: HistoryEntry): HTMLElement {
         async (b) => {
           const wasThis = playing?.id === e.id;
           stopPlayback();
+          const asked = ++playAsked;
           if (wasThis) return;
           try {
             const bytes = await invoke<ArrayBuffer>("history_audio", { id: e.id });
+            // Play was clicked again while the recording was fetched (a
+            // double-click, another row): that click's recording plays, not
+            // this one beside it, which no button could stop any more.
+            if (asked !== playAsked) return;
             const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
             const audio = new Audio(url);
             playing = { audio, url, id: e.id, btn: b };
@@ -221,11 +229,17 @@ function renderEntry(e: HistoryEntry): HTMLElement {
     if (!e.edit) actions.appendChild(rerun);
   }
   actions.appendChild(
-    action(t("history_delete"), async () => {
-      if (playing && item.contains(playing.btn)) stopPlayback();
-      await invoke("history_delete", { id: e.id });
-      await refreshHistory();
-    }),
+    deleteButton(
+      `history-${e.id}`,
+      // A delete that fails throws: the button says so and the dictation
+      // stays (src/confirm-delete.ts).
+      async () => {
+        await invoke("history_delete", { id: e.id });
+        if (playing?.id === e.id) stopPlayback();
+        await refreshHistory();
+      },
+      { name: e.text.slice(0, 40) },
+    ),
   );
 
   item.append(main, actions);
@@ -270,11 +284,15 @@ function keepFootFocus(gone: HTMLButtonElement, other: HTMLButtonElement) {
 
 let sayTimer: number | undefined;
 /** What a screen reader is told about the list: that it is empty, and how
- *  many dictations a search finds, once the typing rests and not for every key. */
+ *  many dictations a search finds, once the typing rests and not for every key.
+ *  Not that it is empty when the keyboard focus went to that very sentence
+ *  (the last dictation was deleted): the focus reads it out already. */
 function announce(searching: boolean, found: number) {
   window.clearTimeout(sayTimer);
   const text = !empty.classList.contains("hidden")
-    ? (empty.textContent ?? "")
+    ? document.activeElement === empty
+      ? ""
+      : (empty.textContent ?? "")
     : searching
       ? t(found === 1 ? "home_recent_found_one" : "home_recent_found").replace("{n}", String(found))
       : "";
@@ -307,21 +325,12 @@ function render() {
 
   count.textContent = entries.length === 1 ? t("history_count_one") : t("history_count").replace("{n}", String(entries.length));
   clear.classList.toggle("hidden", entries.length === 0);
-  resetClearButton();
 }
 
 /** Read the history again and redraw (after a dictation, a delete, a language change). */
 export async function refreshHistory() {
   entries = await invoke<HistoryEntry[]>("history_list");
   render();
-}
-
-let clearArmed: number | undefined;
-function resetClearButton() {
-  window.clearTimeout(clearArmed);
-  clearArmed = undefined;
-  clear.classList.remove("armed");
-  clear.textContent = t("history_clear");
 }
 
 export function initHistory(h: HistoryHost) {
@@ -344,15 +353,15 @@ export function initHistory(h: HistoryHost) {
     keepFootFocus(less, more);
     document.getElementById("home-recent")?.scrollIntoView({ block: "nearest" });
   });
-  clear.addEventListener("click", async () => {
-    if (clearArmed === undefined) {
-      clear.classList.add("armed");
-      clear.textContent = t("history_clear_confirm");
-      clearArmed = window.setTimeout(resetClearButton, 3000);
-      return;
-    }
-    await invoke("history_clear");
-    await refreshHistory();
-  });
+  confirmDelete(
+    clear,
+    "history-all",
+    async () => {
+      await invoke("history_clear");
+      await refreshHistory();
+    },
+    // The button goes with the last dictation: the row above takes the focus.
+    { label: "history_clear", armedLabel: "history_clear_confirm", after: () => document.getElementById("history-mode-select") },
+  );
   listen("history-updated", () => refreshHistory());
 }

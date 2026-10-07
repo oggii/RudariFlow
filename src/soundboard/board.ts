@@ -8,6 +8,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { t } from "../i18n";
 import { hotkeyLabel, startCapture } from "../hotkey-capture";
+import { deleteButton } from "../confirm-delete";
 import {
   api,
   EXTENSIONS,
@@ -135,8 +136,6 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
   let refreshSeq = 0;
   let appliedSeq = 0;
   let notice = { text: "", tone: "" };
-  let armedDelete: string | null = null;
-  let armedTimer: number | undefined;
   let listBox: HTMLElement | null = null;
   root.classList.add("sb");
 
@@ -425,9 +424,14 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
         const rename = iconButton(PEN_ICON, t("sb_category_rename"), `chip-${c.id}-rename`, () =>
           inlineEdit(rename, c.name, t("sb_category_placeholder"), (name) => api.categoryRename(c.id, name)),
         );
-        const remove = iconButton(X_ICON, t("sb_category_delete"), `chip-${c.id}-delete`, () => {
-          api.categoryRemove(c.id).catch((e) => setNotice(reasonText(String(e)), "error"));
-        });
+        const remove = deleteButton(
+          `category-${c.id}`,
+          () => api.categoryRemove(c.id).catch((e) => setNotice(reasonText(String(e)), "error")),
+          // The chip goes with its category: "All" takes the focus.
+          { name: c.name, after: () => root.querySelector<HTMLElement>('[data-key="chip-all"]') },
+        );
+        remove.title = t("sb_category_delete");
+        remove.dataset.key = `chip-${c.id}-delete`;
         bar.append(rename, remove);
       }
     }
@@ -514,7 +518,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     if (missing) main.append(el("span", "sb-note", t("sb_missing")));
 
     const side = el("div", "sb-side");
-    side.append(loopButton(sound, s.board.soundHotkeys), el("span", "sb-length", clock(sound.durationMs)), deleteButton(sound));
+    side.append(loopButton(sound, s.board.soundHotkeys), el("span", "sb-length", clock(sound.durationMs)), soundDelete(sound));
 
     const controls = el("div", "sb-controls");
     const cat = el("select", "sb-category");
@@ -553,24 +557,15 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     return b;
   }
 
-  function deleteButton(sound: Sound): HTMLElement {
-    const armed = armedDelete === sound.id;
-    const label = t(armed ? "sb_delete_confirm" : "sb_delete");
-    const b = button(`btn-ghost sb-delete${armed ? " armed" : ""}`, label, `${sound.id}-delete`, () => {
-      window.clearTimeout(armedTimer);
-      if (armedDelete !== sound.id) {
-        armedDelete = sound.id;
-        armedTimer = window.setTimeout(() => {
-          armedDelete = null;
-          render();
-        }, 3000);
-        render();
-        return;
-      }
-      armedDelete = null;
-      api.remove(sound.id).catch((e) => setNotice(`${sound.name}: ${reasonText(String(e))}`, "error"));
-    });
-    b.setAttribute("aria-label", `${label}: ${sound.name}`);
+  function soundDelete(sound: Sound): HTMLElement {
+    const b = deleteButton(
+      `sound-${sound.id}`,
+      () => api.remove(sound.id).catch((e) => setNotice(`${sound.name}: ${reasonText(String(e))}`, "error")),
+      // After the last sound "Add sounds…" takes the focus.
+      { name: sound.name, after: () => root.querySelector<HTMLElement>('[data-key="add"]') },
+    );
+    b.classList.add("sb-delete");
+    b.dataset.key = `${sound.id}-delete`;
     return b;
   }
 

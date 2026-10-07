@@ -9,6 +9,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { getLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
 import { setDownload, setFileRunning } from "./activity";
+import { confirmDelete } from "./confirm-delete";
 
 export interface FilesHost {
   settings(): { language: string; fileSpeakers: string };
@@ -530,7 +531,9 @@ export function initFiles(h: FilesHost) {
     }
   });
   summarizeBtn.addEventListener("click", summarize);
-  clearBtn.addEventListener("click", clearFile);
+  // The transcript is nowhere but on this page: Clear asks first, like every
+  // delete (src/confirm-delete.ts). It keeps its word: no file is deleted.
+  confirmDelete(clearBtn, "file", clearFile, { label: "files_clear", armedLabel: "files_clear_confirm" });
   listen<FileProgress>("file-progress", (e) => onProgress(e.payload));
   listen<DownloadProgress>("speaker-model-progress", (e) => {
     speakersHint.textContent = t("files_speakers_downloading").replace("{percent}", String(Math.round(e.payload.percent)));

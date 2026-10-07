@@ -13,6 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { getLang, t } from "./i18n";
+import { confirmDelete, disarmDelete } from "./confirm-delete";
 
 export interface MeetingsHost {
   settings(): { meetingReminderOff: boolean; meetingHeadphonesSeen: boolean };
@@ -177,7 +178,6 @@ let following = true;
 let headphonesThisMeeting = false;
 let clockTimer: number | undefined;
 let searchTimer: number | undefined;
-let deleteArmed: number | undefined;
 /** The newest `meeting_get` and `meeting_list` asked for: an older answer
  *  that arrives later is dropped. */
 let openSeq = 0;
@@ -510,7 +510,8 @@ function renderView() {
   if (fresh) {
     editing?.end(true);
     setExportMenu(false);
-    resetDelete();
+    // "Delete?" was asked about the meeting that was open before.
+    disarmDelete("meeting");
     Object.assign(drawn, { id: m.id, lang: getLang(), hints: "", notes: "", chips: "", paragraphs: [] });
     hintEl.replaceChildren();
     notesEl.replaceChildren();
@@ -525,7 +526,7 @@ function renderView() {
   copyBtn.disabled = view.paragraphs.length === 0;
   exportBtn.disabled = live || m.lines.length === 0;
   deleteBtn.disabled = live || m.state === "finishing" || !!finishingStep(m.id);
-  if (deleteBtn.disabled) resetDelete();
+  if (deleteBtn.disabled) disarmDelete("meeting");
   transcriptEl.dataset.empty = live ? t("mt_transcript_waiting") : m.state === "finished" ? t("mt_transcript_empty") : "";
   // While lines arrive the transcript is a log (new ones are read out); a
   // saved one is a region to read.
@@ -1075,24 +1076,10 @@ async function exportAs(kind: ExportKind) {
   if (view?.meeting.id === m.id) showFlash(done.text, done.tone);
 }
 
-function resetDelete() {
-  window.clearTimeout(deleteArmed);
-  deleteArmed = undefined;
-  deleteBtn.classList.remove("armed");
-  deleteBtn.textContent = t("mt_delete");
-}
-
-/** Asks once: the first click arms the button for 3 seconds. */
+/** Delete the open meeting (the button asks first: src/confirm-delete.ts). */
 async function deleteMeeting() {
   if (!view) return;
-  if (deleteArmed === undefined) {
-    deleteBtn.classList.add("armed");
-    deleteBtn.textContent = t("mt_delete_confirm");
-    deleteArmed = window.setTimeout(resetDelete, 3000);
-    return;
-  }
   const id = view.meeting.id;
-  resetDelete();
   try {
     await invoke("meeting_delete", { id });
     // Its "meetings-changed" may have closed the view already.
@@ -1250,7 +1237,7 @@ export async function initMeetings(h: MeetingsHost) {
     setExportMenu(false);
     if (returnFocus) exportBtn.focus();
   });
-  deleteBtn.addEventListener("click", deleteMeeting);
+  confirmDelete(deleteBtn, "meeting", deleteMeeting);
   transcriptEl.addEventListener("click", (e) => {
     const play = (e.target as Element).closest<HTMLButtonElement>(".mt-play");
     const row = play?.closest<HTMLElement>(".mt-para");

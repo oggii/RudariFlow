@@ -9,6 +9,7 @@ import { downloadFailure, NOT_STARTED, showProgress, type DownloadProgress } fro
 import { onRoute } from "./shell";
 import { setDownload } from "./activity";
 import { sizeText } from "./setup.ts";
+import { deleteButton, forgetDelete, nameDelete } from "./confirm-delete";
 
 export interface AppRule {
   app: string;
@@ -442,15 +443,21 @@ async function saveRules() {
   await host.save();
 }
 
+/** Numbers the rule rows, so each has its own Delete. */
+let ruleRows = 0;
+
 function addRuleRow(rule: AppRule): HTMLElement {
+  const id = `rule-${++ruleRows}`;
   const row = document.createElement("div");
-  row.className = "rule-row";
+  row.className = "list-row rule-row";
+  row.setAttribute("role", "listitem");
 
   const app = document.createElement("input");
   app.type = "text";
   app.className = "rule-app";
   app.value = rule.app;
   app.placeholder = t("ai_rule_app_placeholder");
+  app.setAttribute("aria-label", t("rule_app_label"));
   app.spellcheck = false;
   app.setAttribute("list", "ai-open-apps");
   app.addEventListener("focus", refreshOpenApps);
@@ -460,19 +467,19 @@ function addRuleRow(rule: AppRule): HTMLElement {
   text.rows = 1;
   text.value = rule.instructions;
   text.placeholder = t("ai_rule_instructions_placeholder");
+  text.setAttribute("aria-label", t("rule_instructions_label"));
   text.disabled = rule.off;
 
   // The language Whisper hears in this app; works with AI cleanup off too.
   const language = document.createElement("select");
   language.className = "rule-language";
-  language.title = t("ai_rule_language_hint");
+  language.setAttribute("aria-label", t("rule_language_label"));
   populateLanguageSelect(language, getLang(), t("ai_rule_language_default"), "");
   language.value = rule.language ?? "";
   language.addEventListener("change", saveRules);
 
   const off = document.createElement("label");
   off.className = "rule-off";
-  off.title = t("ai_rule_off_hint");
   const offInput = document.createElement("input");
   offInput.type = "checkbox";
   offInput.checked = rule.off;
@@ -484,22 +491,45 @@ function addRuleRow(rule: AppRule): HTMLElement {
     saveRules();
   });
 
-  const remove = document.createElement("button");
-  remove.className = "icon-btn";
-  remove.title = t("replacement_remove");
-  remove.setAttribute("aria-label", t("replacement_remove"));
-  remove.innerHTML =
-    '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
-  remove.addEventListener("click", () => {
-    row.remove();
-    ruleEmpty.classList.toggle("hidden", ruleList.children.length > 0);
-    saveRules();
-  });
-
   app.addEventListener("change", saveRules);
   text.addEventListener("change", saveRules);
 
-  row.append(app, text, language, off, remove);
+  // The app, its language and "No AI" on one line, the instructions below.
+  const line = document.createElement("div");
+  line.className = "rule-line";
+  line.append(app, language, off);
+  const fields = document.createElement("div");
+  fields.className = "rule-fields";
+  fields.append(line, text);
+  // The rows on the page are what is saved, so the row goes first. A save
+  // that fails puts it back and throws: the button says so (src/confirm-delete.ts).
+  const del = deleteButton(
+    id,
+    async () => {
+      const next = row.nextSibling;
+      row.remove();
+      ruleEmpty.classList.toggle("hidden", ruleList.children.length > 0);
+      try {
+        await saveRules();
+        forgetDelete(id);
+      } catch (err) {
+        ruleList.insertBefore(row, next);
+        ruleEmpty.classList.add("hidden");
+        // The settings in memory hold the rule again (a save reads the page).
+        void saveRules().catch(() => {});
+        throw err;
+      }
+    },
+    // After the last rule "Add rule" takes the focus.
+    { name: rule.app.trim(), after: () => ruleAdd },
+  );
+  // Delete is named after the rule's app, as it reads now.
+  app.addEventListener("input", () => nameDelete(del, app.value.trim()));
+  const actions = document.createElement("div");
+  actions.className = "list-actions";
+  actions.append(del);
+
+  row.append(fields, actions);
   ruleList.appendChild(row);
   return row;
 }
