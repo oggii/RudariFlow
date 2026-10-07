@@ -256,31 +256,117 @@ async function loadFailed(page) {
   return out;
 }
 
+/**
+ * Someone is at the window (the pointer moves on it now and then), or nobody
+ * is. The setup's level is started only for a user who touched the window in
+ * the last minute; a page that was loaded again has nobody at it.
+ */
+const present = (page, on = true) =>
+  page.evaluate((on) => {
+    clearInterval(window.__present);
+    window.__present = on ? setInterval(() => window.dispatchEvent(new Event("pointermove")), 250) : 0;
+    if (on) window.dispatchEvent(new Event("pointermove"));
+  }, on);
+
+/** Step 1's level as the page shows it and as the mock's backend has it. */
+const levelNow = (page) =>
+  page.evaluate(() => {
+    const row = document.getElementById("setup-meter");
+    const bar = document.getElementById("setup-level");
+    return {
+      starts: window.__MOCK__.calls.filter((c) => c.cmd === "mic_meter_start").length,
+      open: window.__MOCK__.meter.open,
+      device: window.__MOCK__.meter.device,
+      bar: bar.checkVisibility(),
+      // Words in the bar's place: the level rests.
+      rests: row.checkVisibility() && !bar.checkVisibility(),
+      hint: document.getElementById("setup-mic-hint").textContent,
+      height: Math.round(document.getElementById("setup-mic").getBoundingClientRect().height),
+    };
+  });
+
+/** Where the steps stand, and what stands above them. */
+const placeNow = (page) =>
+  page.evaluate(() => {
+    const heading = document.getElementById("home-title");
+    const title = heading.getBoundingClientRect();
+    const pill = document.getElementById("home-status").getBoundingClientRect();
+    return {
+      top: Math.round(document.getElementById("home-setup").getBoundingClientRect().top),
+      title: heading.textContent,
+      pill: document.getElementById("home-status-text").textContent,
+      beside: pill.top < title.bottom && pill.left >= title.right,
+      lines: Math.round(title.height / parseFloat(getComputedStyle(heading).lineHeight)),
+    };
+  });
+
+/** What the backend reports of the speech model from now on (null: as the settings and the downloads have it). */
+const reportSpeech = (page, speech) =>
+  page.evaluate(async (speech) => {
+    window.__MOCK__.speech = speech;
+    window.__MOCK__.emit("speech-status", await window.__TAURI_INTERNALS__.invoke("speech_status"));
+  }, speech);
+
+/** Press a button twice in one go, as a double click or a held Enter does; whether it rested after the first press. */
+const pressTwice = (page, id) =>
+  page.evaluate((id) => {
+    const button = document.getElementById(id);
+    button.focus();
+    button.click();
+    const rested = button.getAttribute("aria-disabled") === "true";
+    button.click();
+    return rested;
+  }, id);
+
 /** The first run on Home, walked through as a new user would (and as the backend can interrupt it). */
 async function firstRun(page, run) {
   const out = [];
   const de = run.lang === "de";
   const once = run.size === "1600x900"; // what does not depend on the window's size
   const slow = once && !de; // what takes seconds: once per run
+  const starts = async () => (await levelNow(page)).starts;
+  /** A new start of the page on Home; with `user`, someone is at the window from then on. */
+  const fresh = async (user = true) => {
+    await again(page);
+    if (user) await present(page);
+  };
+  /** Where the steps stood in each state of the setup: they must not move. */
+  const places = [];
+  const place = async (state) => places.push({ state, ...(await placeNow(page)) });
 
   // ── The steps instead of the daily view; what is done looks done; one thing to do. ──
+  // The page as it starts, with nobody at the window yet.
+  await fresh(false);
+  await wait(page, 400);
   out.push(...expect((await shows(page, "home-setup")) && !(await shows(page, "home-daily")), "the first run shows the setup steps"));
   let now = await stepsNow(page);
   out.push(...expect(now.states === "done,todo,done" && now.marks === "✓2✓", "the microphone and the key are done, the speech model is to do", JSON.stringify(now)));
   out.push(...expect(now.primary.join() === "setup-model-download" && !now.resting, "Download is the page's one primary button", JSON.stringify(now.primary)));
   out.push(...expect(/RTX 5080/.test(now.model) && /Large\sv3\sTurbo\sq8\s\(~870\sMB\)$/.test(now.model), "the speech model is the one for this PC's graphics card, named with its size", now.model));
-  out.push(...expect(/Realtek/.test(now.mic) && now.meter && !now.retry, "the microphone is named and has its level", JSON.stringify(now)));
+  out.push(...expect(/Realtek/.test(now.mic) && !now.retry, "the microphone is named", JSON.stringify(now)));
   const card = await page.evaluate(() => [document.getElementById("home-ai-card").checkVisibility(), document.getElementById("setup-ai-text").textContent]);
   out.push(...expect(card[0] && /Gemma\s4\sE4B, 5\.0\sGB/.test(card[1]), "the optional AI cleanup card names its model and size", JSON.stringify(card)));
+  // Every button says what it acts on: two read "Download", two "Change".
+  const names = await page.evaluate(() => ["setup-mic-change", "setup-model-download", "setup-key-change", "setup-ai-download"].map((id) => document.getElementById(id).getAttribute("aria-label") ?? ""));
+  out.push(...expect(new Set(names).size === 4 && names.every((name) => name.length > 12), "the two Download and the two Change buttons have names of their own", JSON.stringify(names)));
 
-  // ── The microphone is open while the steps are on screen in a window that shows, and only then. ──
+  // ── The microphone is open only for someone who is at a window that shows the steps. ──
+  let level = await levelNow(page);
+  out.push(...expect(level.starts === 0 && !level.open && level.rests && level.hint.length > 20, "a window nobody has touched opens no microphone: the step says in words that the level rests", JSON.stringify(level)));
+  await place("nobody has touched the window");
+  const atRest = level.height;
+  // The first touch brings the level, without a click.
+  await page.mouse.move(420, 320);
   let mic = await micOpen(page);
-  out.push(...expect(mic.ok, "the setup listens to the microphone", mic.log));
-  const level = await page.evaluate(() => {
+  level = await levelNow(page);
+  out.push(...expect(mic.ok && level.bar && !level.rests && level.height === atRest, "the first touch of the window starts the level, without a click, and the step keeps its height", JSON.stringify({ mic, level, atRest })));
+  await place("the level runs");
+  await present(page);
+  const moved = await page.evaluate(() => {
     window.__MOCK__.emit("mic-level", 0.5);
     return [document.getElementById("setup-level-fill").style.width, document.getElementById("setup-level").getAttribute("aria-valuenow")];
   });
-  out.push(...expect(level[0] === "50%" && level[1] === "50", "the level bar follows the microphone", JSON.stringify(level)));
+  out.push(...expect(moved[0] === "50%" && moved[1] === "50", "the level bar follows the microphone", JSON.stringify(moved)));
   await section(page, "files");
   mic = await micClosed(page);
   out.push(...expect(mic.ok, "leaving Home closes the microphone", mic.log));
@@ -313,7 +399,7 @@ async function firstRun(page, run) {
   // second start's answer. The page must still know that the microphone is open (it starts nothing a third
   // time), and close it.
   await section(page, "files");
-  const startsBefore = (await meterLog(page)).calls.filter((c) => c === "start").length;
+  const startsBefore = await starts();
   await page.evaluate(() => {
     const go = (name) => document.querySelector(`.nav-item[data-section="${name}"]`).click();
     window.__MOCK__.meter.delay = 250;
@@ -324,7 +410,7 @@ async function firstRun(page, run) {
   });
   await wait(page, 600);
   mic = await micOpen(page);
-  const startsAdded = (await meterLog(page)).calls.filter((c) => c === "start").length - startsBefore;
+  const startsAdded = (await starts()) - startsBefore;
   out.push(...expect(mic.ok && startsAdded === 2, "after start, stop, start in quick succession the microphone is open, by the second start", `${mic.log}, ${startsAdded} starts`));
   await page.evaluate(() => {
     window.__MOCK__.meter.delay = 0;
@@ -334,13 +420,58 @@ async function firstRun(page, run) {
   out.push(...expect(mic.ok, "and it is closed again when Home is left: an overtaken start's late answer changes nothing", mic.log));
   await section(page, "home");
 
-  if (slow) {
-    // The backend's two-minute limit closes the microphone without a word: the page starts it again.
+  if (once) {
+    // A window that cannot say whether it shows: the microphone closes, and stays closed for a user who is there.
     await micOpen(page);
-    let starts = (await meterLog(page)).calls.filter((c) => c === "start").length;
+    await awaitError(page, /the window's state/);
+    await page.evaluate(() => {
+      window.__MOCK__.window.broken = true;
+      window.dispatchEvent(new Event("blur"));
+    });
+    mic = await micClosed(page);
+    await wait(page, 600);
+    const dark = await meterLog(page);
+    await page.evaluate(() => (window.__MOCK__.window.broken = false));
+    const unanswered = await logged(page);
+    out.push(...expect(mic.ok && !dark.open && dark.calls.at(-1) === "stop" && unanswered >= 1, "a window that does not say whether it shows: the microphone is closed and stays closed", JSON.stringify({ mic, dark: dark.calls.slice(-4), unanswered })));
+    await windowComes(page);
+    mic = await micOpen(page);
+    out.push(...expect(mic.ok, "the window answers again: the microphone is open", mic.log));
+
+    // A window that starts hidden (autostart, "--start-minimized") and is slow to say so: whatever reaches
+    // its page meanwhile (the focus, a key), no microphone opens, before its answer and after it.
+    await page.evaluate(() => window.__MOCK__.keep({ window: { visible: false, delay: 3000 } }));
+    await again(page);
+    const touchIt = () =>
+      page.evaluate(() => {
+        for (const type of ["focus", "keydown", "pointermove"]) window.dispatchEvent(new Event(type));
+      });
+    await touchIt();
+    await wait(page, 300);
+    const early = await levelNow(page);
+    await wait(page, 3600);
+    await touchIt();
+    await wait(page, 300);
+    const late = await levelNow(page);
+    out.push(...expect(early.starts === 0 && late.starts === 0 && !late.open && late.rests, "a window that starts hidden opens no microphone, neither before it has said so nor after", JSON.stringify({ early, late })));
+    // The user opens it from the tray: it shows and has the focus.
+    await page.evaluate(() => {
+      window.__MOCK__.keep({ window: null });
+      Object.assign(window.__MOCK__.window, { visible: true, delay: 0 });
+      window.dispatchEvent(new Event("focus"));
+    });
+    mic = await micOpen(page);
+    out.push(...expect(mic.ok, "opened from the tray, the window has its level", mic.log));
+    await present(page);
+  }
+
+  if (slow) {
+    // The backend's two-minute limit closes the microphone without a word: for a user who is there the page starts it again.
+    await micOpen(page);
+    let before = await starts();
     await page.evaluate(() => window.__MOCK__.meter.timeOut());
     mic = await micOpen(page, 9000);
-    out.push(...expect(mic.ok && (await meterLog(page)).calls.filter((c) => c === "start").length === starts + 1, "the level that fell silent (the backend's time limit) is started again, once", mic.log));
+    out.push(...expect(mic.ok && (await starts()) === before + 1, "the level that fell silent (the backend's time limit) is started again, once", mic.log));
     // The window was closed to the tray and the page was not told: silence, and the window does not show. No new start.
     await page.evaluate(() => {
       window.__MOCK__.window.visible = false;
@@ -352,7 +483,36 @@ async function firstRun(page, run) {
     await windowComes(page);
     mic = await micOpen(page);
     out.push(...expect(mic.ok, "the window is back from the tray: the microphone is open", mic.log));
-    // The microphone is unplugged and Windows has no other: said in words beside the step, with a way to try again.
+
+    // Nobody is at the window any more (another app covers it, the PC is locked, it slept): the page hears
+    // nothing of that. Here the backend's limit is 2.5 s instead of two minutes. For the minute after the
+    // last touch the level is started again; after it the microphone stays closed, and the step says so.
+    await page.evaluate(() => (window.__MOCK__.meter.cap = 2500));
+    await section(page, "files");
+    await section(page, "home");
+    await micOpen(page);
+    await present(page, false);
+    before = await starts();
+    await wait(page, 20_000);
+    const meanwhile = (await starts()) - before;
+    await wait(page, 50_000);
+    const left = await levelNow(page);
+    await wait(page, 9000);
+    const still = await levelNow(page);
+    mic = await micClosed(page);
+    out.push(...expect(meanwhile >= 1 && mic.ok && !still.open && still.starts === left.starts && still.rests, "a minute after the last touch the level is no longer started again: the microphone stays closed, and the step says that the level rests", JSON.stringify({ meanwhile, left, still, mic })));
+    // The user is back: the level is too, at the first touch.
+    await page.evaluate(() => (window.__MOCK__.meter.cap = 120_000));
+    await page.mouse.move(430, 330);
+    mic = await micOpen(page);
+    level = await levelNow(page);
+    out.push(...expect(mic.ok && level.bar && level.starts === still.starts + 1, "the next touch starts the level again, without a click", JSON.stringify({ mic, level })));
+    await present(page);
+
+    // The microphone does not open any more, and Windows still lists it: said in words beside the step, with a
+    // way to try again. The page looks once what Windows lists, and does not try over and over.
+    const listed = () => page.evaluate(() => window.__MOCK__.calls.filter((c) => c.cmd === "list_microphones").length);
+    const listedBefore = await listed();
     await awaitError(page, /the microphone meter did not start/);
     await page.evaluate(() => {
       window.__MOCK__.meter.fail = "No input device found";
@@ -360,31 +520,108 @@ async function firstRun(page, run) {
     });
     await until(page, () => document.getElementById("setup-mic").dataset.state === "problem", 9000);
     now = await stepsNow(page);
-    starts = (await meterLog(page)).calls.filter((c) => c === "start").length;
+    before = await starts();
     await wait(page, 3000);
-    const later = (await meterLog(page)).calls.filter((c) => c === "start").length;
+    const later = await starts();
     const tries = await logged(page);
-    out.push(...expect(now.states === "problem,todo,done" && now.retry && !now.meter && now.mic.length > 30 && later === starts && tries === 1, "a microphone that does not open is said beside its step, with Retry, and is not tried over and over", JSON.stringify({ ...now, starts, later, tries })));
+    const looked = (await listed()) - listedBefore;
+    out.push(...expect(now.states === "problem,todo,done" && now.retry && !now.meter && now.mic.length > 30 && later === before && tries === 1 && looked === 1, "a microphone that does not open is said beside its step, with Retry; the page looks once what Windows lists and does not try over and over", JSON.stringify({ ...now, before, later, tries, looked })));
     out.push(...expect(now.primary.join() === "setup-model-download", "Download stays the one primary button beside a microphone that failed", JSON.stringify(now.primary)));
-    await page.evaluate(() => (window.__MOCK__.meter.fail = null));
+    const heard = await page.evaluate(() => [document.querySelector("#setup-mic .setup-state").textContent, document.getElementById("setup-mic-retry").getAttribute("aria-label")]);
+    out.push(...expect(/attention|Aufmerksamkeit/.test(heard[0]) && (heard[1] ?? "").length > 12, "a step with a problem says so to a screen reader, and its Retry says what it tries", JSON.stringify(heard)));
+    // It was the only one, and it is unplugged: Retry finds that out, and the step says what is the matter.
+    await awaitError(page, /the microphone meter did not start/);
+    await page.evaluate(() => window.__MOCK__.keep({ mics: [] }));
+    await page.click("#setup-mic-retry");
+    await wait(page, 300);
+    now = await stepsNow(page);
+    const none = await page.evaluate(() => document.getElementById("setup-mic-retry").textContent);
+    out.push(...expect(now.states === "problem,todo,done" && none === "Check again" && /No microphone found/.test(now.mic) && (await starts()) === later && (await logged(page)) === 0, "Retry after the only microphone was unplugged: the step says that there is none, and opens nothing", JSON.stringify({ ...now, none })));
+    // Plugged in again.
+    await page.evaluate(() => {
+      window.__MOCK__.keep({ mics: null });
+      window.__MOCK__.meter.fail = null;
+    });
     await page.click("#setup-mic-retry");
     mic = await micOpen(page);
     now = await stepsNow(page);
-    out.push(...expect(mic.ok && now.states === "done,todo,done" && now.meter && !now.retry, "Retry opens the microphone again", JSON.stringify({ mic, now })));
+    out.push(...expect(mic.ok && now.states === "done,todo,done" && now.meter && !now.retry, "Check again opens the microphone that is back", JSON.stringify({ mic, now })));
+
+    // The graphics cards take long to answer: after five seconds the step offers what fits every PC, and
+    // the answer still counts when it comes before anything was started.
+    await page.evaluate(() => window.__MOCK__.keep({ gpus: 7500 }));
+    await fresh();
+    await wait(page, 1500);
+    const asking = await stepsNow(page);
+    await until(page, () => document.getElementById("setup-model-download").checkVisibility(), 6000);
+    const offered = await stepsNow(page);
+    await until(page, () => /RTX 5080/.test(document.getElementById("setup-model-text").textContent), 6000);
+    const known = await stepsNow(page);
+    await page.evaluate(() => window.__MOCK__.keep({ gpus: null }));
+    out.push(...expect(asking.button === "" && !/Small|RTX/.test(asking.model) && /Small/.test(offered.model) && !/graphics card/.test(offered.model) && offered.button === "Download" && offered.primary.join() === "setup-model-download" && /RTX 5080/.test(known.model) && /Large\sv3\sTurbo/.test(known.model), "while the graphics cards do not answer the step waits five seconds, then offers the model for every PC, and takes the answer when it comes", JSON.stringify([asking.model, offered.model, known.model])));
   }
 
+  // ── The cloud engine without its key: no welcome, and the pill says only what is missing. ──
+  await fresh();
+  await page.evaluate(() => document.getElementById("engine-cloud").click());
+  await wait(page, 250);
+  now = await stepsNow(page);
+  out.push(...expect(now.states === "done,todo,done" && /Groq/.test(now.model) && now.primary.join() === "setup-model-download" && !/Welcome|Willkommen/.test(now.title), "with the cloud engine step 2 asks for the API key", JSON.stringify(now)));
+  await place("the cloud engine without its key");
+
+  // ── No microphone: said beside step 1 with a way to look again; nothing is opened; Download stays the thing to do. ──
+  await page.evaluate(() => window.__MOCK__.keep({ mics: [] }));
+  await fresh();
+  now = await stepsNow(page);
+  let log = await meterLog(page);
+  out.push(...expect(now.states === "problem,todo,done" && now.retry && !now.meter && now.mic.length > 30 && log.calls.length === 0 && !log.open, "without a microphone step 1 says so, offers to look again and opens nothing", JSON.stringify({ ...now, log })));
+  out.push(...expect(now.primary.join() === "setup-model-download", "Download stays the one primary button without a microphone", JSON.stringify(now.primary)));
+  await place("no microphone");
+  // The speech model is there and the microphone is not: no welcome, the pill says "No microphone", and looking again is the thing to do.
+  await reportSpeech(page, { downloaded: true, load: "loaded", device: "CPU" });
+  await wait(page, 150);
+  now = await stepsNow(page);
+  out.push(...expect(now.states === "problem,done,done" && now.primary.join() === "setup-mic-retry" && !/Welcome|Willkommen/.test(now.title), "with the model there and no microphone, Check again is the one primary button", JSON.stringify(now)));
+  await place("no microphone, the speech model is there");
+  await reportSpeech(page, null);
+  await wait(page, 150);
+  if (slow) {
+    // One that is plugged in shows up by itself.
+    await page.evaluate(() => window.__MOCK__.keep({ mics: null }));
+    const found = await until(page, () => document.getElementById("setup-mic").dataset.state === "done", 6000);
+    out.push(...expect(found && (await micOpen(page)).ok, "a microphone that is plugged in shows up in the step by itself"));
+    await page.evaluate(() => window.__MOCK__.keep({ mics: [] }));
+    await fresh();
+  }
+  await page.evaluate(() => window.__MOCK__.keep({ mics: null }));
+  await page.click("#setup-mic-retry");
+  mic = await micOpen(page);
+  now = await stepsNow(page);
+  out.push(...expect(mic.ok && now.states === "done,todo,done" && now.meter && !now.retry, "Check again finds the microphone that was plugged in", JSON.stringify({ mic, now })));
+  out.push(...expect(now.focus === "setup-mic-change", "Check again goes when it has found one: the keyboard focus it had is on Change", now.focus));
+
   if (once) {
-    // Another microphone, chosen in place: saved first, then the meter opens it.
+    // Another microphone, chosen in place. The save takes a moment (a busy backend) and the page is drawn
+    // again meanwhile: the level opens the new microphone only once it is saved, and it is that one's.
+    const usb = "Headset (USB Audio)";
+    await page.evaluate((usb) => window.__MOCK__.keep({ mics: [{ name: "Microphone (Realtek(R) Audio)", is_default: true }, { name: usb, is_default: false }] }), usb);
+    await fresh();
+    await micOpen(page);
+    const first = await levelNow(page);
     await page.click("#setup-mic-change");
     const picking = await page.evaluate(() => [document.activeElement.id, document.getElementById("setup-mic-change").checkVisibility(), document.getElementById("setup-mic-select").options.length]);
-    out.push(...expect(picking[0] === "setup-mic-select" && !picking[1] && picking[2] === 2, "Change shows the microphones in place and gives the list the focus", JSON.stringify(picking)));
-    await page.selectOption("#setup-mic-select", { index: 1 });
-    await wait(page, 200);
-    const chosen = await page.evaluate(() => {
-      const calls = window.__MOCK__.calls.map((c) => c.cmd);
-      return [window.__MOCK__.settings().microphone, document.getElementById("mic-select").value, calls.lastIndexOf("save_settings") < calls.lastIndexOf("mic_meter_start"), window.__MOCK__.meter.open];
-    });
-    out.push(...expect(chosen[0] === "Microphone (Realtek(R) Audio)" && chosen[1] === chosen[0] && chosen[2] && chosen[3], "a microphone chosen in the step is saved, and the level is that microphone's", JSON.stringify(chosen)));
+    out.push(...expect(picking[0] === "setup-mic-select" && !picking[1] && picking[2] === 3, "Change shows the microphones in place and gives the list the focus", JSON.stringify(picking)));
+    await page.evaluate(() => (window.__MOCK__.saveDelay = 400));
+    await page.selectOption("#setup-mic-select", usb);
+    await page.evaluate(() => window.__MOCK__.emit("recording-state", "Ready"));
+    await wait(page, 150);
+    const during = await levelNow(page);
+    await until(page, (usb) => window.__MOCK__.meter.device === usb, 2000, usb);
+    const second = await levelNow(page);
+    const chosen = await page.evaluate(() => [window.__MOCK__.settings().microphone, document.getElementById("mic-select").value]);
+    await page.evaluate(() => (window.__MOCK__.saveDelay = 0));
+    out.push(...expect(/Realtek/.test(first.device) && during.starts === first.starts && /Realtek/.test(during.device) && second.starts === first.starts + 1 && second.open && second.device === usb && chosen[0] === usb && chosen[1] === usb, "a microphone chosen in the step is saved first; then the level opens it, and it is that microphone's", JSON.stringify({ first, during, second, chosen })));
+    await page.evaluate(() => window.__MOCK__.keep({ mics: null }));
     // The dictation key, changed in place by the capture every key has; Settings shows the same key.
     await page.click("#setup-key-change");
     await wait(page, 80);
@@ -394,34 +631,25 @@ async function firstRun(page, run) {
     const keys = await page.evaluate(() => [document.getElementById("setup-hotkey-text").textContent, document.getElementById("hotkey-text").textContent, document.getElementById("home-hotkey-text").textContent]);
     out.push(...expect(listening && keys.every((k) => k === "Ctrl+Alt+D"), "the dictation key is changed in the step and shows in Settings and on Home", JSON.stringify([listening, keys])));
 
-    // No microphone: said beside step 1 with a way to look again; nothing is opened; Download stays the thing to do.
+    // The model arrives while the microphone is missing: the steps stay, Download goes, and the keyboard
+    // focus it had is on the thing to do next.
     await page.evaluate(() => window.__MOCK__.keep({ mics: [] }));
-    await again(page);
-    now = await stepsNow(page);
-    let log = await meterLog(page);
-    out.push(...expect(now.states === "problem,todo,done" && now.retry && !now.meter && now.mic.length > 30 && log.calls.length === 0 && !log.open, "without a microphone step 1 says so, offers to look again and opens nothing", JSON.stringify({ ...now, log })));
-    out.push(...expect(now.primary.join() === "setup-model-download", "Download stays the one primary button without a microphone", JSON.stringify(now.primary)));
-    if (slow) {
-      // One that is plugged in shows up by itself.
-      await page.evaluate(() => window.__MOCK__.keep({ mics: null }));
-      const found = await until(page, () => document.getElementById("setup-mic").dataset.state === "done", 6000);
-      out.push(...expect(found && (await micOpen(page)).ok, "a microphone that is plugged in shows up in the step by itself"));
-      await page.evaluate(() => window.__MOCK__.keep({ mics: [] }));
-      await again(page);
-    }
+    await fresh();
+    await page.click("#setup-model-download");
+    await until(page, () => window.__MOCK__.calls.some((c) => c.cmd === "download_model"));
+    await page.evaluate(() => window.__MOCK__.finishDownload("speech"));
+    await until(page, () => document.getElementById("setup-model").dataset.state === "done");
+    await wait(page, 500);
+    const next = await page.evaluate(() => [document.activeElement?.id ?? "", document.getElementById("home-setup").checkVisibility(), document.getElementById("setup-model-download").checkVisibility()]);
+    out.push(...expect(next[0] === "setup-mic-retry" && next[1] && !next[2], "Download goes when the model is there: the keyboard focus it had is on Check again", JSON.stringify(next)));
     await page.evaluate(() => window.__MOCK__.keep({ mics: null }));
-    await page.click("#setup-mic-retry");
-    mic = await micOpen(page);
-    now = await stepsNow(page);
-    out.push(...expect(mic.ok && now.states === "done,todo,done" && now.meter && !now.retry, "Check again finds the microphone that was plugged in", JSON.stringify({ mic, now })));
 
-    // The cloud engine: step 2 asks for its key and leads to the field; with the key the setup is done.
+    // The cloud engine: the step's button leads to the key field; with the key the setup is done.
+    await fresh();
     await settings(page, "models");
     await page.evaluate(() => document.getElementById("engine-cloud").click());
     await wait(page, 200);
     await section(page, "home");
-    now = await stepsNow(page);
-    out.push(...expect(now.states === "done,todo,done" && /Groq/.test(now.model) && now.primary.join() === "setup-model-download" && !/Welcome|Willkommen/.test(now.title), "with the cloud engine step 2 asks for the API key", JSON.stringify(now)));
     await page.click("#setup-model-download");
     await wait(page);
     const key = await page.evaluate(() => [document.activeElement.id, document.activeElement.checkVisibility(), window.__MOCK__.calls.some((c) => c.cmd === "download_model")]);
@@ -434,39 +662,46 @@ async function firstRun(page, run) {
     out.push(...expect((await shows(page, "home-daily")) && !(await shows(page, "home-setup")) && mic.ok, "with the key the daily view shows and the microphone is closed", mic.log));
 
     // The Download button in Settings (the model that is selected): the same way to Ready.
-    await again(page);
+    await fresh();
     await settings(page, "models");
     await noteStatuses(page);
     await page.click("#download-btn");
     await until(page, () => document.getElementById("status-indicator").dataset.kind === "downloading");
     out.push(...(await downloadToReady(page, "Download in Settings")));
-    await again(page);
   }
 
   // ── The speech model: Download, percent and size, a failure in words with Retry, then the daily view. ──
-  await page.click("#setup-model-download");
+  await fresh();
+  const fetched = () => page.evaluate(() => window.__MOCK__.calls.filter((c) => c.cmd === "download_model").map((c) => c.args.modelSize));
+  // Pressed twice in one go: the button rests from the first press, and one download starts.
+  let rested = await pressTwice(page, "setup-model-download");
   await until(page, () => window.__MOCK__.calls.some((c) => c.cmd === "download_model"));
-  const asked = await page.evaluate(() => window.__MOCK__.calls.find((c) => c.cmd === "download_model")?.args.modelSize);
-  out.push(...expect(asked === "large-v3-turbo-q8_0", "Download fetches the model suggested for the graphics card", String(asked)));
+  await wait(page, 150);
+  out.push(...expect(rested && (await fetched()).join() === "large-v3-turbo-q8_0", "Download fetches the model suggested for the graphics card, once, however often it is pressed", JSON.stringify([rested, await fetched()])));
   await page.evaluate(() => window.__MOCK__.emit("download-progress", { downloaded: 374e6, total: 870e6, percent: 43 }));
   await wait(page, 150);
   now = await stepsNow(page);
   out.push(...expect(/^43 % · 374 MB (of|von) 870 MB$/.test(now.numbers) && now.bar, "a download shows percent and size", now.numbers));
   out.push(...expect(now.resting && now.focus === "setup-model-download" && now.primary.length === 0 && now.states === "done,todo,done", "while it downloads the button rests, keeps the focus, and nothing else asks to be pressed", JSON.stringify(now)));
   out.push(...expect(/^downloading: .* 43 %$/.test(await statusNow(page)), "the status shows the first model's download", await statusNow(page)));
+  await place("the speech model downloads");
+  await page.evaluate(() => window.__MOCK__.emit("download-progress", { downloaded: 870e6, total: 870e6, percent: 100 }));
+  await wait(page, 150);
+  await place("the speech model is at 100 %");
   // The connection breaks.
   await awaitError(page, /Download failed/);
   await page.evaluate(() => window.__MOCK__.failDownload("speech", "error sending request"));
   await until(page, () => document.getElementById("setup-model").dataset.state === "problem");
   out.push(...expect((await logged(page)) === 1, "the failed download is written to the log once"));
   now = await stepsNow(page);
-  out.push(...expect(now.states === "done,problem,done" && now.model.length > 40 && !now.bar && !now.resting && now.primary.join() === "setup-model-download" && /^setup/.test(await statusNow(page)), "a download that fails is said beside its step, and the button is the way to try again", JSON.stringify(now)));
-  out.push(...expect(now.button === (de ? "Wiederholen" : "Retry"), "the button reads Retry after a failed download", now.button));
-  // Again, to the end: every status from the click to Ready.
+  out.push(...expect(now.states === "done,problem,done" && /Large\sv3\sTurbo\sq8\s\(~870\sMB\)/.test(now.model) && now.model.length > 60 && !now.bar && !now.resting && now.primary.join() === "setup-model-download" && /^setup/.test(await statusNow(page)), "a download that fails is said beside its step, with the model and its size, and the button is the way to try again", JSON.stringify(now)));
+  out.push(...expect(now.button === (de ? "Wiederholen" : "Retry") && now.focus === "setup-model-download", "the button reads Retry after a failed download and keeps the keyboard focus", JSON.stringify([now.button, now.focus])));
+  await place("the download failed");
+  // Again, to the end, and again pressed twice: every status from the press to Ready.
   await noteStatuses(page);
-  await page.click("#setup-model-download");
+  rested = await pressTwice(page, "setup-model-download");
   await until(page, () => document.getElementById("status-indicator").dataset.kind === "downloading");
-  out.push(...(await downloadToReady(page, "the first run's Download")));
+  out.push(...(await downloadToReady(page, "the first run's Download, pressed twice")));
   // Home is the daily view now, without a new start; the optional card stays; the microphone is closed.
   const done = await page.evaluate(() => ({
     daily: document.getElementById("home-daily").checkVisibility(),
@@ -476,8 +711,9 @@ async function firstRun(page, run) {
     title: document.getElementById("home-title").textContent,
     how: document.getElementById("home-how").checkVisibility(),
     saved: window.__MOCK__.settings().whisperModel,
+    chosen: document.getElementById("model-select").value,
   }));
-  out.push(...expect(done.daily && !done.steps && done.card && done.how && done.saved === "large-v3-turbo-q8_0", "once the model is there Home is the daily view, and the optional card stays", JSON.stringify(done)));
+  out.push(...expect(rested && done.daily && !done.steps && done.card && done.how && done.saved === "large-v3-turbo-q8_0" && done.chosen === done.saved && (await fetched()).length === 2, "once the model is there Home is the daily view with the model saved, also when Download was pressed twice, and the optional card stays", JSON.stringify({ rested, ...done, fetched: await fetched() })));
   out.push(...expect(done.focus === "home-title" && !/Welcome|Willkommen/.test(done.title), "the focus the steps had is on Home's heading, which is the daily one", JSON.stringify(done)));
   mic = await micClosed(page);
   out.push(...expect(mic.ok, "the setup is done: the microphone is closed", mic.log));
@@ -485,21 +721,51 @@ async function firstRun(page, run) {
   const after = await meterLog(page);
   out.push(...expect(!after.open && after.calls.at(-1) === "stop", "and it stays closed", JSON.stringify(after.calls.slice(-4))));
 
-  // ── The optional card: Download with percent and size, a failure with Retry, then AI cleanup is on. ──
-  await page.click("#setup-ai-download");
+  // The steps stood at one place in every state, under a heading of one line with the pill beside it.
+  const where = JSON.stringify(places.map((p) => [p.state, p.top, p.pill, p.beside, p.lines]));
+  out.push(...expect(places.length === 8 && new Set(places.map((p) => p.top)).size === 1 && places.every((p) => p.beside && p.lines === 1), "the steps stand at the same place in every state of the setup, under a one-line heading with the pill beside it", where));
+  const welcome = places.filter((p) => /Welcome|Willkommen/.test(p.title));
+  const plain = places.filter((p) => !welcome.includes(p));
+  const short = de ? /^(Einrichtung nötig|Download \d+ %)$/ : /^(Setup needed|Downloading \d+ %)$/;
+  out.push(...expect(welcome.length === 6 && welcome.every((p) => short.test(p.pill)), "beside the welcome the pill says only the short state", where));
+  out.push(...expect(plain.length === 2 && plain.every((p) => p.title === (de ? "Einrichtung nötig" : "Setup needed") && p.pill.length > 8 && !p.pill.includes(":") && !p.pill.includes(p.title)), "under the heading Setup needed the pill says only the reason", JSON.stringify(plain)));
+
+  // ── The optional card: flat at the head of the daily view; Download with percent and size, a failure with Retry, then AI cleanup is on. ──
+  const flat = await page.evaluate(() => {
+    const content = document.getElementById("content");
+    const rect = (id) => document.getElementById(id).getBoundingClientRect();
+    return {
+      over: content.scrollHeight - content.clientHeight,
+      height: Math.round(rect("home-ai-card").height),
+      oneLine: Math.abs(rect("setup-ai-label").top - rect("setup-ai-text").top) < 6 && rect("setup-ai-text").height < 26,
+      right: rect("setup-ai-download").left > rect("setup-ai-text").right,
+      width: window.innerWidth,
+    };
+  });
+  if (flat.width >= 1200) out.push(...expect(flat.height <= 60 && flat.right, "from 1200 px of window the optional card is flat: its text at the left, its buttons at the right", JSON.stringify(flat)));
+  if (flat.width >= 1600) out.push(...expect(flat.oneLine && flat.height <= 52 && flat.over === 0, "in a large window the optional card is one line, and the daily view does not scroll because of it", JSON.stringify(flat)));
+  // Pressed twice in one go: one download.
+  rested = await pressTwice(page, "setup-ai-download");
   await until(page, () => window.__MOCK__.calls.some((c) => c.cmd === "ai_download_model"));
-  const aiAsked = await page.evaluate(() => window.__MOCK__.calls.find((c) => c.cmd === "ai_download_model")?.args.id);
-  out.push(...expect(aiAsked === "gemma-4-e4b", "the card downloads the AI model suggested for the graphics card", String(aiAsked)));
+  await wait(page, 150);
+  const aiAsked = await page.evaluate(() => window.__MOCK__.calls.filter((c) => c.cmd === "ai_download_model").map((c) => c.args.id));
+  out.push(...expect(rested && aiAsked.join() === "gemma-4-e4b", "the card downloads the AI model suggested for the graphics card, once, however often it is pressed", JSON.stringify([rested, aiAsked])));
   await page.evaluate(() => window.__MOCK__.emit("ai-download-progress", { downloaded: 1.2e9, total: 4977171584, percent: 24.1 }));
   await wait(page, 150);
   let ai = await page.evaluate(() => [document.getElementById("setup-ai-numbers").textContent, document.getElementById("setup-ai-download").getAttribute("aria-disabled"), document.activeElement?.id]);
   out.push(...expect(/^24 % · 1\.2 GB (of|von) 5\.0 GB$/.test(ai[0]) && ai[1] === "true" && ai[2] === "setup-ai-download", "the AI model's download shows percent and size, and its button rests", JSON.stringify(ai)));
+  const says = await page.evaluate(() => [document.getElementById("setup-ai-text").textContent, document.getElementById("setup-ai-dismiss").textContent, document.getElementById("status-indicator").dataset.kind, document.getElementById("status-text").textContent]);
+  out.push(...expect(/turns on|schaltet sich ein/.test(says[0]) && says[1] === (de ? "Ausblenden" : "Hide") && says[2] === "downloading" && / 24 %$/.test(says[3]), "while its download runs the card says that AI cleanup turns on at the end and offers to hide it, and the status shows the download", JSON.stringify(says)));
+  if (flat.width >= 1600) {
+    const busy = await page.evaluate(() => [Math.round(document.getElementById("home-ai-card").getBoundingClientRect().height), document.getElementById("content").scrollHeight - document.getElementById("content").clientHeight]);
+    out.push(...expect(busy[0] <= 60 && busy[1] === 0, "the card stays flat while it downloads", JSON.stringify(busy)));
+  }
   await awaitError(page, /ai_download_model failed/);
   await page.evaluate(() => window.__MOCK__.failDownload("ai", "error sending request"));
   await until(page, () => document.getElementById("setup-ai-text").dataset.tone === "warn");
   out.push(...expect((await logged(page)) === 1, "the failed AI download is written to the log once"));
-  ai = await page.evaluate(() => [document.getElementById("setup-ai-text").dataset.tone, document.getElementById("setup-ai-download").textContent, document.getElementById("setup-ai-progress").checkVisibility(), document.getElementById("home-ai-card").checkVisibility()]);
-  out.push(...expect(ai[0] === "warn" && ai[1] === (de ? "Wiederholen" : "Retry") && !ai[2] && ai[3], "an AI download that fails is said on the card, with Retry", JSON.stringify(ai)));
+  ai = await page.evaluate(() => [document.getElementById("setup-ai-text").dataset.tone, document.getElementById("setup-ai-download").textContent, document.getElementById("setup-ai-progress").checkVisibility(), document.getElementById("home-ai-card").checkVisibility(), document.getElementById("setup-ai-text").textContent, document.getElementById("setup-ai-dismiss").textContent, document.activeElement?.id]);
+  out.push(...expect(ai[0] === "warn" && ai[1] === (de ? "Wiederholen" : "Retry") && !ai[2] && ai[3] && /Gemma\s4\sE4B\s\(5\.0\sGB\)/.test(ai[4]) && ai[5] === (de ? "Jetzt nicht" : "Not now") && ai[6] === "setup-ai-download", "an AI download that fails is said on the card, with the model, its size and Retry, which keeps the focus", JSON.stringify(ai)));
   await page.click("#setup-ai-download");
   await until(page, () => window.__MOCK__.calls.filter((c) => c.cmd === "ai_download_model").length === 2);
   await page.evaluate(() => window.__MOCK__.finishDownload("ai"));
@@ -508,13 +774,28 @@ async function firstRun(page, run) {
   out.push(...expect(!on[0] && on[1] === true && on[2] === "gemma-4-e4b" && on[3] && on[4] === "home-title", "with its model the card goes and AI cleanup is on", JSON.stringify(on)));
 
   // ── "Not now" closes the card, and it stays closed after a new start. ──
-  await again(page);
+  await fresh();
   out.push(...expect(await shows(page, "home-ai-card"), "a new first run shows the optional card again"));
   await page.click("#setup-ai-dismiss");
   await wait(page, 100);
-  const gone = [await shows(page, "home-ai-card"), await shows(page, "home-setup")];
-  await again(page);
+  const gone = [await shows(page, "home-ai-card"), await shows(page, "home-setup"), await page.evaluate(() => document.activeElement?.id ?? "")];
+  await fresh();
   out.push(...expect(!gone[0] && gone[1] && !(await shows(page, "home-ai-card")) && (await shows(page, "home-setup")), "Not now closes the card for good, and the steps stay", JSON.stringify(gone)));
+  out.push(...expect(gone[2] === "home-title", "the focus Not now had is on Home's heading", gone[2]));
+  if (once) {
+    // Hidden while its download runs: the download goes on, and AI cleanup turns on at its end, as the card said.
+    await page.evaluate(() => localStorage.removeItem("rudariflow-ui"));
+    await fresh();
+    await page.click("#setup-ai-download");
+    await until(page, () => window.__MOCK__.calls.some((c) => c.cmd === "ai_download_model"));
+    await page.click("#setup-ai-dismiss");
+    await wait(page, 100);
+    const hidden = !(await shows(page, "home-ai-card"));
+    await page.evaluate(() => window.__MOCK__.finishDownload("ai"));
+    const turned = await until(page, () => window.__MOCK__.settings().aiCleanup === true && document.getElementById("home-ai-toggle").checked);
+    out.push(...expect(hidden && turned, "a card that is hidden while it downloads still ends with AI cleanup on", JSON.stringify([hidden, turned])));
+    await fresh();
+  }
 
   // A speech model that is there and does not load is no step: the notice, not the steps.
   out.push(...(await loadFailed(page)));
@@ -524,9 +805,10 @@ async function firstRun(page, run) {
   mic = await micClosed(page);
   out.push(...expect(mic.ok, "at the end of the walk the microphone is closed", mic.log));
 
-  // The picture is the first run as a new user finds it.
+  // The picture is the first run as a new user finds it, the pointer on the window.
   await page.evaluate(() => localStorage.removeItem("rudariflow-ui"));
   await again(page);
+  await page.mouse.move(425, 325);
   await until(page, () => window.__MOCK__.meter.open);
   return out;
 }
@@ -766,6 +1048,7 @@ export const PAGES = [
       // The cloud engine without its key is a setup again: the Speech model line says what is missing, and
       // Home shows the steps, whose second one leads to the key (the daily view is hidden behind them).
       await page.evaluate(() => document.getElementById("engine-cloud").click());
+      await present(page);
       await wait(page, 200);
       const cloud = await page.evaluate(() => [document.getElementById("home-loaded-speech").textContent, document.getElementById("home-loaded-speech").dataset.tone]);
       const asks = [await shown("home-setup"), await shown("home-daily"), (await micOpen(page)).ok];

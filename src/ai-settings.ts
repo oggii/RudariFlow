@@ -279,8 +279,17 @@ async function refreshOpenApps() {
 
 /** A download started here runs: only then its progress counts for the status. */
 let downloadInFlight = false;
+/** The download that runs. A second word for it (the button pressed twice,
+ *  Home's card and this tab) joins it: asked again, the backend answers "A
+ *  download is already running", which read as a failure here and took the
+ *  download that runs out of the status. */
+let downloadRunning: Promise<void> | null = null;
 
-async function download() {
+function download(): Promise<void> {
+  return (downloadRunning ??= fetchModel().finally(() => (downloadRunning = null)));
+}
+
+async function fetchModel() {
   const id = host.settings().aiModel;
   progressFill.style.width = "0%";
   progressText.textContent = "";

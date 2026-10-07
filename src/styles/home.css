@@ -420,7 +420,9 @@
   font-size: var(--fs);
 }
 
-/* The level: the bar and what it is for, on one line while there is room. */
+/* The level: the bar and what it is for, on one line while there is room.
+   While the level rests (nobody uses the window) the line alone says so:
+   the row keeps its height. */
 .setup-meter {
   display: flex;
   align-items: center;
@@ -449,9 +451,11 @@
   margin-top: var(--s1);
 }
 
+/* At the top of its step: a step that grows (a download's bar, a longer
+   line) does not move the button that was just pressed. */
 .setup-action {
   flex-shrink: 0;
-  align-self: center;
+  align-self: flex-start;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -488,4 +492,49 @@
   border-color: var(--line);
   color: var(--text-2);
   cursor: default;
+}
+
+/* The optional card is flat: what it is and what it does in one line where
+   the window has the room, its two buttons at the right, and no more room
+   above and below than the card's own. Text that does not fit beside the
+   title goes under it. */
+#setup-ai {
+  align-items: center;
+  padding: 0;
+}
+
+#setup-ai .setup-num {
+  margin-top: 0;
+}
+
+#setup-ai .setup-main {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--s3);
+}
+
+#setup-ai .setup-main > .label-text {
+  flex: none;
+}
+
+/* The download's bar and its numbers share a line, after the text or under it. */
+#setup-ai .progress {
+  flex: 1 1 240px;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--s3);
+  margin-top: 0;
+}
+
+#setup-ai .progress-track {
+  flex: 1 1 0;
+}
+
+#setup-ai .progress-text {
+  flex: none;
+}
+
+#setup-ai .setup-action {
+  align-self: center;
 }

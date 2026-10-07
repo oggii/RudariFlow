@@ -9,11 +9,15 @@
 // save_settings stored last), emit(event, payload) (a backend event).
 // A check also steers what the page cannot: finishDownload(kind) and
 // failDownload(kind, why) end a model download ("speech" or "ai"), which
-// waits until then; meter is the setup's microphone (open, delay, fail,
-// timeOut(), lose()); window is the window's own state (visible, minimized);
-// keep({ mics }) sets the microphones Windows lists, also for the next start
-// of the page; speech is laid over what speech_status answers (a model that
-// did not load: { downloaded: true, load: "failed" }).
+// waits until then; meter is the setup's microphone (open, device, delay,
+// fail, cap, timeOut(), lose()); window is the window's own state (visible,
+// minimized; delay: it answers that late; broken: it does not answer);
+// keep({ mics, window, gpus }) sets the microphones Windows lists, the
+// window's state and how detect_gpus answers ("never", or after that many
+// ms), also for the next start of the page; saveDelay makes save_settings
+// take that long, as a busy backend does; speech is laid over what
+// speech_status answers (a model that did not load: { downloaded: true,
+// load: "failed" }).
 (() => {
   const CFG = window.__MOCK_CFG__ || { lang: "en", scenario: "populated" };
   const rich = CFG.scenario !== "firstrun";
@@ -198,7 +202,9 @@
       sessionStorage.setItem("ui-check-mock", JSON.stringify(kept));
     },
     /** The window itself, as the page asks it (is_visible, is_minimized). */
-    window: { visible: true, minimized: false },
+    window: { visible: true, minimized: false, delay: 0, broken: false, ...kept.window },
+    /** save_settings takes this many ms: what is sent with it in one go arrives before the save is done. */
+    saveDelay: 0,
     /** Laid over the speech model's state; null: as the settings and the downloads have it. */
     speech: null,
     finishDownload: (kind = "speech") => downloads[kind]?.finish(),
@@ -230,21 +236,29 @@
     });
 
   // ── The setup's microphone meter ──
-  // Like the backend's: a start opens the microphone after `delay` ms and
-  // answers "stopped" when a stop or a newer start came meanwhile, or with
-  // `fail` when that is set. While it is open a level goes out ten times a
-  // second. timeOut() is the backend's two-minute limit and the window
-  // closed to the tray: it closes without a word. lose() is the microphone
-  // unplugged: one last level of 0.
+  // Like the backend's: a start is counted when it arrives, opens the
+  // microphone that is saved at that moment (Windows' default one when it is
+  // "default" or gone) after `delay` ms, and answers "stopped" when a stop or
+  // a newer start arrived meanwhile, or with `fail` when that is set. While
+  // it is open a level goes out ten times a second, and `device` is the
+  // microphone that is open. After `cap` ms (the backend's two minutes) it
+  // closes by itself without a word; timeOut() is that limit now, and the
+  // window closed to the tray. lose() is the microphone unplugged: one last
+  // level of 0.
   const meter = {
     open: false,
+    device: "",
     delay: 0,
     fail: null,
+    cap: 120_000,
     run: 0,
     timer: null,
+    capTimer: null,
     close() {
       meter.open = false;
+      meter.device = "";
       clearInterval(meter.timer);
+      clearTimeout(meter.capTimer);
     },
     timeOut() {
       meter.run++;
@@ -261,7 +275,8 @@
 
   const handlers = {
     get_settings: () => JSON.parse(JSON.stringify(settings)),
-    save_settings: (a) => {
+    save_settings: async (a) => {
+      if (window.__MOCK__.saveDelay) await sleep(window.__MOCK__.saveDelay);
       settings = a.settings;
       // The backend reports the speech model again after a change.
       setTimeout(() => window.__MOCK__.emit("speech-status", handlers.speech_status()), 0);
@@ -291,10 +306,15 @@
         setTimeout(() => window.__MOCK__.emit("speech-status", handlers.speech_status()), 0);
         setTimeout(() => window.__MOCK__.emit("speech-status", handlers.speech_status()), 320);
       }),
-    detect_gpus: () => [
-      { gpu_index: 0, api: "Cuda", name: "NVIDIA GeForce RTX 5080", integrated: false, memory_mib: 16303 },
-      { gpu_index: 1, api: "Vulkan", name: "NVIDIA GeForce RTX 5080", integrated: false, memory_mib: 16303 },
-    ],
+    detect_gpus: async () => {
+      // A driver that hangs never answers; a slow one answers late.
+      if (kept.gpus === "never") await new Promise(() => {});
+      if (kept.gpus) await sleep(kept.gpus);
+      return [
+        { gpu_index: 0, api: "Cuda", name: "NVIDIA GeForce RTX 5080", integrated: false, memory_mib: 16303 },
+        { gpu_index: 1, api: "Vulkan", name: "NVIDIA GeForce RTX 5080", integrated: false, memory_mib: 16303 },
+      ];
+    },
     game_free_state: () => false,
     unused_models: () => rich
       ? [
@@ -315,6 +335,8 @@
       installed: true, models: aiModels, downloading: downloads.ai ? settings.aiModel : null, gpuFreed: false, gameFreed: false,
     }),
     ai_download_model: (a) => {
+      // One at a time, as in the backend.
+      if (downloads.ai) throw "A download is already running";
       const model = aiModels.find((m) => m.id === a.id);
       return download("ai", "ai-download-progress", model.bytes, () => (model.downloaded = true));
     },
@@ -339,13 +361,19 @@
       new Promise((resolve, reject) => {
         const run = ++meter.run;
         meter.close();
+        // The microphone that is saved now; Windows' default one when it is "default" or not there.
+        const mics = handlers.list_microphones();
+        const device = (mics.find((m) => m.name === settings.microphone) ?? mics.find((m) => m.is_default) ?? mics[0])?.name;
         setTimeout(() => {
           if (run !== meter.run) return reject("stopped");
           if (meter.fail) return reject(meter.fail);
+          if (!device) return reject("No default input device found");
           meter.open = true;
+          meter.device = device;
           let i = 0;
           meter.timer = setInterval(() => window.__MOCK__.emit("mic-level", 0.3 + 0.2 * Math.sin(i++ / 2)), 100);
-          resolve(handlers.list_microphones()[0]?.name ?? "");
+          meter.capTimer = setTimeout(() => run === meter.run && meter.timeOut(), meter.cap);
+          resolve(device);
         }, meter.delay);
       }),
     mic_meter_stop: () => {
@@ -353,7 +381,12 @@
       meter.close();
       return null;
     },
-    "plugin:window|is_visible": () => window.__MOCK__.window.visible,
+    "plugin:window|is_visible": async () => {
+      const win = window.__MOCK__.window;
+      if (win.delay) await sleep(win.delay);
+      if (win.broken) throw "the window does not answer";
+      return win.visible;
+    },
     "plugin:window|is_minimized": () => window.__MOCK__.window.minimized,
     learn_resolve: (a) => (rich ? [{ word: "Shiggy", heard: "Shiggi", count: 3 }, { word: "Temporal", heard: "temporäl", count: 1 }].filter((s) => s.word !== a.word) : []),
   };

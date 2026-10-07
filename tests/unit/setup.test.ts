@@ -1,7 +1,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { recommend, setup, sizeText, type SetupInput } from "../../src/setup.ts";
-import type { SpeechStatus } from "../../src/status.ts";
+import { readFileSync } from "node:fs";
+import {
+  header,
+  meterMay,
+  meterStep,
+  modelStep,
+  recommend,
+  setup,
+  sizeText,
+  METER_REVIVE_MS,
+  METER_SILENT_MS,
+  METER_USE_MS,
+  type MeterInput,
+  type MeterNow,
+  type ModelStepInput,
+  type SetupInput,
+} from "../../src/setup.ts";
+import { status, type Missing, type SpeechStatus, type Status, type StatusInput, type StatusKind } from "../../src/status.ts";
 
 const speech = (over: Partial<SpeechStatus> = {}): SpeechStatus => ({
   engine: "local",
@@ -77,4 +93,176 @@ test("sizes in words", () => {
   assert.equal(sizeText(999_400_000), "999 MB");
   assert.equal(sizeText(999_600_000), "1.0 GB");
   assert.equal(sizeText(1_000_000_000), "1.0 GB");
+});
+
+// ── Home's heading and the pill beside it ──
+
+const now = (over: Partial<StatusInput> = {}): Status =>
+  status({
+    speech: speech(),
+    microphones: 1,
+    download: null,
+    speechDownload: null,
+    dictation: "Ready",
+    meetingRecording: false,
+    fileRunning: false,
+    aiLoading: false,
+    aiFreed: false,
+    gameFreed: false,
+    ...over,
+  });
+const headerOf = (over: Partial<StatusInput> = {}) => {
+  const seen = { speech: speech(), microphones: 1, ...over };
+  return header(now(over), setup({ speech: seen.speech, microphones: seen.microphones, aiDownloaded: false, aiDismissed: false }), seen.speech?.engine === "cloud");
+};
+
+test("beside the welcome the pill is the short state, never the reason", () => {
+  assert.deepEqual(headerOf(), { title: "setup_title", pill: "home_title_setup", n: "" });
+  // No microphone either: still the welcome, and still only "Setup needed".
+  assert.deepEqual(headerOf({ microphones: 0 }), { title: "setup_title", pill: "home_title_setup", n: "" });
+  // The first model downloads: its percent, and "Setup needed" again when it fails.
+  assert.deepEqual(headerOf({ download: 43, speechDownload: 43 }), { title: "setup_title", pill: "status_downloading", n: "43" });
+  assert.deepEqual(headerOf({ download: 100, speechDownload: 100 }), { title: "setup_title", pill: "status_downloading", n: "100" });
+});
+
+test("under the plain heading Setup needed the pill is only the reason", () => {
+  const there = speech({ downloaded: true, load: "loaded" });
+  assert.deepEqual(headerOf({ speech: there, microphones: 0 }), { title: "home_title_setup", pill: "home_reason_microphone", n: "" });
+  assert.deepEqual(headerOf({ speech: speech({ engine: "cloud" }) }), { title: "home_title_setup", pill: "home_reason_key", n: "" });
+  assert.deepEqual(headerOf({ speech: speech({ engine: "cloud" }), microphones: 0 }), { title: "home_title_setup", pill: "home_reason_microphone", n: "" }, "first things first");
+  // A model that did not load is no step of the setup, but the heading says "Setup needed" too.
+  assert.deepEqual(headerOf({ speech: speech({ downloaded: true, load: "failed" }) }), { title: "home_title_setup", pill: "home_reason_load", n: "" });
+});
+
+test("once the setup is done the pill is the status as the sidebar has it", () => {
+  const there = speech({ downloaded: true, load: "loaded" });
+  assert.deepEqual(headerOf({ speech: there }), { title: "home_title_ready", pill: "status_ready", n: "" });
+  assert.deepEqual(headerOf({ speech: speech({ downloaded: true, load: "loading" }) }), { title: "home_title_loading", pill: "status_loading", n: "" });
+  // The AI model's download beside a loaded speech model.
+  assert.deepEqual(headerOf({ speech: there, download: 24 }), { title: "home_title_ready", pill: "status_downloading", n: "24" });
+  assert.deepEqual(headerOf({ speech: there, dictation: "Recording" }), { title: "home_title_ready", pill: "status_recording", n: "" });
+  // Nothing is known yet.
+  assert.deepEqual(headerOf({ speech: null }), { title: "home_title_loading", pill: "status_loading", n: "" });
+});
+
+test("every text of the heading and its pill exists in English and in German", () => {
+  // The pill's keys are put together here, so the tool's check of the keys in use does not see them.
+  const source = readFileSync(new URL("../../src/i18n.ts", import.meta.url), "utf8");
+  const table = (name: string) => {
+    const start = source.indexOf(`const ${name}: Translations = {`);
+    assert.ok(start >= 0, `the table "${name}"`);
+    return new Set([...source.slice(start, source.indexOf("};", start)).matchAll(/^  (\w+):/gm)].map((m) => m[1]));
+  };
+  const tables = { en: table("en"), de: table("de") };
+  assert.ok(tables.en.size > 100 && tables.de.size > 100, "the tables were read");
+  const kinds: StatusKind[] = ["setup", "downloading", "recording", "transcribing", "meeting", "file", "loading", "game", "freed", "ready"];
+  const reasons: Missing[] = ["microphone", "model", "key", "load"];
+  const keys = new Set<string>();
+  for (const kind of kinds) {
+    for (const reason of kind === "setup" ? reasons : [null]) {
+      const s: Status = { kind, tone: "ok", missing: reason ? [reason] : [], percent: 5, marker: null, loading: kind === "loading" };
+      for (const needed of [true, false]) {
+        for (const cloud of [true, false]) {
+          const said = header(s, { needed, microphone: true, model: !needed, aiCard: false }, cloud);
+          keys.add(said.title).add(said.pill);
+        }
+      }
+    }
+  }
+  for (const key of ["setup_title", "home_title_setup", "home_reason_microphone", "home_reason_model", "home_reason_key", "home_reason_load", "status_downloading"]) {
+    assert.ok(keys.has(key), `the heading or the pill can say "${key}"`);
+  }
+  for (const key of keys) for (const lang of ["en", "de"] as const) assert.ok(tables[lang].has(key), `"${key}" in ${lang}`);
+});
+
+// ── Step 2 ──
+
+const model = (over: Partial<ModelStepInput> = {}): ModelStepInput => ({ speech: speech(), fetching: false, wasFetching: false, wasFailed: false, starting: false, suggested: true, ...over });
+
+test("step 2 from to do over starting and downloading to done", () => {
+  assert.deepEqual(modelStep(model({ suggested: false })), { state: "checking", failed: false });
+  assert.deepEqual(modelStep(model()), { state: "todo", failed: false });
+  assert.deepEqual(modelStep(model({ starting: true })), { state: "starting", failed: false });
+  assert.deepEqual(modelStep(model({ starting: true, fetching: true })), { state: "downloading", failed: false });
+  // A download started in Settings, before the graphics cards are known.
+  assert.deepEqual(modelStep(model({ fetching: true, suggested: false })), { state: "downloading", failed: false });
+  assert.deepEqual(modelStep(model({ speech: speech({ downloaded: true, load: "loading" }), wasFetching: true })), { state: "loading", failed: false });
+  for (const load of ["loaded", "unloaded", "failed"] as const) {
+    assert.deepEqual(modelStep(model({ speech: speech({ downloaded: true, load }) })), { state: "done", failed: false }, load);
+  }
+  // Nothing is known yet: nothing has failed.
+  assert.deepEqual(modelStep(model({ speech: null, suggested: false })), { state: "checking", failed: false });
+});
+
+test("a download that ends without the model has failed, until a new try or the model", () => {
+  // It ran when the step was last drawn, it does not run now, and the model is not there.
+  assert.deepEqual(modelStep(model({ wasFetching: true })), { state: "failed", failed: true });
+  // That stays so while nothing happens, also before the graphics cards are known.
+  assert.deepEqual(modelStep(model({ wasFailed: true })), { state: "failed", failed: true });
+  assert.deepEqual(modelStep(model({ wasFailed: true, suggested: false })), { state: "failed", failed: true });
+  // Retry: the click itself ends the failure, then the download does.
+  assert.deepEqual(modelStep(model({ wasFailed: true, starting: true })), { state: "starting", failed: false });
+  assert.deepEqual(modelStep(model({ wasFailed: true, fetching: true })), { state: "downloading", failed: false });
+  // While it runs nothing has failed, whatever was before.
+  assert.deepEqual(modelStep(model({ fetching: true, wasFetching: true })), { state: "downloading", failed: false });
+  // The model is there (it was chosen in Settings): no failure is left.
+  assert.deepEqual(modelStep(model({ wasFailed: true, speech: speech({ downloaded: true, load: "loaded" }) })), { state: "done", failed: false });
+  // Without a download before, nothing has failed.
+  assert.deepEqual(modelStep(model()), { state: "todo", failed: false });
+});
+
+test("step 2 with the cloud engine asks for the key, not for a model", () => {
+  assert.deepEqual(modelStep(model({ speech: speech({ engine: "cloud" }) })), { state: "key", failed: false });
+  assert.deepEqual(modelStep(model({ speech: speech({ engine: "cloud", cloudKey: true }) })), { state: "cloud", failed: false });
+  // A downloaded model does not help the cloud engine, and a download of the local model changes nothing here.
+  assert.deepEqual(modelStep(model({ speech: speech({ engine: "cloud", downloaded: true }), fetching: true })), { state: "key", failed: false });
+  // The key is there: a failed download of the local model is no longer in the way.
+  assert.deepEqual(modelStep(model({ speech: speech({ engine: "cloud", cloudKey: true }), wasFailed: true })), { state: "cloud", failed: false });
+});
+
+// ── Step 1's level ──
+
+const atWindow: MeterInput = { steps: true, shown: true, microphone: true, failed: false, idle: 0 };
+
+test("the microphone opens only for someone who is at the window", () => {
+  assert.equal(meterMay(atWindow), true);
+  assert.equal(meterMay({ ...atWindow, idle: METER_USE_MS }), true, "the last moment of the minute");
+  assert.equal(meterMay({ ...atWindow, idle: METER_USE_MS + 1 }), false, "nobody touched the window for over a minute");
+  assert.equal(meterMay({ ...atWindow, idle: null }), false, "nobody ever touched it");
+  assert.equal(meterMay({ ...atWindow, steps: false }), false, "another page, the setup done, or the document hidden");
+  assert.equal(meterMay({ ...atWindow, shown: false }), false, "the window is in the tray or minimized, or has not answered");
+  assert.equal(meterMay({ ...atWindow, microphone: false }), false);
+  assert.equal(meterMay({ ...atWindow, failed: true }), false, "one that did not open is not tried again by itself");
+});
+
+test("the meter starts with a touch and stops with its place", () => {
+  const off: MeterNow = { ...atWindow, on: false, opening: false, silent: 0, sinceStart: 0 };
+  const on: MeterNow = { ...off, on: true };
+  assert.equal(meterStep(off), "start");
+  assert.equal(meterStep({ ...off, idle: null }), "keep", "it rests until the first touch");
+  assert.equal(meterStep({ ...off, idle: METER_USE_MS + 1 }), "keep");
+  assert.equal(meterStep({ ...off, shown: false }), "keep");
+  assert.equal(meterStep(on), "keep");
+  // One that runs is not stopped for being left alone: it runs to the backend's limit.
+  assert.equal(meterStep({ ...on, idle: 10 * METER_USE_MS, silent: 30 }), "keep");
+  for (const gone of [{ steps: false }, { shown: false }, { microphone: false }, { failed: true }]) {
+    assert.equal(meterStep({ ...on, ...gone }), "stop", JSON.stringify(gone));
+    assert.equal(meterStep({ ...on, ...gone, opening: true }), "stop", `${JSON.stringify(gone)} while it opens`);
+    assert.equal(meterStep({ ...off, ...gone }), "keep", JSON.stringify(gone));
+  }
+});
+
+test("a meter that fell silent comes back only for a user who is there", () => {
+  const silent: MeterNow = { ...atWindow, on: true, opening: false, silent: METER_SILENT_MS + 1, sinceStart: 120_000, idle: 5000 };
+  assert.equal(meterStep(silent), "restart");
+  assert.equal(meterStep({ ...silent, silent: METER_SILENT_MS }), "keep", "not silent yet");
+  assert.equal(meterStep({ ...silent, opening: true }), "keep", "a device can take seconds to open");
+  assert.equal(meterStep({ ...silent, sinceStart: METER_REVIVE_MS }), "keep", "not started again more often than this");
+  assert.equal(meterStep({ ...silent, sinceStart: METER_REVIVE_MS + 1 }), "restart");
+  // Nobody is there any more: it is given up, and the next touch starts it.
+  assert.equal(meterStep({ ...silent, idle: METER_USE_MS + 1 }), "stop");
+  assert.equal(meterStep({ ...silent, idle: METER_USE_MS + 1, on: false }), "keep");
+  assert.equal(meterStep({ ...silent, idle: 0, on: false }), "start");
+  // The longest it is open with nobody there: started again at the end of the minute, then the backend's two minutes.
+  assert.equal(meterStep({ ...silent, idle: METER_USE_MS }), "restart");
 });

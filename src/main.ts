@@ -142,6 +142,10 @@ let currentSettings: Settings;
 let mics: MicDevice[] = [];
 /** The microphones were listed (an empty list is then no microphone). */
 let micsListed = false;
+/** The microphone the backend has: as loaded, then as the last save that was
+ *  answered sent it. Home's level opens what is saved, so it follows this
+ *  and not the dropdown. */
+let savedMicrophone = "default";
 
 /// "default" follows whatever Windows uses as input. A saved device that is
 /// unplugged stays listed, so the dropdown never goes blank and a later save
@@ -184,6 +188,7 @@ window.addEventListener("focus", () => {
 
 async function loadSettings() {
   currentSettings = await invoke<Settings>("get_settings");
+  savedMicrophone = currentSettings.microphone || "default";
 
   // UI language: auto-detect on first launch (empty string), otherwise use saved
   if (!currentSettings.uiLanguage) {
@@ -393,7 +398,9 @@ async function saveSettings() {
   currentSettings.idleUnloadMinutes = parseInt(idleUnloadSelect.value, 10) || 0;
   currentSettings.history = historyModeSelect.value;
   currentSettings.replacements = readReplacements();
+  const microphone = currentSettings.microphone;
   await invoke("save_settings", { settings: currentSettings });
+  savedMicrophone = microphone;
 }
 
 // Event listeners
@@ -600,7 +607,9 @@ autostartToggle.addEventListener("change", async () => {
 });
 
 let lastSavedModel = "";
-modelSelect.addEventListener("change", async () => {
+/** The model in the dropdown was chosen: one that is missing is downloaded
+ *  first. True when it is there and saved. */
+async function chooseModel(): Promise<boolean> {
   const chosen = modelSelect.value;
   const previousSaved = lastSavedModel || currentSettings.whisperModel;
   if (await isCurrentModelDownloaded()) {
@@ -608,8 +617,14 @@ modelSelect.addEventListener("change", async () => {
     await saveSettings();
     lastSavedModel = chosen;
     await renderUnusedModels();
-    return;
+    return true;
   }
+  // A download runs already, and the dropdown rests on its model: this is a
+  // second word for the same choice (the list is disabled meanwhile, so it
+  // came from code). The download's own end saves it; going on here would
+  // find the download refused, and put the dropdown back on the old model
+  // under a download that then counts as failed.
+  if (downloadInFlight) return false;
   // Missing -> auto-download. Don't persist until success.
   const ok = await downloadCurrentModel();
   if (ok) {
@@ -626,7 +641,9 @@ modelSelect.addEventListener("change", async () => {
     modelSelect.value = previousSaved;
     await refreshModelStatusUI();
   }
-});
+  return ok;
+}
+modelSelect.addEventListener("change", () => void chooseModel());
 
 downloadBtn.addEventListener("click", async () => {
   if (await downloadCurrentModel()) await downloadSettled();
@@ -871,9 +888,15 @@ function startHome() {
     dictationKey: () => hotkeyLabel(currentSettings.hotkey),
     microphones: () => (micsListed ? mics.length : null),
     findMicrophones: listMicrophones,
+    microphone: () => savedMicrophone,
     ai: aiSummary,
     aiModel: aiModelInfo,
     addWords,
+    // The Settings dropdown's own way: it downloads a model that is missing and saves the choice.
+    setUpSpeech: (id) => {
+      modelSelect.value = id;
+      return chooseModel();
+    },
     setUpAi,
   });
 }

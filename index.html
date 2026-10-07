@@ -95,12 +95,12 @@
                     <div id="setup-level" class="progress-track setup-level" role="meter" data-i18n-aria-label="setup_level" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
                       <div id="setup-level-fill" class="progress-fill"></div>
                     </div>
-                    <span class="label-hint" data-i18n="setup_mic_hint">Speak: the bar shows what it hears.</span>
+                    <span class="label-hint" id="setup-mic-hint"></span>
                   </div>
                 </div>
                 <div class="setup-action">
                   <select id="setup-mic-select" class="hidden" aria-labelledby="setup-mic-label"></select>
-                  <button type="button" id="setup-mic-change" class="btn-secondary" aria-labelledby="setup-mic-change setup-mic-label" data-i18n="setup_change">Change</button>
+                  <button type="button" id="setup-mic-change" class="btn-secondary" data-i18n-aria-label="setup_mic_change_name" aria-label="Change the microphone" data-i18n="setup_change">Change</button>
                   <button type="button" id="setup-mic-retry" class="btn-secondary hidden"></button>
                 </div>
               </li>
@@ -116,7 +116,7 @@
                   </div>
                 </div>
                 <div class="setup-action">
-                  <button type="button" id="setup-model-download" class="btn-primary" aria-describedby="setup-model-label"></button>
+                  <button type="button" id="setup-model-download" class="btn-primary"></button>
                 </div>
               </li>
               <li class="setup-step" id="setup-key">
@@ -128,7 +128,7 @@
                 </div>
                 <div class="setup-action hotkey-control">
                   <button type="button" id="setup-hotkey-btn" class="hotkey-btn" aria-labelledby="setup-key-label setup-hotkey-text"><kbd id="setup-hotkey-text"></kbd></button>
-                  <button type="button" id="setup-key-change" class="btn-secondary" aria-labelledby="setup-key-change setup-key-label" data-i18n="setup_change">Change</button>
+                  <button type="button" id="setup-key-change" class="btn-secondary" data-i18n-aria-label="setup_key_change_name" aria-label="Change the dictation key" data-i18n="setup_change">Change</button>
                 </div>
               </li>
             </ol>
@@ -147,8 +147,8 @@
                 </div>
               </div>
               <div class="setup-action">
-                <button type="button" id="setup-ai-download" class="btn-secondary" aria-describedby="setup-ai-label"></button>
-                <button type="button" id="setup-ai-dismiss" class="btn-text" data-i18n="setup_ai_dismiss">Not now</button>
+                <button type="button" id="setup-ai-download" class="btn-secondary"></button>
+                <button type="button" id="setup-ai-dismiss" class="btn-text"></button>
               </div>
             </div>
           </div>

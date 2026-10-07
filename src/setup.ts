@@ -1,6 +1,8 @@
-// The first run: which setup steps are done, and which models to suggest
-// for this PC. Pure (tests/unit/setup.test.ts); src/home.ts shows the steps.
-import type { SpeechStatus } from "./status.ts";
+// The first run: which setup steps are done, which models to suggest for
+// this PC, how the speech model's step stands, when the microphone's level
+// may run, and what Home's heading says meanwhile. Pure
+// (tests/unit/setup.test.ts); src/home.ts shows the steps.
+import { homeTitle, statusText, type SpeechStatus, type Status } from "./status.ts";
 
 export interface SetupInput {
   /** null until the backend answered. */
@@ -72,4 +74,126 @@ export function recommend(gpus: Gpu[]): Recommendation {
 export function sizeText(bytes: number): string {
   const mb = Math.max(1, Math.round(bytes / 1e6));
   return mb >= 1000 ? `${(bytes / 1e9).toFixed(1)} GB` : `${mb} MB`;
+}
+
+// ── Home's heading ────────────────────────────────────
+
+/** Home's heading and the pill beside it, as i18n keys; `n` fills the pill's "{n}". */
+export interface Header {
+  title: string;
+  pill: string;
+  n: string;
+}
+
+/** The heading and the pill never say the same thing twice. Beside the
+ *  welcome (a PC without a speech model) the pill is the short state, "Setup
+ *  needed" or the download's percent: the steps below say what is missing.
+ *  Under the plain heading "Setup needed" (a microphone that was unplugged
+ *  later, a cloud key that is gone, a model that did not load) it is only
+ *  the reason. In every other state it is the status as the sidebar has it. */
+export function header(now: Status, s: Setup, cloud: boolean): Header {
+  const full = statusText(now);
+  if (s.needed && !s.model && !cloud) return { title: "setup_title", pill: now.kind === "setup" ? "home_title_setup" : full.key, n: full.n };
+  const title = homeTitle(now);
+  if (now.kind === "setup") return { title, pill: `home_reason_${now.missing[0]}`, n: "" };
+  return { title, pill: full.key, n: full.n };
+}
+
+// ── Step 2, the speech model ──────────────────────────
+
+/** How step 2 stands. With the cloud engine: "key" (its key is missing) or
+ *  "cloud". With the local one: "checking" (which model to suggest is not
+ *  known yet), "todo", "starting" (Download was pressed, the download has not
+ *  begun), "downloading", "failed", and with the model there "loading" or
+ *  "done". */
+export type ModelStep = "key" | "cloud" | "checking" | "todo" | "starting" | "downloading" | "failed" | "loading" | "done";
+
+export interface ModelStepInput {
+  /** null until the backend answered. */
+  speech: SpeechStatus | null;
+  /** The speech model's download runs (the status has it). */
+  fetching: boolean;
+  /** It ran when the step was last drawn. */
+  wasFetching: boolean;
+  /** The step said last that the download had failed. */
+  wasFailed: boolean;
+  /** Download was pressed here and what it started has not ended. */
+  starting: boolean;
+  /** The models to suggest for this PC are known. */
+  suggested: boolean;
+}
+
+/** Step 2's state, and whether its download counts as failed from here on.
+ *  A download leaves the status only once the model is known to be there
+ *  (src/main.ts), so one that ends without the model has failed; that holds
+ *  until a new try starts or the model is there. */
+export function modelStep(input: ModelStepInput): { state: ModelStep; failed: boolean } {
+  const s = input.speech;
+  const cloud = s?.engine === "cloud";
+  const there = !!s && (cloud ? s.cloudKey : s.downloaded);
+  const busy = input.fetching || input.starting;
+  const failed = !busy && !there && (input.wasFetching || input.wasFailed);
+  let state: ModelStep;
+  if (cloud) state = there ? "cloud" : "key";
+  else if (there) state = s?.load === "loading" ? "loading" : "done";
+  else if (input.fetching) state = "downloading";
+  else if (input.starting) state = "starting";
+  else if (failed) state = "failed";
+  else state = input.suggested ? "todo" : "checking";
+  return { state, failed };
+}
+
+// ── Step 1, the microphone's level ────────────────────
+
+/** The level is started, or started again, only while the user touched the
+ *  window this recently (pointer, key, focus). */
+export const METER_USE_MS = 60_000;
+/** The backend sends about 30 levels a second. Without one for this long its
+ *  meter is over: it stops by itself after two minutes, when the window is
+ *  closed to the tray and when the microphone is unplugged, and says nothing. */
+export const METER_SILENT_MS = 1500;
+/** A meter that fell silent is started again at most this often. */
+export const METER_REVIVE_MS = 5000;
+
+export interface MeterInput {
+  /** The steps are on screen: the setup is needed, Home is the page, the document is not hidden. */
+  steps: boolean;
+  /** The window shows, as the window itself last answered: not hidden to the tray, not minimized. */
+  shown: boolean;
+  /** Windows lists a microphone. */
+  microphone: boolean;
+  /** The microphone did not open: no new try by itself. */
+  failed: boolean;
+  /** Milliseconds since the user last touched the window; null: never. */
+  idle: number | null;
+}
+
+/** May the microphone be opened for the level now? Only for someone who is
+ *  at this window: a window that is covered by another app, a locked PC and
+ *  a PC that slept all still "show". */
+export function meterMay(m: MeterInput): boolean {
+  return m.steps && m.shown && m.microphone && !m.failed && m.idle !== null && m.idle <= METER_USE_MS;
+}
+
+export interface MeterNow extends MeterInput {
+  /** The page asked for the meter and has not asked to stop it. */
+  on: boolean;
+  /** Its start has not answered yet (a device can take seconds to open). */
+  opening: boolean;
+  /** Milliseconds since the last level arrived. */
+  silent: number;
+  /** Milliseconds since the meter was last started. */
+  sinceStart: number;
+}
+
+/** What to do with the meter: "start" it, "restart" one that fell silent,
+ *  "stop" it, or "keep" things as they are. One that runs is left to run to
+ *  the backend's limit; once it is silent it comes back only for a user who
+ *  is still there, and is given up otherwise. */
+export function meterStep(m: MeterNow): "start" | "restart" | "stop" | "keep" {
+  if (!m.on) return meterMay(m) ? "start" : "keep";
+  if (!(m.steps && m.shown && m.microphone && !m.failed)) return "stop";
+  if (m.opening || m.silent <= METER_SILENT_MS) return "keep";
+  if (!meterMay(m)) return "stop";
+  return m.sinceStart > METER_REVIVE_MS ? "restart" : "keep";
 }
