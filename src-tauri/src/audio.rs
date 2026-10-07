@@ -331,6 +331,9 @@ struct MeterState {
     /// limit of an earlier start stops nothing.
     run: u64,
     stream: Option<MeterStream>,
+    /// The numbers of the starts that arrived (`arrived`) and have not
+    /// opened their device yet, oldest first.
+    arrived: std::collections::VecDeque<u64>,
 }
 
 /// An open meter. Dropping it closes the microphone and ends the thread
@@ -359,7 +362,32 @@ impl Default for MicMeter {
 
 impl MicMeter {
     pub fn new() -> Self {
-        Self { state: Mutex::new(MeterState { run: 0, stream: None }) }
+        Self { state: Mutex::new(MeterState { run: 0, stream: None, arrived: Default::default() }) }
+    }
+
+    /// A start arrived from the window: it takes its number now, in the
+    /// order the window sent it, and a meter that runs is closed. `start`
+    /// opens the device later, on another thread; numbered only there, a
+    /// stop sent right after the start was counted before it and stopped
+    /// nothing: the microphone stayed open until the time limit.
+    pub fn arrived(&self) {
+        let mut state = lock(&self.state);
+        state.run += 1;
+        let run = state.run;
+        state.arrived.push_back(run);
+        close_meter(state.stream.take());
+    }
+
+    /// The number `start` runs under: the oldest arrival's, or the next one
+    /// when none was announced. Public for the test of that order.
+    pub fn take_run(&self) -> u64 {
+        let mut state = lock(&self.state);
+        if let Some(run) = state.arrived.pop_front() {
+            return run;
+        }
+        state.run += 1;
+        close_meter(state.stream.take());
+        state.run
     }
 
     /// The number of the start or stop that came last.
@@ -375,12 +403,7 @@ impl MicMeter {
     /// own with a time limit: a sleeping USB interface can take seconds.
     /// A meter that runs already is closed first.
     pub fn start(&self, app: &AppHandle, mic_name: &str) -> Result<(String, u64), String> {
-        let run = {
-            let mut state = lock(&self.state);
-            state.run += 1;
-            close_meter(state.stream.take());
-            state.run
-        };
+        let run = self.take_run();
         let (tx, rx) = std::sync::mpsc::channel();
         let (app, mic) = (app.clone(), mic_name.to_string());
         std::thread::Builder::new()

@@ -674,6 +674,23 @@ fn mic_meter_stop(state: State<AppState>) {
 /// The longest the setup's microphone meter runs without a new start.
 const MIC_METER_MAX: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// The commands, with a `mic_meter_start` counted as it arrives: here, on
+/// the thread the window's requests come in on and in their order. The body
+/// of an async command runs later, on the runtime's threads, so a
+/// `mic_meter_stop` (not async) sent right after the start overtook it.
+fn counting_meter_starts(
+    commands: impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        if invoke.message.command() == "mic_meter_start" {
+            if let Some(state) = invoke.message.webview_ref().try_state::<AppState>() {
+                state.mic_meter.arrived();
+            }
+        }
+        commands(invoke)
+    }
+}
+
 #[tauri::command]
 fn check_model_downloaded(state: State<AppState>, model_size: String) -> bool {
     let model_file = rudariflow_lib::whisper_engine::model_filename(&model_size);
@@ -3348,7 +3365,7 @@ fn main() {
             meetings,
             mic_meter: audio::MicMeter::new(),
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(counting_meter_starts(tauri::generate_handler![
             get_settings,
             save_settings,
             list_microphones,
@@ -3438,7 +3455,7 @@ fn main() {
             meeting_default_title,
             meeting_quit,
             meeting_test_play,
-        ])
+        ]))
         .on_window_event(|window, event| {
             // Close button (X) on the main window hides to tray instead of quitting.
             if window.label() == "main" {
@@ -4148,6 +4165,24 @@ mod tests {
             Err("No default input device found".to_string())
         });
         assert_eq!((none, tries), (Err("No default input device found".to_string()), 2));
+    }
+
+    #[test]
+    fn a_meter_stopped_right_after_its_start_stays_stopped() {
+        let meter = audio::MicMeter::new();
+        // The window sent start, then stop; the start's thread runs only now.
+        meter.arrived();
+        meter.stop();
+        let start = meter.take_run();
+        assert_eq!((start, meter.run()), (1, 2), "the stop is the newer one: the stream this start opens is dropped");
+        // Start, stop, start: the first start is old, the second is the one that stays.
+        meter.arrived();
+        meter.stop();
+        meter.arrived();
+        let (first, second) = (meter.take_run(), meter.take_run());
+        assert_eq!((first, second, meter.run()), (3, 5, 5));
+        // A start nobody announced still gets a number of its own.
+        assert_eq!((meter.take_run(), meter.run()), (6, 6));
     }
 
     #[test]
