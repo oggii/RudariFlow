@@ -8,6 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { getLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
+import { setDownload, setFileRunning } from "./activity";
 
 export interface FilesHost {
   settings(): { language: string; fileSpeakers: string };
@@ -219,6 +220,7 @@ function ensureSpeakerModel(): Promise<boolean> {
       speakersHint.textContent = t("files_speakers_download_failed");
       return false;
     } finally {
+      setDownload("speaker", null);
       modelDownload = null;
     }
   })();
@@ -239,6 +241,7 @@ async function transcribe(path: string) {
     return;
   }
   running = true;
+  setFileRunning(true);
   cancelRequested = false;
   segments = [];
   names = [];
@@ -305,6 +308,7 @@ async function transcribe(path: string) {
     if (!textArea.value.trim()) result.classList.add("hidden");
   } finally {
     running = false;
+    setFileRunning(false);
     cancelBtn.classList.add("hidden");
     updateClear();
   }
@@ -530,6 +534,7 @@ export function initFiles(h: FilesHost) {
   listen<FileProgress>("file-progress", (e) => onProgress(e.payload));
   listen<DownloadProgress>("speaker-model-progress", (e) => {
     speakersHint.textContent = t("files_speakers_downloading").replace("{percent}", String(Math.round(e.payload.percent)));
+    if (modelDownload) setDownload("speaker", e.payload.percent);
   });
   listen<[number, number]>("summary-progress", (e) => {
     const [done, total] = e.payload;

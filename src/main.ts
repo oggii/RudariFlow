@@ -5,13 +5,17 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { setLang, getLang, detectDefaultLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
-import { initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
+import { aiActivity, initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
 import { initDictionary, renderDictionary } from "./dictionary";
 import { initFiles, renderFiles } from "./files";
 import { initMeetingQuit, initMeetings, renderMeetings } from "./meetings";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
 import { hotkeyLabel, startCapture } from "./hotkey-capture";
 import { mountBoard } from "./soundboard/board";
+import { currentRoute, go, initShell, onRoute, startOn } from "./shell";
+import { setDownload } from "./activity";
+import { currentSpeech, initStatus, onStatus, renderStatus } from "./status-view";
+import { setup } from "./setup.ts";
 
 interface Settings {
   microphone: string;
@@ -84,8 +88,6 @@ interface DownloadProgress {
 }
 
 // DOM elements
-const statusDot = document.getElementById("status-dot")!;
-const statusText = document.getElementById("status-text")!;
 const micSelect = document.getElementById("mic-select") as HTMLSelectElement;
 const engineLocal = document.getElementById("engine-local")!;
 const engineCloud = document.getElementById("engine-cloud")!;
@@ -136,25 +138,15 @@ const historyList = document.getElementById("history-list")!;
 const historyEmpty = document.getElementById("history-empty")!;
 const historyCount = document.getElementById("history-count")!;
 const historyClear = document.getElementById("history-clear") as HTMLButtonElement;
-const soundboardSection = document.getElementById("section-soundboard")!;
 // The Soundboard tab; the same component runs in the pop-out window.
 const soundboard = mountBoard(document.getElementById("sb-root")!, { popOut: false });
 
-// Section navigation
-const navItems = document.querySelectorAll(".nav-item");
-const sections = document.querySelectorAll(".content-section");
-
-function showSection(target: string) {
-  navItems.forEach((n) => n.classList.toggle("active", n.getAttribute("data-section") === target));
-  sections.forEach((s) => s.classList.remove("active"));
-  document.getElementById(`section-${target}`)?.classList.add("active");
-  soundboard.setActive(target === "soundboard");
-  if (target === "meetings") void renderMeetings();
-  if (target === "engine") void renderUnusedModels();
-}
-
-navItems.forEach((item) => {
-  item.addEventListener("click", () => showSection(item.getAttribute("data-section") ?? "general"));
+// Sections and Settings tabs (src/shell.ts); what a page needs when it is shown.
+initShell();
+onRoute((now) => {
+  soundboard.setActive(now.section === "soundboard");
+  if (now.section === "meetings") void renderMeetings();
+  if (now.section === "settings" && now.tab === "models") void renderUnusedModels();
 });
 
 // Window drag — titlebar and sidebar empty space
@@ -174,6 +166,8 @@ sidebar.addEventListener("mousedown", (e) => {
 
 let currentSettings: Settings;
 let mics: MicDevice[] = [];
+/** The microphones were listed (an empty list is then no microphone). */
+let micsListed = false;
 
 /// "default" follows whatever Windows uses as input. A saved device that is
 /// unplugged stays listed, so the dropdown never goes blank and a later save
@@ -217,6 +211,7 @@ async function loadSettings() {
 
   // Populate mic dropdown
   mics = await invoke<MicDevice[]>("list_microphones");
+  micsListed = true;
   renderMicOptions();
 
   // Engine
@@ -352,6 +347,7 @@ async function downloadCurrentModel(): Promise<boolean> {
   modelSelect.disabled = true;
   downloadProgress.classList.remove("hidden");
   progressFill.style.width = "0%";
+  setDownload("speech", 0);
   try {
     await invoke("download_model", { modelSize: modelSelect.value });
     downloadBtn.textContent = "\u2713";
@@ -364,6 +360,7 @@ async function downloadCurrentModel(): Promise<boolean> {
     console.error("Download failed:", e);
     return false;
   } finally {
+    setDownload("speech", null);
     downloadProgress.classList.add("hidden");
     modelSelect.disabled = false;
     downloadInFlight = false;
@@ -563,6 +560,7 @@ uiLanguageSelect.addEventListener("change", async () => {
   renderFiles();
   void soundboard.refresh();
   void renderMeetings();
+  renderStatus();
 });
 
 sendCommandSelect.addEventListener("change", () => saveSettings());
@@ -629,26 +627,16 @@ modePtt.addEventListener("click", () => {
   saveSettings();
 });
 
-// Listen for recording state changes
+// The start, stop and discard sounds of a dictation (the status itself is
+// src/status-view.ts).
 let prevRecordingState = "Ready";
 listen<string>("recording-state", (event) => {
   const state = event.payload;
-  statusDot.className = "";
-  statusText.removeAttribute("data-i18n");
   if (state === "Recording") {
-    statusDot.classList.add("recording");
-    statusText.setAttribute("data-i18n", "status_recording");
-    statusText.textContent = t("status_recording");
     if (prevRecordingState !== "Recording") playStart();
   } else if (state === "Transcribing") {
-    statusDot.classList.add("transcribing");
-    statusText.setAttribute("data-i18n", "status_transcribing");
-    statusText.textContent = t("status_transcribing");
     if (prevRecordingState === "Recording") playStop();
   } else {
-    statusDot.classList.add("ready");
-    statusText.setAttribute("data-i18n", "status_ready");
-    statusText.textContent = t("status_ready");
     // Recording -> Ready (no Transcribing in between) means cancel/discard
     if (prevRecordingState === "Recording") playDiscard();
   }
@@ -659,6 +647,7 @@ listen<string>("recording-state", (event) => {
 listen<DownloadProgress>("download-progress", (event) => {
   const { percent } = event.payload;
   progressFill.style.width = `${percent}%`;
+  if (downloadInFlight) setDownload("speech", percent);
 });
 
 // Hotkeys. "dictation" starts/stops recording, "pasteLast" pastes the last
@@ -979,7 +968,7 @@ document.getElementById("credit-link")?.addEventListener("click", async (e) => {
   }
 });
 
-initAiSettings({ settings: () => currentSettings, save: saveSettings });
+initAiSettings({ settings: () => currentSettings, save: saveSettings, changed: renderStatus });
 initDictionary({ settings: () => currentSettings, save: saveSettings });
 initFiles({
   settings: () => currentSettings,
@@ -987,8 +976,18 @@ initFiles({
     Object.assign(currentSettings, patch);
     await invoke("save_settings", { settings: currentSettings });
   },
-  showSection: () => showSection("files"),
-  acceptsDrops: () => !soundboardSection.classList.contains("active"),
+  showSection: () => go("files"),
+  acceptsDrops: () => currentRoute().section !== "soundboard",
+});
+
+// Home is where the window opens while the setup is not done: decided once,
+// when the first status is known.
+let startDecided = false;
+onStatus(() => {
+  const speech = currentSpeech();
+  if (startDecided || !speech || !micsListed) return;
+  startDecided = true;
+  startOn(setup({ speech, microphones: mics.length, aiDownloaded: true, aiDismissed: true }).needed);
 });
 
 // Initialize
@@ -1004,6 +1003,8 @@ initMeetingQuit();
 // nothing is saved over the settings that did not load.
 loadSettings()
   .catch((err) => console.error("loading the settings failed:", err))
+  .then(() => initStatus({ microphones: () => (micsListed ? mics.length : null), ai: aiActivity }))
+  .catch((err) => console.error("the status did not start:", err))
   .then(() =>
     initMeetings({
       settings: () => currentSettings ?? { meetingReminderOff: false, meetingHeadphonesSeen: false },
@@ -1012,7 +1013,7 @@ loadSettings()
         Object.assign(currentSettings, patch);
         await invoke("save_settings", { settings: currentSettings });
       },
-      showSection: () => showSection("meetings"),
+      showSection: () => go("meetings"),
     }),
   )
   .catch((err) => console.error("the Meetings tab did not start:", err));

@@ -180,7 +180,21 @@
 
   const handlers = {
     get_settings: () => JSON.parse(JSON.stringify(settings)),
-    save_settings: (a) => { settings = a.settings; return null; },
+    save_settings: (a) => {
+      settings = a.settings;
+      // The backend reports the speech model again after a change.
+      setTimeout(() => window.__MOCK__.emit("speech-status", handlers.speech_status()), 0);
+      return null;
+    },
+    speech_status: () => {
+      const downloaded = whisperDownloaded.includes(settings.whisperModel);
+      const local = settings.engine === "local";
+      return {
+        engine: settings.engine, model: settings.whisperModel, downloaded,
+        load: local && downloaded ? "loaded" : "unloaded", freed: false, cloudKey: !!settings.groqApiKey,
+        device: local && downloaded ? "NVIDIA GeForce RTX 5080 (CUDA)" : "",
+      };
+    },
     list_microphones: () => rich
       ? [{ name: "Microphone (Fast Track)", is_default: true }, { name: "Headset Microphone (Logitech PRO X)", is_default: false }, { name: "Microphone (HD Pro Webcam C920)", is_default: false }]
       : [{ name: "Microphone (Realtek(R) Audio)", is_default: true }],

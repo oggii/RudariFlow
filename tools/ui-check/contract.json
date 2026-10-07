@@ -256,7 +256,15 @@
   "mt-quit-cancel",
   "mt-quit-ok"
  ],
- "removedIds": {},
+ "removedIds": {
+  "section-general": "Task 3: the page became a tab of Settings",
+  "section-engine": "Task 3: the page became a tab of Settings",
+  "section-recording": "Task 3: the page became a tab of Settings",
+  "section-dictionary": "Task 3: the page became a tab of Settings",
+  "section-replacements": "Task 3: the page became a tab of Settings",
+  "section-ai": "Task 3: the page became a tab of Settings",
+  "section-history": "Task 3: the list is on Home, its setting in Settings > General"
+ },
  "dashKeys": [
   "unused_model_links",
   "model_tiny",

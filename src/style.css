@@ -1,221 +1,9 @@
-/* RudariFlow's styles: tokens, the shared components, then the window and the pages. */
+/* RudariFlow's styles. The order matters: tokens, the shared components,
+   the window, then the pages (which add layout to the components). */
 @import "./styles/tokens.css";
 @import "./styles/components.css";
+@import "./styles/shell.css";
 
-/* ── App Shell ──────────────────────────────────────── */
-
-#app {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  width: 100vw;
-}
-
-#titlebar {
-  height: 38px;
-  width: 100%;
-  flex-shrink: 0;
-  background: var(--sidebar-bg);
-}
-
-#app-body {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-}
-
-/* ── Sidebar ────────────────────────────────────────── */
-
-#sidebar {
-  width: 220px;
-  min-width: 220px;
-  background: var(--sidebar-bg);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  padding: 16px 0;
-}
-
-.sidebar-header {
-  padding: 0 16px 16px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 8px;
-}
-
-.app-identity {
-  display: flex;
-  align-items: center;
-  margin-bottom: 14px;
-}
-
-.app-logo {
-  width: 100%;
-  max-width: 160px;
-  height: auto;
-  display: block;
-}
-
-#status-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--surface);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-}
-
-#status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--green);
-  flex-shrink: 0;
-  box-shadow: 0 0 6px rgba(62, 207, 110, 0.4);
-}
-
-#status-dot.ready {
-  background: var(--green);
-  box-shadow: 0 0 6px rgba(62, 207, 110, 0.4);
-}
-
-#status-dot.recording {
-  background: var(--red);
-  box-shadow: 0 0 6px rgba(229, 72, 77, 0.5);
-  animation: pulse 1s ease-in-out infinite;
-}
-
-#status-dot.transcribing {
-  background: var(--yellow);
-  box-shadow: 0 0 6px rgba(245, 166, 35, 0.4);
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-
-#status-text {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-/* ── Navigation ─────────────────────────────────────── */
-
-#sidebar-nav {
-  flex: 1;
-  padding: 4px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-radius: var(--radius);
-  color: var(--text-secondary);
-  text-decoration: none;
-  font-size: 13px;
-  font-weight: 400;
-  cursor: pointer;
-  transition: all var(--transition);
-  position: relative;
-}
-
-.nav-item:hover {
-  color: var(--text);
-  background: var(--surface-hover);
-}
-
-.nav-item.active {
-  color: var(--text);
-  background: var(--surface-active);
-  font-weight: 500;
-}
-
-.nav-item.active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 2px;
-  height: 16px;
-  background: var(--accent);
-  border-radius: 1px;
-}
-
-.nav-icon {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  opacity: 0.6;
-}
-
-.nav-item.active .nav-icon {
-  opacity: 1;
-}
-
-/* ── Sidebar Footer ─────────────────────────────────── */
-
-.sidebar-footer {
-  padding: 12px 16px 14px;
-  border-top: 1px solid var(--border);
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.version-text {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  font-weight: 400;
-}
-
-.credit-text {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  font-weight: 400;
-  letter-spacing: 0.02em;
-  opacity: 0.7;
-  text-decoration: none;
-  cursor: pointer;
-  transition: opacity 120ms ease, color 120ms ease;
-}
-.credit-text:hover {
-  opacity: 1;
-  color: var(--accent, #6c8cff);
-}
-/* ── Content Area ───────────────────────────────────── */
-
-#content {
-  flex: 1;
-  overflow-y: auto;
-  background: var(--bg);
-}
-
-.content-section {
-  display: none;
-  max-width: 680px;
-  margin: 0 auto;
-  padding: 32px 40px;
-  animation: fadeIn 200ms ease;
-}
-
-.content-section.active {
-  display: block;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
-}
 /* The Files tab uses the whole window: the transcript takes the height. */
 #section-files {
   max-width: none;
@@ -228,7 +16,7 @@
 }
 #section-soundboard .sb-layout {
   max-width: 680px;
-  margin: 0 auto;
+  margin: 0;
 }
 
 #section-files.active {
@@ -1253,7 +1041,7 @@ body.sb-page {
   width: 100%;
   max-width: 600px;
   min-height: 0;
-  margin: 0 auto;
+  margin: 0;
 }
 #section-meetings.mt-open .mt-layout {
   max-width: 760px;

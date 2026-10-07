@@ -5,6 +5,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { t, getLang } from "./i18n";
 import { populateLanguageSelect } from "./languages";
+import { onRoute } from "./shell";
+import { setDownload } from "./activity";
 
 export interface AppRule {
   app: string;
@@ -66,6 +68,8 @@ interface DownloadProgress {
 export interface AiSettingsHost {
   settings(): AiFields;
   save(): Promise<void>;
+  /** The AI's state was read again (for the status and Home). */
+  changed?(): void;
 }
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -104,6 +108,12 @@ const MODEL_NOTE: Record<string, string> = {
   "gemma-4-12b": "ai_model_best",
   "gemma-4-e2b": "ai_model_small",
 };
+
+/** For the status: AI cleanup is on and its model is loading, or was unloaded to free the GPU. */
+export function aiActivity(): { loading: boolean; freed: boolean } {
+  if (!status || !host?.settings().aiCleanup || !selectedModel()?.downloaded) return { loading: false, freed: false };
+  return { loading: status.server.state === "loading", freed: status.gpuFreed && status.server.state === "stopped" };
+}
 
 function gb(bytes: number): string {
   return (bytes / 1e9).toFixed(1);
@@ -191,6 +201,8 @@ async function refreshStatus() {
   }
   renderModels();
   renderStatus();
+  if (status.downloading === null) setDownload("ai", null);
+  host.changed?.();
 }
 
 async function refreshOpenApps() {
@@ -217,6 +229,7 @@ async function download() {
   modelSelect.disabled = true;
   statusLine.textContent = t("ai_status_downloading");
   statusLine.dataset.tone = "";
+  setDownload("ai", 0);
   try {
     await invoke("ai_download_model", { id });
   } catch (e) {
@@ -224,6 +237,7 @@ async function download() {
     statusLine.textContent = `${t("ai_download_failed")}: ${e}`;
     statusLine.dataset.tone = "error";
   }
+  setDownload("ai", null);
   await refreshStatus();
 }
 
@@ -423,7 +437,9 @@ export function initAiSettings(h: AiSettingsHost) {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) runTest();
   });
 
-  document.querySelector('.nav-item[data-section="ai"]')?.addEventListener("click", () => {
+  // The AI tab is shown: its state and the open apps may have changed.
+  onRoute((now) => {
+    if (now.section !== "settings" || now.tab !== "ai") return;
     refreshStatus();
     refreshOpenApps();
   });
@@ -435,6 +451,7 @@ export function initAiSettings(h: AiSettingsHost) {
     progress.classList.remove("hidden");
     progressFill.style.width = `${percent}%`;
     progressText.textContent = total ? `${gb(downloaded)} / ${gb(total)} GB` : "";
+    setDownload("ai", percent);
   });
 }
 
