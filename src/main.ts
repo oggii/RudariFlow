@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { setLang, getLang, detectDefaultLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
-import { aiActivity, aiSummary, initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
+import { aiActivity, aiModelInfo, aiSummary, initAiSettings, renderAiSettings, setUpAi, type AppRule } from "./ai-settings";
 import { addWords, initDictionary, renderDictionary } from "./dictionary";
 import { initHistory, refreshHistory } from "./history";
 import { initHome, renderHome } from "./home";
@@ -16,7 +16,7 @@ import { hotkeyLabel, startCapture } from "./hotkey-capture";
 import { mountBoard } from "./soundboard/board";
 import { announceRoute, currentRoute, go, initShell, onRoute, startOn } from "./shell";
 import { setDownload } from "./activity";
-import { currentSpeech, initStatus, onStatus, renderStatus } from "./status-view";
+import { currentSpeech, initStatus, onStatus, refreshSpeech, renderStatus } from "./status-view";
 import { setup } from "./setup.ts";
 
 interface Settings {
@@ -340,10 +340,12 @@ async function downloadCurrentModel(): Promise<boolean> {
   downloadProgress.classList.remove("hidden");
   progressFill.style.width = "0%";
   setDownload("speech", 0);
+  let ok = false;
   try {
     await invoke("download_model", { modelSize: modelSelect.value });
     downloadBtn.textContent = "\u2713";
     downloadBtn.removeAttribute("data-i18n");
+    ok = true;
     return true;
   } catch (e) {
     downloadBtn.setAttribute("data-i18n", "retry");
@@ -352,11 +354,27 @@ async function downloadCurrentModel(): Promise<boolean> {
     console.error("Download failed:", e);
     return false;
   } finally {
-    setDownload("speech", null);
+    // A download that failed is over. One that worked stays in the status
+    // until the backend has said that the model is there (downloadSettled).
+    if (!ok) setDownload("speech", null);
     downloadProgress.classList.add("hidden");
     modelSelect.disabled = false;
     downloadInFlight = false;
     await refreshModelDropdownLabels();
+  }
+}
+
+/** After a download that worked: ask the backend for the speech model's
+ *  state, and only then take the download out of the status. Taken out
+ *  sooner, the status steps back to "Setup needed: no speech model" for as
+ *  long as the backend's last word still calls the model missing (a model
+ *  chosen in the dropdown is saved only after its download). */
+async function downloadSettled() {
+  try {
+    await refreshSpeech();
+  } finally {
+    // Not a download that started in the meantime: its own end clears it.
+    if (!downloadInFlight) setDownload("speech", null);
   }
 }
 
@@ -595,7 +613,11 @@ modelSelect.addEventListener("change", async () => {
   // Missing -> auto-download. Don't persist until success.
   const ok = await downloadCurrentModel();
   if (ok) {
-    await saveSettings();
+    try {
+      await saveSettings();
+    } finally {
+      await downloadSettled();
+    }
     lastSavedModel = chosen;
     await refreshModelStatusUI();
     await renderUnusedModels();
@@ -607,7 +629,7 @@ modelSelect.addEventListener("change", async () => {
 });
 
 downloadBtn.addEventListener("click", async () => {
-  await downloadCurrentModel();
+  if (await downloadCurrentModel()) await downloadSettled();
 });
 
 groqKey.addEventListener("change", () => saveSettings());
@@ -687,6 +709,8 @@ const hotkeyViews: HotkeyView[] = [
   hotkeyView("pasteLast", "home-paste-last", true),
   hotkeyView("rewriteLast", "home-rewrite-last", true),
   hotkeyView("freeGpu", "home-free-gpu", true),
+  // The first run's step 3
+  hotkeyView("dictation", "setup-hotkey"),
 ];
 
 function hotkeyOf(target: HotkeyTarget): string {
@@ -845,8 +869,12 @@ function startHome() {
   initHome({
     recordingMode: () => currentSettings.recordingMode,
     dictationKey: () => hotkeyLabel(currentSettings.hotkey),
+    microphones: () => (micsListed ? mics.length : null),
+    findMicrophones: listMicrophones,
     ai: aiSummary,
+    aiModel: aiModelInfo,
     addWords,
+    setUpAi,
   });
 }
 

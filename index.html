@@ -69,7 +69,7 @@
         <section id="section-home" class="content-section active">
           <div class="section-header home-header">
             <div class="home-heading">
-              <h2 class="section-title" id="home-title" data-i18n="home_title_loading">Getting ready…</h2>
+              <h2 class="section-title" id="home-title" tabindex="-1" data-i18n="home_title_loading">Getting ready…</h2>
               <span id="home-status" class="status-pill" data-tone="busy" aria-hidden="true">
                 <span class="status-dot"></span>
                 <span id="home-status-text"></span>
@@ -80,6 +80,77 @@
           <div id="home-notice" class="notice hidden" data-tone="warn" role="status">
             <span class="notice-text" data-i18n="home_load_failed">The speech model did not load. Dictate once to try again, or choose another model.</span>
             <button type="button" id="home-notice-open" class="btn-secondary" data-i18n="home_open_models">Open Models &amp; GPU</button>
+          </div>
+
+          <!-- The first run: shown while a microphone or a speech model is missing. -->
+          <div id="home-setup" class="card home-setup hidden">
+            <ol class="setup-steps">
+              <li class="setup-step" id="setup-mic">
+                <span class="setup-num" aria-hidden="true">1</span>
+                <span class="sr-only setup-state"></span>
+                <div class="setup-main">
+                  <span class="label-text" id="setup-mic-label" data-i18n="setup_mic_title">Microphone</span>
+                  <span class="label-hint status-line" id="setup-mic-text" role="status"></span>
+                  <div id="setup-meter" class="setup-meter">
+                    <div id="setup-level" class="progress-track setup-level" role="meter" data-i18n-aria-label="setup_level" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                      <div id="setup-level-fill" class="progress-fill"></div>
+                    </div>
+                    <span class="label-hint" data-i18n="setup_mic_hint">Speak: the bar shows what it hears.</span>
+                  </div>
+                </div>
+                <div class="setup-action">
+                  <select id="setup-mic-select" class="hidden" aria-labelledby="setup-mic-label"></select>
+                  <button type="button" id="setup-mic-change" class="btn-secondary" aria-labelledby="setup-mic-change setup-mic-label" data-i18n="setup_change">Change</button>
+                  <button type="button" id="setup-mic-retry" class="btn-secondary hidden"></button>
+                </div>
+              </li>
+              <li class="setup-step" id="setup-model">
+                <span class="setup-num" aria-hidden="true">2</span>
+                <span class="sr-only setup-state"></span>
+                <div class="setup-main">
+                  <span class="label-text" id="setup-model-label" data-i18n="setup_model_title">Speech model</span>
+                  <span class="label-hint status-line" id="setup-model-text" role="status"></span>
+                  <div id="setup-model-progress" class="progress hidden">
+                    <div id="setup-model-bar" class="progress-track" role="progressbar" aria-labelledby="setup-model-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="setup-model-fill" class="progress-fill"></div></div>
+                    <span id="setup-model-numbers" class="progress-text"></span>
+                  </div>
+                </div>
+                <div class="setup-action">
+                  <button type="button" id="setup-model-download" class="btn-primary" aria-describedby="setup-model-label"></button>
+                </div>
+              </li>
+              <li class="setup-step" id="setup-key">
+                <span class="setup-num" aria-hidden="true">3</span>
+                <span class="sr-only setup-state"></span>
+                <div class="setup-main">
+                  <span class="label-text" id="setup-key-label" data-i18n="setup_key_title">Your dictation key</span>
+                  <span class="label-hint status-line" id="setup-key-text"></span>
+                </div>
+                <div class="setup-action hotkey-control">
+                  <button type="button" id="setup-hotkey-btn" class="hotkey-btn" aria-labelledby="setup-key-label setup-hotkey-text"><kbd id="setup-hotkey-text"></kbd></button>
+                  <button type="button" id="setup-key-change" class="btn-secondary" aria-labelledby="setup-key-change setup-key-label" data-i18n="setup_change">Change</button>
+                </div>
+              </li>
+            </ol>
+          </div>
+
+          <!-- Optional, until its model is downloaded or the card is closed. -->
+          <div id="home-ai-card" class="card home-setup hidden">
+            <div class="setup-step" id="setup-ai">
+              <span class="setup-num" aria-hidden="true">+</span>
+              <div class="setup-main">
+                <span class="label-text" id="setup-ai-label" data-i18n="setup_ai_title">Optional: AI cleanup</span>
+                <span class="label-hint status-line" id="setup-ai-text" role="status"></span>
+                <div id="setup-ai-progress" class="progress hidden">
+                  <div id="setup-ai-bar" class="progress-track" role="progressbar" aria-labelledby="setup-ai-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="setup-ai-fill" class="progress-fill"></div></div>
+                  <span id="setup-ai-numbers" class="progress-text"></span>
+                </div>
+              </div>
+              <div class="setup-action">
+                <button type="button" id="setup-ai-download" class="btn-secondary" aria-describedby="setup-ai-label"></button>
+                <button type="button" id="setup-ai-dismiss" class="btn-text" data-i18n="setup_ai_dismiss">Not now</button>
+              </div>
+            </div>
           </div>
 
           <!-- The daily view. src/home.ts puts "Recent dictations" after the

@@ -7,6 +7,13 @@
 // window.__MOCK__ lets a check look inside: calls (every command with its
 // arguments), unknown (commands without a handler here), settings() (what
 // save_settings stored last), emit(event, payload) (a backend event).
+// A check also steers what the page cannot: finishDownload(kind) and
+// failDownload(kind, why) end a model download ("speech" or "ai"), which
+// waits until then; meter is the setup's microphone (open, delay, fail,
+// timeOut(), lose()); window is the window's own state (visible, minimized);
+// keep({ mics }) sets the microphones Windows lists, also for the next start
+// of the page; speech is laid over what speech_status answers (a model that
+// did not load: { downloaded: true, load: "failed" }).
 (() => {
   const CFG = window.__MOCK_CFG__ || { lang: "en", scenario: "populated" };
   const rich = CFG.scenario !== "firstrun";
@@ -74,6 +81,12 @@
     { id: "gemma-4-e2b", label: "Gemma 4 E2B", bytes: 3106738272, downloaded: rich },
   ];
   const whisperDownloaded = rich ? ["small", "medium", "large-v3-turbo-q8_0"] : [];
+  const whisperBytes = { tiny: 75e6, base: 142e6, small: 466e6, medium: 1.5e9, "large-v3": 2.9e9, "large-v3-turbo": 1.5e9, "large-v3-turbo-q8_0": 870e6, "large-v3-turbo-q5_0": 574e6 };
+  /** A model that was just downloaded loads for a moment, as in the app. */
+  let loadingUntil = 0;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  /** What a check set for this start of the page and the next ones (the session's). */
+  const kept = JSON.parse(sessionStorage.getItem("ui-check-mock") || "{}");
 
   // ── Meetings ──
   const M1 = "m-20261005-1400", M2 = "m-20261002-1000", MREC = "m-live";
@@ -180,7 +193,69 @@
       return meetingStatus;
     },
     settings: () => settings,
+    keep(patch) {
+      Object.assign(kept, patch);
+      sessionStorage.setItem("ui-check-mock", JSON.stringify(kept));
+    },
+    /** The window itself, as the page asks it (is_visible, is_minimized). */
+    window: { visible: true, minimized: false },
+    /** Laid over the speech model's state; null: as the settings and the downloads have it. */
+    speech: null,
+    finishDownload: (kind = "speech") => downloads[kind]?.finish(),
+    failDownload: (kind = "speech", why = "error sending request") => downloads[kind]?.fail(why),
   };
+
+  // ── Model downloads ──
+  // A download waits until a check ends it: finish() reports the rest of
+  // the way to 100 % and then answers the command, fail() refuses it. Left
+  // alone it never ends.
+  const downloads = {};
+  const download = (kind, event, total, done) =>
+    new Promise((resolve, reject) => {
+      downloads[kind] = {
+        async finish() {
+          delete downloads[kind];
+          for (const percent of [25, 50, 75, 100]) {
+            window.__MOCK__.emit(event, { downloaded: (total * percent) / 100, total, percent });
+            await sleep(25);
+          }
+          done();
+          resolve(null);
+        },
+        fail(why) {
+          delete downloads[kind];
+          reject(why);
+        },
+      };
+    });
+
+  // ── The setup's microphone meter ──
+  // Like the backend's: a start opens the microphone after `delay` ms and
+  // answers "stopped" when a stop or a newer start came meanwhile, or with
+  // `fail` when that is set. While it is open a level goes out ten times a
+  // second. timeOut() is the backend's two-minute limit and the window
+  // closed to the tray: it closes without a word. lose() is the microphone
+  // unplugged: one last level of 0.
+  const meter = {
+    open: false,
+    delay: 0,
+    fail: null,
+    run: 0,
+    timer: null,
+    close() {
+      meter.open = false;
+      clearInterval(meter.timer);
+    },
+    timeOut() {
+      meter.run++;
+      meter.close();
+    },
+    lose() {
+      meter.close();
+      window.__MOCK__.emit("mic-level", 0);
+    },
+  };
+  window.__MOCK__.meter = meter;
 
   const clockFmt = (ms) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 
@@ -195,18 +270,27 @@
     speech_status: () => {
       const downloaded = whisperDownloaded.includes(settings.whisperModel);
       const local = settings.engine === "local";
+      const loaded = local && downloaded && Date.now() >= loadingUntil;
       return {
         engine: settings.engine, model: settings.whisperModel, downloaded,
-        load: local && downloaded ? "loaded" : "unloaded", freed: false, cloudKey: !!settings.groqApiKey,
-        device: local && downloaded ? "NVIDIA GeForce RTX 5080 (CUDA)" : "",
+        load: loaded ? "loaded" : local && downloaded ? "loading" : "unloaded", freed: false, cloudKey: !!settings.groqApiKey,
+        device: loaded ? "NVIDIA GeForce RTX 5080 (CUDA)" : "",
+        ...window.__MOCK__.speech,
       };
     },
-    list_microphones: () => rich
+    list_microphones: () => kept.mics ?? (rich
       ? [{ name: "Microphone (Fast Track)", is_default: true }, { name: "Headset Microphone (Logitech PRO X)", is_default: false }, { name: "Microphone (HD Pro Webcam C920)", is_default: false }]
-      : [{ name: "Microphone (Realtek(R) Audio)", is_default: true }],
+      : [{ name: "Microphone (Realtek(R) Audio)", is_default: true }]),
     get_recording_state: () => "Ready",
     check_model_downloaded: (a) => whisperDownloaded.includes(a.modelSize),
-    download_model: () => new Promise(() => {}),
+    download_model: (a) =>
+      download("speech", "download-progress", whisperBytes[a.modelSize] ?? 466e6, () => {
+        whisperDownloaded.push(a.modelSize);
+        // The backend loads the model and says so, as after every change.
+        loadingUntil = Date.now() + 300;
+        setTimeout(() => window.__MOCK__.emit("speech-status", handlers.speech_status()), 0);
+        setTimeout(() => window.__MOCK__.emit("speech-status", handlers.speech_status()), 320);
+      }),
     detect_gpus: () => [
       { gpu_index: 0, api: "Cuda", name: "NVIDIA GeForce RTX 5080", integrated: false, memory_mib: 16303 },
       { gpu_index: 1, api: "Vulkan", name: "NVIDIA GeForce RTX 5080", integrated: false, memory_mib: 16303 },
@@ -226,9 +310,14 @@
       return null;
     },
     ai_status: () => ({
-      server: rich ? { state: "ready", device: "NVIDIA GeForce RTX 5080 (CUDA)" } : { state: "stopped" },
-      installed: true, models: aiModels, downloading: null, gpuFreed: false, gameFreed: false,
+      // On a new PC the AI runs once its model is there and AI cleanup is on.
+      server: rich || (settings.aiCleanup && aiModels.some((m) => m.id === settings.aiModel && m.downloaded)) ? { state: "ready", device: "NVIDIA GeForce RTX 5080 (CUDA)" } : { state: "stopped" },
+      installed: true, models: aiModels, downloading: downloads.ai ? settings.aiModel : null, gpuFreed: false, gameFreed: false,
     }),
+    ai_download_model: (a) => {
+      const model = aiModels.find((m) => m.id === a.id);
+      return download("ai", "ai-download-progress", model.bytes, () => (model.downloaded = true));
+    },
     list_open_apps: () => ["chrome", "code", "discord", "explorer", "olk", "whatsapp.root"],
     learn_suggestions: () => rich ? [{ word: "Shiggy", heard: "Shiggi", count: 3 }, { word: "Temporal", heard: "temporäl", count: 1 }] : [],
     speaker_model_status: () => ({ downloaded: rich, runtime: true, downloading: false }),
@@ -246,8 +335,26 @@
     "plugin:event|unlisten": () => null,
     "plugin:dialog|open": () => (de ? "C:\\Users\\Oggi\\Downloads\\Kundengespräch Keller 2026-10-05.m4a" : "C:\\Users\\Oggi\\Downloads\\Client call Keller 2026-10-05.m4a"),
     "plugin:dialog|save": () => null,
-    mic_meter_start: () => (rich ? "Microphone (Fast Track)" : "Microphone (Realtek(R) Audio)"),
-    mic_meter_stop: () => null,
+    mic_meter_start: () =>
+      new Promise((resolve, reject) => {
+        const run = ++meter.run;
+        meter.close();
+        setTimeout(() => {
+          if (run !== meter.run) return reject("stopped");
+          if (meter.fail) return reject(meter.fail);
+          meter.open = true;
+          let i = 0;
+          meter.timer = setInterval(() => window.__MOCK__.emit("mic-level", 0.3 + 0.2 * Math.sin(i++ / 2)), 100);
+          resolve(handlers.list_microphones()[0]?.name ?? "");
+        }, meter.delay);
+      }),
+    mic_meter_stop: () => {
+      meter.run++;
+      meter.close();
+      return null;
+    },
+    "plugin:window|is_visible": () => window.__MOCK__.window.visible,
+    "plugin:window|is_minimized": () => window.__MOCK__.window.minimized,
     learn_resolve: (a) => (rich ? [{ word: "Shiggy", heard: "Shiggi", count: 3 }, { word: "Temporal", heard: "temporäl", count: 1 }].filter((s) => s.word !== a.word) : []),
   };
   // Commands that only do something in the real backend.

@@ -339,3 +339,153 @@
 .home-recent-foot:not(:has(button:not(.hidden))) {
   display: none;
 }
+
+/* ── First run ──────────────────────────────────────── */
+
+/* The steps instead of the daily view, and the optional card. The steps
+   keep the measure of a Settings page, so in a large window a step's button
+   stays near its text; after the setup the card heads the daily view and is
+   as wide as it. */
+#home-setup,
+#home-ai-card {
+  max-width: 832px;
+  margin: 0 0 var(--s4);
+}
+
+#home-setup.hidden ~ #home-ai-card {
+  max-width: none;
+}
+
+.setup-steps {
+  list-style: none;
+}
+
+/* A step: its mark, what it is and how it stands, its one action. */
+.setup-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--s2) var(--s3);
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.setup-steps > .setup-step:last-child,
+.home-setup > .setup-step {
+  border-bottom: none;
+}
+
+/* The number of a step that is to do, in the colour of the button that
+   does it; a tick once it is done. */
+.setup-num {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  margin-top: -2px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--fs-s);
+  font-weight: 600;
+  line-height: 24px;
+  text-align: center;
+}
+
+.setup-step[data-state="done"] .setup-num {
+  background: var(--ok-bg);
+  color: var(--text-ok);
+}
+
+.setup-step[data-state="problem"] .setup-num {
+  background: var(--warn-bg);
+  color: var(--text-warn);
+}
+
+/* The optional card's "+" is no step to do. */
+#setup-ai .setup-num {
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+
+.setup-main {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* What a step says is the page's text here, not a hint under a setting. */
+.setup-main > .status-line {
+  font-size: var(--fs);
+}
+
+/* The level: the bar and what it is for, on one line while there is room. */
+.setup-meter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s3);
+  margin-top: var(--s1);
+}
+
+.setup-level {
+  flex: 0 0 auto;
+  width: 200px;
+  max-width: 100%;
+  height: 8px;
+  border-radius: 4px;
+}
+
+/* The level follows the voice at once. */
+.setup-level .progress-fill {
+  border-radius: 4px;
+  background: var(--text-ok);
+  transition: width 80ms linear;
+}
+
+.setup-main .progress {
+  max-width: 420px;
+  margin-top: var(--s1);
+}
+
+.setup-action {
+  flex-shrink: 0;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s2);
+  max-width: 50%;
+}
+
+/* The list of microphones takes a line of its own under the step's text,
+   so the longest name fits. */
+.setup-action:has(> select:not(.hidden)) {
+  flex: 1 0 100%;
+  max-width: none;
+  justify-content: flex-start;
+  padding-left: calc(24px + var(--s3));
+}
+
+.setup-action > select {
+  width: auto;
+  max-width: 100%;
+}
+
+/* "Change" stays beside the key, also while the key box asks for the new
+   key in a sentence: the sentence takes two lines in the box. */
+.setup-action.hotkey-control {
+  flex-wrap: nowrap;
+}
+
+/* A button whose work runs ("Downloading…"): it keeps its place and the
+   keyboard focus, and does nothing. */
+.setup-action [aria-disabled="true"],
+.setup-action [aria-disabled="true"]:is(:hover, :active) {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--text-2);
+  cursor: default;
+}

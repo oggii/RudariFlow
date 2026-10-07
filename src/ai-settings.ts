@@ -138,6 +138,29 @@ export function aiSummary(): { name: string; state: string; tone: string; kind: 
   return { name: model?.label ?? "", state: said.text, tone: said.tone, kind: said.kind, downloaded: !!model?.downloaded, retry: said.kind === "failed" ? restart : null };
 }
 
+/** An AI model's name and size, for the setup's suggestion. */
+export function aiModelInfo(id: string): { name: string; bytes: number } | null {
+  const model = status?.models.find((m) => m.id === id);
+  return model ? { name: model.label, bytes: model.bytes } : null;
+}
+
+/** Home's setup card: choose this model, download it and turn AI cleanup on. True when it is on. */
+export async function setUpAi(id: string): Promise<boolean> {
+  if (host.settings().aiModel !== id && status?.models.some((m) => m.id === id)) {
+    host.settings().aiModel = id;
+    await host.save();
+    await refreshStatus();
+  }
+  if (!selectedModel()?.downloaded) await download();
+  if (!selectedModel()?.downloaded || !status?.installed) return false;
+  host.settings().aiCleanup = true;
+  toggle.checked = true;
+  renderOutputSkip();
+  await host.save();
+  await refreshStatus();
+  return true;
+}
+
 function gb(bytes: number): string {
   return (bytes / 1e9).toFixed(1);
 }
