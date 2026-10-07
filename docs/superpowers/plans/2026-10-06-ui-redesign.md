@@ -84,6 +84,8 @@ apply_stage() {
 
 **After the review of Task 3 (the shell).** What later tasks build on changed in five places. (1) The status: the missing speech model's own download is the status `downloading` with its percent (before "Setup needed"), `StatusInput` has `speechDownload`, `activity()` also says which download runs and the speech model's percent, a download no longer makes Home's heading "Getting ready…", and what is read out is `#status-live` (`statusSaid`, no percent) while `#status-text` is `aria-hidden`. `ui-check` does not measure the contrast of `aria-hidden` text; the pill's five tones were measured by hand: 6.5:1 to 9.0:1. (2) `announceRoute()` tells every `onRoute` listener the place the window starts on, once, at the end of `main.ts`'s start; a listener a later task adds (Home's `renderHome`) hears of it too. (3) The sidebar has one left edge at x 20 (logo mark, pill, icons, version; 12 px inside the items) and the pages' padding is 24 px (`--s5`) instead of 32 and 40: every page starts at x 224 and is 16 px wider, so a pixel position measured before can differ by that much. (4) `resolve("settings/<no tab>")` keeps the tab; `sizeText` never says "1000 MB". (5) Unit tests: 31 after Task 3 instead of 23, so every later count is 8 higher (the tasks below carry the new numbers). The merges of the next stage were rehearsed again with these fixes in place (`main.ts`, `ai-settings.ts`, `i18n.ts`, `style.css`, `index.html`, `pages.mjs`, `mock.js` from stage 3 to 5; `components.css` from 5 to 6): no conflict.
 
+**After the review of Task 4 (Home).** What later tasks build on changed in seven places. (1) The layout's steps: `home.ts` decides `wide` (900 px) and `wider` (1600 px) on `#content.offsetWidth`, the width with the scrollbar's room in it. With `clientWidth` the 1600 px step changed in every frame at some window sizes (1800 to 1805 px wide, about 900 px high): the wider form was 40 px higher, got a scrollbar, lost 6 px, stepped back, lost the scrollbar, and so on. In `wider` the two sides keep 5fr / 6fr (it was 4fr / 3fr, which made the list narrower at 1920 px than at 1600 px) and the controls' side is two columns of cards itself (4fr / 5fr, each card as high as its rows), so the wider form is never the higher one. A probe that reads the layout must use `offsetWidth` too. (2) The list's rows have one shape for all rows, chosen by the width of the card (`.home-recent` is a query container, the `@container` rules are in `home.css`), not by how many actions a row has: below 600 px the actions stand under the text, from 600 px at the right on the level of the second line, from 840 px beside the text in two columns all rows share (`subgrid`). Delete is the row's last action and stands apart (`.history-actions > :last-child`). The second line is made of `.history-part` spans that do not break. (3) Markup: `#home-ai-retry`, `#home-output-hint`, `#history-live` are new; `#home-ai-status` is hidden and empty unless AI cleanup loads or is not available; `#history-list` is a `role="list"` of `role="listitem"` rows named after their text (`#history-text-<id>`), with `data-id`; `#history-empty` takes the focus (`tabindex="-1"`). (4) `aiSummary()` (and `HomeHost.ai()`) returns `{ name, state, tone, kind, downloaded, retry }`: `state` is the text without the Retry button, `kind` is an `AiKind` (`"ready"`, `"off"`, `"missing"`, `"loading"`, `"failed"` …), `retry` is the function behind Retry or null. `ai-settings.ts` writes its state line only through `say(text, tone, kind)`. (5) `history.ts`: `action(label, onClick, name?)` catches a failed action and says "{action} failed" on the button for 2.5 s (`history_action_failed`); `render()` gives the keyboard focus back after the rows were drawn again (the same action of the same dictation; after a Delete the first action of the row that moved up; then the search field or the empty text) and no longer stops a recording whose row is still in the list (`playing.id`, `showPlaying()`); Re-run uses `aria-disabled` and the set `rerunning`. (6) The tool: `run.mjs` knows `alsoSizes` (sizes a page adds in a run without `--size`; `home` adds 1200x800), hands a probe a second argument `run = { openWindow, scenario, lang, size }`, and `openWindow({ scrollbars: true })` opens a window in a second browser that draws its scrollbars (Playwright hides them; the layout flicker was invisible to the tool). `mock.js`: `history_delete` removes the entry. `run.mjs` and `mock.js` are the same in every stage, so no merge touches them. (7) Unit tests: 37 after Task 4's review (search 5; status has had 16 since the re-review of Task 3, so it was 36 before, not 35), and every later count is 2 higher than first written (the tasks below carry the new numbers). The merges of the next stages were rehearsed with these fixes in place (`home.ts`, `history.ts`, `mirror.ts`, `main.ts`, `ai-settings.ts`, `i18n.ts`, `styles/home.css`, `index.html`, `pages.mjs`, `mock.js`, `run.mjs`; 5 to 6, 6 to 7, 7 to final; `home.ts` also with the first run put back as Task 5 will): the review adds no conflict. Two conflicts are there from earlier work and were not written down, both in Task 6, which now names them: `home.ts` (the Speech model line, Task 4's own change; the review made the hunk one line longer) and `ai-settings.ts` (the download's progress, Task 3's review). And one thing that merges without a conflict and loses a fix: Task 7's stage builds the row's Delete with `deleteButton`, past `action()` and its catch (Task 7 Step 2, correction 2).
+
 ## File map
 
 | File | Change | Task |
@@ -626,11 +628,11 @@ The prototype has Home and the first run as one stage (5). This task takes stage
 **Interfaces:**
 - Consumes: `shell.ts` (`reveal`), `status-view.ts` (`currentSpeech`, `currentStatus`, `onStatus`), `status.ts` (`homeTitle`, `statusText`), `hotkey-capture.ts` (the existing capture), the Settings controls `#ai-toggle`, `#language-select`, `#ai-output-select`, `#mic-select`.
 - Produces (`src/search.ts`, pure): `fold(text)`, `matches(texts, query)`, `RECENT = 8`, `PAGE = 50`, `Shown<T>`, `shown(all, texts, query, expanded, pages)`.
-- Produces (`src/mirror.ts`): `mirrorSelect(source, copy) -> sync`, `mirrorSwitch(source, copy) -> sync` (a second control for a Settings control: same value, the change goes through the Settings control's own handler).
-- Produces (`src/history.ts`): `HistoryHost { mode() }`, `initHistory(host)`, `refreshHistory()`; rows are `article.list-row.history-item` with `.history-text`, `.history-meta` (app · time · length · model, wraps), actions Copy, Original / AI version, Play, Re-run, Delete.
-- Produces (`src/home.ts`): `HomeHost { recordingMode(), dictationKey(), ai(), addWords(text) }` (Task 5 adds three members), `initHome(host)`, `renderHome()`. (`src/ai-settings.ts`): `aiSummary()`. (`src/dictionary.ts`): `addWords(text)` exported.
-- Produces (markup): `#home-title`, `#home-status`, `#home-status-text`, `#home-how`, `#home-notice`, `#home-notice-open`, `#home-daily.home-grid` (class `wide` from 900 px of content), `#home-controls`, `#home-hotkeys` (`#home-hotkey-btn`, `#home-paste-last-btn`, `#home-rewrite-last-btn`, `#home-free-gpu-btn` with `…-text`), `#home-switches` (`#home-ai-toggle`, `#home-ai-status`, `#home-language-select`, `#home-output-select`), `#home-loaded` (`button.home-loaded-row[data-reveal]`, `#home-loaded-speech|ai|mic`), `#home-word-form`, `#home-word-input`, `#home-word-status`, `#home-recent` (`#history-search`, `#history-list`, `#history-empty`, `#history-more`, `#history-less`). In Settings › General: `#history-count`, `#history-clear`.
-- Produces (i18n): `home_how_hold|toggle`, `home_key_dictate|paste|rewrite|unset`, `home_loaded_speech|ai`, `home_speech_loading|failed|unloaded|missing`, `home_load_failed`, `home_open_models`, `home_word_label|added|known`, `home_recent_title|search|all|more|less|none`.
+- Produces (`src/mirror.ts`): `mirrorSelect(source, copy) -> sync`, `mirrorSwitch(source, copy) -> sync` (a second control for a Settings control: same value, the change goes through the Settings control's own handler); since the review `mirrorHint(sources, copy) -> sync` (the notes under a Settings control shown again under its copy: the text of every source that is not `.hidden`; hidden and empty with none).
+- Produces (`src/history.ts`): `HistoryHost { mode() }`, `initHistory(host)`, `refreshHistory()`; rows are `article.list-row.history-item` (`role="listitem"`, `aria-labelledby` its text, `data-id`) with `.history-text` (`id="history-text-<id>"`), `.history-meta` (app · time · length · model as `.history-part` spans that do not break; the line wraps between them), actions Copy, Original / AI version, Play (`data-action="play"`), Re-run (`data-action="rerun"`), Delete (the last one). `action(label, onClick, name?)` makes an action's button and catches its failure.
+- Produces (`src/home.ts`): `HomeHost { recordingMode(), dictationKey(), ai(), addWords(text) }` (Task 5 adds three members), `initHome(host)`, `renderHome()`. (`src/ai-settings.ts`): `aiSummary() -> { name, state, tone, kind, downloaded, retry }`, `AiKind`. (`src/dictionary.ts`): `addWords(text)` exported.
+- Produces (markup): `#home-title`, `#home-status`, `#home-status-text`, `#home-how`, `#home-notice`, `#home-notice-open`, `#home-daily.home-grid` (class `wide` from 900 px and `wider` from 1600 px of `#content.offsetWidth`), `#home-controls`, `#home-hotkeys` (`#home-hotkey-btn`, `#home-paste-last-btn`, `#home-rewrite-last-btn`, `#home-free-gpu-btn` with `…-text`; an unset key's text is "Not set · " and `span.key-set`), `#home-switches` (`#home-ai-toggle` described by `#home-ai-status`, `#home-ai-retry`, `#home-language-select`, `#home-output-select` described by `#home-output-hint`), `#home-loaded` (`button.home-loaded-row[data-reveal]`, `#home-loaded-speech|ai|mic`; with the cloud engine the first line leads to `#groq-key`), `#home-word-form`, `#home-word-input`, `#home-word-status`, `#home-recent` (`#history-search`, `#history-list` as `role="list"`, `#history-empty`, `#history-live` as `role="status"`, `#history-more`, `#history-less`). In Settings › General: `#history-count`, `#history-clear`.
+- Produces (i18n): `home_how_hold|toggle`, `home_key_dictate|paste|rewrite|unset|missing`, `home_loaded_speech|ai`, `home_speech_loading|failed|unloaded|missing`, `home_mic_missing`, `home_load_failed`, `home_open_models`, `home_word_label|added|known`, `home_recent_title|search|all|more|less|none|found|found_one`, `history_action_failed`. `home_key_unset` is two parts around " · ": the second one is underlined.
 
 - [ ] **Step 1: Merge stage 5**
 
@@ -657,9 +659,11 @@ Expected: `merged` for `ai-settings.ts`, `dictionary.ts`, `i18n.ts`, `main.ts`, 
 
 - [ ] **Step 3: Verify**
 
-`npx tsc --noEmit` clean; `npx vite build` clean; `npm run test:unit`: `tests 35` (+ search 4).
+`npx tsc --noEmit` clean; `npx vite build` clean; `npm run test:unit`: `tests 35` (+ search 4); after the review `tests 37` (search 5, status 16).
 
 `node tools/ui-check/run.mjs --no-shots --task 4`: `49 findings, 49 known`, one stale entry (`span.history-meta`, `"until": 4`); delete it (10 remain); exit 0. The `home` probe checks: two columns from 900 px of content and the recent dictations after the quick switches below it; Home's AI switch, Language and a hotkey set on Home change the setting and show in Settings at once; "Add a word" lands in the dictionary; the search finds a dictation by its app. `home-all` checks Show all (50), Show more (+50), the end of the list, Show fewer (8).
+
+Since the review the run is still `49 findings, 49 known` (name 32, hint-lines 12, clipped 5), with `home` also at 1200x800, and the probes check more. `home`: what is loaded has no colour while nothing is missing, and in the first-run data set both model lines are tinted and say "not downloaded"; the AI's state line is hidden and empty while it is ready, and shows why the switch is off in the first run; both sides start on one top edge and the list is the wider one; every row is a named list item, all rows have one shape and no part of a second line is broken; an unset key underlines only "Set" and shows the accent box while it listens; "Write in" with AI cleanup off shows Settings' reason under Home's select (`aria-describedby`) and loses it with the language; the search says what it found (`#history-live`); Delete from the keyboard puts the focus on the next row's first action; with the cloud engine the Speech model line says "API key missing" and leads to `#groq-key`, the other two lines lead to their selects; and once per run (English, 1600x900) the layout's two steps are tried in a window with its scrollbar drawn, one pixel below, at and above each step, at the heights where the page just fits and just does not: nothing may change by itself (on the code before the review 10 of 75 sizes did). `home-all`: after the last page the focus is on Show fewer, after Show fewer on Show all.
 
 Screenshots: `--pages "home,home-all,settings-general" --size 1600x900`, `--size 900x600`, and `--lang de --size 900x600`: compare with `mockups/home.html` option 2 and `look.html` option B; in German the history's second line wraps and loses nothing (audit, German defect 2). With the first-run data set Home shows the daily view with empty lists and the status "Setup needed: no speech model"; the steps come with Task 5.
 
@@ -692,6 +696,15 @@ EOF
 
 Everything in Task 4 Step 2's list, taken from `$P/app_src_task5/` (`home.ts`, `main.ts`, `ai-settings.ts`, `i18n.ts`, `styles/home.css`), `$P/app_index_task5.html` (lines 85 to 149) and `$P/tool5/pages.mjs` (the `home` probe's first-run branch and its original daily-view line). Afterwards `diff -ru --strip-trailing-cr $P/app_src_task5 src` shows only the corrections of Tasks 3 to 5 and review fixes. (Not the heading lines Task 4 deleted from `status-view.ts`: they stay deleted.)
 
+Notes from the review of Task 4. Stage 5 is older than its fixes: where a line of stage 5 differs from the repo's in what follows, the repo's stays.
+
+- `src/home.ts`: `layout()` reads `$("content").offsetWidth` and sets `wider` (stage 5: `clientWidth`, no `wider`). `HomeHost.ai()` returns `{ name, state, tone, kind, downloaded, retry }`; the three members come back beside it. The `syncs` array ends with `mirrorHint(…)`: put `mirrorSelect(select("mic-select"), select("setup-mic-select")),` back before it. `renderLoaded()` is the repo's whole (no colour for a value, "not downloaded" for the AI model, the microphone line with `home_mic_missing`, the state line only when there is something to say, `#home-ai-retry`); `renderSetup()` reads `host.ai().downloaded` as before.
+- `src/main.ts`: the listener for the window's focus stays as it is (it lists the microphones only while none is listed and the settings are loaded; stage 5's line asks at every focus). `renderHotkeys()` stays (the unset key's two parts). `renderMicOptions()` marks an unplugged microphone's option with `data-missing`.
+- `src/ai-settings.ts`: `aiModelInfo` and `setUpAi` come back after `aiSummary`, unchanged. Whatever writes `statusLine` goes through `say(text, tone, kind)`; stage 5's two functions do not write it.
+- `src/styles/home.css`: only the block from `/* ── First run ─` to the end comes back, at the end of the file.
+- `index.html`: lines 85 to 149 of the stage's file go where they were (between `#home-notice` and `#home-daily`); nothing inside `#home-daily` is taken from the stage.
+- `tools/ui-check/pages.mjs`: the first-run branch replaces only the line `if (firstrun) return out; // the first run: Task 5`. The checks before it (what is loaded, the AI's state line) run in both data sets and read text and classes, so they hold while `#home-daily` is hidden behind the steps. The probe's signature is `async (page, run)`.
+
 Notes from the review of Task 3, for `home.ts`:
 
 - **"Setup needed" has two definitions.** `status.ts` counts a speech model that failed to load as setup (`missing` is `["load"]`), `setup.ts` does not (`setup(...).needed` asks only for a microphone and a downloaded model or the cloud key). So with a failed load the pill says "Setup needed: model did not load" while the steps do not show. Home must then show its load-failed notice with the link to Models & GPU (Task 4's `#home-notice`, `home_load_failed`, `home_open_models`). Verify it with a probe in the `home` page of `pages.mjs`: emit `speech-status` with `downloaded: true, load: "failed"` and expect `#home-notice` shown, `#home-setup` hidden and the pill's kind `setup`.
@@ -716,7 +729,7 @@ Notes from the review of Task 3, for `home.ts`:
 
 - [ ] **Step 3: Verify**
 
-`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 35`. `node tools/ui-check/run.mjs --no-shots --task 5`: `49 findings, 49 known`, exit 0 (no entry has `"until": 5`). The first-run branch of the `home` probe checks: the steps show instead of the daily view; `mic_meter_start` is called and the level bar follows `mic-level`; Download asks for the model `recommend` suggests for the graphics card (`large-v3-turbo-q8_0` in the mock); the progress reads "43 % · 374 MB of 870 MB" (the sidebar's status says "Downloading 43 %" meanwhile, since Task 3's review); leaving Home calls `mic_meter_stop`. The `shell` probe: the first run starts on Home with the status kind `setup`.
+`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 37`. `node tools/ui-check/run.mjs --no-shots --task 5`: `49 findings, 49 known`, exit 0 (no entry has `"until": 5`). The first-run branch of the `home` probe checks: the steps show instead of the daily view; `mic_meter_start` is called and the level bar follows `mic-level`; Download asks for the model `recommend` suggests for the graphics card (`large-v3-turbo-q8_0` in the mock); the progress reads "43 % · 374 MB of 870 MB" (the sidebar's status says "Downloading 43 %" meanwhile, since Task 3's review); leaving Home calls `mic_meter_stop`. The `shell` probe: the first run starts on Home with the status kind `setup`.
 
 Screenshots: `--pages home --scenario firstrun`, both sizes and both languages; compare with the first-run mockup in `mockups/home.html`.
 
@@ -755,7 +768,29 @@ cp $P/app/tests/unit/models.test.ts tests/unit/
 git merge-file tools/ui-check/pages.mjs $P/tool5/pages.mjs $P/tool6/pages.mjs
 ```
 
-Expected: `merged` for `ai-settings.ts`, `home.ts`, `i18n.ts`, `main.ts`, `style.css`, `styles/components.css`; `new` for `confirm-delete.ts`, `models.ts`, `replacements.ts`, `rows.ts`, `styles/settings.css`; no conflict (rehearsed with the corrections of Tasks 3 to 5 in place, and again with Task 2's review fixes: `style.css` merges cleanly; for `styles/components.css` the stage's one line, `flex-wrap: wrap;` in `.setting-control`, is already there from Task 2's review, so the merge changes nothing and `git diff src/styles/components.css` stays empty). The two removed files are dead code in stage 6 (and `replacements.ts` uses two i18n keys that only stage 7 has, which the tool would report).
+Expected: `merged` for `i18n.ts`, `main.ts`, `style.css`, `styles/components.css`; `CONFLICT` for `home.ts` and `ai-settings.ts`, one place each (below); `new` for `confirm-delete.ts`, `models.ts`, `replacements.ts`, `rows.ts`, `styles/settings.css`; no other conflict (rehearsed with the corrections of Tasks 3 to 5 in place, and again with Task 2's review fixes: `style.css` merges cleanly; for `styles/components.css` the stage's one line, `flex-wrap: wrap;` in `.setting-control`, is already there from Task 2's review, so the merge changes nothing and `git diff src/styles/components.css` stays empty). The two removed files are dead code in stage 6 (and `replacements.ts` uses two i18n keys that only stage 7 has, which the tool would report).
+
+The two conflicts (rehearsed after the review of Task 4, with the first run put back as Task 5 does; `index.html`, `pages.mjs`, `i18n.ts` and `main.ts` merge cleanly with that review's changes in them):
+
+- `src/home.ts`, in `renderLoaded()`: our side has the comment `// The name alone: …`, the line with `speechModelName(speech.model).replace(/\s*\(.*$/, "")`, the comment `// A value is plain text. …` and the tone line `speechLine.dataset.tone = speech.load === "failed" || !speech.downloaded ? "warn" : "";`; the stage's side has its name line and the old tone line (with `"ok"`). Write the stage's name line and our tone line with its comment:
+
+```ts
+    speechLine.textContent = `${speechModel(speech.model).name} · ${state[speech.load]}`;
+    // A value is plain text. Only what is missing or failed is tinted, in all three lines.
+    speechLine.dataset.tone = speech.load === "failed" || !speech.downloaded ? "warn" : "";
+```
+
+  (`models.ts` has the name without the size, so the comment about the dropdown's size goes with the regular expression. The stage deletes `speechModelName` itself without a conflict.)
+- `src/ai-settings.ts`, in the listener of `ai-download-progress`: the stage writes the numbers with `progress_numbers`, Task 3's review had put `if (downloadInFlight)` before `setDownload("ai", percent);` on the next line. Take the stage's four lines for `progressText` (with their comment) and keep our guarded line with its comment:
+
+```ts
+    // Always the numbers: percent and size.
+    progressText.textContent = total
+      ? t("progress_numbers").replace("{percent}", String(Math.round(percent))).replace("{done}", sizeText(downloaded)).replace("{total}", sizeText(total))
+      : `${Math.round(percent)} %`;
+    // A progress event that arrives after the download ended must not bring it back into the status.
+    if (downloadInFlight) setDownload("ai", percent);
+```
 
 - [ ] **Step 2: Correction: place names**
 
@@ -775,7 +810,7 @@ Seven texts still name tabs that no longer exist (the prototype never changed th
 
 - [ ] **Step 3: Verify**
 
-`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 37` (+ models 2).
+`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 39` (+ models 2).
 
 `node tools/ui-check/run.mjs --no-shots --task 6`: `17 findings, 17 known` (name 9: the rule rows, the replacement rows, the Files transcript; clipped 5: the rule-language selects, the Soundboard's device selects; hint-lines 3: the Soundboard), three stale entries (`name *`, `hint-lines *`, `select#*model-select`, all `"until": 6`); delete them (7 remain); exit 0. The run covers: every tab and every tab with Advanced open at three sizes in both languages; every hint on one line at 1600 px (two below); every control named; the `settings-models-advanced` probe (More opens the long hint in place, an open fold is remembered over a new start); the `shell` probe (the tab is remembered); and `roundtrip`: all 32 values shown, all 39 changes saved, among them every hotkey from its new place.
 
@@ -837,9 +872,32 @@ function renderSuggestions(now: Suggestion[] = suggestions) {
 
 (the loop below it then iterates `suggestions`), and make `renderSuggestions();` the first line of `renderDictionary()`.
 
+Correction 2, from the review of Task 4: a delete that fails must say so. `src/history.ts` merges without a conflict, and the stage's `deleteButton(…)` takes the place of `action(t("history_delete"), …)`, whose `action()` catches a failed action and writes "{action} failed" on its button. `deleteButton` runs the delete without anyone waiting for it, so a failure would be an unhandled rejection again. Write the block as (and import `repaintDeletes` with `confirmDelete` and `deleteButton`):
+
+```ts
+  const del = deleteButton(
+    `history-${e.id}`,
+    async () => {
+      try {
+        if (playing && item.contains(playing.btn)) stopPlayback();
+        await invoke("history_delete", { id: e.id });
+        await refreshHistory();
+      } catch (err) {
+        console.error("history_delete failed:", err);
+        del.textContent = t("history_action_failed").replace("{action}", () => t("delete"));
+        setTimeout(repaintDeletes, 2500);
+      }
+    },
+    { name: e.text.slice(0, 40) },
+  );
+  actions.appendChild(del);
+```
+
+What else the review of Task 4 built into the rows holds without a change: Delete is still the row's last action (the gap before it is `.history-actions > :last-child` in `home.css`); after a delete `render()` puts the focus on the first action of the row that moved up; and the `home` probe's Delete from the keyboard presses Enter a second time when the first press only armed the button.
+
 - [ ] **Step 3: Verify**
 
-`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 41` (+ arm 4).
+`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 43` (+ arm 4).
 
 `node tools/ui-check/run.mjs --no-shots --task 7`: `7 findings, 7 known` (clipped 3 and hint-lines 3 on the Soundboard, name 1 on the Files transcript), three stale entries (`*.rule-*`, `*.replacement-*`, `select.rule-language`, all `"until": 7`); delete them (4 remain); exit 0. The `settings-dictionary` probe checks: the first click on Delete only arms, Esc disarms, a click elsewhere disarms, the second click deletes; the suggestions are in the Display Language; the word search finds "Zürich" for "zurich"; the replacement search hides rows and a save while searching keeps the hidden ones; a replacement needs two clicks. `grep -rn "armedDelete\|armedTimer\|_delete_confirm\|replacement_remove" src` prints nothing.
 
@@ -944,7 +1002,7 @@ Corrections 6 to 8 come from Task 2's review. They sit in page rules the prototy
 
 - [ ] **Step 3: Verify**
 
-`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 41`.
+`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 43`.
 
 `node tools/ui-check/run.mjs --no-shots --task 8`: `0 findings`, four stale entries (the last four); set `tools/ui-check/allow.json` to `[]`; run again: `0 findings, 0 known, 0 new`, exit 0. (Measured on a scratch copy with every correction of this plan.) The run covers: the Soundboard probes (the panel is open only where it has its own column, the switch always shows, the first sound is on the first screen also at 900×600, the panel's state is remembered, the pop-out opens on the sounds with its settings closed); `files-loaded` and `files-result`; every pill probe.
 
@@ -1086,8 +1144,8 @@ EOF
 
 Run by the controller after the whole-branch review and its fix wave.
 
-- [ ] **1. The full `ui-check`, with screenshots:** `node tools/ui-check/run.mjs` with `tools/ui-check/allow.json` equal to `[]`. Expected: exit 0, `0 findings, 0 known (allow.json), 0 new`, about 460 screenshots (both data sets, both languages, 2560×1392, 1600×900, 900×600, the pop-out at 460×680, the pill at 320×64). Allow 15 minutes. Look at Home, the first run, each Settings tab (also with Advanced open), Files with a result, Meetings open and recording, the Soundboard with its panel open and closed, the pop-out, in both languages at 1600×900 and 900×600, against the four mockups.
-- [ ] **2. The unit tests and the frontend build:** `npm run test:unit` (41 pass), `npx tsc --noEmit`, `npx vite build`.
+- [ ] **1. The full `ui-check`, with screenshots:** `node tools/ui-check/run.mjs` with `tools/ui-check/allow.json` equal to `[]`. Expected: exit 0, `0 findings, 0 known (allow.json), 0 new`, about 470 screenshots (both data sets, both languages, 2560×1392, 1600×900, 900×600, Home also at 1200×800, the pop-out at 460×680, the pill at 320×64). Allow 15 minutes. Look at Home, the first run, each Settings tab (also with Advanced open), Files with a result, Meetings open and recording, the Soundboard with its panel open and closed, the pop-out, in both languages at 1600×900 and 900×600, against the four mockups.
+- [ ] **2. The unit tests and the frontend build:** `npm run test:unit` (43 pass), `npx tsc --noEmit`, `npx vite build`.
 - [ ] **3a. Not yet run anywhere: the library's new tests.** On the PC where Task 3 was built, Windows Smart App Control refused to start the library's test binary (os error 4551), so `--lib meter` and `--lib the_load_state` (four tests: `the_meter_level_is_zero_for_silence_and_capped_for_loud`, `a_meter_that_is_not_running_stops_quietly`, `the_loudest_meter_level_wins_as_bits`, `the_load_state_follows_loads_and_unloads`) only compile there; the three `--bins` tests ran and pass. Run the two `--lib` commands on a PC that lets the binary start (the PC that makes the release build) before the release. The policy is not to be changed or worked around.
 - [ ] **3. The Rust tests, filtered:** the five commands of Task 3 Step 3, and `<RUST-ENV> cargo test --no-default-features --bins hotkey` (see Build environment note).
 - [ ] **4. Against the real app** (the spec's list). This needs a test instance, which takes the keyboard focus when it starts and writes into the installed app's `startup.log`: the controller tells the user first, starts it only when the user is not typing, with its own data folder (`RUDARIFLOW_DATA_DIR`), and stops it right after. Never the installed app or its data.

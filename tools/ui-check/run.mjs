@@ -43,6 +43,8 @@ const SHOTS = path.join(here, "shots");
 const SCENARIOS = option("scenario") ? [option("scenario")] : ["populated", "firstrun"];
 const LANGS = option("lang") ? [option("lang")] : ["en", "de"];
 const SIZES = option("size") ? [option("size")] : ["2560x1392", "1600x900", "900x600"];
+/** The sizes a page is opened at: its own, or the run's and (in a run without --size) the ones the page adds. */
+const sizesOf = (p) => p.sizes ?? [...SIZES, ...(option("size") ? [] : (p.alsoSizes ?? []))];
 /** The size and language the keyboard walk runs at (once per page and data set; a page with sizes of its own walks at those). */
 const WALK = { size: "1600x900", lang: "en" };
 const glob = (pattern) => new RegExp("^" + pattern.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
@@ -115,12 +117,19 @@ const BASE = `http://127.0.0.1:${server.address().port}`;
 
 const MOCK = fs.readFileSync(path.join(here, "mock.js"), "utf8");
 const INPAGE = fs.readFileSync(path.join(here, "inpage.js"), "utf8");
-const browser = await chromium.launch({ headless: true, args: ["--disable-gpu", "--mute-audio"] });
+const LAUNCH = { headless: true, args: ["--disable-gpu", "--mute-audio"] };
+const browser = await chromium.launch(LAUNCH);
+/** A second browser that draws its scrollbars, as the app's window does (Playwright hides them); started when a probe asks for it. */
+let barBrowser = null;
 
-/** A window on `url` with the mocked backend. `problems` collects what went wrong in it. */
-async function openWindow({ scenario, lang, size, url }) {
+/**
+ * A window on `url` with the mocked backend. `problems` collects what went wrong in it.
+ * `scrollbars`: with the scrollbars drawn, so a page that gets one loses their width.
+ */
+async function openWindow({ scenario, lang, size, url, scrollbars = false }) {
   const [width, height] = size.split("x").map(Number);
-  const context = await browser.newContext({
+  if (scrollbars) barBrowser ??= await chromium.launch({ ...LAUNCH, ignoreDefaultArgs: ["--hide-scrollbars"] });
+  const context = await (scrollbars ? barBrowser : browser).newContext({
     viewport: { width, height },
     deviceScaleFactor: 1,
     locale: lang === "de" ? "de-CH" : "en-GB",
@@ -216,10 +225,10 @@ for (const scenario of SCENARIOS) {
   for (const lang of LANGS) {
     for (const url of urls) {
       const defs = PAGES.filter((p) => (p.url ?? "/") === url && wanted(p.id) && (p.scenarios ?? ["populated", "firstrun"]).includes(scenario));
-      for (const size of new Set(defs.flatMap((p) => p.sizes ?? SIZES))) {
+      for (const size of new Set(defs.flatMap(sizesOf))) {
         const where = `${scenario} ${lang} ${size}`;
         const win = await openWindow({ scenario, lang, size, url });
-        for (const def of defs.filter((p) => (p.sizes ?? SIZES).includes(size))) {
+        for (const def of defs.filter((p) => sizesOf(p).includes(size))) {
           opened++;
           try {
             if (def.fresh) await win.load();
@@ -242,7 +251,7 @@ for (const scenario of SCENARIOS) {
               report(def.id, where, await win.page.evaluate((o) => window.__uic.collect(o), opts));
               if (lang === WALK.lang && (size === WALK.size || def.sizes)) report(def.id, where, await keyboardWalk(win.page, scope));
             }
-            if (def.probe) report(def.id, where, await def.probe(win.page));
+            if (def.probe) report(def.id, where, await def.probe(win.page, { openWindow, scenario, lang, size }));
             if (!flag("no-shots")) {
               await shoot(win, `${def.id}-${scenario}-${lang}-${size}`);
               shots += 2;
@@ -278,6 +287,7 @@ if (wanted("roundtrip") && SCENARIOS.includes("populated") && LANGS.includes("en
 }
 
 await browser.close();
+await barBrowser?.close();
 server.close();
 if (!opened) stop(`nothing was checked: no page of ${option("pages") ?? "the list"} is opened with --scenario ${SCENARIOS.join(",")}, --lang ${LANGS.join(",")}, --size ${SIZES.join(",")}`);
 

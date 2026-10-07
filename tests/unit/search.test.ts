@@ -39,3 +39,17 @@ test("a search looks through everything, also from the short list", () => {
   assert.deepEqual([byApp.rows.length, byApp.found, byApp.more], [PAGE, 60, 10]);
   assert.equal(shown(entries, texts, "nothing like it", true, 1).found, 0);
 });
+
+test("a query while the list is expanded pages what it finds, and without it the list is whole again", () => {
+  // 60 of the 120 rows are from "olk": two pages of them, then nothing more to show.
+  const first = shown(entries, texts, "olk", true, 1);
+  assert.deepEqual([first.rows.length, first.found, first.more, first.canExpand], [PAGE, 60, 10, false]);
+  const second = shown(entries, texts, "olk", true, 2);
+  assert.deepEqual([second.rows.length, second.found, second.more, second.canExpand], [60, 60, 0, false]);
+  assert.ok(second.rows.every((row) => row.app === "olk"));
+  // Expanded or not, a search finds the same rows.
+  assert.deepEqual(shown(entries, texts, "invoice", true, 1).rows, shown(entries, texts, "invoice", false, 1).rows);
+  // The query cleared: the expanded list at the page it was on, not the short one.
+  const cleared = shown(entries, texts, "  ", true, 2);
+  assert.deepEqual([cleared.rows.length, cleared.found, cleared.more, cleared.canExpand], [100, 120, 20, false]);
+});

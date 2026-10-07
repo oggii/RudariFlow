@@ -29,6 +29,27 @@ export function mirrorSelect(source: HTMLSelectElement, copy: HTMLSelectElement)
   return sync;
 }
 
+/** A second place for the notes under a Settings control (why "Write in"
+ *  does nothing at the moment): the text of every note that shows. With none
+ *  the copy is hidden and empty, so a control it describes has nothing read out. */
+export function mirrorHint(sources: HTMLElement[], copy: HTMLElement): () => void {
+  const sync = () => {
+    const text = sources
+      .filter((source) => !source.classList.contains("hidden"))
+      .map((source) => (source.textContent ?? "").trim())
+      .filter(Boolean)
+      .join(" ");
+    if (copy.textContent !== text) copy.textContent = text;
+    copy.classList.toggle("hidden", text === "");
+  };
+  // A note is written and shown by its own page, with no event to hear.
+  for (const source of sources) {
+    new MutationObserver(sync).observe(source, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+  }
+  sync();
+  return sync;
+}
+
 export function mirrorSwitch(source: HTMLInputElement, copy: HTMLInputElement): () => void {
   const sync = () => {
     copy.checked = source.checked;

@@ -160,6 +160,8 @@ function renderMicOptions() {
   for (const mic of mics) add(mic.name, mic.name);
   if (saved !== "default" && !mics.some((m) => m.name === saved)) {
     add(saved, `${saved} (${t("mic_not_connected")})`);
+    // Home tints its microphone line for it.
+    (micSelect.lastElementChild as HTMLOptionElement).dataset.missing = "true";
   }
   micSelect.value = saved;
 }
@@ -171,8 +173,14 @@ async function listMicrophones() {
   renderMicOptions();
   renderStatus();
 }
-// A microphone plugged in while the window was away (the first run waits for one).
-window.addEventListener("focus", () => void listMicrophones().catch(console.error));
+// A microphone plugged in while the window was away (the first run waits for
+// one). Only while none is listed: asking holds the backend up for a moment
+// and draws the dropdown again, also under an open one. And not before the
+// settings are loaded, which list the microphones themselves.
+window.addEventListener("focus", () => {
+  if (!currentSettings || !micsListed || mics.length > 0) return;
+  void listMicrophones().catch(console.error);
+});
 
 async function loadSettings() {
   currentSettings = await invoke<Settings>("get_settings");
@@ -694,7 +702,16 @@ function renderHotkeys() {
   for (const view of hotkeyViews) {
     const combo = hotkeyOf(view.target);
     const unset = view.home && !combo;
-    view.text.textContent = unset ? t("home_key_unset") : hotkeyLabel(combo);
+    if (unset) {
+      // "Not set · Set": the second part is what a click does, and only it is underlined.
+      const [state, act = ""] = t("home_key_unset").split(" · ");
+      const set = document.createElement("span");
+      set.className = "key-set";
+      set.textContent = act;
+      view.text.replaceChildren(`${state} · `, set);
+    } else {
+      view.text.textContent = hotkeyLabel(combo);
+    }
     view.btn.classList.toggle("key-unset", unset);
     view.clear?.classList.toggle("hidden", !combo);
   }

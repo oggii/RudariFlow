@@ -1,7 +1,7 @@
-/* Home: the dictation page. One column; two from 900 px of content (the
-   class "wide", set by src/home.ts together with the order of the cards);
-   from 1600 px the controls are two columns of cards beside the list (the
-   class "wider"). The page takes the window's whole width. */
+/* Home: the dictation page. One column; two from 900 px beside the sidebar
+   (the class "wide", set by src/home.ts together with the order of the
+   cards); from 1600 px the controls' side is two columns of cards itself
+   (the class "wider"). The page takes the window's whole width. */
 
 #section-home {
   max-width: none;
@@ -47,16 +47,16 @@
   align-items: start;
 }
 
-/* A large window: hotkeys and quick switches side by side, what is loaded
-   and "add a word" below them, each pair of one height. No row is
-   stretched over a width it cannot fill. */
-.home-grid.wider {
-  grid-template-columns: minmax(0, 4fr) minmax(0, 3fr);
-}
-
+/* A large window: the two sides keep their share, so the list never gets
+   narrower when the window grows. The controls' side is two columns of
+   cards: hotkeys and quick switches, below them what is loaded and "add a
+   word"; the quick switches have the wider one for their selects. A card is
+   as high as its rows, not as its neighbour. This layout is never higher
+   than the one below 1600 px (src/home.ts, layout). */
 .home-grid.wider > .home-col {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 4fr) minmax(0, 5fr);
+  align-items: start;
 }
 
 /* One column: the cards of the left column and "Recent dictations" are one list. */
@@ -64,16 +64,56 @@
   display: contents;
 }
 
-/* A key that is not set reads "Not set · Set", not a key box. The words
-   end where the key boxes above them end. */
-.hotkey-btn.key-unset kbd {
+/* A key that is not set reads "Not set · Set", not a key box; "Set" is
+   what a click does. The words end where the key boxes above them end.
+   While it listens for the key, or says why a key was refused, it is the
+   accent box of every other key (components.css). */
+.hotkey-btn.key-unset:not(.capturing) kbd {
   padding-right: 0;
   border-color: transparent;
   background: none;
   font-family: var(--font);
   color: var(--text-2);
+}
+
+.hotkey-btn.key-unset:not(.capturing) .key-set {
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+.hotkey-btn.key-unset:not(.capturing):hover .key-set {
+  color: var(--text);
+}
+
+/* ── Quick switches ─────────────────────────────────── */
+
+/* A select may take the whole row: a setting row's 60 % would cut "Gleiche
+   Sprache wie gesprochen". Where label and select do not fit side by side,
+   the select stands below its label. */
+#home-switches .setting-row {
+  flex-wrap: wrap;
+}
+
+#home-switches .setting-control {
+  max-width: 100%;
+}
+
+#home-switches .setting-row:has(select) > .setting-label {
+  flex: 1 0 auto;
+}
+
+/* Why a row's setting does nothing at the moment, on a line of its own under the row. */
+.home-row-hint {
+  flex: 1 0 100%;
+}
+
+/* The AI's state with "Retry" after it, in one line of text. */
+#home-ai-status {
+  display: inline;
+}
+
+#home-ai-retry {
+  font-size: var(--fs-s);
 }
 
 /* ── What is loaded: three lines that lead to their setting ── */
@@ -116,10 +156,7 @@
   overflow-wrap: anywhere;
 }
 
-.home-loaded-value[data-tone="ok"] {
-  color: var(--text-ok);
-}
-
+/* A value is plain text; only what is missing or failed has a colour. */
 .home-loaded-value[data-tone="warn"] {
   color: var(--text-warn);
 }
@@ -155,7 +192,9 @@
 
 /* ── Recent dictations ──────────────────────────────── */
 
+/* The rows ask this card how wide it is (the @container rule below). */
 .home-recent {
+  container-type: inline-size;
   padding-bottom: var(--s2);
 }
 
@@ -166,10 +205,107 @@
   cursor: text;
 }
 
-/* The words of the row's last action end at the card's right edge, where
-   the search field and the lines between the rows end. */
+/* App, time, length, model: each part stays whole and keeps its dot, so a
+   line breaks between two parts and never starts with the dot. */
+.history-part {
+  white-space: nowrap;
+}
+
+/* Every row has one shape, whatever it can do; which one, the list's width
+   decides for all rows together (the @container rules below), not a row's
+   number of actions. In a narrow list: the text, its second line, the
+   actions below. They start at the text's left edge; Delete stands apart at
+   the card's right edge, where the search field and the lines between the
+   rows end. */
+.history-item {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+
+.history-item > .list-main {
+  flex: none;
+}
+
 .history-actions {
-  margin-right: calc(-1 * var(--s2));
+  justify-content: flex-start;
+  /* As wide as the row and its two margins: "100 %" would stop 8 px short of the right edge. */
+  max-width: none;
+  margin: 0 calc(-1 * var(--s2));
+}
+
+.history-actions > :last-child {
+  margin-left: auto;
+}
+
+/* With more room the actions stand at the right, on the level of the
+   second line: the text keeps the row's whole width. From 600 px, so that
+   the smallest window (a list of 620 px, 614 with the page's scrollbar) has
+   this shape with and without the scrollbar; the German actions then leave
+   the second line about 190 px, and it breaks between two of its parts. */
+@container (min-width: 600px) {
+  .history-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0 var(--s3);
+  }
+
+  .history-item > .list-main {
+    display: contents;
+  }
+
+  .history-text {
+    grid-column: 1 / -1;
+  }
+
+  .history-meta {
+    margin-top: 0;
+  }
+
+  .history-actions {
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    margin-left: 0;
+  }
+
+  .history-actions > :last-child {
+    margin-left: var(--s4);
+  }
+}
+
+/* A wide list: the actions stand beside the text. The rows share the list's
+   two columns, so every text is as wide as the next one. */
+@container (min-width: 840px) {
+  .history-list {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: var(--s3);
+  }
+
+  .history-item {
+    grid-template-columns: subgrid;
+    grid-column: 1 / -1;
+    align-items: start;
+    row-gap: 2px;
+  }
+
+  .history-text {
+    grid-column: 1;
+  }
+
+  .history-actions {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+}
+
+/* Re-run while it runs: it keeps the focus and its words, and does nothing. */
+.history-actions .btn-text[aria-disabled="true"],
+.history-actions .btn-text[aria-disabled="true"]:is(:hover, :active) {
+  background: transparent;
+  color: var(--text-2);
+  cursor: default;
 }
 
 /* "Show all" starts at the rows' left edge. */

@@ -220,6 +220,11 @@
         ]
       : [],
     history_list: () => history,
+    history_delete: (a) => {
+      const at = history.findIndex((h) => h.id === a.id);
+      if (at >= 0) history.splice(at, 1);
+      return null;
+    },
     ai_status: () => ({
       server: rich ? { state: "ready", device: "NVIDIA GeForce RTX 5080 (CUDA)" } : { state: "stopped" },
       installed: true, models: aiModels, downloading: null, gpuFreed: false, gameFreed: false,
@@ -248,7 +253,7 @@
   // Commands that only do something in the real backend.
   for (const cmd of [
     "set_hotkey_paused", "change_hotkey", "copy_text", "diag_log", "set_autostart", "cancel_recording", "cancel_file", "ai_restart",
-    "history_delete", "history_clear", "delete_unused_model", "export_file", "speaker_model_download", "dictionary_export",
+    "history_clear", "delete_unused_model", "export_file", "speaker_model_download", "dictionary_export",
     "soundboard_set_volumes", "soundboard_set_layer", "soundboard_remove", "soundboard_rename", "soundboard_set_category",
     "soundboard_set_sound_volume", "soundboard_set_sound_loop", "soundboard_set_hotkey", "soundboard_set_stop_hotkey",
     "soundboard_set_sound_hotkeys", "soundboard_set_toggle_hotkey", "soundboard_stop_all", "soundboard_category_rename",

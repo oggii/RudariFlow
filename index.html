@@ -118,11 +118,12 @@
                 <div class="setting-row">
                   <div class="setting-label">
                     <span class="label-text" id="home-ai-label" data-i18n="ai_enable_label">AI cleanup</span>
-                    <span class="label-hint status-line" id="home-ai-status"></span>
+                    <span class="label-hint status-line hidden" id="home-ai-status"></span>
+                    <button type="button" id="home-ai-retry" class="link-btn hidden" data-i18n="ai_retry">Retry</button>
                   </div>
                   <div class="setting-control">
                     <label class="switch">
-                      <input id="home-ai-toggle" type="checkbox" role="switch" aria-labelledby="home-ai-label" />
+                      <input id="home-ai-toggle" type="checkbox" role="switch" aria-labelledby="home-ai-label" aria-describedby="home-ai-status" />
                       <span class="switch-slider"></span>
                     </label>
                   </div>
@@ -136,8 +137,9 @@
                 <div class="setting-row">
                   <div class="setting-label"><span class="label-text" id="home-output-label" data-i18n="ai_output_label">Write in</span></div>
                   <div class="setting-control">
-                    <select id="home-output-select" aria-labelledby="home-output-label"></select>
+                    <select id="home-output-select" aria-labelledby="home-output-label" aria-describedby="home-output-hint"></select>
                   </div>
+                  <span class="label-hint status-line home-row-hint hidden" id="home-output-hint" data-tone="warn"></span>
                 </div>
               </div>
 
@@ -171,8 +173,9 @@
                 <h3 class="list-title" data-i18n="home_recent_title">Recent dictations</h3>
                 <input type="search" id="history-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="home_recent_search" data-i18n-aria-label="home_recent_search" placeholder="Search text or app" aria-label="Search text or app" />
               </div>
-              <p id="history-empty" class="empty-state hidden"></p>
-              <div id="history-list" class="list history-list"></div>
+              <p id="history-empty" class="empty-state hidden" tabindex="-1"></p>
+              <div id="history-list" class="list history-list" role="list"></div>
+              <p id="history-live" class="sr-only" role="status"></p>
               <div class="home-recent-foot">
                 <button type="button" id="history-more" class="btn-text hidden"></button>
                 <button type="button" id="history-less" class="btn-text hidden" data-i18n="home_recent_less">Show fewer</button>

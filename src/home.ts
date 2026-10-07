@@ -3,7 +3,7 @@
 // loaded, "add a word", and the recent dictations (src/history.ts). Before
 // the setup is done: the first-run steps instead.
 import { t } from "./i18n";
-import { mirrorSelect, mirrorSwitch } from "./mirror";
+import { mirrorHint, mirrorSelect, mirrorSwitch } from "./mirror";
 import { reveal } from "./shell";
 import { currentSpeech, currentStatus, onStatus } from "./status-view";
 import { homeTitle, statusText, type Status } from "./status.ts";
@@ -13,8 +13,10 @@ export interface HomeHost {
   recordingMode(): string;
   /** The dictation hotkey as it is shown ("Ctrl+Shift+Space"). */
   dictationKey(): string;
-  /** The AI model in use and its state line, as Settings shows them. */
-  ai(): { name: string; state: string; tone: string; downloaded: boolean };
+  /** The AI model in use and its state line, as Settings shows them: the
+   *  text, its tone, what kind of state it is ("ready", "off", "missing",
+   *  "loading", "failed" …) and, after a failed start, the way to try again. */
+  ai(): { name: string; state: string; tone: string; kind: string; downloaded: boolean; retry: (() => void) | null };
   /** Add words to the dictionary; how many were new. */
   addWords(text: string): Promise<number>;
 }
@@ -69,8 +71,8 @@ function renderLoaded() {
   if (!speech) {
     speechLine.textContent = "";
   } else if (speech.engine === "cloud") {
-    speechLine.textContent = t("engine_cloud");
-    speechLine.dataset.tone = speech.cloudKey ? "ok" : "warn";
+    speechLine.textContent = speech.cloudKey ? t("engine_cloud") : `${t("engine_cloud")} · ${t("home_key_missing")}`;
+    speechLine.dataset.tone = speech.cloudKey ? "" : "warn";
   } else {
     const state: Record<string, string> = {
       loaded: speech.device,
@@ -80,18 +82,28 @@ function renderLoaded() {
     };
     // The name alone: the dropdown's size and note ("(~870 MB) …") belong to the choice, not to this line.
     speechLine.textContent = `${speechModelName(speech.model).replace(/\s*\(.*$/, "")} · ${state[speech.load]}`;
-    speechLine.dataset.tone = speech.load === "loaded" ? "ok" : speech.load === "failed" || !speech.downloaded ? "warn" : "";
+    // A value is plain text. Only what is missing or failed is tinted, in all three lines.
+    speechLine.dataset.tone = speech.load === "failed" || !speech.downloaded ? "warn" : "";
   }
   const ai = host.ai();
   const aiLine = $("home-loaded-ai");
-  aiLine.textContent = `${ai.name} · ${ai.state}`;
-  aiLine.dataset.tone = ai.tone;
-  const mic = document.querySelector<HTMLSelectElement>("#mic-select");
-  $("home-loaded-mic").textContent = mic?.selectedOptions[0]?.textContent ?? "";
-  // The AI's state line under the quick switch.
+  // A model that is not downloaded says so, as the speech model's line does.
+  aiLine.textContent = ai.name ? `${ai.name} · ${ai.kind === "missing" ? t("home_speech_missing") : ai.state}` : "";
+  aiLine.dataset.tone = ai.kind === "missing" ? "warn" : ai.tone === "ok" ? "" : ai.tone;
+  const mic = document.querySelector<HTMLSelectElement>("#mic-select")?.selectedOptions[0];
+  const micLine = $("home-loaded-mic");
+  const noMic = currentStatus().missing.includes("microphone");
+  micLine.textContent = noMic ? t("home_mic_missing") : (mic?.textContent ?? "");
+  micLine.dataset.tone = noMic || mic?.dataset.missing ? "warn" : "";
+  // The AI's state under the quick switch, only when there is something to
+  // say: it loads, or it is not available. "Ready" and "Off" are the switch
+  // itself and the line above. Empty when hidden: it describes the switch.
   const line = $("home-ai-status");
-  line.textContent = ai.state;
+  const said = ai.kind === "ready" || ai.kind === "off" ? "" : ai.state;
+  line.textContent = said;
   line.dataset.tone = ai.tone;
+  line.classList.toggle("hidden", said === "");
+  $("home-ai-retry").classList.toggle("hidden", ai.retry === null);
 }
 
 // ── Layout ────────────────────────────────────────────
@@ -99,9 +111,14 @@ function renderLoaded() {
 /** Two columns from 900 px of content; in one column the recent dictations
  *  come right after the quick switches. The card is moved, so the Tab order
  *  is the order on the page in both. From 1600 px the controls are two
- *  columns themselves (styles/home.css), so a large window is filled. */
+ *  columns themselves (styles/home.css), so a large window is filled.
+ *
+ *  The width is the one with the scrollbar's room in it. `clientWidth`
+ *  loses that room when the page gets a scrollbar: a layout that decides on
+ *  it and is higher in the wider form brings its own scrollbar, loses the
+ *  width, steps back, loses the scrollbar, and so on in every frame. */
 function layout() {
-  const width = $("content").clientWidth;
+  const width = $("content").offsetWidth;
   const wide = width >= 900;
   daily.classList.toggle("wider", width >= 1600);
   if (wide === laidOutWide) return;
@@ -130,10 +147,17 @@ export function initHome(h: HomeHost) {
     mirrorSwitch($<HTMLInputElement>("ai-toggle"), $<HTMLInputElement>("home-ai-toggle")),
     mirrorSelect(select("language-select"), select("home-language-select")),
     mirrorSelect(select("ai-output-select"), select("home-output-select")),
+    // Why "Write in" translates nothing at the moment, as Settings says it under the same control.
+    mirrorHint([$("ai-output-skip"), $("ai-output-warn")], $("home-output-hint")),
   ];
+  $("home-ai-retry").addEventListener("click", () => host.ai().retry?.());
 
   for (const row of document.querySelectorAll<HTMLElement>("#home-loaded [data-reveal]")) {
-    row.addEventListener("click", () => reveal(row.dataset.reveal ?? ""));
+    row.addEventListener("click", () => {
+      const id = row.dataset.reveal ?? "";
+      // With the cloud engine there is no speech model to choose (its row is hidden): the key is the setting.
+      reveal(id === "model-select" && currentSpeech()?.engine === "cloud" ? "groq-key" : id);
+    });
   }
   $("home-notice-open").addEventListener("click", () => reveal("model-select"));
 
@@ -144,7 +168,7 @@ export function initHome(h: HomeHost) {
     const word = wordInput.value.trim();
     if (!word) return;
     const added = await host.addWords(word);
-    $("home-word-status").textContent = added > 0 ? t("home_word_added").replace("{word}", word) : t("home_word_known");
+    $("home-word-status").textContent = added > 0 ? t("home_word_added").replace("{word}", () => word) : t("home_word_known");
     wordInput.value = "";
     wordInput.focus();
   });

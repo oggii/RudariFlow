@@ -103,6 +103,22 @@ const testMeta = $("ai-test-meta");
 let host: AiSettingsHost;
 let status: AiStatus | null = null;
 
+/** What the state line says, as a kind: Home shows the line only for some of them. */
+export type AiKind = "" | "not-installed" | "downloading" | "missing" | "off" | "loading" | "ready" | "failed" | "freed" | "starting";
+/** The state line as it reads now (its text alone: "Retry" is a button after it). */
+let said: { text: string; tone: string; kind: AiKind } = { text: "", tone: "", kind: "" };
+
+function say(text: string, tone: string, kind: AiKind) {
+  said = { text, tone, kind };
+  statusLine.textContent = text;
+  statusLine.dataset.tone = tone;
+}
+
+/** "Retry" after the AI did not start. */
+function restart() {
+  invoke("ai_restart").catch(console.error);
+}
+
 const MODEL_NOTE: Record<string, string> = {
   "gemma-4-e4b": "ai_model_recommended",
   "gemma-4-12b": "ai_model_best",
@@ -115,10 +131,11 @@ export function aiActivity(): { loading: boolean; freed: boolean } {
   return { loading: status.server.state === "loading", freed: status.gpuFreed && status.server.state === "stopped" };
 }
 
-/** For Home: the AI model in use, the state line as it reads in Settings, and whether the model is downloaded. */
-export function aiSummary(): { name: string; state: string; tone: string; downloaded: boolean } {
+/** For Home: the AI model in use, the state line as it reads in Settings (its text, tone and kind), whether
+ *  the model is downloaded, and "Retry" while the line offers it. */
+export function aiSummary(): { name: string; state: string; tone: string; kind: AiKind; downloaded: boolean; retry: (() => void) | null } {
   const model = selectedModel();
-  return { name: model?.label ?? "", state: statusLine.textContent ?? "", tone: statusLine.dataset.tone ?? "", downloaded: !!model?.downloaded };
+  return { name: model?.label ?? "", state: said.text, tone: said.tone, kind: said.kind, downloaded: !!model?.downloaded, retry: said.kind === "failed" ? restart : null };
 }
 
 function gb(bytes: number): string {
@@ -160,40 +177,51 @@ function renderStatus() {
 
   let text = "";
   let tone = "";
+  let kind: AiKind;
   const server = status.server;
   if (!status.installed) {
     text = t("ai_status_not_installed");
     tone = "error";
+    kind = "not-installed";
   } else if (downloading) {
     text = t("ai_status_downloading");
+    kind = "downloading";
   } else if (!downloaded) {
     text = t("ai_status_not_downloaded");
+    kind = "missing";
   } else if (!host.settings().aiCleanup) {
     text = t("ai_status_off");
+    kind = "off";
   } else if (server.state === "loading") {
     text = t("ai_status_loading");
+    kind = "loading";
   } else if (server.state === "ready") {
     const onCpu = server.device === "CPU";
     text = onCpu ? t("ai_status_ready_cpu") : t("ai_status_ready").replace("{device}", server.device ?? "");
     tone = onCpu ? "warn" : "ok";
+    kind = "ready";
   } else if (server.state === "failed") {
     text = `${t("ai_status_failed")}: ${server.error ?? ""}`;
     tone = "error";
+    kind = "failed";
   } else if (status.gameFreed) {
     text = t("ai_status_game_freed");
     tone = "warn";
+    kind = "freed";
   } else if (status.gpuFreed) {
     text = t("ai_status_freed");
+    kind = "freed";
   } else {
     text = t("ai_status_starting");
+    kind = "starting";
   }
-  statusLine.textContent = text;
-  statusLine.dataset.tone = tone;
-  const retry = document.createElement("button");
-  if (server.state === "failed" && host.settings().aiCleanup) {
+  say(text, tone, kind);
+  // "Retry" stands after the text; Home has its own button for the same thing (aiSummary).
+  if (kind === "failed") {
+    const retry = document.createElement("button");
     retry.className = "link-btn";
     retry.textContent = t("ai_retry");
-    retry.addEventListener("click", () => invoke("ai_restart").catch(console.error));
+    retry.addEventListener("click", restart);
     statusLine.append(" ", retry);
   }
 }
@@ -236,16 +264,14 @@ async function download() {
   progress.classList.remove("hidden");
   downloadBtn.disabled = true;
   modelSelect.disabled = true;
-  statusLine.textContent = t("ai_status_downloading");
-  statusLine.dataset.tone = "";
+  say(t("ai_status_downloading"), "", "downloading");
   downloadInFlight = true;
   setDownload("ai", 0);
   try {
     await invoke("ai_download_model", { id });
   } catch (e) {
     console.error("ai_download_model failed:", e);
-    statusLine.textContent = `${t("ai_download_failed")}: ${e}`;
-    statusLine.dataset.tone = "error";
+    say(`${t("ai_download_failed")}: ${e}`, "error", "missing");
   }
   downloadInFlight = false;
   setDownload("ai", null);
