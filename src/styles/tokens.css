@@ -8,7 +8,8 @@
 :root {
   color-scheme: dark;
 
-  /* Surfaces: the window, a card, a control on a card, a control hovered or pressed. */
+  /* Surfaces: the window, a card, a control on a card, a control hovered.
+     A pressed button sinks to --bg. */
   --bg: #101014;
   --surface: #17171d;
   --surface-2: #1e1e26;
@@ -23,18 +24,20 @@
   --text-warn: #ffb347;
   --text-danger: #ff7b7b;
 
-  /* The accent, what is written on it, and the tinted grounds. */
+  /* The accent (hovered, pressed), what is written on it, and the tinted grounds. */
   --accent: #7c83ff;
   --accent-hover: #8f95ff;
+  --accent-active: #6f75e3;
   --on-accent: #0c0c12;
   --accent-bg: color-mix(in srgb, var(--accent) 16%, transparent);
   --ok-bg: #12251a;
   --warn-bg: #2a2010;
   --danger-bg: #2a1418;
 
-  /* Lines: --line divides rows, --line-strong is the edge of a field (3:1). */
+  /* Lines: --line divides rows, --line-strong is the edge of a field and the
+     track of a switch that is off (3:1 or more on every surface above). */
   --line: #2a2a35;
-  --line-strong: #6f6f80;
+  --line-strong: #727284;
   --focus: #a5aaff;
 
   /* Shape: cards 14 px, controls 8 px. */

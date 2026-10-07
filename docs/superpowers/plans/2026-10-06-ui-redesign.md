@@ -80,6 +80,8 @@ apply_stage() {
 
 **After the review of Task 1 (the hardening of `ui-check`).** The counts in this table and in Tasks 2 to 8 were measured before the tool was hardened (text cut by a box around it, 24 px for every control that is not `display: inline`, a colour the tool cannot read, a file of the page's own that does not load, a settings key lost in a save), so the `clipped`, `target` and `contrast` counts there can be higher now, and every such finding on a page the task builds has to be fixed, not allowed. Measured with the hardened tool on 2026-10-07: 0.16.0 has 312 findings (3 more `clipped`: the sidebar's last three texts, cut by the window at 900×600, allowed until Task 3), so Task 2 should end with 75 known findings (clipped 9) and 18 entries, and Task 3 removes seven entries, not four. The final stage (`$P/tool8`'s pages on `$P/app`) has 21 findings more than before: `target` for `button.hint-more` (32×17 px, 20 findings: every page that shows a "More"), and one `page-error` for `/src/sidebar-logo.png`, the file only the prototype lacks. The remedy for "More", tried on a scratch copy: in `components.css` (Task 2) `.hint-more` gets `padding: 4px 2px; margin: -4px 0;` instead of `padding: 0 2px;`, which makes it 32×25 px and leaves the hint one line high; `display: inline` does not help, a `<button>` computes to `inline-block`.
 
+**After the review of Task 2 (the components).** Task 2's review changed `components.css`, `tokens.css` and `style.css`: one progress bar (the leftover 3 px track is gone), disabled states for fields and every button kind, list rows and setting controls that wrap, a key box that breaks instead of running over its label, armed and pressed states (`--accent-active`), round focus rings on tabs, sliders and links, `--line-strong` at `#727284`, and cards with 8 px of vertical padding instead of 4. So pixel positions in later tasks' probes can differ slightly from the ones measured here; a "first screen" probe that fails by a few pixels is fixed in that page's layout, not by reverting the component. The merges were rehearsed again with these fixes in place (stages 3, 5, 6, 7, final for `style.css`; 5 to 6 for `components.css`): Task 3 needs the three-way merge of its Step 6, Task 7 gets one more conflict in `style.css`, Task 8 keeps its one; each task names them. Resolve a conflict in an editor: Git Bash's `sed -i` writes LF line ends, and the next merge against the stages (CRLF) then conflicts on every line.
+
 ## File map
 
 | File | Change | Task |
@@ -308,7 +310,7 @@ EOF
 - Modify: `src/style.css`, `index.html`, `soundboard.html`, `package.json`, `package-lock.json`, `tools/ui-check/allow.json`
 
 **Interfaces:**
-- Produces (CSS custom properties on `:root`, the one source): surfaces `--bg`, `--surface`, `--surface-2`, `--surface-3`; text `--text`, `--text-2`, `--text-accent`, `--text-ok`, `--text-warn`, `--text-danger` (each at least 4.5:1 on every surface); `--accent`, `--accent-hover`, `--on-accent`, `--accent-bg`, `--ok-bg`, `--warn-bg`, `--danger-bg`; `--line`, `--line-strong`, `--focus`; `--radius-card` 14 px, `--radius` 8 px, `--radius-s`; `--s1` to `--s5` (4, 8, 12, 16, 24 px); `--fs-s`, `--fs`, `--fs-l`, `--fs-xl` (12, 14, 16, 22 px); `--font`, `--mono`; `--ease` (150 ms ease-out). The names of 0.16.0 (`--sidebar-bg`, `--text-secondary`, `--border`, `--radius-lg`, `--transition`, …) stay as aliases so the old page rules get the new look.
+- Produces (CSS custom properties on `:root`, the one source): surfaces `--bg`, `--surface`, `--surface-2`, `--surface-3`; text `--text`, `--text-2`, `--text-accent`, `--text-ok`, `--text-warn`, `--text-danger` (each at least 4.5:1 on every surface); `--accent`, `--accent-hover`, `--accent-active` (a pressed button; the review's addition), `--on-accent`, `--accent-bg`, `--ok-bg`, `--warn-bg`, `--danger-bg`; `--line`, `--line-strong`, `--focus`; `--radius-card` 14 px, `--radius` 8 px, `--radius-s`; `--s1` to `--s5` (4, 8, 12, 16, 24 px); `--fs-s`, `--fs`, `--fs-l`, `--fs-xl` (12, 14, 16, 22 px); `--font`, `--mono`; `--ease` (150 ms ease-out). The names of 0.16.0 (`--sidebar-bg`, `--text-secondary`, `--border`, `--radius-lg`, `--transition`, …) stay as aliases so the old page rules get the new look.
 - Produces (component classes, one each): `.card`, `.card-title`; `.settings-list`, `.setting-row` (`.stack`), `.setting-label`, `.label-text`, `.label-hint`, `.hint-more`, `.hint-long`, `.setting-control`; fields (`select`, `input`, `textarea`, `.field-textarea`); `.switch`, `.switch-slider`; `.btn-primary`, `.btn-secondary`, `.btn-text` (`.btn-ghost` is its older name), `.armed`, `.icon-btn`, `.link-btn`; `.toggle-group`, `.toggle-btn`; `.hotkey-btn`, `.hotkey-control`, `kbd`; `.tabs`, `.tab`; `details.fold`; `.list`, `.list-row`, `.list-main`, `.list-primary`, `.list-secondary`, `.list-actions`, `.list-head`, `.list-title`; `.status-pill[data-tone]`, `.status-dot`, `.status-marker`; `.progress`, `.progress-track`, `.progress-fill`, `.progress-text`; `.empty-state`; `.notice[data-tone]`; `.section-header`, `.section-title`, `.section-desc`; `.sr-only`, `.hidden`; one focus ring (`:focus-visible`, `--focus`).
 - Produces: dependency `@fontsource/ibm-plex-sans` (weights 400, 500, 600 imported by `tokens.css`); no request leaves the PC.
 
@@ -468,13 +470,20 @@ EOF
 
 ```bash
 cd $R && apply_stage $W/src $P/app_src_task3 src
-cp $P/app_src_task3/style.css src/style.css          # replaces Task 2's file: stage 3 contains it, the shell rules moved to styles/shell.css
+# apply_stage copies "new" files over the repo's and leaves conflict markers in style.css: Task 2's reviewed files come back.
+git checkout -- src/style.css src/styles/tokens.css src/styles/components.css
+# style.css: stage 3 is Task 2's file (commit bcb7eb3) without the shell rules, which moved to styles/shell.css.
+# Merge that difference into the reviewed file. Never `cp` the stage's file: Task 2's review fixes would be lost.
+T=$(mktemp -d); crlf() { sed 's/\r$//; s/$/\r/' "$1"; }     # the stages have CRLF line ends; a file with LF conflicts on every line
+git show bcb7eb3:src/style.css > $T/task2.css && crlf $T/task2.css > $T/base.css
+crlf src/style.css > $T/ours.css && cp $T/ours.css src/style.css
+git merge-file src/style.css $T/base.css $P/app_src_task3/style.css && echo "merged    style.css"; rm -rf $T
 cp $P/app_index_task3.html index.html                # the new sidebar; the old pages' blocks moved whole into the five tab panels
 rm src/arm.ts src/search.ts                          # they come with Tasks 7 and 4
 mkdir -p tests/unit && cp $P/app/tests/unit/{status,route,prefs,setup}.test.ts tests/unit/
 ```
 
-Expected output: `merged` for `ai-settings.ts`, `files.ts`, `i18n.ts`, `main.ts`; `CONFLICT style.css` (replaced by the `cp`); `new` for `activity.ts`, `arm.ts`, `prefs.ts`, `route.ts`, `search.ts`, `setup.ts`, `shell.ts`, `status-view.ts`, `status.ts`, `styles/shell.css`, and for `styles/tokens.css`, `styles/components.css` (identical to Task 2's unless Task 2's review changed them: check `git diff src/styles/tokens.css src/styles/components.css` and keep the review's lines). `src/overlay.html` is not touched by this step. `src/sidebar-logo.png` stays: `index.html` shows it as `<img class="app-logo">`, 136×30 px, `object-fit: cover`, which cuts the one-line mark out of the square PNG.
+Expected output: `merged` for `ai-settings.ts`, `files.ts`, `i18n.ts`, `main.ts`; `CONFLICT style.css` (undone by the checkout; the three-way merge below it then prints `merged    style.css`, no conflict, rehearsed with either kind of line ends in the repo's file); `new` for `activity.ts`, `arm.ts`, `prefs.ts`, `route.ts`, `search.ts`, `setup.ts`, `shell.ts`, `status-view.ts`, `status.ts`, `styles/shell.css`, and for `styles/tokens.css`, `styles/components.css` (undone by the checkout too). Then compare by hand that stage 3's two files hold nothing the repo's lack: `diff --strip-trailing-cr $P/app_src_task3/styles/tokens.css src/styles/tokens.css` and the same for `components.css` show only the changes of Task 2 and its review (`.hint-more`'s padding; `--accent-active`, `--line-strong`; disabled, armed and pressed states; `.list-row`, `.setting-control` and `kbd` wrapping; the tab's mark as `::after`; `.card` padding; `.sr-only, .mt-sr-only`; `.link-btn`), and `src/style.css` is 1659 lines: stage 3's file without `.subsection-title`, `.subsection-desc`, `.link-btn`, `.progress-track`, `.progress-fill`, `.field-textarea` (with its `:focus`) and `.mt-sr-only`, and with the review's `.download-progress` rule. `src/overlay.html` is not touched by this step. `src/sidebar-logo.png` stays: `index.html` shows it as `<img class="app-logo">`, 136×30 px, `object-fit: cover`, which cuts the one-line mark out of the square PNG.
 
 - [ ] **Step 7: Correction: two windows share the preferences**
 
@@ -585,7 +594,7 @@ In `tools/ui-check/contract.json` set `removedIds` to the seven entries of `$P/t
 
 Screenshots: `--pages "shell,home,settings-*" --size 1600x900` and `--size 900x600`, `--pages "pill-*"`. The logo is one line, the status pill sits under it, Settings is at the bottom above the version; the five tabs hold the old pages' rows (not yet regrouped: that is Task 6); Home is a heading and the old history list.
 
-`diff -ru --strip-trailing-cr $P/app_src_task3 src` shows only: Steps 7 to 9, the two deleted files, `overlay.html` (Step 4) and the logo.
+`diff -ru --strip-trailing-cr $P/app_src_task3 src` shows only: Steps 7 to 9, the two deleted files, `overlay.html` (Step 4), the logo, and Task 2's review fixes in `style.css`, `styles/tokens.css` and `styles/components.css` (Step 6 lists them).
 
 - [ ] **Step 12: Commit**
 
@@ -627,7 +636,7 @@ git merge-file tools/ui-check/pages.mjs $P/tool3/pages.mjs $P/tool5/pages.mjs
 git merge-file tools/ui-check/mock.js $P/tool3/mock.js $P/tool5/mock.js
 ```
 
-Expected: `merged` for `ai-settings.ts`, `dictionary.ts`, `i18n.ts`, `main.ts`, `style.css`; `new` for `history.ts`, `home.ts`, `mirror.ts`, `styles/home.css`; no conflict (checked on a copy that had Task 3's corrections).
+Expected: `merged` for `ai-settings.ts`, `dictionary.ts`, `i18n.ts`, `main.ts`, `style.css`; `new` for `history.ts`, `home.ts`, `mirror.ts`, `styles/home.css`; no conflict (checked on a copy that had Task 3's corrections; `style.css` rehearsed again with Task 2's review fixes: clean).
 
 - [ ] **Step 2: Leave the first run to Task 5**
 
@@ -732,7 +741,7 @@ cp $P/app/tests/unit/models.test.ts tests/unit/
 git merge-file tools/ui-check/pages.mjs $P/tool5/pages.mjs $P/tool6/pages.mjs
 ```
 
-Expected: `merged` for `ai-settings.ts`, `home.ts`, `i18n.ts`, `main.ts`, `style.css`, `styles/components.css`; `new` for `confirm-delete.ts`, `models.ts`, `replacements.ts`, `rows.ts`, `styles/settings.css`; no conflict (rehearsed with the corrections of Tasks 3 to 5 in place). The two removed files are dead code in stage 6 (and `replacements.ts` uses two i18n keys that only stage 7 has, which the tool would report).
+Expected: `merged` for `ai-settings.ts`, `home.ts`, `i18n.ts`, `main.ts`, `style.css`, `styles/components.css`; `new` for `confirm-delete.ts`, `models.ts`, `replacements.ts`, `rows.ts`, `styles/settings.css`; no conflict (rehearsed with the corrections of Tasks 3 to 5 in place, and again with Task 2's review fixes: `style.css` merges cleanly; for `styles/components.css` the stage's one line, `flex-wrap: wrap;` in `.setting-control`, is already there from Task 2's review, so the merge changes nothing and `git diff src/styles/components.css` stays empty). The two removed files are dead code in stage 6 (and `replacements.ts` uses two i18n keys that only stage 7 has, which the tool would report).
 
 - [ ] **Step 2: Correction: place names**
 
@@ -795,7 +804,9 @@ cp $P/app_src_task7/{arm.ts,confirm-delete.ts,replacements.ts} src/ && cp $P/app
 git merge-file tools/ui-check/pages.mjs $P/tool6/pages.mjs $P/tool7/pages.mjs
 ```
 
-Expected: `merged` for `ai-settings.ts`, `dictionary.ts`, `history.ts`, `i18n.ts`, `main.ts`, `meetings.ts`, `soundboard/board.ts`, `style.css`, `styles/settings.css`; no conflict (rehearsed). The three copied files exist in stage 6 already, so `apply_stage` does not bring them.
+Expected: `merged` for `ai-settings.ts`, `dictionary.ts`, `history.ts`, `i18n.ts`, `main.ts`, `meetings.ts`, `soundboard/board.ts`, `styles/settings.css`; `CONFLICT style.css` in one place (rehearsed with Task 2's review fixes; no other conflict). The three copied files exist in stage 6 already, so `apply_stage` does not bring them.
+
+The conflict in `src/style.css` is the block under `/* ── AI cleanup ── */`, after the three `.ai-status[data-tone]` lines: the stage deletes it whole (`.link-btn` to `.pc-check-result`), Task 2's review had already deleted `.link-btn`, `.progress-track`, `.progress-fill` and `.field-textarea` from it and changed `.download-progress`. Our side holds `.ai-model-row`, `#download-progress, .download-progress`, `.rule-list`, `.rule-row`, `.rule-instructions` and `.pc-check-result`; the stage's side is empty. Take the stage's side: delete everything from `<<<<<<<` to `>>>>>>>` (in an editor, see the note on `sed -i` under "The prototype's measured state"); the next line is `.pc-check-result pre {`. Afterwards `diff --strip-trailing-cr $P/app_src_task7/style.css src/style.css` shows only Task 3's two `margin: 0;` and the missing `.mt-sr-only` rule (`components.css` hides it together with `.sr-only`). With the block the review's room above a download's bar goes, so put it where the rule now lives: in `src/styles/settings.css`, `.download-progress` gets `padding: var(--s2) 0 var(--s3);` instead of `padding: 0 0 var(--s3);` (the stage's bar touches the dividing line of the row above it).
 
 - [ ] **Step 2: Correction: the suggestions follow the Display Language**
 
@@ -854,7 +865,7 @@ git merge-file index.html $P/app_index_task7.html $P/app/index.html
 git merge-file tools/ui-check/pages.mjs $P/tool7/pages.mjs $P/tool8/pages.mjs
 ```
 
-Expected: `merged` for `files.ts`, `i18n.ts`, `rows.ts`, `soundboard/board.ts`; `CONFLICT overlay.html` (undone by the checkout); `CONFLICT style.css` in one place, `#section-soundboard .sb-layout`: write `max-width: 880px;` (the stage's) and `margin: 0;` (Task 3's correction). `index.html` and `pages.mjs` merge cleanly (the pill entries Task 3 took from `tool8` are recognised as the same).
+Expected: `merged` for `files.ts`, `i18n.ts`, `rows.ts`, `soundboard/board.ts`; `CONFLICT overlay.html` (undone by the checkout); `CONFLICT style.css` in one place, `#section-soundboard .sb-layout`: write `max-width: 880px;` (the stage's) and `margin: 0;` (Task 3's correction). Rehearsed again with Task 2's review fixes: this one conflict and no other; afterwards `diff --strip-trailing-cr $P/app/src/style.css src/style.css` shows only the two `margin: 0;` of Task 3 and the missing `.mt-sr-only` rule. `index.html` and `pages.mjs` merge cleanly (the pill entries Task 3 took from `tool8` are recognised as the same).
 
 - [ ] **Step 2: Corrections**
 
@@ -900,13 +911,38 @@ Expected: `merged` for `files.ts`, `i18n.ts`, `rows.ts`, `soundboard/board.ts`; 
 
 5. Motion: in `src/style.css` delete the line `transition: border-color 0.15s ease, background 0.15s ease;` of `.file-drop`. Then `grep -n "transition:\|animation:" src/style.css src/styles/*.css` may list only: `page-in` and `fold-in` with `var(--ease)`; `pulse` animations of status dots; `transition: width …` of progress fills; declarations with `var(--transition)` (0 s) or `none`; and the reduced-motion block in `tokens.css`.
 
+Corrections 6 to 8 come from Task 2's review. They sit in page rules the prototype keeps to its final stage, so they are done once, here, after the last merge. The counts are those of `src/style.css` after Step 1 (rehearsed); Task 2's file holds more of each, the stages delete the rest. The corrections themselves were not built on a scratch copy: if one of them brings a `clipped` or first-screen finding, fix it in that page's layout.
+
+6. One focus ring. `src/style.css` still carries its own focus rules from 0.16.0: 14 selectors in 12 rules (17 in Task 2's file). Twelve of them draw the ring in `--accent` with an offset of 1 or 2 px: `.sb-devices > summary`, `.sb-chip`, `.sb-play` and `.sb-name`, `#section-meetings .btn-primary` and `.mt-modal .btn-primary`, `.mt-bar-title`, `.mt-view-title`, `.mt-checklist input`, `.mt-transcript`, `.mt-play`, `.mt-item` (all `:focus-visible`). One, `.mt-search:focus`, puts an accent border and a glow on top of the shared ring, so the field shows two indicators. Delete these eleven rules; keep only `.export-list button:focus-visible` (a menu item's ground, no ring). Delete with them what only fights the shared ring: the three `outline: none;` (`.speaker-chip-input`, `.mt-title-edit`, `.mt-search`) and the glow of `.mt-title-edit` (`box-shadow: 0 0 0 2px var(--accent-subtle);`; its accent border stays, it marks the title as being edited). Afterwards every control shows the one `--focus` ring of `components.css`: the tool's `focus` check stays clean, and a screenshot of the Meetings search field with the keyboard focus shows one ring.
+7. Colours that bypass the tokens. `src/style.css` holds 12 colour literals (11 `rgba()`, one hex; 17 in Task 2's file), worst in Meetings. Write them with the tokens:
+
+| Rule | Now | Becomes |
+|---|---|---|
+| `.mt-bar` | `background: rgba(229, 72, 77, 0.1);` `border: 1px solid rgba(229, 72, 77, 0.45);` | `background: var(--danger-bg);` `border: 1px solid var(--text-danger);` |
+| `.mt-bar-dot` | `box-shadow: 0 0 6px rgba(229, 72, 77, 0.5);` | the line goes (a glow has no token; the dot pulses) |
+| `.mt-hint-row[data-tone="warn"]` | `background: rgba(245, 166, 35, 0.07);` `border-color: rgba(245, 166, 35, 0.4);` | `background: var(--warn-bg);` `border-color: var(--text-warn);` |
+| `.mt-badge[data-state="recording"]` | `background: rgba(229, 72, 77, 0.18);` `color: var(--red);` | `background: var(--danger-bg);` `color: var(--text-danger);` |
+| `.mt-badge[data-state="interrupted"]` | `background: rgba(245, 166, 35, 0.16);` `color: var(--yellow);` | `background: var(--warn-bg);` `color: var(--text-warn);` |
+| `.mt-para[data-track="you"] .mt-para-who` | `color: color-mix(in srgb, var(--accent) 55%, #fff);` | `color: var(--text-accent);` (and its comment goes: the token is the readable accent) |
+
+   What stays are the four that have no token: the shadows of `.export-list`, `.mt-live` and `.mt-modal`, and the dialog's backdrop (`.mt-modal::backdrop`).
+8. The type scale. `src/style.css` hard-codes two sizes that are not on the scale (12 / 14 / 16 / 22): 11 px three times (`.pc-check-result pre`, `.sb-note`, `.mt-badge`; six times in Task 2's file) and 13 px seven times (`.file-drop-title`, `.file-name`, `.file-text`, `.file-summary-text`, `.sb-devices > summary`, `.sb-name`, `.mt-search`; eleven times in Task 2's file). Write `font-size: var(--fs-s);` for 11 px and `font-size: var(--fs);` for 13 px.
+
 - [ ] **Step 3: Verify**
 
 `npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 33`.
 
 `node tools/ui-check/run.mjs --no-shots --task 8`: `0 findings`, four stale entries (the last four); set `tools/ui-check/allow.json` to `[]`; run again: `0 findings, 0 known, 0 new`, exit 0. (Measured on a scratch copy with every correction of this plan.) The run covers: the Soundboard probes (the panel is open only where it has its own column, the switch always shows, the first sound is on the first screen also at 900×600, the panel's state is remembered, the pop-out opens on the sounds with its settings closed); `files-loaded` and `files-result`; every pill probe.
 
-Meetings gets no code in this task (its hotkey row moved in Task 6, its Delete in Task 7). Look at `--pages "meetings*"` in both languages at both sizes: the new look, the structure of 0.16.0.
+The greps that prove corrections 6 to 8:
+
+```bash
+grep -n ":focus\|outline: none\|0 0 0 2px" src/style.css          # one line: .export-list button:focus-visible {
+grep -n "rgba(\|#[0-9a-fA-F]\{3,8\}\b" src/style.css              # four lines: the shadows of .export-list, .mt-live, .mt-modal and the backdrop
+grep -n "font-size: 1[13]px" src/style.css                        # nothing
+```
+
+Meetings gets no script in this task (its hotkey row moved in Task 6, its Delete in Task 7), only the style corrections 6 to 8. Look at `--pages "meetings*"` in both languages at both sizes: the new look, the structure of 0.16.0; the recording bar and the "recording" and "interrupted" badges stand on the tinted grounds of the tokens.
 
 The three German overflows of the audit, each with its screenshot at `--lang de --size 900x600`: the Soundboard's toggle-key row (`soundboard-settings`: label "Taste für Sound-Tastenkürzel ein/aus", nothing under the key box), the history's second line (`home`: wraps, the app name is there), the rule-language selects (`settings-ai`: "Sprache wie eingestellt" whole).
 
