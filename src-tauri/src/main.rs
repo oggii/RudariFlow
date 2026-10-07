@@ -292,12 +292,39 @@ fn speech_status_of(settings: &Settings, downloaded: bool, load: LoadState, free
     }
 }
 
+/// Whether "no model in memory" means freed (the next dictation loads it)
+/// and not "the load is still to come": after a Free GPU press, after an
+/// idle unload, and from the first load on, whatever unloaded the model
+/// since (a game, the PC check, a change of the model).
+fn speech_freed(released: bool, idle_unloaded: bool, loaded_once: bool) -> bool {
+    released || idle_unloaded || loaded_once
+}
+
+/// What a change of the settings means for the speech model in memory:
+/// (drop it, load one now). Another model, backend or flash attention
+/// drops it and loads again. A switch to the local engine loads too: with
+/// the cloud engine nothing was loaded at the start, and the window would
+/// wait for a load that only the first dictation starts.
+fn speech_reload(prev: &Settings, next: &Settings) -> (bool, bool) {
+    let invalidate = prev.gpu_backend != next.gpu_backend
+        || prev.whisper_model != next.whisper_model
+        || prev.whisper_flash_attn != next.whisper_flash_attn;
+    let to_local = prev.engine != "local" && next.engine == "local";
+    (invalidate, invalidate || to_local)
+}
+
 fn speech_status_now(state: &AppState) -> SpeechStatus {
     let settings = state.settings.lock().unwrap().clone();
+    // Known and accepted: a model file put into the folder by hand while
+    // the app runs counts as downloaded here, and with nothing loaded since
+    // the start the window says "Loading models…" until the first
+    // dictation or the next start loads it. Nothing watches the folder.
     let downloaded = state.app_dir.join(rudariflow_lib::whisper_engine::model_filename(&settings.whisper_model)).exists();
-    let freed = state.whisper_engine.released()
-        || state.gpu.idle_unloaded.load(Ordering::SeqCst)
-        || state.whisper_engine.loaded_once();
+    let freed = speech_freed(
+        state.whisper_engine.released(),
+        state.gpu.idle_unloaded.load(Ordering::SeqCst),
+        state.whisper_engine.loaded_once(),
+    );
     speech_status_of(&settings, downloaded, state.whisper_engine.load_state(), freed, state.whisper_engine.device())
 }
 
@@ -335,6 +362,14 @@ fn watch_speech_status(handle: AppHandle) {
 /// ("speech-notice") instead of a recording that ends in nothing.
 fn dictation_blocked(settings: &Settings, model_downloaded: bool) -> Option<&'static str> {
     (settings.engine == "local" && !model_downloaded).then_some("no_model")
+}
+
+/// `dictation_blocked` for the settings and the model folder as they are
+/// now. The settings lock is not held while the disk is asked.
+fn dictation_blocked_now(state: &AppState) -> Option<&'static str> {
+    let settings = state.settings.lock().unwrap().clone();
+    let model = rudariflow_lib::whisper_engine::model_filename(&settings.whisper_model);
+    dictation_blocked(&settings, state.app_dir.join(model).exists())
 }
 
 /// Start the AI server in the background when the settings use it.
@@ -543,14 +578,10 @@ fn get_settings(state: State<AppState>) -> Settings {
 #[tauri::command]
 fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<(), String> {
     settings.save(&state.app_dir)?;
-    let (engine_invalidate, ai_restart) = {
+    let (engine_invalidate, engine_load, ai_restart) = {
         let prev = state.settings.lock().unwrap();
-        (
-            prev.gpu_backend != settings.gpu_backend
-                || prev.whisper_model != settings.whisper_model
-                || prev.whisper_flash_attn != settings.whisper_flash_attn,
-            prev.ai_cleanup != settings.ai_cleanup || prev.ai_model != settings.ai_model,
-        )
+        let (invalidate, load) = speech_reload(&prev, &settings);
+        (invalidate, load, prev.ai_cleanup != settings.ai_cleanup || prev.ai_model != settings.ai_model)
     };
     let warm_prompt = polish::system_prompt(&settings);
     let language_changed = state.settings.lock().unwrap().ui_language != settings.ui_language;
@@ -573,14 +604,15 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     emit_speech_status();
     if engine_invalidate {
         state.whisper_engine.invalidate();
-        // Load the new model or backend now, not at the next dictation;
-        // after a Free GPU press the next use loads it.
-        if !state.whisper_engine.released() {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                load_whisper(app.state::<AppState>().inner()).await;
-            });
-        }
+    }
+    // Load the new model or backend, or the local engine's model after a
+    // switch from the cloud, now and not at the next dictation; after a
+    // Free GPU press the next use loads it.
+    if engine_load && !state.whisper_engine.released() {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            load_whisper(app.state::<AppState>().inner()).await;
+        });
     }
     if ai_restart {
         state.llm.stop();
@@ -615,7 +647,9 @@ fn speech_status(state: State<AppState>) -> SpeechStatus {
 }
 
 /// First-run setup on Home: send the microphone's level ("mic-level") until
-/// `mic_meter_stop`, at most `MIC_METER_MAX`. Returns the device's name.
+/// `mic_meter_stop`, at most `MIC_METER_MAX`. Returns the name of the device
+/// that is really open: the default input when the saved microphone is
+/// gone, as for a dictation.
 #[tauri::command]
 async fn mic_meter_start(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     let mic = state.settings.lock().unwrap().microphone.clone();
@@ -1169,7 +1203,7 @@ async fn pc_check(app: AppHandle, state: State<'_, AppState>) -> Result<PcCheckR
     // The engine's model gives up its video memory while the variants run.
     state.whisper_engine.invalidate();
     let progress_app = app.clone();
-    let (results, default) = tauri::async_runtime::spawn_blocking(move || {
+    let measured = tauri::async_runtime::spawn_blocking(move || {
         let variants = check::variants();
         let default = check::default_variant();
         let results = check::measure(&model_for_check, &clip, &language, &variants, |done, total, label| {
@@ -1177,8 +1211,18 @@ async fn pc_check(app: AppHandle, state: State<'_, AppState>) -> Result<PcCheckR
         });
         (results, default)
     })
-    .await
-    .map_err(|e| e.to_string())?;
+    .await;
+    let (results, default) = match measured {
+        Ok(measured) => measured,
+        Err(e) => {
+            // The check took the engine's model out of memory: it comes
+            // back also when the check ends early. With nothing loaded
+            // before, the window would otherwise wait for a load that
+            // only the next dictation starts.
+            load_whisper(state.inner()).await;
+            return Err(e.to_string());
+        }
+    };
 
     let chosen = check::choose(&results, &default);
     let (gpu_backend, whisper_flash_attn) = match chosen {
@@ -1186,13 +1230,15 @@ async fn pc_check(app: AppHandle, state: State<'_, AppState>) -> Result<PcCheckR
         None => (settings.gpu_backend.clone(), settings.whisper_flash_attn.clone()),
     };
     let changed = gpu_backend != settings.gpu_backend || whisper_flash_attn != settings.whisper_flash_attn;
-    {
+    let saved = {
         let mut s = state.settings.lock().unwrap();
         s.gpu_backend = gpu_backend.clone();
         s.whisper_flash_attn = whisper_flash_attn.clone();
-        s.save(&state.app_dir)?;
-    }
+        s.save(&state.app_dir)
+    };
+    // Before the save's error is returned: the model comes back either way.
     load_whisper(state.inner()).await;
+    saved?;
     let ai = ai_check_line(state.inner()).await;
 
     let mut report = vec![
@@ -1795,6 +1841,16 @@ fn on_rewrite_hotkey(handle: &AppHandle, pressed: bool) {
     let handle = handle.clone();
     tauri::async_runtime::spawn(async move {
         let state = handle.state::<AppState>();
+        // No speech model yet: say so before anything is selected. The
+        // dictation hotkey's own check (`on_hotkey`) would come after the
+        // selection and leave the last dictation selected with no
+        // recording, for the next key typed to replace. Nothing below runs
+        // then, so the notice is sent once.
+        if let Some(reason) = dictation_blocked_now(state.inner()) {
+            startup_log::log(&format!("[rewrite] no dictation: {}", reason));
+            state.recorder.notice(&handle, "speech-notice", reason);
+            return;
+        }
         let settings = state.settings.lock().unwrap().clone();
         let ctx = foreground_app::current();
         if state.game.holds() {
@@ -2994,11 +3050,7 @@ fn on_hotkey(handle: &AppHandle, pressed: bool) {
             let starting = state.recorder.get_state() == RecordingState::Ready;
             if starting {
                 // No speech model yet: say so in the pill and record nothing.
-                // The settings lock is not held while the disk is asked.
-                let model = rudariflow_lib::whisper_engine::model_filename(&state.settings.lock().unwrap().whisper_model);
-                let downloaded = state.app_dir.join(model).exists();
-                let blocked = dictation_blocked(&state.settings.lock().unwrap(), downloaded);
-                if let Some(reason) = blocked {
+                if let Some(reason) = dictation_blocked_now(state.inner()) {
                     startup_log::log(&format!("[hotkey] no dictation: {}", reason));
                     state.recorder.notice(&handle, "speech-notice", reason);
                     return;
@@ -3393,6 +3445,9 @@ fn main() {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     let _ = window.hide();
                     api.prevent_close();
+                    // The setup's meter has no one to show its level to:
+                    // the microphone closes with the window.
+                    window.app_handle().state::<AppState>().mic_meter.stop();
                 }
             }
             // The pop-out closed (its X or Bring back): the board goes back
@@ -4017,6 +4072,82 @@ mod tests {
         // The cloud engine needs no local model.
         let cloud = Settings { engine: "cloud".into(), ..Settings::default() };
         assert_eq!(dictation_blocked(&cloud, false), None);
+    }
+
+    #[test]
+    fn no_model_in_memory_is_freed_only_after_an_unload_or_a_first_load() {
+        let local = Settings::default();
+        // What the window is told for a downloaded model, from the engine's three flags.
+        let freed = |released: bool, idle_unloaded: bool, loaded_once: bool, load: LoadState| {
+            speech_status_of(&local, true, load, speech_freed(released, idle_unloaded, loaded_once), "CPU".into()).freed
+        };
+        // The start: the load is still to come, the window says "Loading models…".
+        assert!(!freed(false, false, false, LoadState::Unloaded));
+        // A Free GPU press and an idle unload, each on its own.
+        assert!(freed(true, false, false, LoadState::Unloaded));
+        assert!(freed(false, true, false, LoadState::Unloaded));
+        // Every hotkey clears the idle flag and Whisper can stay unloaded;
+        // a game and the PC check unload without either flag. Once a model
+        // was loaded, nothing in memory is "freed", not "loading".
+        assert!(freed(false, false, true, LoadState::Unloaded));
+        // The flag of the first load stays for good: it says nothing while
+        // a model is loaded, loads or failed to load.
+        for load in [LoadState::Loaded, LoadState::Loading, LoadState::Failed] {
+            assert!(!freed(true, true, true, load), "{:?}", load);
+        }
+        // The cloud engine loads nothing for a dictation: never freed.
+        let cloud = Settings { engine: "cloud".into(), ..Settings::default() };
+        assert!(!speech_status_of(&cloud, true, LoadState::Unloaded, speech_freed(true, true, true), String::new()).freed);
+    }
+
+    #[test]
+    fn a_switch_to_the_local_engine_loads_the_speech_model() {
+        let local = Settings::default();
+        let cloud = Settings { engine: "cloud".into(), ..Settings::default() };
+        // (drop the model in memory, load one now)
+        assert_eq!(speech_reload(&cloud, &local), (false, true), "nothing was loaded for the cloud engine");
+        assert_eq!(speech_reload(&local, &cloud), (false, false));
+        assert_eq!(speech_reload(&local, &local), (false, false));
+        assert_eq!(speech_reload(&cloud, &cloud), (false, false));
+        // Another model, backend or flash attention: the old one goes, the new one loads.
+        for next in [
+            Settings { whisper_model: "medium".into(), ..local.clone() },
+            Settings { gpu_backend: "vulkan".into(), ..local.clone() },
+            Settings { whisper_flash_attn: "off".into(), ..local.clone() },
+            Settings { whisper_model: "medium".into(), ..cloud.clone() },
+        ] {
+            assert_eq!(speech_reload(&local, &next), (true, true), "{} {} {}", next.whisper_model, next.gpu_backend, next.whisper_flash_attn);
+        }
+        // A setting the speech model does not depend on.
+        let other = Settings { ai_cleanup: !local.ai_cleanup, language: "de".into(), ..local.clone() };
+        assert_eq!(speech_reload(&local, &other), (false, false));
+    }
+
+    #[test]
+    fn the_meter_opens_the_microphone_a_dictation_would_record_from() {
+        use rudariflow_lib::audio::open_with_fallback;
+        // The saved microphone is unplugged: once more, then Windows' default input.
+        let mut tried = Vec::new();
+        let opened = open_with_fallback("USB microphone", |name| {
+            tried.push(name.to_string());
+            if name == "default" { Ok("Realtek") } else { Err(format!("Microphone '{}' not found", name)) }
+        });
+        assert_eq!(opened, Ok("Realtek"), "the name that comes back is the device really used");
+        assert_eq!(tried, ["USB microphone", "USB microphone", "default"]);
+        // A device that wakes up for the second try is used, not the default.
+        let mut tries = 0;
+        let woke = open_with_fallback("USB microphone", |name| {
+            tries += 1;
+            if tries == 2 { Ok(name.to_string()) } else { Err("asleep".to_string()) }
+        });
+        assert_eq!((woke, tries), (Ok("USB microphone".to_string()), 2));
+        // No default input either: the error, and "default" is not tried a third time.
+        let mut tries = 0;
+        let none: Result<(), String> = open_with_fallback("default", |_| {
+            tries += 1;
+            Err("No default input device found".to_string())
+        });
+        assert_eq!((none, tries), (Err("No default input device found".to_string()), 2));
     }
 
     #[test]
