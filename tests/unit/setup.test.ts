@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   header,
+  idleFor,
   meterMay,
   meterStep,
   modelStep,
@@ -265,4 +266,19 @@ test("a meter that fell silent comes back only for a user who is there", () => {
   assert.equal(meterStep({ ...silent, idle: 0, on: false }), "start");
   // The longest it is open with nobody there: started again at the end of the minute, then the backend's two minutes.
   assert.equal(meterStep({ ...silent, idle: METER_USE_MS }), "restart");
+});
+
+test("the minute since the last touch is measured on two clocks, and the longer answer counts", () => {
+  assert.equal(idleFor(5000, 5000), 5000);
+  // The PC slept for an hour: the page's own clock stood still, the wall clock did not.
+  assert.equal(idleFor(5000, 3_605_000), 3_605_000);
+  assert.equal(meterMay({ ...atWindow, idle: idleFor(5000, 3_605_000) }), false);
+  // The wall clock was set back by an hour (or jumped back at a time change): the page's own clock counts.
+  assert.equal(idleFor(METER_USE_MS + 1, METER_USE_MS + 1 - 3_600_000), METER_USE_MS + 1);
+  assert.equal(meterMay({ ...atWindow, idle: idleFor(METER_USE_MS + 1, METER_USE_MS + 1 - 3_600_000) }), false);
+  // Set forward: the level rests early, and the next touch brings it back.
+  assert.equal(idleFor(1000, 3_601_000), 3_601_000);
+  // Never less than nothing.
+  assert.equal(idleFor(0, -3_600_000), 0);
+  assert.equal(meterMay({ ...atWindow, idle: idleFor(0, -3_600_000) }), true);
 });

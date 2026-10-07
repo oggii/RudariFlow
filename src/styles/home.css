@@ -416,7 +416,8 @@
 }
 
 /* What a step says is the page's text here, not a hint under a setting. */
-.setup-main > .status-line {
+.setup-main > .status-line,
+.setup-ai-live > .status-line {
   font-size: var(--fs);
 }
 
@@ -497,7 +498,12 @@
 /* The optional card is flat: what it is and what it does in one line where
    the window has the room, its two buttons at the right, and no more room
    above and below than the card's own. Text that does not fit beside the
-   title goes under it. */
+   title goes under it.
+
+   The card has one height at every width, whether it rests, downloads or
+   has failed: the daily view under it does not move when Download is
+   pressed. Two things see to that. Its line always takes the room of the
+   text the card rests on, and the two buttons that of their widest words. */
 #setup-ai {
   align-items: center;
   padding: 0;
@@ -518,17 +524,49 @@
   flex: none;
 }
 
-/* The download's bar and its numbers share a line, after the text or under it. */
+/* The line beside the title or under it. The text the card rests on
+   (data-rest, src/home.ts) lies under it unseen, as wide and as high as it
+   is when it shows: what the line says meanwhile (shorter, by its wording)
+   changes neither where the line stands nor how many rows it takes. */
+.setup-ai-line {
+  flex: 1 1 auto;
+  display: grid;
+  min-width: 0;
+}
+
+.setup-ai-line::before {
+  content: attr(data-rest);
+  grid-area: 1 / 1;
+  visibility: hidden;
+  font-size: var(--fs);
+  line-height: 1.45;
+}
+
+/* What the line says, and while the model downloads the bar and its
+   numbers after it, on the text's row (under it only where the window is
+   too narrow for both). */
+.setup-ai-live {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: flex-start;
+  gap: 0 var(--s3);
+  min-width: 0;
+}
+
 #setup-ai .progress {
-  flex: 1 1 240px;
+  flex: 1 1 200px;
   flex-direction: row;
   align-items: center;
   gap: var(--s3);
+  max-width: 420px;
   margin-top: 0;
 }
 
 #setup-ai .progress-track {
   flex: 1 1 0;
+  min-width: 48px;
 }
 
 #setup-ai .progress-text {
@@ -537,4 +575,29 @@
 
 #setup-ai .setup-action {
   align-self: center;
+}
+
+/* A button of the card is as wide as its widest words ("Download",
+   "Downloading…", "Retry"; "Not now", "Hide"): the others lie in it unseen
+   (data-alt, data-alt2), each on a row without height. */
+#setup-ai .setup-action > button {
+  display: inline-grid;
+  justify-items: center;
+  align-content: center;
+  gap: 0;
+}
+
+#setup-ai .setup-action > button::before,
+#setup-ai .setup-action > button::after {
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+#setup-ai .setup-action > button::before {
+  content: attr(data-alt);
+}
+
+#setup-ai .setup-action > button::after {
+  content: attr(data-alt2);
 }

@@ -158,6 +158,8 @@ const micClosed = async (page) => {
   const log = await meterLog(page);
   return { ok: !log.open && log.calls.at(-1) === "stop", log: JSON.stringify(log.calls.slice(-6)) + (log.open ? " open" : " closed") };
 };
+/** How often the mock's backend has opened the microphone. */
+const opens = (page) => page.evaluate(() => window.__MOCK__.meter.opens);
 const micOpen = async (page, ms = 1500) => {
   await until(page, () => window.__MOCK__.meter.open, ms);
   const log = await meterLog(page);
@@ -195,11 +197,33 @@ const windowComes = (page) =>
     window.dispatchEvent(new Event("focus"));
   });
 
-/** A new start of the page on Home, as the first run finds it (the mock forgets what was downloaded). */
+/**
+ * The page has started: the status is known and Home is wired (asking for the graphics cards is the last
+ * thing it does, after the settings, the microphones and the first status), and its fonts are in.
+ */
+async function started(page) {
+  await until(page, () => !!document.getElementById("status-indicator").dataset.kind && window.__MOCK__.calls.some((c) => c.cmd === "detect_gpus"), 10_000);
+  await page.evaluate(async () => {
+    document.body.getBoundingClientRect(); // laid out, so every font the page uses is asked for
+    await document.fonts.ready;
+  });
+}
+
+/** A new start of the page, waited for by what it shows instead of by the clock. */
+async function restart(page) {
+  await page.reload({ waitUntil: "load" });
+  await started(page);
+}
+
+/**
+ * A new start of the page on Home, as the first run finds it (the mock forgets what was downloaded).
+ * Where the window starts on Home (it does while the setup is not done) nothing is pressed: a click
+ * counts as a touch of the window, and the setup's level would start with it.
+ */
 async function again(page) {
-  await page.reload({ waitUntil: "networkidle" });
-  await wait(page, 500);
-  await section(page, "home");
+  await restart(page);
+  if (await page.evaluate(() => document.getElementById("section-home").classList.contains("active"))) await wait(page);
+  else await section(page, "home");
 }
 
 /** The look of the steps: each step's state, the page's primary buttons that show, and the texts. */
@@ -318,6 +342,53 @@ const pressTwice = (page, id) =>
     return rested;
   }, id);
 
+/**
+ * Nobody is at the window any more (another app covers it, the PC is locked, it slept): the page hears
+ * nothing of that. Here the backend's limit is 2.5 s instead of two minutes. For the minute after the
+ * last touch the level is started again; after it the microphone stays closed, and the step says so.
+ *
+ * In a window of its own whose clocks and timers are Playwright's, so the minute passes in a moment.
+ * The page measures it on two clocks (`performance.now()` and `Date.now()`): both must be the faked ones.
+ */
+async function restsAlone(run) {
+  const win = await run.openWindow({ scenario: "firstrun", lang: run.lang, size: run.size, url: "/" });
+  const { page } = win;
+  try {
+    await page.clock.install();
+    await win.load(); // from this load on, every clock and timer of the page is Playwright's
+    // The first run starts on Home, and nothing has touched the window yet (a click on Home would).
+    await page.evaluate(() => (window.__MOCK__.meter.cap = 2500));
+    const clocks = () => page.evaluate(() => ({ running: Math.round(performance.now()), wall: Date.now() }));
+    const real = Date.now();
+    const from = await clocks();
+    await page.mouse.move(420, 320);
+    await micOpen(page);
+    const starts = async () => (await levelNow(page)).starts;
+    const before = await starts();
+    await page.clock.runFor(20_000);
+    const meanwhile = (await starts()) - before;
+    await page.clock.runFor(50_000);
+    const left = await levelNow(page);
+    await page.clock.runFor(9000);
+    const still = await levelNow(page);
+    const to = await clocks();
+    // What passed on the page's two clocks, and how long that took.
+    const passed = { running: to.running - from.running, wall: to.wall - from.wall, real: Date.now() - real };
+    let mic = await micClosed(page);
+    const out = expect(passed.running >= 79_000 && passed.wall >= 79_000 && passed.real < 40_000, "the minute's check runs on a faked clock: both of the page's clocks, and it takes no minute", JSON.stringify(passed));
+    out.push(...expect(meanwhile >= 1 && mic.ok && !still.open && still.starts === left.starts && still.rests, "a minute after the last touch the level is no longer started again: the microphone stays closed, and the step says that the level rests", JSON.stringify({ meanwhile, left, still, mic })));
+    // The user is back: the level is too, at the first touch.
+    await page.evaluate(() => (window.__MOCK__.meter.cap = 120_000));
+    await page.mouse.move(430, 330);
+    mic = await micOpen(page);
+    const level = await levelNow(page);
+    out.push(...expect(mic.ok && level.bar && level.starts === still.starts + 1, "the next touch starts the level again, without a click", JSON.stringify({ mic, level })));
+    return [...out, ...win.problems.splice(0)];
+  } finally {
+    await win.context.close();
+  }
+}
+
 /** The first run on Home, walked through as a new user would (and as the backend can interrupt it). */
 async function firstRun(page, run) {
   const out = [];
@@ -335,7 +406,7 @@ async function firstRun(page, run) {
   const place = async (state) => places.push({ state, ...(await placeNow(page)) });
 
   // ── The steps instead of the daily view; what is done looks done; one thing to do. ──
-  // The page as it starts, with nobody at the window yet.
+  // The page as it starts, with nobody at the window yet: it starts on Home by itself.
   await fresh(false);
   await wait(page, 400);
   out.push(...expect((await shows(page, "home-setup")) && !(await shows(page, "home-daily")), "the first run shows the setup steps"));
@@ -355,6 +426,14 @@ async function firstRun(page, run) {
   out.push(...expect(level.starts === 0 && !level.open && level.rests && level.hint.length > 20, "a window nobody has touched opens no microphone: the step says in words that the level rests", JSON.stringify(level)));
   await place("nobody has touched the window");
   const atRest = level.height;
+  // The window stands open beside other work and is not the one in front: a pointer that crosses it is no use of it.
+  await page.evaluate(() => (document.hasFocus = () => false));
+  await page.mouse.move(400, 300);
+  await page.mouse.move(410, 310);
+  await wait(page, 300);
+  const crossed = await levelNow(page);
+  await page.evaluate(() => delete document.hasFocus);
+  out.push(...expect(crossed.starts === 0 && !crossed.open && crossed.rests, "a pointer that moves over a window without the focus opens no microphone", JSON.stringify(crossed)));
   // The first touch brings the level, without a click.
   await page.mouse.move(420, 320);
   let mic = await micOpen(page);
@@ -421,6 +500,39 @@ async function firstRun(page, run) {
   await section(page, "home");
 
   if (once) {
+    // Every call to the backend is a request of its own: two that are sent in one go can arrive swapped.
+    // Start, stop, and the stop arrives first: the start opens the microphone after the page's last word.
+    await section(page, "files");
+    await micClosed(page);
+    let opened = await opens(page);
+    await page.evaluate(() => {
+      window.__MOCK__.meter.swap = "stop";
+      document.querySelector('.nav-item[data-section="home"]').click();
+      document.querySelector('.nav-item[data-section="files"]').click();
+    });
+    let swapped = await until(page, (n) => window.__MOCK__.meter.opens === n + 1, 1500, opened);
+    mic = await micClosed(page);
+    out.push(...expect(swapped && mic.ok, "a stop that arrives before the start that was sent before it: the microphone ends closed", `${swapped ? "the start opened it" : "the start never opened it"}, ${mic.log}`));
+    // Start, stop, start, and the first start arrives last and opens first, while the window goes to the tray
+    // (the page is not told): the second start is answered "stopped", and nothing is started after it.
+    opened = await opens(page);
+    await page.evaluate(() => {
+      const go = (name) => document.querySelector(`.nav-item[data-section="${name}"]`).click();
+      window.__MOCK__.window.visible = false;
+      window.__MOCK__.meter.swap = "start";
+      window.__MOCK__.meter.delays = [80, 0];
+      go("home");
+      go("files");
+      go("home");
+    });
+    swapped = await until(page, (n) => window.__MOCK__.meter.opens === n + 1, 1500, opened);
+    await wait(page, 200);
+    mic = await micClosed(page);
+    out.push(...expect(swapped && mic.ok, "a start that arrives after the start that was sent after it: the microphone ends closed when the page wants none", `${swapped ? "the older start opened it" : "the older start never opened it"}, ${mic.log}`));
+    await windowComes(page);
+    mic = await micOpen(page);
+    out.push(...expect(mic.ok, "and it is open again for the window that is back", mic.log));
+
     // A window that cannot say whether it shows: the microphone closes, and stays closed for a user who is there.
     await micOpen(page);
     await awaitError(page, /the window's state/);
@@ -437,6 +549,13 @@ async function firstRun(page, run) {
     await windowComes(page);
     mic = await micOpen(page);
     out.push(...expect(mic.ok, "the window answers again: the microphone is open", mic.log));
+
+    // A screen reader in browse mode and voice control press a control without a pointer or a key: the page
+    // hears a click and nothing else. That is a touch too.
+    await fresh(false);
+    await page.evaluate(() => document.getElementById("home-title").dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    mic = await micOpen(page);
+    out.push(...expect(mic.ok, "a click alone (a screen reader, voice control) counts as a touch: the level starts", mic.log));
 
     // A window that starts hidden (autostart, "--start-minimized") and is slow to say so: whatever reaches
     // its page meanwhile (the focus, a key), no microphone opens, before its answer and after it.
@@ -484,30 +603,8 @@ async function firstRun(page, run) {
     mic = await micOpen(page);
     out.push(...expect(mic.ok, "the window is back from the tray: the microphone is open", mic.log));
 
-    // Nobody is at the window any more (another app covers it, the PC is locked, it slept): the page hears
-    // nothing of that. Here the backend's limit is 2.5 s instead of two minutes. For the minute after the
-    // last touch the level is started again; after it the microphone stays closed, and the step says so.
-    await page.evaluate(() => (window.__MOCK__.meter.cap = 2500));
-    await section(page, "files");
-    await section(page, "home");
-    await micOpen(page);
-    await present(page, false);
-    before = await starts();
-    await wait(page, 20_000);
-    const meanwhile = (await starts()) - before;
-    await wait(page, 50_000);
-    const left = await levelNow(page);
-    await wait(page, 9000);
-    const still = await levelNow(page);
-    mic = await micClosed(page);
-    out.push(...expect(meanwhile >= 1 && mic.ok && !still.open && still.starts === left.starts && still.rests, "a minute after the last touch the level is no longer started again: the microphone stays closed, and the step says that the level rests", JSON.stringify({ meanwhile, left, still, mic })));
-    // The user is back: the level is too, at the first touch.
-    await page.evaluate(() => (window.__MOCK__.meter.cap = 120_000));
-    await page.mouse.move(430, 330);
-    mic = await micOpen(page);
-    level = await levelNow(page);
-    out.push(...expect(mic.ok && level.bar && level.starts === still.starts + 1, "the next touch starts the level again, without a click", JSON.stringify({ mic, level })));
-    await present(page);
+    // Nobody is at the window any more: in a window of its own, where the minute takes no time.
+    out.push(...(await restsAlone(run)));
 
     // The microphone does not open any more, and Windows still lists it: said in words beside the step, with a
     // way to try again. The page looks once what Windows lists, and does not try over and over.
@@ -742,6 +839,16 @@ async function firstRun(page, run) {
       width: window.innerWidth,
     };
   });
+  // How the card stands, to the tenth of a pixel: its height, where its text starts and ends, where its
+  // button is, and where the daily view under it starts. None of it may change when Download is pressed.
+  const cardNow = () =>
+    page.evaluate(() => {
+      const rect = (id) => document.getElementById(id).getBoundingClientRect();
+      const px = (n) => Math.round(n * 10) / 10;
+      const card = rect("home-ai-card");
+      return [px(card.height), px(rect("setup-ai-line").left), px(rect("setup-ai-line").right), px(rect("setup-ai-download").top - card.top), px(rect("setup-ai-download").width), px(rect("home-daily").top)].join(" ");
+    });
+  const stands = { rests: await cardNow() };
   if (flat.width >= 1200) out.push(...expect(flat.height <= 60 && flat.right, "from 1200 px of window the optional card is flat: its text at the left, its buttons at the right", JSON.stringify(flat)));
   if (flat.width >= 1600) out.push(...expect(flat.oneLine && flat.height <= 52 && flat.over === 0, "in a large window the optional card is one line, and the daily view does not scroll because of it", JSON.stringify(flat)));
   // Pressed twice in one go: one download.
@@ -755,17 +862,26 @@ async function firstRun(page, run) {
   let ai = await page.evaluate(() => [document.getElementById("setup-ai-numbers").textContent, document.getElementById("setup-ai-download").getAttribute("aria-disabled"), document.activeElement?.id]);
   out.push(...expect(/^24 % · 1\.2 GB (of|von) 5\.0 GB$/.test(ai[0]) && ai[1] === "true" && ai[2] === "setup-ai-download", "the AI model's download shows percent and size, and its button rests", JSON.stringify(ai)));
   const says = await page.evaluate(() => [document.getElementById("setup-ai-text").textContent, document.getElementById("setup-ai-dismiss").textContent, document.getElementById("status-indicator").dataset.kind, document.getElementById("status-text").textContent]);
-  out.push(...expect(/turns on|schaltet sich ein/.test(says[0]) && says[1] === (de ? "Ausblenden" : "Hide") && says[2] === "downloading" && / 24 %$/.test(says[3]), "while its download runs the card says that AI cleanup turns on at the end and offers to hide it, and the status shows the download", JSON.stringify(says)));
+  out.push(...expect(/turns on|schaltet sich nach dem Download ein/.test(says[0]) && says[1] === (de ? "Ausblenden" : "Hide") && says[2] === "downloading" && / 24 %$/.test(says[3]), "while its download runs the card says that AI cleanup turns on at the end and offers to hide it, and the status shows the download", JSON.stringify(says)));
   if (flat.width >= 1600) {
     const busy = await page.evaluate(() => [Math.round(document.getElementById("home-ai-card").getBoundingClientRect().height), document.getElementById("content").scrollHeight - document.getElementById("content").clientHeight]);
     out.push(...expect(busy[0] <= 60 && busy[1] === 0, "the card stays flat while it downloads", JSON.stringify(busy)));
   }
+  stands.downloads = await cardNow();
+  // The bar stands on the text's row, after it, where the card is flat.
+  const row = await page.evaluate(() => {
+    const rect = (id) => document.getElementById(id).getBoundingClientRect();
+    return { text: rect("setup-ai-text"), bar: rect("setup-ai-bar"), shown: document.getElementById("setup-ai-bar").checkVisibility() };
+  });
+  if (flat.width >= 1200) out.push(...expect(row.shown && row.bar.left > row.text.right && row.bar.top > row.text.top && row.bar.bottom < row.text.bottom && row.bar.width >= 60, "from 1200 px of window the download's bar stands on the row of the card's text", JSON.stringify(row)));
   await awaitError(page, /ai_download_model failed/);
   await page.evaluate(() => window.__MOCK__.failDownload("ai", "error sending request"));
   await until(page, () => document.getElementById("setup-ai-text").dataset.tone === "warn");
   out.push(...expect((await logged(page)) === 1, "the failed AI download is written to the log once"));
   ai = await page.evaluate(() => [document.getElementById("setup-ai-text").dataset.tone, document.getElementById("setup-ai-download").textContent, document.getElementById("setup-ai-progress").checkVisibility(), document.getElementById("home-ai-card").checkVisibility(), document.getElementById("setup-ai-text").textContent, document.getElementById("setup-ai-dismiss").textContent, document.activeElement?.id]);
   out.push(...expect(ai[0] === "warn" && ai[1] === (de ? "Wiederholen" : "Retry") && !ai[2] && ai[3] && /Gemma\s4\sE4B\s\(5\.0\sGB\)/.test(ai[4]) && ai[5] === (de ? "Jetzt nicht" : "Not now") && ai[6] === "setup-ai-download", "an AI download that fails is said on the card, with the model, its size and Retry, which keeps the focus", JSON.stringify(ai)));
+  stands.failed = await cardNow();
+  out.push(...expect(stands.downloads === stands.rests && stands.failed === stands.rests, "the optional card has one height, one place for its text and its button, and the daily view under it stays where it is, while it rests, downloads and after a failure", JSON.stringify(stands)));
   await page.click("#setup-ai-download");
   await until(page, () => window.__MOCK__.calls.filter((c) => c.cmd === "ai_download_model").length === 2);
   await page.evaluate(() => window.__MOCK__.finishDownload("ai"));
@@ -809,7 +925,8 @@ async function firstRun(page, run) {
   await page.evaluate(() => localStorage.removeItem("rudariflow-ui"));
   await again(page);
   await page.mouse.move(425, 325);
-  await until(page, () => window.__MOCK__.meter.open);
+  // With the level in it: the bar is empty until the microphone's first level has arrived.
+  await until(page, () => window.__MOCK__.meter.open && parseFloat(document.getElementById("setup-level-fill").style.width) > 0);
   return out;
 }
 
@@ -864,9 +981,7 @@ export const PAGES = [
         const fetching = { ...(await read()), said: await page.evaluate(() => window.__said) };
         out.push(...expect(fetching.kind === "downloading" && / 43 %$/.test(fetching.text) && fetching.said.length === 1, "the first model's download shows its percent and is announced once", JSON.stringify(fetching)));
         // The download never ends in the mock: a new start for the pages that follow.
-        await page.reload({ waitUntil: "networkidle" });
-        await wait(page, 500);
-        await section(page, "home");
+        await again(page);
         return out;
       }
       // A dictation, then a meeting with a dictation on top: the marker.
@@ -885,15 +1000,16 @@ export const PAGES = [
       out.push(...expect((await read()).kind === "ready", "the status after the meeting", JSON.stringify(await read())));
       // The place is remembered: Settings > General, a new start, still there.
       await settings(page, "general");
-      await page.reload({ waitUntil: "networkidle" });
-      await wait(page, 500);
+      await restart(page);
       const place = await page.evaluate(() => ({ nav: document.querySelector('.nav-item[aria-current="page"]')?.dataset.section, tab: document.querySelector('#settings-tabs [aria-selected="true"]')?.dataset.tab, shown: !document.getElementById("panel-general").hidden }));
       out.push(...expect(place.nav === "settings" && place.tab === "general" && place.shown, "the section and the tab are remembered", JSON.stringify(place)));
       // A window that opens on a remembered place tells the page that it is shown.
       // Settings > AI cleanup asks for the open apps (the rule suggestions), once.
       await settings(page, "ai");
-      await page.reload({ waitUntil: "networkidle" });
-      await wait(page, 500);
+      await restart(page);
+      // The page tells its tabs where the window starts once everything is wired: wait for the question, then a moment for a second one.
+      await until(page, () => window.__MOCK__.calls.some((c) => c.cmd === "list_open_apps"));
+      await wait(page, 250);
       const asked = await page.evaluate(() => window.__MOCK__.calls.filter((c) => c.cmd === "list_open_apps").length);
       out.push(...expect(asked === 1, "opened on Settings > AI cleanup, the open apps are asked for once", String(asked)));
       // The Soundboard takes a file that is dragged over the window.
@@ -1077,9 +1193,7 @@ export const PAGES = [
       // The layout's steps with the scrollbar drawn: once per run is enough.
       if (run.lang === "en" && run.size === "1600x900") out.push(...(await layoutHolds(run)));
       // A new start, and back from Settings (the window remembers the place): the screenshot is Home's.
-      await page.reload({ waitUntil: "networkidle" });
-      await wait(page, 500);
-      await section(page, "home");
+      await again(page);
       return out;
     },
   },

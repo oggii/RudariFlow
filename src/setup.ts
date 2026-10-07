@@ -146,8 +146,17 @@ export function modelStep(input: ModelStepInput): { state: ModelStep; failed: bo
 // ── Step 1, the microphone's level ────────────────────
 
 /** The level is started, or started again, only while the user touched the
- *  window this recently (pointer, key, focus). */
+ *  window this recently (pointer, key, click, focus). */
 export const METER_USE_MS = 60_000;
+
+/** How long ago the last touch was, from what two clocks say has passed
+ *  since: the one that counts while the page runs (`performance.now()`) and
+ *  the wall clock. The longer answer counts. The first can stand still
+ *  while the PC sleeps, the second can be set back (then it says less than
+ *  nothing: taken as 0): neither stretches the minute. */
+export function idleFor(running: number, wall: number): number {
+  return Math.max(running, wall, 0);
+}
 /** The backend sends about 30 levels a second. Without one for this long its
  *  meter is over: it stops by itself after two minutes, when the window is
  *  closed to the tray and when the microphone is unplugged, and says nothing. */

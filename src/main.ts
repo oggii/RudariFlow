@@ -610,12 +610,12 @@ let lastSavedModel = "";
 /** The model in the dropdown was chosen: one that is missing is downloaded
  *  first. True when it is there and saved. */
 async function chooseModel(): Promise<boolean> {
-  const chosen = modelSelect.value;
   const previousSaved = lastSavedModel || currentSettings.whisperModel;
   if (await isCurrentModelDownloaded()) {
     await refreshModelStatusUI();
     await saveSettings();
-    lastSavedModel = chosen;
+    // What the save took from the dropdown, which may have moved on while the model was looked for.
+    lastSavedModel = currentSettings.whisperModel;
     await renderUnusedModels();
     return true;
   }
@@ -633,7 +633,7 @@ async function chooseModel(): Promise<boolean> {
     } finally {
       await downloadSettled();
     }
-    lastSavedModel = chosen;
+    lastSavedModel = currentSettings.whisperModel;
     await refreshModelStatusUI();
     await renderUnusedModels();
   } else {
@@ -893,7 +893,9 @@ function startHome() {
     aiModel: aiModelInfo,
     addWords,
     // The Settings dropdown's own way: it downloads a model that is missing and saves the choice.
-    setUpSpeech: (id) => {
+    setUpSpeech: async (id) => {
+      // A download runs: the dropdown stays on its model (chooseModel's own guard comes after the dropdown is set).
+      if (downloadInFlight) return false;
       modelSelect.value = id;
       return chooseModel();
     },

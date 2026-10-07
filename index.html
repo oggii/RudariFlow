@@ -140,10 +140,15 @@
               <span class="setup-num" aria-hidden="true">+</span>
               <div class="setup-main">
                 <span class="label-text" id="setup-ai-label" data-i18n="setup_ai_title">Optional: AI cleanup</span>
-                <span class="label-hint status-line" id="setup-ai-text" role="status"></span>
-                <div id="setup-ai-progress" class="progress hidden">
-                  <div id="setup-ai-bar" class="progress-track" role="progressbar" aria-labelledby="setup-ai-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="setup-ai-fill" class="progress-fill"></div></div>
-                  <span id="setup-ai-numbers" class="progress-text"></span>
+                <!-- The line keeps the room of the text the card rests on, whatever it says (styles/home.css). -->
+                <div class="setup-ai-line" id="setup-ai-line">
+                  <div class="setup-ai-live">
+                    <span class="label-hint status-line" id="setup-ai-text" role="status"></span>
+                    <div id="setup-ai-progress" class="progress hidden">
+                      <div id="setup-ai-bar" class="progress-track" role="progressbar" aria-labelledby="setup-ai-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="setup-ai-fill" class="progress-fill"></div></div>
+                      <span id="setup-ai-numbers" class="progress-text"></span>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div class="setup-action">

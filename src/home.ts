@@ -11,7 +11,7 @@ import { mirrorHint, mirrorSelect, mirrorSwitch } from "./mirror";
 import { prefs, reveal, updatePrefs } from "./shell";
 import { currentSpeech, currentStatus, onStatus } from "./status-view";
 import { type Status } from "./status.ts";
-import { header, meterStep, modelStep, recommend, setup, sizeText, METER_SILENT_MS, type Gpu, type MeterNow, type Recommendation, type Setup } from "./setup.ts";
+import { header, idleFor, meterMay, meterStep, modelStep, recommend, setup, sizeText, METER_SILENT_MS, type Gpu, type MeterNow, type Recommendation, type Setup } from "./setup.ts";
 
 export interface HomeHost {
   /** "push-to-talk" or "toggle". */
@@ -220,6 +220,15 @@ function act(button: HTMLElement, label: string, primary: boolean, resting = fal
 
 const resting = (button: HTMLElement) => button.getAttribute("aria-disabled") === "true";
 
+/** A button whose words change keeps the width of its widest ones, so what
+ *  stands beside it does not move: the words it does not show (up to two)
+ *  lie in it unseen (styles/home.css). */
+function widest(button: HTMLElement, labels: string[]) {
+  const [first = "", second = ""] = labels.filter((label) => label !== button.textContent);
+  button.dataset.alt = first;
+  button.dataset.alt2 = second;
+}
+
 /** A download's bar with its numbers, always percent and size; null hides it. */
 function progress(prefix: string, p: DownloadProgress | null) {
   $(`${prefix}-progress`).classList.toggle("hidden", p === null);
@@ -357,16 +366,24 @@ function renderSetup() {
     if (busy) aiFailed = false;
     aiWasBusy = busy;
     const fill = (text: string) => text.replace("{model}", () => whole(ai.name)).replace("{size}", whole(sizeText(ai.bytes)));
+    // The card has one height in every state (styles/home.css): its line
+    // keeps the room of the text it rests on, and whatever it says meanwhile
+    // is shorter than that text.
+    const rest = fill(t("setup_ai_text"));
+    $("setup-ai-line").dataset.rest = rest;
     // What the card started ends with AI cleanup on (setUpAi), also behind a
     // card that was hidden meanwhile: the card says so. A download started
     // in Settings turns nothing on.
-    const text = aiFailed ? t("setup_download_failed").replace("{model}", () => whole(`${ai.name} (${sizeText(ai.bytes)})`)) : fill(aiSetting ? t("setup_ai_coming") : t("setup_ai_text"));
+    const text = aiFailed ? fill(t("setup_ai_failed")) : aiSetting ? t("setup_ai_coming") : busy ? t("setup_ai_fetching") : rest;
     say($("setup-ai-text"), text, aiFailed ? "warn" : "");
     const name = busy ? t("setup_ai_fetching") : aiFailed ? t("setup_ai_retry") : t("setup_ai_get");
-    act($("setup-ai-download"), busy ? t("setup_downloading") : aiFailed ? t("retry") : t("download"), false, busy, name);
+    const download = $("setup-ai-download");
+    act(download, busy ? t("setup_downloading") : aiFailed ? t("retry") : t("download"), false, busy, name);
+    widest(download, [t("download"), t("setup_downloading"), t("retry")]);
     // "Not now" would not be true of a download that goes on: then the card can be hidden.
     const dismiss = aiSetting ? t("setup_ai_hide") : t("setup_ai_dismiss");
     if ($("setup-ai-dismiss").textContent !== dismiss) $("setup-ai-dismiss").textContent = dismiss;
+    widest($("setup-ai-dismiss"), [t("setup_ai_dismiss"), t("setup_ai_hide")]);
     progress("setup-ai", busy ? (aiProgress ?? { downloaded: 0, total: 0, percent: 0 }) : null);
   }
 
@@ -416,8 +433,11 @@ let micSaved = "";
 /** When the last level arrived, and when the meter was last started. */
 let heardAt = 0;
 let startedAt = 0;
-/** When the user last touched this window (pointer, key, focus); null: never. */
-let usedAt: number | null = null;
+/** When the user last touched this window (pointer, key, click, focus), on
+ *  both clocks; null: never. The time since then is the longer of the two
+ *  answers (src/setup.ts, idleFor): `performance.now()` can stand still
+ *  while the PC sleeps, and the wall clock can be set back. */
+let usedAt: { perf: number; wall: number } | null = null;
 /** The window is on screen: only ever what the window itself last answered
  *  (`windowShows`), and false until it was asked. A window that starts
  *  hidden (autostart, "--start-minimized") opens no microphone. */
@@ -458,7 +478,15 @@ async function meter(on: boolean, again = false) {
     }
     const device = await invoke<string>("mic_meter_start");
     // An older start's answer says nothing about now: a stop or a newer start came after it.
-    if (call !== meterCall) return;
+    if (call !== meterCall) {
+      // Unless it opened although the page's last word is "stop": the two
+      // arrived swapped (each call is a request of its own). Said again, or
+      // the microphone stays open to the backend's limit. With a newer start
+      // as the last word nothing is sent: that start replaces this one, or
+      // answers "stopped" below.
+      if (!metering) void invoke("mic_meter_stop").catch(() => {});
+      return;
+    }
     opening = false;
     meterDevice = device;
     heardAt = performance.now();
@@ -474,7 +502,13 @@ async function meter(on: boolean, again = false) {
     }
     metering = false;
     if (e === "stopped") {
-      // The backend stopped it while the device opened: the window was
+      // The latest start was stopped, and not by the page (a stop or a newer
+      // start of the page's would be the latest call). An older start may
+      // have arrived after it and hold the microphone open, with the page
+      // believing it closed: close it. Only the latest call gets here, so
+      // this never stops a newer start that is wanted.
+      void invoke("mic_meter_stop").catch(() => {});
+      // Or the backend stopped it while the device opened: the window was
       // closed to the tray. No error; ask whether the window still shows
       // before the steps start the meter again.
       await lookAtWindow();
@@ -523,7 +557,7 @@ function meterNow(s: Setup, silent = 0): MeterNow {
     shown: windowUp,
     microphone: s.microphone,
     failed: meterFailed,
-    idle: usedAt === null ? null : now - usedAt,
+    idle: usedAt === null ? null : idleFor(now - usedAt.perf, Date.now() - usedAt.wall),
     on: metering,
     opening,
     silent,
@@ -532,10 +566,14 @@ function meterNow(s: Setup, silent = 0): MeterNow {
 }
 
 /** The user touched the window: the pointer moved or pressed on it, a key
- *  was pressed in it, it got the focus. The level may run for the next
- *  minute, and one that rests comes back now, without a click. */
+ *  was pressed in it, something in it was clicked (all a screen reader in
+ *  browse mode or voice control sends), it got the focus. The level may run
+ *  for the next minute, and one that rests comes back now, without a click. */
 function used(e: Event) {
-  usedAt = performance.now();
+  // A pointer that crosses a window left open beside other work is no use of
+  // it: the microphone would open each time.
+  if (e.type === "pointermove" && !document.hasFocus()) return;
+  usedAt = { perf: performance.now(), wall: Date.now() };
   // Only the steps have a level.
   if (!host || setupBox.classList.contains("hidden")) return;
   if (!windowUp) {
@@ -570,8 +608,9 @@ function syncMeter(s: Setup) {
   if (next === "start") void meter(true);
   else if (next === "stop") void meter(false);
   // Another microphone was saved (src/main.ts draws Home again once the
-  // save was answered): from now on the level is that one's.
-  else if (metering && meterFor !== host.microphone()) void meter(true, true);
+  // save was answered): from now on the level is that one's, for a user who
+  // is there. With nobody there it rests, and the next touch opens the new one.
+  else if (metering && meterFor !== host.microphone()) void meter(meterMay(now), true);
 }
 
 /** Once a second while the steps are on screen. */
@@ -776,7 +815,7 @@ export function initHome(h: HomeHost) {
   window.addEventListener("blur", () => {
     if (watchTimer !== undefined) void lookAtWindow();
   });
-  for (const touch of ["pointermove", "pointerdown", "keydown", "focus"]) window.addEventListener(touch, used, { passive: true });
+  for (const touch of ["pointermove", "pointerdown", "keydown", "click", "focus"]) window.addEventListener(touch, used, { passive: true });
   // The page goes (the app quits, the window is loaded again): the microphone closes.
   window.addEventListener("pagehide", () => void meter(false));
 

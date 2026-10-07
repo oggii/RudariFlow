@@ -9,9 +9,10 @@
 // save_settings stored last), emit(event, payload) (a backend event).
 // A check also steers what the page cannot: finishDownload(kind) and
 // failDownload(kind, why) end a model download ("speech" or "ai"), which
-// waits until then; meter is the setup's microphone (open, device, delay,
-// fail, cap, timeOut(), lose()); window is the window's own state (visible,
-// minimized; delay: it answers that late; broken: it does not answer);
+// waits until then; meter is the setup's microphone (open, opens, device,
+// delay, delays, fail, cap, swap, timeOut(), lose()); window is the
+// window's own state (visible, minimized; delay: it answers that late;
+// broken: it does not answer);
 // keep({ mics, window, gpus }) sets the microphones Windows lists, the
 // window's state and how detect_gpus answers ("never", or after that many
 // ms), also for the next start of the page; saveDelay makes save_settings
@@ -245,12 +246,22 @@
   // closes by itself without a word; timeOut() is that limit now, and the
   // window closed to the tray. lose() is the microphone unplugged: one last
   // level of 0.
+  // Every call is a request of its own, so two that are sent in one go can
+  // arrive swapped. `swap` = "stop" or "start" does that once: the next
+  // start arrives only after the next stop, or after the next start, that
+  // the page sends behind it. `delays` are the times the next starts take
+  // to open, in the order they arrive (then `delay` again); `opens` counts
+  // how often the microphone was opened.
   const meter = {
     open: false,
+    opens: 0,
     device: "",
     delay: 0,
+    delays: [],
     fail: null,
     cap: 120_000,
+    swap: null,
+    held: null,
     run: 0,
     timer: null,
     capTimer: null,
@@ -267,6 +278,13 @@
     lose() {
       meter.close();
       window.__MOCK__.emit("mic-level", 0);
+    },
+    /** A call of this kind has arrived: the start it overtook arrives now. */
+    overtaken(kind) {
+      const held = meter.held;
+      if (held?.after !== kind) return;
+      meter.held = null;
+      held.go();
     },
   };
   window.__MOCK__.meter = meter;
@@ -357,28 +375,43 @@
     "plugin:event|unlisten": () => null,
     "plugin:dialog|open": () => (de ? "C:\\Users\\Oggi\\Downloads\\Kundengespräch Keller 2026-10-05.m4a" : "C:\\Users\\Oggi\\Downloads\\Client call Keller 2026-10-05.m4a"),
     "plugin:dialog|save": () => null,
-    mic_meter_start: () =>
-      new Promise((resolve, reject) => {
-        const run = ++meter.run;
-        meter.close();
-        // The microphone that is saved now; Windows' default one when it is "default" or not there.
-        const mics = handlers.list_microphones();
-        const device = (mics.find((m) => m.name === settings.microphone) ?? mics.find((m) => m.is_default) ?? mics[0])?.name;
-        setTimeout(() => {
-          if (run !== meter.run) return reject("stopped");
-          if (meter.fail) return reject(meter.fail);
-          if (!device) return reject("No default input device found");
-          meter.open = true;
-          meter.device = device;
-          let i = 0;
-          meter.timer = setInterval(() => window.__MOCK__.emit("mic-level", 0.3 + 0.2 * Math.sin(i++ / 2)), 100);
-          meter.capTimer = setTimeout(() => run === meter.run && meter.timeOut(), meter.cap);
-          resolve(device);
-        }, meter.delay);
-      }),
+    mic_meter_start: () => {
+      // The start as it arrives at the backend.
+      const arrive = () =>
+        new Promise((resolve, reject) => {
+          const run = ++meter.run;
+          meter.close();
+          // The microphone that is saved now; Windows' default one when it is "default" or not there.
+          const mics = handlers.list_microphones();
+          const device = (mics.find((m) => m.name === settings.microphone) ?? mics.find((m) => m.is_default) ?? mics[0])?.name;
+          setTimeout(() => {
+            if (run !== meter.run) return reject("stopped");
+            if (meter.fail) return reject(meter.fail);
+            if (!device) return reject("No default input device found");
+            meter.open = true;
+            meter.opens++;
+            meter.device = device;
+            let i = 0;
+            meter.timer = setInterval(() => window.__MOCK__.emit("mic-level", 0.3 + 0.2 * Math.sin(i++ / 2)), 100);
+            meter.capTimer = setTimeout(() => run === meter.run && meter.timeOut(), meter.cap);
+            resolve(device);
+          }, meter.delays.shift() ?? meter.delay);
+        });
+      // Swapped with the call that follows it: on its way until that one has arrived.
+      if (meter.swap && !meter.held) {
+        return new Promise((resolve, reject) => {
+          meter.held = { after: meter.swap, go: () => arrive().then(resolve, reject) };
+          meter.swap = null;
+        });
+      }
+      const answer = arrive();
+      meter.overtaken("start");
+      return answer;
+    },
     mic_meter_stop: () => {
       meter.run++;
       meter.close();
+      meter.overtaken("stop");
       return null;
     },
     "plugin:window|is_visible": async () => {
