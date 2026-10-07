@@ -49,6 +49,147 @@
   max-width: min(320px, 100%);
 }
 
+/* A row without a hint has one line of label: it stands at the middle of
+   its control, not at its top. */
+.tab-panel .setting-row:not(:has(.label-hint)) {
+  align-items: center;
+}
+
+/* ── A model's download, on the model's row ─────────── */
+
+/* The bar under the last row of a card: the card's own edge ends it. */
+.setting-row:has(+ .download-progress:last-child) {
+  border-bottom-color: transparent;
+}
+
+.card > .download-progress:last-child {
+  border-bottom: none;
+}
+
+/* The AI's state and, while its model downloads, the percent after it are
+   one line of text (two elements: only the first is read out). */
+#ai-status-line,
+#ai-status-percent {
+  display: inline;
+}
+
+#ai-status-percent {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Key boxes share one right edge ─────────────────── */
+
+/* Every hotkey row keeps the room of its × ("Turn off"), also while the key
+   is not set and there is nothing to turn off, and in the Dictate row,
+   which has no × at all: a key box ends where the one above it ends. */
+.tab-panel .hotkey-control .icon-btn.unset {
+  visibility: hidden;
+}
+
+#hotkey-btn {
+  margin-right: calc(28px + var(--s1));
+}
+
+/* ── A large window: two columns ────────────────────── */
+
+/* From 1600 px beside the sidebar (the class "wider", set by src/shell.ts
+   on the same width as Home's step) a tab is two columns on the page's left
+   edge, each up to 900 px, so a label stays near its control and a 1920 or
+   2560 px window is used. Only the placement changes: the order in the
+   page, and with it the Tab order, is the one of the single column. Below
+   the step nothing here applies. The tab bar spans the whole width. */
+#section-settings.wider {
+  max-width: none;
+}
+
+#section-settings.wider .tab-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 900px));
+  align-items: start;
+  gap: var(--s4);
+}
+
+/* The grid's gap spaces the parts. */
+#section-settings.wider .tab-panel > * {
+  margin: 0;
+}
+
+#section-settings.wider .tab-panel > .panel-lead {
+  grid-column: 1 / -1;
+}
+
+/* Dictation, Models & GPU: the main card left, the Advanced fold right.
+   General: its two cards side by side. All three place themselves.
+
+   AI cleanup: the main card and the fold left, "Rules per app" right over
+   both rows. The last row takes what is left, so the rules' height never
+   pushes the fold away from the card above it. */
+#section-settings.wider #panel-ai {
+  grid-template-rows: auto auto 1fr;
+}
+
+#section-settings.wider #panel-ai > .panel-lead + .card {
+  grid-area: 2 / 1;
+}
+
+#section-settings.wider #panel-ai > .card:has(#ai-rule-list) {
+  grid-area: 2 / 2 / span 2;
+}
+
+#section-settings.wider #panel-ai > .fold {
+  grid-area: 3 / 1;
+}
+
+/* Dictionary: the suggestions and the words left; the replacements, Swiss
+   spelling and the fold right. Two stacks of several cards each cannot
+   share the rows of a grid (a short card beside a long one would leave a
+   hole under it), so here the columns are columns of text flow, broken
+   before the replacements; no card is split. */
+#section-settings.wider #panel-dictionary {
+  display: block;
+  columns: 2;
+  column-gap: var(--s4);
+  max-width: calc(2 * 900px + var(--s4));
+}
+
+#section-settings.wider #panel-dictionary > * {
+  margin: 0 0 var(--s4);
+  break-inside: avoid;
+}
+
+#section-settings.wider #panel-dictionary > .panel-lead {
+  column-span: all;
+}
+
+#section-settings.wider #panel-dictionary > .card:has(#replacement-list) {
+  break-before: column;
+}
+
+#section-settings.wider #panel-dictionary > :is(.card:has(#dict-list), .fold) {
+  margin-bottom: 0;
+}
+
+/* A fold beside a card, or under one in its column: its heading is a bar on
+   the card's ground, as wide as the column and on the top edge of the card
+   beside it. So both columns start on one edge, and a closed fold in a
+   column of its own still reads as something to open. */
+#section-settings.wider .fold > summary {
+  display: flex;
+  min-height: 48px;
+  margin: 0;
+  padding: var(--s2) var(--s4);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+
+#section-settings.wider .fold > summary:hover {
+  color: var(--text);
+}
+
+#section-settings.wider .fold[open] > summary {
+  margin-bottom: var(--s2);
+}
+
 /* A hint or a notice that stands in a card by itself, under its heading. */
 .card > .label-hint {
   padding-bottom: var(--s2);

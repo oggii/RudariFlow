@@ -76,7 +76,10 @@ function show(next: Route, remember: boolean) {
       p.tab = current.tab;
     });
   }
-  if (moved) document.getElementById("content")?.scrollTo(0, 0);
+  if (moved) {
+    endVisits();
+    document.getElementById("content")?.scrollTo(0, 0);
+  }
   for (const fn of listeners) fn(current, before);
 }
 
@@ -94,6 +97,20 @@ export function startOn(setupNeeded: boolean) {
   if (start.section !== current.section) show(start, false);
 }
 
+/** Folds a link opened to show a control in them (`reveal`): open for the
+ *  visit, not remembered. A fold is remembered as the user leaves it, and
+ *  the user did not open this one. */
+const visited = new Set<HTMLDetailsElement>();
+
+/** The visit is over (the user went to another place): a fold a link opened is as it is remembered again. */
+function endVisits() {
+  for (const fold of visited) {
+    if (fold.closest<HTMLElement>(".tab-panel")?.hidden === false && current.section === "settings") continue;
+    visited.delete(fold);
+    fold.open = prefs.folds[fold.dataset.fold ?? ""] === true;
+  }
+}
+
 /** Show the control with this id: its section, its tab, its fold open, scrolled to and focused. */
 export function reveal(id: string) {
   const el = document.getElementById(id);
@@ -103,9 +120,34 @@ export function reveal(id: string) {
   if (panel) go(`settings/${panel.id.replace("panel-", "")}`);
   else if (section) go(section.id.replace("section-", ""));
   const fold = el.closest<HTMLDetailsElement>("details.fold");
-  if (fold) fold.open = true;
+  if (fold && !fold.open) {
+    visited.add(fold);
+    fold.open = true;
+  }
   el.scrollIntoView({ block: "center" });
   el.focus({ preventScroll: true });
+}
+
+// ── The window's width ────────────────────────────────
+
+/** From this much room beside the sidebar a page is two columns (Home). */
+export const WIDE = 900;
+/** From this much it has room for more: Home's controls are two columns of
+ *  cards themselves, and a Settings tab is two columns. */
+export const WIDER = 1600;
+
+/** The room beside the sidebar, with the scrollbar's own room in it.
+ *  `clientWidth` loses that room when the page gets a scrollbar: a layout
+ *  that is decided on it and is higher in one form than in the other brings
+ *  its own scrollbar, loses the width, steps back, loses the scrollbar, and
+ *  so on in every frame. Every layout step is decided on this width. */
+export function roomBeside(): number {
+  return document.getElementById("content")?.offsetWidth ?? 0;
+}
+
+/** Settings is two columns in a large window (styles/settings.css). */
+function layoutSettings() {
+  document.getElementById("section-settings")?.classList.toggle("wider", roomBeside() >= WIDER);
 }
 
 /** Wire the sidebar, the tab bar and the folds, and show the remembered place. */
@@ -134,10 +176,18 @@ export function initShell() {
     const key = fold.dataset.fold ?? "";
     fold.open = prefs.folds[key] === true;
     fold.addEventListener("toggle", () => {
-      if (prefs.folds[key] === fold.open) return;
+      // Opened by a link to a control in it: for this visit, nothing is saved.
+      if (fold.open && visited.has(fold)) return;
+      // Anything else is the user's own word (or the end of a visit, which changes nothing).
+      visited.delete(fold);
+      if ((prefs.folds[key] === true) === fold.open) return;
       updatePrefs((p) => (p.folds[key] = fold.open));
     });
   }
+
+  const content = document.getElementById("content");
+  if (content) new ResizeObserver(layoutSettings).observe(content);
+  layoutSettings();
 
   draw();
 }

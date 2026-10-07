@@ -437,6 +437,9 @@
           <div class="section-header">
             <h2 class="section-title" data-i18n="settings_title">Settings</h2>
           </div>
+          <!-- What a screen reader hears of the speech model's download: its start and its end, not every
+               percent (the bar has the numbers). The AI model's download has the AI's state line for that. -->
+          <p id="download-live" class="sr-only" role="status"></p>
           <div id="settings-tabs" class="tabs" role="tablist" data-i18n-aria-label="settings_title" aria-label="Settings">
             <button type="button" role="tab" class="tab" id="tab-dictation" data-tab="dictation" aria-controls="panel-dictation" aria-selected="true" data-i18n="tab_dictation">Dictation</button>
             <button type="button" role="tab" class="tab" id="tab-ai" data-tab="ai" aria-controls="panel-ai" aria-selected="false" tabindex="-1" data-i18n="tab_ai">AI cleanup</button>
@@ -464,7 +467,7 @@
               <div class="setting-row">
                 <div class="setting-label">
                   <span class="label-text" data-i18n="paste_last_label">Paste last dictation</span>
-                  <span class="label-hint" data-i18n="paste_last_hint">Pastes your last dictation again, e.g. after the wrong window.</span>
+                  <span class="label-hint" data-i18n="paste_last_hint">Pastes your last dictation again, e.g. when it went to the wrong window.</span>
                 </div>
                 <div class="setting-control hotkey-control">
                   <button type="button" id="paste-last-btn" class="hotkey-btn"><kbd id="paste-last-text"></kbd></button>
@@ -489,7 +492,6 @@
               <div class="setting-row">
                 <div class="setting-label">
                   <span class="label-text" data-i18n="microphone_label">Microphone</span>
-                  <span class="label-hint" data-i18n="microphone_hint">The microphone you dictate with.</span>
                 </div>
                 <div class="setting-control">
                   <select id="mic-select"></select>
@@ -498,7 +500,7 @@
               <div class="setting-row">
                 <div class="setting-label">
                   <span class="label-text" data-i18n="volume_label">Start and stop sounds</span>
-                  <span class="label-hint" data-i18n="volume_hint">How loud the soft sound at the start and the end is.</span>
+                  <span class="label-hint" data-i18n="volume_hint">Volume of the sound at the start and end of a recording.</span>
                 </div>
                 <div class="setting-control">
                   <input id="volume-slider" type="range" min="0" max="1" step="0.05" />
@@ -525,7 +527,6 @@
                   <div class="setting-row">
                     <div class="setting-label">
                       <span class="label-text" data-i18n="meeting_hotkey_label">Start / stop a meeting</span>
-                      <span class="label-hint" data-i18n="meeting_hotkey_hint">Starts a meeting, or stops the one that records.</span>
                     </div>
                     <div class="setting-control hotkey-control">
                       <button type="button" id="meeting-hotkey-btn" class="hotkey-btn"><kbd id="meeting-hotkey-text"></kbd></button>
@@ -573,6 +574,7 @@
                 <div class="setting-label">
                   <span class="label-text" data-i18n="ai_enable_label">AI cleanup</span>
                   <span class="label-hint ai-status status-line" id="ai-status-line" role="status"></span>
+                  <span class="label-hint status-line" id="ai-status-percent"></span>
                 </div>
                 <div class="setting-control">
                   <button type="button" id="ai-download-main" class="btn-secondary hidden" data-i18n="download">Download</button>
@@ -581,10 +583,6 @@
                     <span class="switch-slider"></span>
                   </label>
                 </div>
-              </div>
-              <div id="ai-download-progress" class="progress download-progress hidden">
-                <div class="progress-track"><div class="progress-fill" id="ai-progress-fill"></div></div>
-                <span class="progress-text" id="ai-progress-text" role="status"></span>
               </div>
               <div class="setting-row">
                 <div class="setting-label">
@@ -654,7 +652,7 @@
                 <div class="card">
                   <div class="setting-row">
                     <div class="setting-label">
-                      <span class="label-text" data-i18n="ai_model_label">AI model</span>
+                      <span class="label-text" id="ai-model-label" data-i18n="ai_model_label">AI model</span>
                       <span class="label-hint" data-i18n="ai_model_hint">Downloaded once, then it runs offline on your graphics card.</span>
                       <span class="label-hint status-line" id="ai-model-note"></span>
                     </div>
@@ -664,6 +662,10 @@
                         <button type="button" id="ai-download-btn" class="btn-primary" data-i18n="download">Download</button>
                       </div>
                     </div>
+                  </div>
+                  <div id="ai-download-progress" class="progress download-progress hidden">
+                    <div id="ai-progress-bar" class="progress-track" role="progressbar" aria-labelledby="ai-model-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="progress-fill" id="ai-progress-fill"></div></div>
+                    <span class="progress-text" id="ai-progress-text"></span>
                   </div>
                 </div>
                 <div class="card">
@@ -745,8 +747,8 @@
                   <div class="setting-row">
                     <div class="setting-label">
                       <span class="label-text" data-i18n="screen_context_label">Words on screen</span>
-                      <span class="label-hint"><span data-i18n="screen_context_hint">Names in the window you dictate into help with spelling.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="screen-context-more" data-i18n="hint_more">More</button></span>
-                      <span class="label-hint hint-long" id="screen-context-more" data-i18n="screen_context_more" hidden>Whisper and the AI use them. They are read on your PC when you press the hotkey and never saved.</span>
+                      <span class="label-hint"><span data-i18n="screen_context_hint">Reads names in the window you dictate into, on your PC; nothing is saved.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="screen-context-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="screen-context-more" data-i18n="screen_context_more" hidden>Whisper and the AI use them to spell names right. They are read when you press the hotkey.</span>
                     </div>
                     <div class="setting-control">
                       <label class="switch">
@@ -758,8 +760,8 @@
                   <div class="setting-row">
                     <div class="setting-label">
                       <span class="label-text" data-i18n="learn_label">Learn from corrections</span>
-                      <span class="label-hint"><span data-i18n="learn_hint">Names you correct right after dictating are suggested.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="learn-more" data-i18n="hint_more">More</button></span>
-                      <span class="label-hint hint-long" id="learn-more" data-i18n="learn_more" hidden>Only the corrected word is kept, never your text.</span>
+                      <span class="label-hint"><span data-i18n="learn_hint">Suggests names you correct; only the corrected word is kept, never your text.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="learn-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint hint-long" id="learn-more" data-i18n="learn_more" hidden>A correction counts when you make it right after dictating. A suggestion shows on top of this tab until you add or dismiss it.</span>
                     </div>
                     <div class="setting-control">
                       <label class="switch">
@@ -789,7 +791,7 @@
             <div class="card">
               <div class="setting-row" id="local-settings">
                 <div class="setting-label">
-                  <span class="label-text" data-i18n="model_label">Speech model</span>
+                  <span class="label-text" id="model-label" data-i18n="model_label">Speech model</span>
                   <span class="label-hint" data-i18n="model_hint">Larger models are more accurate and need more memory.</span>
                   <span class="label-hint status-line" id="model-note"></span>
                 </div>
@@ -810,11 +812,12 @@
                 </div>
               </div>
               <div id="download-progress" class="progress download-progress hidden">
-                <div id="progress-bar"><div id="progress-fill"></div></div>
-                <span class="progress-text" id="download-numbers" role="status"></span>
+                <div id="progress-bar" role="progressbar" aria-labelledby="model-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progress-fill"></div></div>
+                <span class="progress-text" id="download-numbers"></span>
               </div>
               <div id="engine-cloud-note" class="notice hidden">
-                <span class="notice-text" data-i18n="cloud_note">The cloud engine (Groq) transcribes. Change it under Advanced.</span>
+                <span class="notice-text" id="engine-cloud-text" data-i18n="cloud_note">The cloud engine (Groq) transcribes. Change it under Advanced.</span>
+                <button type="button" id="engine-cloud-key" class="btn-secondary hidden" data-i18n="cloud_note_open">Enter the key</button>
               </div>
               <div class="setting-row" id="language-row">
                 <div class="setting-label">

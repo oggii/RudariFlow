@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { t, getLang } from "./i18n";
 import { populateLanguageSelect } from "./languages";
+import { NOT_STARTED, showProgress, type DownloadProgress } from "./progress";
 import { onRoute } from "./shell";
 import { setDownload } from "./activity";
 import { sizeText } from "./setup.ts";
@@ -60,12 +61,6 @@ interface Polished {
   aiMs: number;
 }
 
-interface DownloadProgress {
-  downloaded: number;
-  total: number;
-  percent: number;
-}
-
 export interface AiSettingsHost {
   settings(): AiFields;
   save(): Promise<void>;
@@ -82,9 +77,11 @@ const modelNote = $("ai-model-note");
 const downloadBtn = $<HTMLButtonElement>("ai-download-btn");
 /** The same download, next to the switch it unlocks (the model's own row is under Advanced). */
 const downloadMain = $<HTMLButtonElement>("ai-download-main");
+/** The download's bar and numbers, on the model's row under Advanced. */
 const progress = $("ai-download-progress");
-const progressFill = $("ai-progress-fill");
-const progressText = $("ai-progress-text");
+const progressParts = { bar: $("ai-progress-bar"), fill: $("ai-progress-fill"), numbers: $("ai-progress-text") };
+/** Its percent after the state line beside the switch, which is in view when the fold is closed. */
+const statusPercent = $("ai-status-percent");
 const stylePolished = $<HTMLButtonElement>("ai-style-polished");
 const styleLight = $<HTMLButtonElement>("ai-style-light");
 const instructions = $<HTMLTextAreaElement>("ai-instructions");
@@ -111,10 +108,33 @@ export type AiKind = "" | "not-installed" | "downloading" | "missing" | "off" | 
 /** The state line as it reads now (its text alone: "Retry" is a button after it). */
 let said: { text: string; tone: string; kind: AiKind } = { text: "", tone: "", kind: "" };
 
+/** Written only when it changes: the line is read out (role="status"), and
+ *  the backend reports the AI's state more often than it changes. */
 function say(text: string, tone: string, kind: AiKind) {
+  const same = said.text === text && said.kind === kind;
   said = { text, tone, kind };
-  statusLine.textContent = text;
+  if (!same) statusLine.textContent = text;
   statusLine.dataset.tone = tone;
+}
+
+/** The AI model whose download did not finish. Its row and the state line
+ *  say so until another model is chosen or a download works; a new try
+ *  starts clean. */
+let downloadFailed: string | null = null;
+/** The whole percent of the download that runs; null: none runs. */
+let downloadPercent: number | null = null;
+
+/** "The download of Gemma 4 12B · 7.1 GB did not finish. …": the same sentence as for the speech model. */
+function failureText(model: AiModelInfo): string {
+  const name = `${model.label} · ${sizeText(model.bytes)}`.replace(/ /g, "\u00a0");
+  return t("setup_download_failed").replace("{model}", () => name);
+}
+
+/** The percent after "Downloading the model…". Apart from the state line:
+ *  that one is read out, and a percent would be at every step. */
+function renderPercent() {
+  const text = said.kind === "downloading" && downloadPercent !== null ? `${downloadPercent} %` : "";
+  if (statusPercent.textContent !== text) statusPercent.textContent = text;
 }
 
 /** "Retry" after the AI did not start. */
@@ -136,9 +156,18 @@ export function aiActivity(): { loading: boolean; freed: boolean } {
 
 /** For Home: the AI model in use, the state line as it reads in Settings (its text, tone and kind), whether
  *  the model is downloaded, and "Retry" while the line offers it. */
-export function aiSummary(): { name: string; state: string; tone: string; kind: AiKind; downloaded: boolean; retry: (() => void) | null } {
+export function aiSummary(): { name: string; state: string; tone: string; kind: AiKind; downloaded: boolean; failed: boolean; retry: (() => void) | null } {
   const model = selectedModel();
-  return { name: model?.label ?? "", state: said.text, tone: said.tone, kind: said.kind, downloaded: !!model?.downloaded, retry: said.kind === "failed" ? restart : null };
+  return {
+    name: model?.label ?? "",
+    state: said.text,
+    tone: said.tone,
+    kind: said.kind,
+    downloaded: !!model?.downloaded,
+    // The model's download did not finish (the state line says so).
+    failed: !!model && !model.downloaded && downloadFailed === model.id,
+    retry: said.kind === "failed" ? restart : null,
+  };
 }
 
 /** An AI model's name and size, for the setup's suggestion. */
@@ -183,9 +212,15 @@ function renderModels() {
     modelSelect.appendChild(option);
   }
   modelSelect.value = current;
+  // The one line about the model: after a download that did not finish it
+  // says that, in the colour of an error ("Retry" is the button beside it).
+  const model = selectedModel();
+  const failed = !!model && !model.downloaded && downloadFailed === model.id;
   const note = MODEL_NOTE[current];
-  modelNote.textContent = note ? t(note) : "";
-  modelNote.classList.toggle("hidden", !note);
+  modelNote.textContent = failed ? failureText(model) : note ? t(note) : "";
+  if (failed) modelNote.dataset.tone = "error";
+  else delete modelNote.dataset.tone;
+  modelNote.classList.toggle("hidden", !failed && !note);
 }
 
 function renderStatus() {
@@ -193,7 +228,15 @@ function renderStatus() {
   const model = selectedModel();
   const downloading = status.downloading !== null;
   const downloaded = !!model?.downloaded;
+  const failed = !!model && !downloaded && !downloading && downloadFailed === model.id;
 
+  // Both Download buttons: "Retry" after a download that did not finish, and
+  // a name that says what ("Download" alone does not).
+  for (const button of [downloadBtn, downloadMain]) {
+    button.setAttribute("data-i18n", failed ? "retry" : "download");
+    button.textContent = t(failed ? "retry" : "download");
+    button.setAttribute("aria-label", t(failed ? "setup_ai_retry" : "setup_ai_get"));
+  }
   downloadBtn.classList.toggle("hidden", downloaded);
   downloadBtn.disabled = downloading;
   downloadMain.classList.toggle("hidden", downloaded || !status.installed);
@@ -215,7 +258,10 @@ function renderStatus() {
     text = t("ai_status_downloading");
     kind = "downloading";
   } else if (!downloaded) {
-    text = t("ai_status_not_downloaded");
+    // After a download that did not finish the line says so, here beside the
+    // switch too: the model's own row is in the Advanced fold, which may be closed.
+    text = failed && model ? failureText(model) : t("ai_status_not_downloaded");
+    if (failed) tone = "error";
     kind = "missing";
   } else if (!host.settings().aiCleanup) {
     text = t("ai_status_off");
@@ -244,8 +290,9 @@ function renderStatus() {
     kind = "starting";
   }
   say(text, tone, kind);
+  renderPercent();
   // "Retry" stands after the text; Home has its own button for the same thing (aiSummary).
-  if (kind === "failed") {
+  if (kind === "failed" && !statusLine.querySelector("button")) {
     const retry = document.createElement("button");
     retry.className = "link-btn";
     retry.textContent = t("ai_retry");
@@ -296,24 +343,43 @@ function download(): Promise<void> {
 
 async function fetchModel() {
   const id = host.settings().aiModel;
-  progressFill.style.width = "0%";
-  progressText.textContent = "";
+  // The keyboard focus is on a control that rests while the download runs
+  // (a resting control cannot hold the focus), or goes with its end.
+  const at = document.activeElement;
+  // A new try starts clean: the last one's failure and its numbers are gone.
+  downloadFailed = null;
+  downloadPercent = 0;
+  renderModels();
+  showProgress(progressParts, NOT_STARTED);
   progress.classList.remove("hidden");
-  downloadBtn.disabled = true;
-  downloadMain.disabled = true;
+  for (const button of [downloadBtn, downloadMain]) {
+    button.setAttribute("data-i18n", "download");
+    button.textContent = t("download");
+    button.setAttribute("aria-label", t("setup_ai_get"));
+    button.disabled = true;
+  }
   modelSelect.disabled = true;
   say(t("ai_status_downloading"), "", "downloading");
+  renderPercent();
   downloadInFlight = true;
   setDownload("ai", 0);
+  let failed = false;
   try {
     await invoke("ai_download_model", { id });
   } catch (e) {
     console.error("ai_download_model failed:", e);
-    say(`${t("ai_download_failed")}: ${e}`, "error", "missing");
+    failed = true;
   }
   downloadInFlight = false;
+  downloadPercent = null;
   setDownload("ai", null);
+  // Said by the model's row and by the state line, which refreshStatus() draws (and draws again later).
+  if (failed) downloadFailed = id;
   await refreshStatus();
+  if (document.activeElement === document.body || document.activeElement === null) {
+    if (at === downloadMain) (downloadMain.classList.contains("hidden") ? toggle : downloadMain).focus();
+    else if (at === downloadBtn || at === modelSelect) modelSelect.focus();
+  }
 }
 
 function renderOutputLanguage() {
@@ -470,6 +536,8 @@ export function initAiSettings(h: AiSettingsHost) {
   });
 
   modelSelect.addEventListener("change", async () => {
+    // Another choice: what was said of a download that did not finish is over.
+    downloadFailed = null;
     host.settings().aiModel = modelSelect.value;
     await host.save();
     await refreshStatus();
@@ -528,13 +596,16 @@ export function initAiSettings(h: AiSettingsHost) {
   listen("ai-status", () => refreshStatus());
   listen("game-free", () => refreshStatus());
   listen<DownloadProgress>("ai-download-progress", (event) => {
-    const { downloaded, total, percent } = event.payload;
+    const { percent } = event.payload;
     progress.classList.remove("hidden");
-    progressFill.style.width = `${percent}%`;
-    // Always the numbers: percent and size.
-    progressText.textContent = total
-      ? t("progress_numbers").replace("{percent}", String(Math.round(percent))).replace("{done}", sizeText(downloaded)).replace("{total}", sizeText(total))
-      : `${Math.round(percent)} %`;
+    // The bar on the model's row, and always the numbers: percent and size.
+    // Nothing of it is read out by itself; the bar has the numbers for a
+    // screen reader that asks. The percent also stands beside the switch.
+    const whole = showProgress(progressParts, event.payload);
+    if (downloadInFlight || status?.downloading) {
+      downloadPercent = whole;
+      renderPercent();
+    }
     // A progress event that arrives after the download ended must not bring it back into the status.
     if (downloadInFlight) setDownload("ai", percent);
   });

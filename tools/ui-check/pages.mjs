@@ -930,6 +930,535 @@ async function firstRun(page, run) {
   return out;
 }
 
+// ── Settings: a model's download on its row, the two columns ──
+
+/** Run in the page: set a control's value as a user would (it may stand in a closed fold). */
+const choose = (page, id, value) =>
+  page.evaluate(
+    ([id, value]) => {
+      const el = document.getElementById(id);
+      el.value = value;
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    },
+    [id, value],
+  );
+
+/** A download of this kind has been asked for and waits in the mock ("download_model" or "ai_download_model"); `n`: that many times so far. */
+const asked = (page, cmd, n = 1) => until(page, ([cmd, n]) => window.__MOCK__.calls.filter((c) => c.cmd === cmd).length >= n, 3000, [cmd, n]);
+
+/** A report of the download that waits: 43 % of `total` bytes. */
+const report = (page, event, total, percent = 43) => page.evaluate(([event, total, percent]) => window.__MOCK__.emit(event, { downloaded: (total * percent) / 100, total, percent }), [event, total, percent]);
+
+/**
+ * Start to note what every live region in the window is given to read out
+ * (window.__live: its id, or its tag and class, to the texts in order). A
+ * download reports ten times a second: nothing that is read out may follow it.
+ */
+const noteLive = (page) =>
+  page.evaluate(() => {
+    for (const o of window.__liveNotes ?? []) o.disconnect();
+    window.__liveNotes = [];
+    window.__live = {};
+    for (const el of document.querySelectorAll('[role="status"], [role="alert"], [aria-live]')) {
+      const key = el.id || `${el.tagName.toLowerCase()}.${el.className}`;
+      const o = new MutationObserver(() => {
+        const texts = (window.__live[key] ??= []);
+        if (texts.at(-1) !== el.textContent) texts.push(el.textContent);
+      });
+      o.observe(el, { childList: true, characterData: true, subtree: true });
+      window.__liveNotes.push(o);
+    }
+  });
+/** What was read out since `noteLive`, per live region; those of Settings, and the sidebar's status. */
+const liveNoted = (page) =>
+  page.evaluate(() => {
+    const inSettings = (key) => !!document.getElementById(key)?.closest("#section-settings");
+    const all = Object.entries(window.__live);
+    return { settings: Object.fromEntries(all.filter(([key]) => inSettings(key))), status: window.__live["status-live"] ?? [], all: Object.fromEntries(all) };
+  });
+/** At most two texts per live region of Settings (the start and the end), and no number in what the sidebar says. */
+const liveOk = (noted) => Object.values(noted.settings).every((texts) => texts.length <= 2) && noted.status.every((text) => !/\d/.test(text));
+
+/** A model row's download as it shows: the bar and its numbers under the row, and what the bar says to a screen reader. */
+const downloadNow = (page, ids) =>
+  page.evaluate((ids) => {
+    const box = document.getElementById(ids.box);
+    const bar = document.getElementById(ids.bar);
+    const numbers = document.getElementById(ids.numbers);
+    const row = document.getElementById(ids.select).closest(".setting-row");
+    const note = document.getElementById(ids.note);
+    const r = box.getBoundingClientRect();
+    const content = document.getElementById("content").getBoundingClientRect();
+    return {
+      shown: box.checkVisibility(),
+      // Under its row, in the row's card.
+      onRow: box.previousElementSibling === row && Math.abs(r.top - row.getBoundingClientRect().bottom) < 2,
+      inView: box.checkVisibility() && r.top >= content.top && r.bottom <= Math.min(content.bottom, window.innerHeight),
+      numbers: numbers.textContent,
+      width: document.getElementById(ids.fill).style.width,
+      role: bar.getAttribute("role"),
+      now: bar.getAttribute("aria-valuenow"),
+      range: `${bar.getAttribute("aria-valuemin")}-${bar.getAttribute("aria-valuemax")}`,
+      said: bar.getAttribute("aria-valuetext"),
+      named: document.getElementById(bar.getAttribute("aria-labelledby"))?.textContent ?? "",
+      label: row.querySelector(".label-text").textContent,
+      live: numbers.getAttribute("role") ?? numbers.getAttribute("aria-live") ?? "",
+      select: document.getElementById(ids.select).value,
+      resting: document.getElementById(ids.select).disabled,
+      note: note.textContent,
+      tone: note.dataset.tone ?? "",
+      noteRetry: note.querySelector("button")?.getAttribute("aria-label") ?? null,
+      button: ids.buttons.map((id) => {
+        const b = document.getElementById(id);
+        return { id, shown: b.checkVisibility(), key: b.getAttribute("data-i18n"), text: b.textContent, name: b.getAttribute("aria-label") ?? "", off: b.disabled };
+      }),
+    };
+  }, ids);
+
+const SPEECH_ROW = { box: "download-progress", bar: "progress-bar", fill: "progress-fill", numbers: "download-numbers", select: "model-select", note: "model-note", buttons: ["download-btn"] };
+const AI_ROW = { box: "ai-download-progress", bar: "ai-progress-bar", fill: "ai-progress-fill", numbers: "ai-progress-text", select: "ai-model-select", note: "ai-model-note", buttons: ["ai-download-btn", "ai-download-main"] };
+
+/** The bar is a progress bar named after its row, with the numbers in words, and nothing of it is a live region. */
+const barOk = (now, numbers, said) =>
+  now.shown && now.onRow && numbers.test(now.numbers) && now.width === "43%" && now.role === "progressbar" && now.now === "43" && now.range === "0-100" && said.test(now.said ?? "") && now.named === now.label && now.live === "";
+
+/**
+ * The speech model's row on Models & GPU while its model downloads, after
+ * the download failed, and at the start of the next one. `open` has started
+ * a download: of the model chosen in the dropdown where one is there
+ * already (populated), with the Download button where none is (first run).
+ */
+async function speechDownload(page) {
+  const out = [];
+  const firstrun = await page.evaluate(() => window.__MOCK_CFG__.scenario === "firstrun");
+  const saved = () => page.evaluate(() => window.__MOCK__.settings().whisperModel);
+  const before = await saved();
+  // Downloading: the bar and "43 % · 32 MB of 75 MB" on the row.
+  let now = await downloadNow(page, SPEECH_ROW);
+  out.push(...expect(barOk(now, firstrun ? /^43 % · 200 MB \S+ 466 MB$/ : /^43 % · 32 MB \S+ 75 MB$/, /^43 %, \d+ MB \S+ \d+ MB$/), "the speech model's row shows its download: the bar and percent with size, a progress bar named after the row, no live region", JSON.stringify(now)));
+  out.push(...expect(now.resting && now.button[0].off, "the dropdown and the button rest while the model downloads", JSON.stringify(now)));
+  // Another setting is saved meanwhile: the model that is on its way is not stored.
+  await choose(page, "idle-unload-select", "15");
+  await wait(page, 120);
+  out.push(...expect((await saved()) === before && (await page.evaluate(() => window.__MOCK__.settings().idleUnloadMinutes)) === 15, "a save while a model downloads keeps the model that was saved", `${await saved()} (was ${before})`));
+
+  // The download fails: the row says which model, in the colour of an error, with Retry; the settings keep the old model.
+  await awaitError(page, /Download failed/);
+  await page.evaluate(() => window.__MOCK__.failDownload("speech"));
+  await until(page, () => !document.getElementById("download-progress").checkVisibility());
+  await wait(page, 150);
+  const errors = await logged(page);
+  now = await downloadNow(page, SPEECH_ROW);
+  const failedModel = firstrun ? /Small\s·\s466\sMB/ : /Tiny\s·\s75\sMB/;
+  out.push(...expect(errors === 1 && !now.shown && now.tone === "error" && failedModel.test(now.note) && !now.resting && (await saved()) === before, "a download that fails: the row's note says which model did not finish, in the colour of an error, and the settings keep their model", JSON.stringify({ errors, now, saved: await saved() })));
+  const said = await page.evaluate(() => document.getElementById("download-live").textContent);
+  out.push(...expect(failedModel.test(said), "the failure is said to a screen reader", said));
+  if (firstrun) {
+    // The dropdown is still on the model that failed: its button reads Retry, and Home's step says the same.
+    const home = await page.evaluate(() => ({ text: document.getElementById("setup-model-text").textContent, tone: document.getElementById("setup-model-text").dataset.tone, button: document.getElementById("setup-model-download").textContent }));
+    out.push(...expect(now.select === "small" && now.button[0].shown && now.button[0].key === "retry" && !now.button[0].off && now.button[0].name.length > now.button[0].text.length && now.noteRetry === null, "the Download button reads Retry after the failure and says what it retries", JSON.stringify(now.button)));
+    out.push(...expect(failedModel.test(home.text) && home.tone === "warn" && home.button === now.button[0].text, "Home's step says the same failure and offers Retry", JSON.stringify(home)));
+    // Another model is chosen: its download starts clean, under a button that no longer reads Retry.
+    await noteLive(page);
+    await page.selectOption("#model-select", "base");
+    await asked(page, "download_model", 2);
+    now = await downloadNow(page, SPEECH_ROW);
+    out.push(...expect(now.shown && now.numbers === "0 %" && now.width === "0%" && now.now === "0" && now.tone === "" && !failedModel.test(now.note) && now.button[0].key === "download" && now.button[0].off, "a second download starts clean: no numbers of the last one, no failure, no Retry on the resting button", JSON.stringify(now)));
+    await page.evaluate(() => {
+      for (let i = 1; i <= 60; i++) window.__MOCK__.emit("download-progress", { downloaded: i * 1e6, total: 142e6, percent: (i * 100) / 142 });
+    });
+    await page.evaluate(() => window.__MOCK__.finishDownload("speech"));
+    await until(page, () => window.__MOCK__.settings().whisperModel === "base" && !document.getElementById("download-progress").checkVisibility());
+    await wait(page, 150);
+    const noted = await liveNoted(page);
+    out.push(...expect(liveOk(noted) && (noted.settings["download-live"] ?? []).length === 2, "a download is read out at its start and its end, not at every step", JSON.stringify(noted.all)));
+    now = await downloadNow(page, SPEECH_ROW);
+    out.push(...expect((await saved()) === "base" && now.select === "base" && now.tone === "" && !now.button[0].shown, "the model that arrived is saved, and the row is as for any model that is there", JSON.stringify(now)));
+    return out;
+  }
+  // The dropdown is back on the model that works: Retry stands in the note, and says what it retries.
+  out.push(...expect(now.select === before && !now.button[0].shown && (now.noteRetry ?? "").length > 8, "the dropdown is back on the saved model and the note offers Retry", JSON.stringify(now)));
+  // A language change keeps the failure, in the new language.
+  // Retry: the same model again, clean: no numbers of the last try, no failure.
+  await noteLive(page);
+  await page.click("#model-note button");
+  await asked(page, "download_model", 2);
+  now = await downloadNow(page, SPEECH_ROW);
+  out.push(...expect(now.shown && now.select === "tiny" && now.resting && now.numbers === "0 %" && now.width === "0%" && now.now === "0" && now.tone === "" && now.noteRetry === null, "Retry downloads the same model again and starts clean: no numbers of the last try, no failure", JSON.stringify(now)));
+  await page.evaluate(() => {
+    for (let i = 1; i <= 60; i++) window.__MOCK__.emit("download-progress", { downloaded: i * 1e6, total: 75e6, percent: (i * 100) / 75 });
+  });
+  await page.evaluate(() => window.__MOCK__.finishDownload("speech"));
+  await until(page, () => window.__MOCK__.settings().whisperModel === "tiny" && !document.getElementById("download-progress").checkVisibility());
+  await wait(page, 150);
+  const noted = await liveNoted(page);
+  out.push(...expect(liveOk(noted) && (noted.settings["download-live"] ?? []).length === 2, "a download is read out at its start and its end, not at every step", JSON.stringify(noted.all)));
+  now = await downloadNow(page, SPEECH_ROW);
+  const focus = await page.evaluate(() => document.activeElement?.id ?? "");
+  out.push(...expect((await saved()) === "tiny" && now.select === "tiny" && now.tone === "" && now.noteRetry === null && focus === "model-select", "the model that arrived is saved, the failure is gone, and the keyboard focus is on the dropdown", JSON.stringify({ now, focus })));
+  // A failure survives a change of the Display Language, in the new language, and goes with the next choice.
+  await page.selectOption("#model-select", "base");
+  await asked(page, "download_model", 3);
+  await awaitError(page, /Download failed/);
+  await page.evaluate(() => window.__MOCK__.failDownload("speech"));
+  await until(page, () => document.getElementById("model-note").dataset.tone === "error");
+  await logged(page);
+  const lang = await page.evaluate(() => document.documentElement.lang);
+  const one = await page.evaluate(() => document.getElementById("model-note").textContent);
+  await choose(page, "ui-language-select", lang === "de" ? "en" : "de");
+  await wait(page, 300);
+  const other = await page.evaluate(() => [document.getElementById("model-note").textContent, document.getElementById("model-note").dataset.tone, document.getElementById("gpu-detected").textContent]);
+  out.push(...expect(other[0] !== one && /Base/.test(other[0]) && other[1] === "error", "the failure stays through a change of the Display Language, in the new language", JSON.stringify([one, other])));
+  out.push(...expect((lang === "de" ? /^Detected: / : /^Erkannt: /).test(other[2]), "the detected graphics cards follow the Display Language", other[2]));
+  await choose(page, "ui-language-select", lang);
+  await wait(page, 300);
+  await page.selectOption("#model-select", "small");
+  await wait(page, 200);
+  now = await downloadNow(page, SPEECH_ROW);
+  out.push(...expect(now.tone === "" && !/Base/.test(now.note) && (await saved()) === "small", "the next choice ends the failure's note", JSON.stringify(now)));
+  // For the screenshot: a download that runs.
+  await page.selectOption("#model-select", "large-v3");
+  await asked(page, "download_model", 4);
+  await report(page, "download-progress", 2.9e9);
+  return out;
+}
+
+/**
+ * The AI model's row in the Advanced fold of AI cleanup, the same way.
+ * `open` has opened the fold, chosen a model that is not there and scrolled
+ * its row to the middle of the window, as a click on it would have it.
+ */
+async function aiDownload(page) {
+  const out = [];
+  const main = () => page.evaluate(() => ({ text: document.getElementById("ai-status-line").textContent, percent: document.getElementById("ai-status-percent").textContent, tone: document.getElementById("ai-status-line").dataset.tone ?? "" }));
+  // Downloading: the bar and its numbers on the model's row, in view, and the percent beside the switch.
+  // The model's row at the middle of the window, as after a click on its dropdown (the tool scrolled back to the top).
+  await page.evaluate(() => document.getElementById("ai-model-select").scrollIntoView({ block: "center" }));
+  await wait(page, 100);
+  let now = await downloadNow(page, AI_ROW);
+  out.push(...expect(barOk(now, /^43 % · 3\.1 GB \S+ 7\.1 GB$/, /^43 %, 3\.1 GB \S+ 7\.1 GB$/), "the AI model's row shows its download: the bar and percent with size, a progress bar named after the row, no live region", JSON.stringify(now)));
+  out.push(...expect(now.inView, "the download's progress is in view beside the control that started it", `${JSON.stringify(now)} in a window of ${await page.evaluate(() => `${window.innerWidth}x${window.innerHeight}`)}`));
+  let line = await main();
+  out.push(...expect(line.percent === "43 %" && line.text.length > 8 && !/\d/.test(line.text), "the state line beside the switch has the percent after it, outside what is read out", JSON.stringify(line)));
+  out.push(...expect(now.resting && now.button.every((b) => b.off && b.name.length > b.text.length), "the dropdown and both Download buttons rest, and each says what it downloads", JSON.stringify(now.button)));
+
+  // It fails: the model's row and the state line say which model, in the colour of an error; both buttons read Retry.
+  await awaitError(page, /ai_download_model failed/);
+  await page.evaluate(() => window.__MOCK__.failDownload("ai"));
+  await until(page, () => !document.getElementById("ai-download-progress").checkVisibility());
+  await wait(page, 200);
+  const errors = await logged(page);
+  now = await downloadNow(page, AI_ROW);
+  line = await main();
+  const model = /Gemma\s4\s12B\s·\s7\.1\sGB/;
+  out.push(...expect(errors === 1 && !now.shown && now.tone === "error" && model.test(now.note) && model.test(line.text) && line.tone === "error" && line.percent === "", "a download that fails: the model's row and the state line beside the switch say which model did not finish, in the colour of an error", JSON.stringify({ errors, now, line })));
+  out.push(...expect(now.button.every((b) => b.shown && b.key === "retry" && !b.off && b.name.length > b.text.length), "both Download buttons read Retry and say what they retry", JSON.stringify(now.button)));
+  // The failure is still there after the backend reported its state again.
+  await page.evaluate(() => window.__MOCK__.emit("ai-status", null));
+  await wait(page, 150);
+  out.push(...expect(model.test((await main()).text) && (await downloadNow(page, AI_ROW)).tone === "error", "the failure stays when the AI's state is read again", JSON.stringify(await main())));
+  // Home says it under its switch, as Settings does.
+  const home = await page.evaluate(() => [document.getElementById("home-ai-status").textContent, document.getElementById("home-ai-status").dataset.tone]);
+  out.push(...expect(model.test(home[0]) && home[1] === "error", "Home says the same failure under its AI cleanup switch", JSON.stringify(home)));
+
+  // Retry starts clean and is read out twice: at its start and at its end.
+  await noteLive(page);
+  await page.click("#ai-download-btn");
+  await asked(page, "ai_download_model", 2);
+  await wait(page, 100);
+  now = await downloadNow(page, AI_ROW);
+  line = await main();
+  out.push(...expect(now.shown && now.numbers === "0 %" && now.width === "0%" && now.now === "0" && now.tone === "" && !model.test(now.note) && now.button.every((b) => b.key === "download" && b.off) && !model.test(line.text) && line.percent === "0 %", "a second download starts clean: no numbers of the last one, no failure, no Retry", JSON.stringify({ now, line })));
+  await page.evaluate(() => {
+    for (let i = 1; i <= 60; i++) window.__MOCK__.emit("ai-download-progress", { downloaded: i * 1e8, total: 7121861440, percent: (i * 1e10) / 7121861440 });
+  });
+  await page.evaluate(() => window.__MOCK__.finishDownload("ai"));
+  await until(page, () => !document.getElementById("ai-download-progress").checkVisibility() && !document.getElementById("ai-download-btn").checkVisibility());
+  await wait(page, 200);
+  const noted = await liveNoted(page);
+  out.push(...expect(liveOk(noted) && (noted.settings["ai-status-line"] ?? []).length === 2, "the AI model's download is read out at its start and its end, not at every step", JSON.stringify(noted.all)));
+  now = await downloadNow(page, AI_ROW);
+  out.push(...expect(now.tone === "" && !model.test(now.note) && now.button.every((b) => !b.shown) && (await main()).percent === "", "with the model there the row is as for any model that is there", JSON.stringify(now)));
+  return out;
+}
+
+/** The cloud engine without its key: the main card of Models & GPU says so and leads to the key field in the fold. */
+async function cloudKey(page) {
+  const out = [];
+  const note = () =>
+    page.evaluate(() => {
+      const el = document.getElementById("engine-cloud-note");
+      const button = document.getElementById("engine-cloud-key");
+      return { shown: el.checkVisibility(), tone: el.dataset.tone ?? "", key: document.getElementById("engine-cloud-text").getAttribute("data-i18n"), button: button.checkVisibility(), fold: document.querySelector('details.fold[data-fold="models"]').open };
+    });
+  let now = await note();
+  out.push(...expect(now.shown && now.tone === "warn" && now.key === "cloud_note_no_key" && now.button && !now.fold, "the cloud engine without a key: the notice warns, says that the key is missing and has a button, with the fold closed", JSON.stringify(now)));
+  await page.click("#engine-cloud-key");
+  await wait(page);
+  const at = await page.evaluate(() => {
+    const el = document.activeElement;
+    const r = el.getBoundingClientRect();
+    return { id: el.id, shown: el.checkVisibility(), inView: r.top >= 0 && r.bottom <= window.innerHeight, fold: document.querySelector('details.fold[data-fold="models"]').open, remembered: JSON.parse(localStorage.getItem("rudariflow-ui") ?? "{}").folds?.models === true };
+  });
+  out.push(...expect(at.id === "groq-key" && at.shown && at.inView && at.fold, "the notice's button lands on the key field: the fold opens, the field is in view and has the focus", JSON.stringify(at)));
+  out.push(...expect(!at.remembered, "a fold that a link opened is not remembered as open", JSON.stringify(at)));
+  // Another tab and back: the visit is over, the fold is as the user left it.
+  await page.evaluate(() => document.getElementById("tab-general").click());
+  await page.evaluate(() => document.getElementById("tab-models").click());
+  await wait(page, 150);
+  now = await note();
+  out.push(...expect(!now.fold, "after the visit the fold is closed again", JSON.stringify(now)));
+  // The user opens it: that is remembered.
+  await page.click('details.fold[data-fold="models"] > summary');
+  await wait(page, 150);
+  const kept = await page.evaluate(() => JSON.parse(localStorage.getItem("rudariflow-ui") ?? "{}").folds?.models === true);
+  out.push(...expect(kept, "a fold the user opens is remembered"));
+  // With a key the notice is the plain one again.
+  await page.fill("#groq-key", "gsk_check");
+  await wait(page, 100);
+  now = await note();
+  out.push(...expect(now.shown && now.tone === "" && now.key === "cloud_note" && !now.button, "with a key the notice no longer warns and has no button", JSON.stringify(now)));
+  // For the screenshot and the pages that follow: no key, the fold as it was.
+  await page.fill("#groq-key", "");
+  await page.click('details.fold[data-fold="models"] > summary');
+  await wait(page, 150);
+  return out;
+}
+
+/** Every key box of a card ends on one right edge, whether its key has a × beside it or not. */
+async function keyEdges(page) {
+  const out = [];
+  const edges = (root) =>
+    page.evaluate(
+      (root) =>
+        [...document.querySelectorAll(`${root} .hotkey-btn`)].filter((b) => b.checkVisibility()).map((b) => ({ id: b.id, right: Math.round(b.getBoundingClientRect().right * 2) / 2, top: Math.round(b.getBoundingClientRect().top) })),
+      root,
+    );
+  // Settings > Dictation, with the fold open: Dictate has no ×, Free GPU is not set.
+  for (const root of ["#panel-dictation > .card", "#panel-dictation .fold"]) {
+    const keys = await edges(root);
+    out.push(...expect(keys.length >= 2 && new Set(keys.map((k) => k.right)).size === 1, `the key boxes of ${root} end on one right edge`, JSON.stringify(keys)));
+  }
+  // The × of a key that is not set keeps its room, and is neither shown nor reached.
+  const off = await page.evaluate(() => {
+    const b = document.getElementById("free-gpu-clear");
+    return [b.getBoundingClientRect().width, b.checkVisibility({ visibilityProperty: true }), document.getElementById("paste-last-clear").checkVisibility({ visibilityProperty: true })];
+  });
+  out.push(...expect(off[0] > 20 && !off[1] && off[2], "the × of a key that is not set keeps its room and does not show", JSON.stringify(off)));
+  // Each key box stays on its row's first line, beside its label.
+  const rows = await page.evaluate(() =>
+    [...document.querySelectorAll("#panel-dictation .setting-row")]
+      .filter((row) => row.querySelector(".hotkey-btn") && row.checkVisibility())
+      .map((row) => [row.querySelector(".hotkey-btn").id, Math.round(row.querySelector(".hotkey-btn").getBoundingClientRect().top - row.querySelector(".label-text").getBoundingClientRect().top)]),
+  );
+  out.push(...expect(rows.every(([, down]) => Math.abs(down) < 16), "a key box stands beside its label, not under it", JSON.stringify(rows)));
+  // Home's hotkeys card.
+  await section(page, "home");
+  const home = await edges("#home-hotkeys");
+  out.push(...expect(home.length === 4 && new Set(home.map((k) => k.right)).size === 1, "Home's key boxes end on one right edge", JSON.stringify(home)));
+  await settings(page, "dictation");
+  return out;
+}
+
+/**
+ * "Download" and "More" say what they are about: three buttons read
+ * "Download" and thirteen "More". The name holds the word that shows, and
+ * follows the Display Language.
+ */
+async function controlNames(page) {
+  const out = [];
+  const read = () =>
+    page.evaluate(() => ({
+      lang: document.documentElement.lang,
+      more: [...document.querySelectorAll("#section-settings .hint-more")].map((b) => [b.textContent, b.getAttribute("aria-label") ?? ""]),
+      download: ["download-btn", "ai-download-btn", "ai-download-main"].map((id) => [document.getElementById(id).textContent, document.getElementById(id).getAttribute("aria-label") ?? ""]),
+    }));
+  const says = (list) => list.every(([text, name]) => name.length > text.length + 3 && name.toLowerCase().includes(text.toLowerCase()));
+  const one = await read();
+  out.push(...expect(one.more.length >= 13 && says(one.more) && new Set(one.more.map((m) => m[1])).size === one.more.length, "every More says what it is about, each something else", JSON.stringify(one.more)));
+  out.push(...expect(says(one.download) && one.download[1][1] === one.download[2][1] && one.download[0][1] !== one.download[1][1], "the Download buttons say which model they download", JSON.stringify(one.download)));
+  // Open, it is "Less about …".
+  const less = await page.evaluate(() => {
+    const b = document.querySelector("#panel-dictation .hint-more");
+    b.click();
+    const open = [b.textContent, b.getAttribute("aria-label")];
+    b.click();
+    return [open, [b.textContent, b.getAttribute("aria-label")]];
+  });
+  out.push(...expect(says(less) && less[0][1] !== less[1][1] && less[1][1] === one.more[0][1], "an open More is named Less about its row, and More again once it is closed", JSON.stringify(less)));
+  await choose(page, "ui-language-select", one.lang === "de" ? "en" : "de");
+  await wait(page, 300);
+  const two = await read();
+  out.push(...expect(two.lang !== one.lang && says(two.more) && says(two.download) && two.more.every((m, i) => m[1] !== one.more[i][1]) && two.download.every((d, i) => d[1] !== one.download[i][1]), "the names follow the Display Language", JSON.stringify(two)));
+  await choose(page, "ui-language-select", one.lang);
+  await wait(page, 300);
+  return out;
+}
+
+/** The parts of each Settings tab in the order of the page, and the column each stands in when the tab has two. */
+const COLUMNS = {
+  dictation: [[".card", 0], [".fold", 1]],
+  ai: [[".card:has(#ai-toggle)", 0], [".card:has(#ai-rule-list)", 1], [".fold", 0]],
+  dictionary: [["#dict-suggest", 0], [".card:has(#dict-list)", 0], [".card:has(#replacement-list)", 1], [".card:has(#swiss-toggle)", 1], [".fold", 1]],
+  models: [[".card", 0], [".fold", 1]],
+  general: [[".card:has(#ui-language-select)", 0], [".card:has(#history-mode-select)", 1]],
+};
+
+/**
+ * A Settings tab as it is laid out, with its Advanced fold closed and open:
+ * two columns from 1600 px beside the sidebar (one left edge, one top edge,
+ * each at most 900 px, the parts of a column 16 px apart, every part in its
+ * column), one column below that. The order in the page is the same in both.
+ */
+async function columns(page, run) {
+  const out = [];
+  const size = await page.evaluate(() => `${window.innerWidth}x${window.innerHeight}`);
+  for (const tab of TABS) {
+    await page.evaluate((t) => document.getElementById(`tab-${t}`).click(), tab);
+    for (const open of tab === "general" ? [false] : [false, true]) {
+      await page.evaluate(([t, open]) => document.querySelector(`details.fold[data-fold="${t}"]`) && (document.querySelector(`details.fold[data-fold="${t}"]`).open = open), [tab, open]);
+      await wait(page, 60);
+      const seen = await page.evaluate(
+        ([tab, parts]) => {
+          const panel = document.getElementById(`panel-${tab}`);
+          const round = (n) => Math.round(n * 2) / 2;
+          const kids = [...panel.children].filter((el) => !el.matches(".panel-lead"));
+          const found = parts.map(([selector]) => panel.querySelector(`:scope > ${selector}`));
+          const boxes = found.map((el, i) => {
+            const r = el?.getBoundingClientRect();
+            return { part: parts[i][0], column: parts[i][1], shown: !!el && el.checkVisibility(), left: r ? round(r.left) : 0, top: r ? round(r.top) : 0, right: r ? round(r.right) : 0, bottom: r ? round(r.bottom) : 0 };
+          });
+          const content = document.getElementById("content");
+          const tabs = document.getElementById("settings-tabs").getBoundingClientRect();
+          const fold = panel.querySelector(":scope > .fold > summary");
+          const hints = [...panel.querySelectorAll(".setting-label .label-hint")]
+            .filter((el) => el.checkVisibility() && !el.matches(".hint-long, .status-line, .ai-status, .ai-output-warn, #gpu-detected, #ai-model-note") && el.innerText.trim())
+            .filter((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)) > 1)
+            .map((el) => el.innerText.trim().slice(0, 40));
+          return {
+            wider: document.getElementById("section-settings").classList.contains("wider"),
+            room: content.offsetWidth,
+            order: kids.length === found.length && kids.every((el, i) => el === found[i]),
+            boxes: boxes.filter((b) => b.shown),
+            tabs: [round(tabs.left), round(tabs.right)],
+            page: round(content.getBoundingClientRect().left + parseFloat(getComputedStyle(document.getElementById("section-settings")).paddingLeft)),
+            pageRight: round(content.getBoundingClientRect().left + content.clientWidth - parseFloat(getComputedStyle(document.getElementById("section-settings")).paddingRight)),
+            fold: fold ? { shown: fold.checkVisibility(), width: round(fold.getBoundingClientRect().width), height: round(fold.getBoundingClientRect().height), ground: getComputedStyle(fold).backgroundColor } : null,
+            sideways: content.scrollWidth > content.clientWidth + 1,
+            hints,
+          };
+        },
+        [tab, COLUMNS[tab]],
+      );
+      const what = `${tab}${open ? ", Advanced open" : ""} at ${size}`;
+      const detail = JSON.stringify(seen);
+      out.push(...expect(seen.order, `${what}: the parts are in the order of the page`, detail));
+      out.push(...expect(seen.wider === seen.room >= 1600, `${what}: two columns from 1600 px beside the sidebar, one below`, detail));
+      out.push(...expect(!seen.sideways, `${what}: nothing scrolls sideways`, detail));
+      const col = (n) => seen.boxes.filter((b) => b.column === n);
+      if (!seen.wider) {
+        // One column: every part on the page's left edge, as wide as the next one, one under the other.
+        const one = seen.boxes.every((b, i) => b.left === seen.page && b.right === seen.boxes[0].right && (i === 0 || b.top >= seen.boxes[i - 1].bottom));
+        out.push(...expect(one && seen.boxes[0].right - seen.boxes[0].left <= 1080.5, `${what}: one column of at most 1080 px on the page's left edge`, detail));
+        continue;
+      }
+      const [left, right] = [col(0), col(1)];
+      const width = (b) => b.right - b.left;
+      out.push(...expect(left.length > 0 && right.length > 0 && left.every((b) => b.left === seen.page) && right.every((b) => b.left === right[0].left && b.left >= left[0].right + 8), `${what}: two columns, the left one on the page's left edge`, detail));
+      out.push(...expect(left[0].top === right[0].top, `${what}: both columns start on one top edge`, detail));
+      out.push(...expect(seen.boxes.every((b) => width(b) === width(seen.boxes[0]) && width(b) <= 900.5 && width(b) >= 700), `${what}: every part is as wide as its column, at most 900 px`, detail));
+      const apart = (list) => list.every((b, i) => i === 0 || Math.abs(b.top - list[i - 1].bottom - 16) <= 1);
+      out.push(...expect(apart(left) && apart(right), `${what}: the parts of a column stand 16 px apart, none is pushed away`, detail));
+      out.push(...expect(seen.tabs[0] === seen.page && Math.abs(seen.tabs[1] - seen.pageRight) <= 1, `${what}: the tab bar spans the whole width`, detail));
+      if (seen.fold) out.push(...expect(seen.fold.shown && seen.fold.width === width(seen.boxes[0]) && seen.fold.height >= 40 && !/rgba\(0, 0, 0, 0\)|transparent/.test(seen.fold.ground), `${what}: the fold's heading is a bar as wide as its column`, detail));
+      out.push(...expect(seen.hints.length === 0, `${what}: every hint is one line`, seen.hints.join(" | ")));
+    }
+  }
+  // The folds as the window found them (the tool set them, the page remembers them as the user's).
+  await page.evaluate(() => {
+    for (const fold of document.querySelectorAll("details.fold[data-fold]")) fold.open = false;
+  });
+  await page.evaluate(() => document.getElementById("tab-dictation").click());
+  await wait(page, 200);
+  // The step with the scrollbar drawn: once per run.
+  if (run.lang === "en" && run.size === "1600x900") out.push(...(await settingsHold(run)));
+  return out;
+}
+
+/**
+ * The step to two columns (1600 px beside the sidebar) in a window that
+ * draws its scrollbar, as Home's steps are tried (`layoutHolds`): one pixel
+ * below, at and above it, at the window heights where the tab just fits and
+ * just does not, for every tab with its fold closed and open. Nothing may
+ * change by itself: the two forms differ in height, and a step decided on a
+ * width the scrollbar takes away would flip in every frame.
+ */
+async function settingsHold(run) {
+  const win = await run.openWindow({ scenario: "populated", lang: run.lang, size: "1800x1000", url: "/", scrollbars: true });
+  const { page } = win;
+  const tried = [];
+  const forms = new Set();
+  try {
+    await section(page, "settings");
+    const side = await page.evaluate(() => window.innerWidth - document.getElementById("content").offsetWidth);
+    const widths = [1599, 1600, 1601].map((w) => w + side);
+    for (const tab of TABS) {
+      await page.evaluate((t) => document.getElementById(`tab-${t}`).click(), tab);
+      for (const open of tab === "general" ? [false] : [false, true]) {
+        await page.evaluate(([t, open]) => document.querySelector(`details.fold[data-fold="${t}"]`) && (document.querySelector(`details.fold[data-fold="${t}"]`).open = open), [tab, open]);
+        // The window height at which the tab ends at the window's bottom, for each width.
+        const fits = [];
+        for (const width of widths) {
+          await page.setViewportSize({ width, height: 3000 });
+          await wait(page, 60);
+          fits.push(await page.evaluate(() => Math.round(window.innerHeight - document.getElementById("content").clientHeight + document.getElementById("section-settings").getBoundingClientRect().height)));
+        }
+        // One pixel too low and one to spare, for the height of each form.
+        const heights = [...new Set(fits.flatMap((h) => [h - 1, h + 1]))];
+        for (const width of widths) {
+          for (const height of heights) {
+            await page.setViewportSize({ width, height });
+            await wait(page, 40);
+            const seen = await page.evaluate(
+              () =>
+                new Promise((done) => {
+                  const settings = document.getElementById("section-settings");
+                  const content = document.getElementById("content");
+                  const look = () => `${settings.classList.contains("wider") ? "two" : "one"} ${content.offsetWidth - content.clientWidth}`;
+                  let was = look();
+                  let n = 0;
+                  const end = performance.now() + 100;
+                  const frame = () => {
+                    const now = look();
+                    if (now !== was) n++;
+                    was = now;
+                    if (performance.now() < end) requestAnimationFrame(frame);
+                    else done({ changes: n, form: now, right: settings.classList.contains("wider") === content.offsetWidth >= 1600 });
+                  };
+                  requestAnimationFrame(frame);
+                }),
+            );
+            forms.add(seen.form);
+            tried.push({ tab, open, size: `${width}x${height}`, changes: seen.changes, right: seen.right });
+          }
+        }
+      }
+    }
+    const moved = tried.filter((t) => t.changes > 0);
+    const wrong = tried.filter((t) => !t.right);
+    // The sweep has seen what it is for: both forms, each with and without the scrollbar.
+    const kinds = [...forms].map((f) => `${f.split(" ")[0]} ${f.split(" ")[1] === "0" ? "without" : "with"}`);
+    return [
+      ...expect(new Set(kinds).size === 4, "the layout check of Settings sees one and two columns, each with and without the scrollbar", JSON.stringify([...forms])),
+      ...expect(moved.length === 0, "Settings' layout holds still at its step with a scrollbar", `${moved.length} of ${tried.length} sizes change by themselves, e.g. ${JSON.stringify(moved.slice(0, 3))}`),
+      // The same window width is the same form, whatever the page's height: the scrollbar's room does not count.
+      ...expect(wrong.length === 0, "Settings' columns follow the room beside the sidebar alone, with or without a scrollbar", `${wrong.length} of ${tried.length} sizes, e.g. ${JSON.stringify(wrong.slice(0, 3))}`),
+    ];
+  } finally {
+    await win.context.close();
+  }
+}
+
 const pill = (id, script, probe) => ({
   id: `pill-${id}`,
   url: "/src/overlay.html",
@@ -1295,6 +1824,71 @@ export const PAGES = [
             return out;
           },
   })),
+  // Every tab in one column and in two (from 1600 px beside the sidebar: the 1920 px window too), fold closed and open.
+  // This page and the next two follow the plain tabs and leave the window usable: no new start.
+  {
+    id: "settings-columns",
+    alsoSizes: ["1920x1080"],
+    open: (page) => settings(page, "dictation"),
+    probe: columns,
+  },
+  // The key boxes' right edges, and the names of the buttons that read "Download" and "More".
+  {
+    id: "settings-keys",
+    scenarios: ["populated"],
+    open: async (page) => {
+      await settings(page, "dictation");
+      await page.evaluate(() => (document.querySelector('details.fold[data-fold="dictation"]').open = true));
+      await wait(page);
+    },
+    probe: async (page) => [...(await keyEdges(page)), ...(await controlNames(page))],
+  },
+  // The cloud engine without its key: the notice in the main card leads to the key field in the closed fold.
+  {
+    id: "settings-models-cloud",
+    scenarios: ["populated"],
+    open: async (page) => {
+      await settings(page, "models");
+      await page.evaluate(() => {
+        document.querySelector('details.fold[data-fold="models"]').open = false;
+        document.getElementById("engine-cloud").click();
+      });
+      await wait(page, 250);
+    },
+    probe: cloudKey,
+  },
+  // A model's download on its own row: while it runs, after it failed, and the next one (the mock ends or fails it).
+  {
+    id: "settings-models-download",
+    fresh: true,
+    open: async (page) => {
+      await settings(page, "models");
+      const firstrun = await page.evaluate(() => window.__MOCK_CFG__.scenario === "firstrun");
+      await page.evaluate(() => (document.querySelector('details.fold[data-fold="models"]').open = false));
+      // Without a model, Download is pressed; with one, another is chosen in the dropdown.
+      if (firstrun) await page.click("#download-btn");
+      else await page.selectOption("#model-select", "tiny");
+      await asked(page, "download_model");
+      await report(page, "download-progress", firstrun ? 466e6 : 75e6);
+      await wait(page, 150);
+    },
+    probe: speechDownload,
+  },
+  {
+    id: "settings-ai-download",
+    scenarios: ["populated"],
+    fresh: true,
+    open: async (page) => {
+      await settings(page, "ai");
+      await page.evaluate(() => (document.querySelector('details.fold[data-fold="ai"]').open = true));
+      await wait(page, 150);
+      await page.selectOption("#ai-model-select", "gemma-4-12b");
+      await asked(page, "ai_download_model");
+      await report(page, "ai-download-progress", 7121861440);
+      await wait(page, 150);
+    },
+    probe: aiDownload,
+  },
   {
     id: "files-result",
     scenarios: ["populated"],

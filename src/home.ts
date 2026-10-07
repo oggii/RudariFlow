@@ -8,7 +8,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { t } from "./i18n";
 import { activity } from "./activity";
 import { mirrorHint, mirrorSelect, mirrorSwitch } from "./mirror";
-import { prefs, reveal, updatePrefs } from "./shell";
+import { prefs, reveal, roomBeside, updatePrefs, WIDE, WIDER } from "./shell";
+import { showProgress, type DownloadProgress } from "./progress";
 import { currentSpeech, currentStatus, onStatus } from "./status-view";
 import { type Status } from "./status.ts";
 import { header, idleFor, meterMay, meterStep, modelStep, recommend, setup, sizeText, METER_SILENT_MS, type Gpu, type MeterNow, type Recommendation, type Setup } from "./setup.ts";
@@ -28,8 +29,9 @@ export interface HomeHost {
   microphone(): string;
   /** The AI model in use and its state line, as Settings shows them: the
    *  text, its tone, what kind of state it is ("ready", "off", "missing",
-   *  "loading", "failed" …) and, after a failed start, the way to try again. */
-  ai(): { name: string; state: string; tone: string; kind: string; downloaded: boolean; retry: (() => void) | null };
+   *  "loading", "failed" …), whether the model's download did not finish,
+   *  and, after a failed start, the way to try again. */
+  ai(): { name: string; state: string; tone: string; kind: string; downloaded: boolean; failed: boolean; retry: (() => void) | null };
   /** An AI model's name and size (the setup suggests one for this PC). */
   aiModel(id: string): { name: string; bytes: number } | null;
   /** Add words to the dictionary; how many were new. */
@@ -38,12 +40,6 @@ export interface HomeHost {
   setUpSpeech(id: string): Promise<boolean>;
   /** Choose this AI model, download it and turn AI cleanup on. */
   setUpAi(id: string): Promise<boolean>;
-}
-
-interface DownloadProgress {
-  downloaded: number;
-  total: number;
-  percent: number;
 }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -222,23 +218,10 @@ function widest(button: HTMLElement, labels: string[]) {
   button.dataset.alt2 = second;
 }
 
-/** A download's bar with its numbers, always percent and size; null hides it. */
+/** A download's bar with its numbers, always percent and size (src/progress.ts); null hides it. */
 function progress(prefix: string, p: DownloadProgress | null) {
   $(`${prefix}-progress`).classList.toggle("hidden", p === null);
-  if (!p) return;
-  const percent = Math.max(0, Math.min(100, Math.round(p.percent)));
-  // Before the first report, and from a server that does not say how much is to come, there is no size to show.
-  const numbers =
-    p.total > 0
-      ? t("progress_numbers").replace("{percent}", String(percent)).replace("{done}", sizeText(p.downloaded)).replace("{total}", sizeText(p.total))
-      : p.downloaded > 0
-        ? sizeText(p.downloaded)
-        : `${percent} %`;
-  $(`${prefix}-fill`).style.width = `${percent}%`;
-  $(`${prefix}-numbers`).textContent = numbers;
-  const bar = $(`${prefix}-bar`);
-  bar.setAttribute("aria-valuenow", String(percent));
-  bar.setAttribute("aria-valuetext", numbers);
+  if (p) showProgress({ bar: $(`${prefix}-bar`), fill: $(`${prefix}-fill`), numbers: $(`${prefix}-numbers`) }, p);
 }
 
 function renderSetup() {
@@ -358,6 +341,9 @@ function renderSetup() {
     if (busy && !aiWasBusy) aiProgress = null;
     if (busy) aiFailed = false;
     aiWasBusy = busy;
+    // A download of this model that was started in Settings and did not
+    // finish is the same failure here, for as long as Settings says so.
+    const failed = aiFailed || (!busy && host.ai().failed && host.ai().name === ai.name);
     const fill = (text: string) => text.replace("{model}", () => whole(ai.name)).replace("{size}", whole(sizeText(ai.bytes)));
     // The card has one height in every state (styles/home.css): its line
     // keeps the room of the text it rests on, and whatever it says meanwhile
@@ -367,11 +353,11 @@ function renderSetup() {
     // What the card started ends with AI cleanup on (setUpAi), also behind a
     // card that was hidden meanwhile: the card says so. A download started
     // in Settings turns nothing on.
-    const text = aiFailed ? fill(t("setup_ai_failed")) : aiSetting ? t("setup_ai_coming") : busy ? t("setup_ai_fetching") : rest;
-    say($("setup-ai-text"), text, aiFailed ? "warn" : "");
-    const name = busy ? t("setup_ai_fetching") : aiFailed ? t("setup_ai_retry") : t("setup_ai_get");
+    const text = failed ? fill(t("setup_ai_failed")) : aiSetting ? t("setup_ai_coming") : busy ? t("setup_ai_fetching") : rest;
+    say($("setup-ai-text"), text, failed ? "warn" : "");
+    const name = busy ? t("setup_ai_fetching") : failed ? t("setup_ai_retry") : t("setup_ai_get");
     const download = $("setup-ai-download");
-    act(download, busy ? t("setup_downloading") : aiFailed ? t("retry") : t("download"), false, busy, name);
+    act(download, busy ? t("setup_downloading") : failed ? t("retry") : t("download"), false, busy, name);
     widest(download, [t("download"), t("setup_downloading"), t("retry")]);
     // "Not now" would not be true of a download that goes on: then the card can be hidden.
     const dismiss = aiSetting ? t("setup_ai_hide") : t("setup_ai_dismiss");
@@ -654,9 +640,9 @@ async function watch() {
  *  it and is higher in the wider form brings its own scrollbar, loses the
  *  width, steps back, loses the scrollbar, and so on in every frame. */
 function layout() {
-  const width = $("content").offsetWidth;
-  const wide = width >= 900;
-  daily.classList.toggle("wider", width >= 1600);
+  const width = roomBeside();
+  const wide = width >= WIDE;
+  daily.classList.toggle("wider", width >= WIDER);
   if (wide === laidOutWide) return;
   laidOutWide = wide;
   daily.classList.toggle("wide", wide);
@@ -685,8 +671,10 @@ export function initHome(h: HomeHost) {
     mirrorSelect(select("language-select"), select("home-language-select")),
     mirrorSelect(select("ai-output-select"), select("home-output-select")),
     mirrorSelect(select("mic-select"), select("setup-mic-select")),
-    // Why "Write in" translates nothing at the moment, as Settings says it under the same control.
-    mirrorHint([$("ai-output-skip"), $("ai-output-warn")], $("home-output-hint")),
+    // Why "Write in" translates nothing at the moment, as Settings says it
+    // under the same control. One of the two notes names a place: in
+    // Settings the Language is on another tab, here it is the row above.
+    mirrorHint([$("ai-output-skip"), $("ai-output-warn")], $("home-output-hint"), (source) => (source.id === "ai-output-warn" ? t("home_output_warn") : null)),
   ];
   $("home-ai-retry").addEventListener("click", () => host.ai().retry?.());
 

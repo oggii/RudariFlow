@@ -31,12 +31,15 @@ export function mirrorSelect(source: HTMLSelectElement, copy: HTMLSelectElement)
 
 /** A second place for the notes under a Settings control (why "Write in"
  *  does nothing at the moment): the text of every note that shows. With none
- *  the copy is hidden and empty, so a control it describes has nothing read out. */
-export function mirrorHint(sources: HTMLElement[], copy: HTMLElement): () => void {
+ *  the copy is hidden and empty, so a control it describes has nothing read out.
+ *  `here` may word a note for the copy's own place (a note that says where
+ *  a setting is, when that setting stands right beside the copy); null
+ *  keeps the note's words. */
+export function mirrorHint(sources: HTMLElement[], copy: HTMLElement, here: (source: HTMLElement) => string | null = () => null): () => void {
   const sync = () => {
     const text = sources
       .filter((source) => !source.classList.contains("hidden"))
-      .map((source) => (source.textContent ?? "").trim())
+      .map((source) => (here(source) ?? source.textContent ?? "").trim())
       .filter(Boolean)
       .join(" ");
     if (copy.textContent !== text) copy.textContent = text;

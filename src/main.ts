@@ -14,10 +14,12 @@ import { initMeetingQuit, initMeetings, renderMeetings } from "./meetings";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
 import { hotkeyLabel, startCapture } from "./hotkey-capture";
 import { mountBoard } from "./soundboard/board";
-import { announceRoute, currentRoute, go, initShell, onRoute, startOn } from "./shell";
+import { announceRoute, currentRoute, go, initShell, onRoute, reveal, startOn } from "./shell";
+import { NOT_STARTED, showProgress, type DownloadProgress } from "./progress";
+import { modelToSave } from "./models.ts";
 import { setDownload } from "./activity";
 import { currentSpeech, initStatus, onStatus, refreshSpeech, renderStatus } from "./status-view";
-import { setup, sizeText } from "./setup.ts";
+import { setup } from "./setup.ts";
 import { initHints, nameRows } from "./rows";
 import { modelLabel, speechModel } from "./models.ts";
 
@@ -71,12 +73,6 @@ interface MicDevice {
   is_default: boolean;
 }
 
-interface DownloadProgress {
-  downloaded: number;
-  total: number;
-  percent: number;
-}
-
 // DOM elements
 const micSelect = document.getElementById("mic-select") as HTMLSelectElement;
 const engineLocal = document.getElementById("engine-local")!;
@@ -92,6 +88,12 @@ const autostartToggle = document.getElementById("autostart-toggle") as HTMLInput
 const downloadBtn = document.getElementById("download-btn")!;
 const downloadProgress = document.getElementById("download-progress")!;
 const progressFill = document.getElementById("progress-fill")!;
+/** The speech model's bar with its numbers (src/progress.ts). */
+const speechProgress = { bar: document.getElementById("progress-bar")!, fill: progressFill, numbers: document.getElementById("download-numbers")! };
+const modelNote = document.getElementById("model-note")!;
+/** What a screen reader hears of the speech model's download: its start and its end. */
+const downloadLive = document.getElementById("download-live")!;
+const cloudNote = document.getElementById("engine-cloud-note")!;
 const groqKey = document.getElementById("groq-key") as HTMLInputElement;
 const modeToggle = document.getElementById("mode-toggle")!;
 const modePtt = document.getElementById("mode-ptt")!;
@@ -230,6 +232,7 @@ async function loadSettings() {
 
   // Groq key
   groqKey.value = currentSettings.groqApiKey;
+  renderCloudNote();
 
   // GPU management
   gameFreeToggle.checked = currentSettings.freeGpuForGames ?? false;
@@ -263,35 +266,47 @@ interface GpuDevice {
   memory_mib: number;
 }
 
+/** The graphics cards as the backend last listed them; null until it answered. */
+let detectedGpus: GpuDevice[] | null = null;
+
 async function refreshDetectedGpus() {
-  const el = document.getElementById("gpu-detected")!;
   try {
-    const gpus = await invoke<GpuDevice[]>("detect_gpus");
-    // An iGPU reports shared system memory, so only dedicated cards count.
-    const dedicated = gpus.filter((g) => !g.integrated);
-    const vramGb = Math.max(0, ...dedicated.map((g) => g.memory_mib / 1024));
-    if (gpus.length === 0) {
-      el.textContent = `${t("gpu_detected_none")}. ${t("gpu_hint_cpu")}`;
-      return;
-    }
-    // An NVIDIA card is listed once per API; group the APIs by card name.
-    const byName = new Map<string, string[]>();
-    for (const g of gpus) {
-      const apis = byName.get(g.name) ?? [];
-      apis.push(g.api === "Cuda" ? "CUDA" : "Vulkan");
-      byName.set(g.name, apis);
-    }
-    const list = [...byName].map(([name, apis]) => `${name} (${apis.join(", ")})`);
-    let hint = "";
-    if (dedicated.length === 0) {
-      hint = t("gpu_hint_cpu");
-    } else if (vramGb <= 8.5) {
-      hint = t("gpu_hint_small").replace("{gb}", String(Math.round(vramGb)));
-    }
-    el.textContent = `${t("gpu_detected")}: ${list.join("; ")}. ${hint}`.trim();
+    detectedGpus = await invoke<GpuDevice[]>("detect_gpus");
+    renderDetectedGpus();
   } catch (e) {
     console.error("detect_gpus failed:", e);
   }
+}
+
+/** The "Detected: …" line under GPU backend, from the list that is known
+ *  (looking at the cards again can take seconds): drawn again after a
+ *  change of the Display Language. */
+function renderDetectedGpus() {
+  const el = document.getElementById("gpu-detected")!;
+  const gpus = detectedGpus;
+  if (!gpus) return;
+  // An iGPU reports shared system memory, so only dedicated cards count.
+  const dedicated = gpus.filter((g) => !g.integrated);
+  const vramGb = Math.max(0, ...dedicated.map((g) => g.memory_mib / 1024));
+  if (gpus.length === 0) {
+    el.textContent = `${t("gpu_detected_none")}. ${t("gpu_hint_cpu")}`;
+    return;
+  }
+  // An NVIDIA card is listed once per API; group the APIs by card name.
+  const byName = new Map<string, string[]>();
+  for (const g of gpus) {
+    const apis = byName.get(g.name) ?? [];
+    apis.push(g.api === "Cuda" ? "CUDA" : "Vulkan");
+    byName.set(g.name, apis);
+  }
+  const list = [...byName].map(([name, apis]) => `${name} (${apis.join(", ")})`);
+  let hint = "";
+  if (dedicated.length === 0) {
+    hint = t("gpu_hint_cpu");
+  } else if (vramGb <= 8.5) {
+    hint = t("gpu_hint_small").replace("{gb}", String(Math.round(vramGb)));
+  }
+  el.textContent = `${t("gpu_detected")}: ${list.join("; ")}. ${hint}`.trim();
 }
 
 /** A segmented choice: the chosen button is `active` and pressed. */
@@ -306,9 +321,25 @@ function setEngine(engine: string) {
   choose(engineCloud, engine === "cloud");
   localSettings.classList.toggle("hidden", engine !== "local");
   cloudSettings.classList.toggle("hidden", engine !== "cloud");
-  // The speech model's row is gone with the cloud engine: say where the engine is.
-  document.getElementById("engine-cloud-note")!.classList.toggle("hidden", engine !== "cloud");
+  renderCloudNote();
 }
+
+/** The speech model's row is gone with the cloud engine: the notice in its
+ *  place says where the engine is. Without the key nothing is transcribed:
+ *  then it says that, in the colour of a warning, with the way to the key
+ *  field (it is in the Advanced fold, which may be closed). */
+function renderCloudNote() {
+  const keyed = groqKey.value.trim() !== "";
+  cloudNote.classList.toggle("hidden", currentSettings.engine !== "cloud");
+  if (keyed) delete cloudNote.dataset.tone;
+  else cloudNote.dataset.tone = "warn";
+  const text = document.getElementById("engine-cloud-text")!;
+  const key = keyed ? "cloud_note" : "cloud_note_no_key";
+  text.setAttribute("data-i18n", key);
+  text.textContent = t(key);
+  document.getElementById("engine-cloud-key")!.classList.toggle("hidden", keyed);
+}
+document.getElementById("engine-cloud-key")!.addEventListener("click", () => reveal("groq-key"));
 
 function setRecordingMode(mode: string) {
   currentSettings.recordingMode = mode;
@@ -328,8 +359,7 @@ async function isCurrentModelDownloaded(): Promise<boolean> {
  *  downloaded one has its tick in the list), with the model's note under the label. */
 async function refreshModelStatusUI() {
   const downloaded = await isCurrentModelDownloaded();
-  downloadBtn.setAttribute("data-i18n", "download");
-  downloadBtn.textContent = t("download");
+  renderDownloadButton();
   downloadBtn.classList.toggle("hidden", downloaded);
   // A download that runs keeps its button resting (this is also called on a language change).
   (downloadBtn as HTMLButtonElement).disabled = downloadInFlight;
@@ -337,10 +367,51 @@ async function refreshModelStatusUI() {
   await refreshModelDropdownLabels();
 }
 
-/** The one line about the model the dropdown is on. */
+/** The speech model whose download did not finish. The row says so until
+ *  the next choice or a download that works; a new try starts clean. */
+let downloadFailed: string | null = null;
+
+/** The one line about the model the dropdown is on. After a download that
+ *  did not finish it says that instead, in the colour of an error: which
+ *  model, and how to try again. The dropdown is back on the model that
+ *  works by then (a model is saved only once it is there), so "Retry"
+ *  stands in the line; where the dropdown is still on the model that
+ *  failed, the Download button beside it reads "Retry". */
 function renderModelNote() {
-  const note = speechModel(modelSelect.value).note;
-  document.getElementById("model-note")!.textContent = note ? t(note) : "";
+  if (downloadFailed === null) {
+    const note = speechModel(modelSelect.value).note;
+    modelNote.textContent = note ? t(note) : "";
+    delete modelNote.dataset.tone;
+    return;
+  }
+  // The name with its size stays on one line.
+  const name = modelLabel(downloadFailed).replace(/ /g, "\u00a0");
+  modelNote.textContent = t("setup_download_failed").replace("{model}", () => name);
+  modelNote.dataset.tone = "error";
+  if (modelSelect.value === downloadFailed) return;
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "link-btn";
+  retry.textContent = t("retry");
+  retry.setAttribute("aria-label", t("setup_model_retry"));
+  retry.addEventListener("click", () => {
+    if (downloadFailed === null || downloadInFlight) return;
+    // The dropdown's own way: download it, and save the choice once it is there.
+    // This button goes with the note: the keyboard focus moves to the dropdown.
+    modelSelect.value = downloadFailed;
+    modelSelect.focus();
+    void chooseModel();
+  });
+  modelNote.append(" ", retry);
+}
+
+/** The Download button's words and its name ("Download" alone does not say
+ *  what): "Retry" after the download of the model the dropdown is on did not finish. */
+function renderDownloadButton() {
+  const again = downloadFailed !== null && downloadFailed === modelSelect.value;
+  downloadBtn.setAttribute("data-i18n", again ? "retry" : "download");
+  downloadBtn.textContent = t(again ? "retry" : "download");
+  downloadBtn.setAttribute("aria-label", t(again ? "setup_model_retry" : "setup_model_get"));
 }
 
 /** "Large v3 Turbo q8 · 870 MB ✓": name, size, and a tick when it is downloaded. */
@@ -356,20 +427,33 @@ let downloadInFlight = false;
 async function downloadCurrentModel(): Promise<boolean> {
   if (downloadInFlight) return false;
   downloadInFlight = true;
+  const model = modelSelect.value;
+  const name = modelLabel(model);
+  // The keyboard focus is on one of the row's controls: they rest while the
+  // download runs (a resting control cannot hold the focus), and "Retry" in
+  // the note goes with the failure it stood for.
+  const at = document.activeElement;
+  const focused = at === modelSelect || at === downloadBtn || modelNote.contains(at);
+  // A new try starts clean: the last one's failure, its "Retry" and its numbers are gone.
+  downloadFailed = null;
+  renderModelNote();
+  renderDownloadButton();
   (downloadBtn as HTMLButtonElement).disabled = true;
   modelSelect.disabled = true;
+  showProgress(speechProgress, NOT_STARTED);
   downloadProgress.classList.remove("hidden");
-  progressFill.style.width = "0%";
+  downloadLive.textContent = t("download_started").replace("{model}", () => name);
   setDownload("speech", 0);
   let ok = false;
   try {
-    await invoke("download_model", { modelSize: modelSelect.value });
+    await invoke("download_model", { modelSize: model });
     downloadBtn.classList.add("hidden");
+    downloadLive.textContent = t("download_done").replace("{model}", () => name);
     ok = true;
     return true;
   } catch (e) {
-    downloadBtn.setAttribute("data-i18n", "retry");
-    downloadBtn.textContent = t("retry");
+    downloadFailed = model;
+    downloadLive.textContent = t("setup_download_failed").replace("{model}", () => name);
     (downloadBtn as HTMLButtonElement).disabled = false;
     console.error("Download failed:", e);
     return false;
@@ -380,6 +464,9 @@ async function downloadCurrentModel(): Promise<boolean> {
     downloadProgress.classList.add("hidden");
     modelSelect.disabled = false;
     downloadInFlight = false;
+    renderModelNote();
+    renderDownloadButton();
+    if (focused && (document.activeElement === document.body || document.activeElement === null)) modelSelect.focus();
     await refreshModelDropdownLabels();
   }
 }
@@ -400,7 +487,8 @@ async function downloadSettled() {
 
 async function saveSettings() {
   currentSettings.microphone = micSelect.value;
-  currentSettings.whisperModel = modelSelect.value;
+  // Not a model that is still on its way (src/models.ts).
+  currentSettings.whisperModel = modelToSave(modelSelect.value, lastSavedModel, downloadInFlight);
   currentSettings.groqApiKey = groqKey.value;
   currentSettings.language = languageSelect.value;
   currentSettings.uiLanguage = uiLanguageSelect.value;
@@ -588,6 +676,8 @@ uiLanguageSelect.addEventListener("change", async () => {
   nameRows();
   renderMicOptions();
   renderHotkeys();
+  renderDetectedGpus();
+  renderCloudNote();
   await refreshModelStatusUI();
   await saveSettings();
   await refreshHistory();
@@ -628,6 +718,8 @@ let lastSavedModel = "";
  *  first. True when it is there and saved. */
 async function chooseModel(): Promise<boolean> {
   const previousSaved = lastSavedModel || currentSettings.whisperModel;
+  // A new choice: what the row said of a download that did not finish is over.
+  if (!downloadInFlight) downloadFailed = null;
   // The note follows the dropdown at once, also through the download of a model that is missing.
   renderModelNote();
   if (await isCurrentModelDownloaded()) {
@@ -669,6 +761,8 @@ downloadBtn.addEventListener("click", async () => {
 });
 
 groqKey.addEventListener("change", () => saveSettings());
+// The notice above the fold follows the field as it is typed in.
+groqKey.addEventListener("input", renderCloudNote);
 
 modeToggle.addEventListener("click", () => {
   setRecordingMode("toggle");
@@ -698,14 +792,10 @@ listen<string>("recording-state", (event) => {
 
 // Listen for download progress
 listen<DownloadProgress>("download-progress", (event) => {
-  const { percent, downloaded, total } = event.payload;
-  progressFill.style.width = `${percent}%`;
-  // Always the numbers too: percent and size.
-  document.getElementById("download-numbers")!.textContent = t("progress_numbers")
-    .replace("{percent}", String(Math.round(percent)))
-    .replace("{done}", sizeText(downloaded))
-    .replace("{total}", sizeText(total));
-  if (downloadInFlight) setDownload("speech", percent);
+  // The bar, and always the numbers too: percent and size. The bar is what a
+  // screen reader asks for them; nothing here is read out by itself.
+  showProgress(speechProgress, event.payload);
+  if (downloadInFlight) setDownload("speech", event.payload.percent);
 });
 
 // Hotkeys. "dictation" starts/stops recording, "pasteLast" pastes the last
@@ -778,7 +868,8 @@ function renderHotkeys() {
       view.text.textContent = hotkeyLabel(combo);
     }
     view.btn.classList.toggle("key-unset", unset);
-    view.clear?.classList.toggle("hidden", !combo);
+    // The × keeps its room while there is nothing to turn off, so every key box ends on one edge (styles/settings.css).
+    view.clear?.classList.toggle("unset", !combo);
   }
   renderHome();
 }

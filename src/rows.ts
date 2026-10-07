@@ -33,6 +33,17 @@ export function nameRows(root: ParentNode = document) {
       off.setAttribute("aria-label", `${t(off.getAttribute("data-i18n-title") ?? "")}: ${label.textContent ?? ""}`);
     }
   }
+  // "More" after a hint says what it is about: "More about PC check".
+  for (const more of root.querySelectorAll<HTMLElement>(".hint-more:not([data-own])")) nameMore(more);
+}
+
+/** What a "More" is about: its row's label, or the heading of the card it stands in. */
+function nameMore(more: HTMLElement) {
+  const about = more.closest(".setting-row")?.querySelector(".label-text") ?? more.closest(".card")?.querySelector(".list-title");
+  const text = (about?.textContent ?? "").trim();
+  if (!text) return;
+  const open = more.getAttribute("aria-expanded") === "true";
+  more.setAttribute("aria-label", t(open ? "hint_less_about" : "hint_more_about").replace("{label}", () => text));
 }
 
 /** "More" / "Less" after a hint, anywhere in the window (also in rows built later). */
@@ -48,5 +59,6 @@ export function initHints() {
     // The key too, so a language change keeps the right word.
     more.setAttribute("data-i18n", open ? "hint_less" : "hint_more");
     more.textContent = t(open ? "hint_less" : "hint_more");
+    nameMore(more);
   });
 }

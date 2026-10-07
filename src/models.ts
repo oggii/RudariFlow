@@ -33,6 +33,15 @@ export function modelSize(mb: number): string {
   return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`;
 }
 
+/** The speech model a save stores. While a model downloads the dropdown is
+ *  already on it, and it is not there yet: a save in between (another
+ *  setting was changed) keeps the model that was saved last. Stored sooner,
+ *  a download that then fails would leave the settings on a model that is
+ *  missing. */
+export function modelToSave(chosen: string, saved: string, downloading: boolean): string {
+  return downloading && saved ? saved : chosen;
+}
+
 /** What the dropdown and the first run show: "Large v3 Turbo q8 · 870 MB". */
 export function modelLabel(id: string): string {
   const model = speechModel(id);

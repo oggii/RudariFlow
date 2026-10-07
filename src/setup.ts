@@ -76,6 +76,30 @@ export function sizeText(bytes: number): string {
   return mb >= 1000 ? `${(bytes / 1e9).toFixed(1)} GB` : `${mb} MB`;
 }
 
+/** What a download reports while it runs. */
+export interface DownloadProgress {
+  downloaded: number;
+  total: number;
+  percent: number;
+}
+
+/** A download's numbers: the percent as a whole number from 0 to 100, what
+ *  stands under the bar ("43 % · 201 MB of 466 MB") and what the bar itself
+ *  says to a screen reader ("43 %, 201 MB of 466 MB"). `shown` and `said`
+ *  are the two sentences with "{percent}", "{done}" and "{total}" in them.
+ *  Before the first report, and from a server that does not say how much is
+ *  to come, there is no size to show: then what has arrived, or the percent
+ *  alone. */
+export function progressWords(p: DownloadProgress, shown: string, said: string): { percent: number; shown: string; said: string } {
+  const percent = Math.max(0, Math.min(100, Math.round(p.percent) || 0));
+  if (p.total > 0) {
+    const fill = (text: string) => text.replace("{percent}", String(percent)).replace("{done}", sizeText(p.downloaded)).replace("{total}", sizeText(p.total));
+    return { percent, shown: fill(shown), said: fill(said) };
+  }
+  const alone = p.downloaded > 0 ? sizeText(p.downloaded) : `${percent} %`;
+  return { percent, shown: alone, said: alone };
+}
+
 // ── Home's heading ────────────────────────────────────
 
 /** Home's heading and the pill beside it, as i18n keys; `n` fills the pill's "{n}". */

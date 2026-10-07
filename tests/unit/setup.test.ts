@@ -7,6 +7,7 @@ import {
   meterMay,
   meterStep,
   modelStep,
+  progressWords,
   recommend,
   setup,
   sizeText,
@@ -281,4 +282,19 @@ test("the minute since the last touch is measured on two clocks, and the longer 
   // Never less than nothing.
   assert.equal(idleFor(0, -3_600_000), 0);
   assert.equal(meterMay({ ...atWindow, idle: idleFor(0, -3_600_000) }), true);
+});
+
+test("a download's numbers: a whole percent, the sizes, and the words a progress bar says", () => {
+  const shown = "{percent} % · {done} of {total}";
+  const said = "{percent} %, {done} of {total}";
+  assert.deepEqual(progressWords({ downloaded: 200.6e6, total: 466e6, percent: 43.04 }, shown, said), { percent: 43, shown: "43 % · 201 MB of 466 MB", said: "43 %, 201 MB of 466 MB" });
+  assert.deepEqual(progressWords({ downloaded: 3.1e9, total: 7.1e9, percent: 43.6 }, shown, said), { percent: 44, shown: "44 % · 3.1 GB of 7.1 GB", said: "44 %, 3.1 GB of 7.1 GB" });
+  // Before the first report there is no size to show: a second download starts at "0 %", not at the last one's numbers.
+  assert.deepEqual(progressWords({ downloaded: 0, total: 0, percent: 0 }, shown, said), { percent: 0, shown: "0 %", said: "0 %" });
+  // A server that does not say how much is to come: what has arrived.
+  assert.deepEqual(progressWords({ downloaded: 12e6, total: 0, percent: 0 }, shown, said), { percent: 0, shown: "12 MB", said: "12 MB" });
+  // Never outside 0 to 100, whatever is reported.
+  assert.equal(progressWords({ downloaded: 470e6, total: 466e6, percent: 100.9 }, shown, said).percent, 100);
+  assert.equal(progressWords({ downloaded: 0, total: 466e6, percent: -3 }, shown, said).percent, 0);
+  assert.equal(progressWords({ downloaded: 0, total: 466e6, percent: Number.NaN }, shown, said).percent, 0);
 });
