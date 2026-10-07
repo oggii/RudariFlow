@@ -33,13 +33,16 @@ export function modelSize(mb: number): string {
   return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`;
 }
 
-/** The speech model a save stores. While a model downloads the dropdown is
- *  already on it, and it is not there yet: a save in between (another
- *  setting was changed) keeps the model that was saved last. Stored sooner,
- *  a download that then fails would leave the settings on a model that is
- *  missing. */
-export function modelToSave(chosen: string, saved: string, downloading: boolean): string {
-  return downloading && saved ? saved : chosen;
+/** The speech model a save stores: the dropdown's only once that model is
+ *  known to be on disk. The dropdown is on a model before that is known:
+ *  while it is looked for, while it downloads, and for a moment after its
+ *  download failed. A save in between (another setting was changed, or an
+ *  earlier choice finishes) keeps the model that was saved last. Stored
+ *  sooner, a download that then fails would leave the settings on a model
+ *  that is missing. `unverified`: the dropdown's model is not the one last
+ *  known to be there. */
+export function modelToSave(chosen: string, saved: string, unverified: boolean): string {
+  return unverified && saved ? saved : chosen;
 }
 
 /** What the dropdown and the first run show: "Large v3 Turbo q8 · 870 MB". */

@@ -19,10 +19,11 @@ test("the table lists the models the dropdown offers, in its order", () => {
   assert.deepEqual(SPEECH_MODELS.map((m) => m.id), offered);
 });
 
-test("a save while a model downloads keeps the model that was saved last", () => {
-  // Nothing downloads: what the dropdown is on is saved.
+test("a save stores the dropdown's model only once it is known to be on disk", () => {
+  // The dropdown's model is the one last known to be there: it is saved.
   assert.equal(modelToSave("tiny", "small", false), "tiny");
-  // The dropdown is on a model that is on its way: not saved yet, or a failed download would leave the settings on a missing model.
+  // Not known to be there (it is looked for, it downloads, its download just failed): the model that was saved last stays,
+  // or a download that then fails would leave the settings on a missing model.
   assert.equal(modelToSave("tiny", "small", true), "small");
   // The saved model itself downloads (the first run): the same either way.
   assert.equal(modelToSave("small", "small", true), "small");

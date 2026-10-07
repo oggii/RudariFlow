@@ -9,7 +9,7 @@ import { t } from "./i18n";
 import { activity } from "./activity";
 import { mirrorHint, mirrorSelect, mirrorSwitch } from "./mirror";
 import { prefs, reveal, roomBeside, updatePrefs, WIDE, WIDER } from "./shell";
-import { showProgress, type DownloadProgress } from "./progress";
+import { downloadFailure, showProgress, type DownloadProgress } from "./progress";
 import { currentSpeech, currentStatus, onStatus } from "./status-view";
 import { type Status } from "./status.ts";
 import { header, idleFor, meterMay, meterStep, modelStep, recommend, setup, sizeText, METER_SILENT_MS, type Gpu, type MeterNow, type Recommendation, type Setup } from "./setup.ts";
@@ -27,10 +27,13 @@ export interface HomeHost {
   /** The microphone the backend has saved ("default": Windows' own input). It
    *  changes only once a save was answered: the level opens what is saved. */
   microphone(): string;
+  /** The speech model whose download did not finish, with the backend's
+   *  reason ("" for none), as its row in Settings says it; null: none. */
+  speechFailure(): { model: string; reason: string } | null;
   /** The AI model in use and its state line, as Settings shows them: the
    *  text, its tone, what kind of state it is ("ready", "off", "missing",
    *  "loading", "failed" …), whether the model's download did not finish,
-   *  and, after a failed start, the way to try again. */
+   *  and, after a failed start or a failed download, the way to try again. */
   ai(): { name: string; state: string; tone: string; kind: string; downloaded: boolean; failed: boolean; retry: (() => void) | null };
   /** An AI model's name and size (the setup suggests one for this PC). */
   aiModel(id: string): { name: string; bytes: number } | null;
@@ -125,7 +128,21 @@ function renderLoaded() {
   line.textContent = said;
   line.dataset.tone = ai.tone;
   line.classList.toggle("hidden", said === "");
-  $("home-ai-retry").classList.toggle("hidden", ai.retry === null);
+  // "Retry" after the line that names it: the AI did not start, or its
+  // model's download did not finish. Pressed for a download, the button
+  // rests where it is while that download runs (it has the keyboard focus,
+  // which a button that goes would drop); when it goes at the end, the
+  // focus moves to the switch the download was for.
+  const retry = $("home-ai-retry");
+  const held = document.activeElement === retry;
+  const waits = held && ai.retry === null && ai.kind === "downloading";
+  retry.classList.toggle("hidden", ai.retry === null && !waits);
+  if (waits) retry.setAttribute("aria-disabled", "true");
+  else retry.removeAttribute("aria-disabled");
+  // "Retry" alone does not say what: the server's is the line before it, the download's is named.
+  if (ai.failed || waits) retry.setAttribute("aria-label", t("setup_ai_retry"));
+  else retry.removeAttribute("aria-label");
+  if (held && retry.classList.contains("hidden")) $("home-ai-toggle").focus();
 }
 
 // ── First run ─────────────────────────────────────────
@@ -298,13 +315,18 @@ function renderSetup() {
       case "loading":
         line = `${modelNamed(speech?.model ?? "", false)} · ${t("home_speech_loading")}`;
         break;
-      case "failed":
-        // Which model, and how much there is to fetch, stays said beside Retry.
-        line = t("setup_download_failed").replace("{model}", () => modelNamed(modelTried ?? suggestion?.model ?? "", true));
-        tone = "warn";
+      case "failed": {
+        // Which model, and how much there is to fetch, stays said beside Retry,
+        // with the backend's reason where Settings has one for this model.
+        // The colour is the one the model's row in Settings has: an error.
+        const tried = modelTried ?? suggestion?.model ?? "";
+        const why = host.speechFailure();
+        line = downloadFailure(modelNamed(tried, true), why?.model === tried ? why.reason : "");
+        tone = "error";
         label = t("retry");
         name = t("setup_model_retry");
         break;
+      }
       case "checking":
         line = t("setup_model_checking");
         break;
@@ -354,7 +376,7 @@ function renderSetup() {
     // card that was hidden meanwhile: the card says so. A download started
     // in Settings turns nothing on.
     const text = failed ? fill(t("setup_ai_failed")) : aiSetting ? t("setup_ai_coming") : busy ? t("setup_ai_fetching") : rest;
-    say($("setup-ai-text"), text, failed ? "warn" : "");
+    say($("setup-ai-text"), text, failed ? "error" : "");
     const name = busy ? t("setup_ai_fetching") : failed ? t("setup_ai_retry") : t("setup_ai_get");
     const download = $("setup-ai-download");
     act(download, busy ? t("setup_downloading") : failed ? t("retry") : t("download"), false, busy, name);
@@ -676,7 +698,9 @@ export function initHome(h: HomeHost) {
     // Settings the Language is on another tab, here it is the row above.
     mirrorHint([$("ai-output-skip"), $("ai-output-warn")], $("home-output-hint"), (source) => (source.id === "ai-output-warn" ? t("home_output_warn") : null)),
   ];
-  $("home-ai-retry").addEventListener("click", () => host.ai().retry?.());
+  $("home-ai-retry").addEventListener("click", () => {
+    if (!resting($("home-ai-retry"))) host.ai().retry?.();
+  });
 
   for (const row of document.querySelectorAll<HTMLElement>("#home-loaded [data-reveal]")) {
     row.addEventListener("click", () => {

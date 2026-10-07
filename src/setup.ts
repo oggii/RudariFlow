@@ -100,6 +100,18 @@ export function progressWords(p: DownloadProgress, shown: string, said: string):
   return { percent, shown: alone, said: alone };
 }
 
+/** What is said of a download that did not finish: `sentence` names the
+ *  model ("{model}"), and where the backend gave a reason it follows in
+ *  `because` ("{reason}"), ended like a sentence. The sentence alone advises
+ *  to check the connection, which is wrong for a full disk: the reason says
+ *  which it was. It is the backend's own wording. */
+export function failureWords(sentence: string, because: string, model: string, reason: string): string {
+  const said = sentence.replace("{model}", () => model);
+  const why = reason.trim();
+  if (!why) return said;
+  return `${said} ${because.replace("{reason}", () => (/[.!?)]$/.test(why) ? why : `${why}.`))}`;
+}
+
 // ── Home's heading ────────────────────────────────────
 
 /** Home's heading and the pill beside it, as i18n keys; `n` fills the pill's "{n}". */

@@ -4,7 +4,7 @@
 // reads them out by itself. What is said aloud of a download is its start
 // and its end, by the page that shows it.
 import { t } from "./i18n";
-import { progressWords, type DownloadProgress } from "./setup.ts";
+import { failureWords, progressWords, type DownloadProgress } from "./setup.ts";
 
 export type { DownloadProgress };
 
@@ -27,4 +27,12 @@ export function showProgress(parts: ProgressParts, p: DownloadProgress): number 
   parts.bar.setAttribute("aria-valuenow", String(words.percent));
   parts.bar.setAttribute("aria-valuetext", words.said);
   return words.percent;
+}
+
+/** "The download of Tiny · 75 MB did not finish. Check your internet
+ *  connection and try again. Reason: …": the one sentence for a model's
+ *  download that failed, wherever it is said (the model's row, Home's step,
+ *  the AI's state line). `reason` is what the backend answered; "" for none. */
+export function downloadFailure(model: string, reason: string): string {
+  return failureWords(t("setup_download_failed"), t("download_reason"), model, reason);
 }

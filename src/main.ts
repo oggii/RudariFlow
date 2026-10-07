@@ -15,7 +15,7 @@ import { playStart, playStop, playDiscard, setVolume } from "./sounds";
 import { hotkeyLabel, startCapture } from "./hotkey-capture";
 import { mountBoard } from "./soundboard/board";
 import { announceRoute, currentRoute, go, initShell, onRoute, reveal, startOn } from "./shell";
-import { NOT_STARTED, showProgress, type DownloadProgress } from "./progress";
+import { downloadFailure, NOT_STARTED, showProgress, type DownloadProgress } from "./progress";
 import { modelToSave } from "./models.ts";
 import { setDownload } from "./activity";
 import { currentSpeech, initStatus, onStatus, refreshSpeech, renderStatus } from "./status-view";
@@ -215,12 +215,17 @@ async function loadSettings() {
   // Populate mic dropdown
   await listMicrophones();
 
+  // Groq key, before the engine: the cloud engine's notice reads the field
+  // (set after it, the notice warned of a missing key for a moment at every start).
+  groqKey.value = currentSettings.groqApiKey;
+
   // Engine
   setEngine(currentSettings.engine);
 
   // Model
   modelSelect.value = currentSettings.whisperModel;
   lastSavedModel = currentSettings.whisperModel;
+  verifiedModel = currentSettings.whisperModel;
   await refreshModelStatusUI();
 
   // Language
@@ -229,10 +234,6 @@ async function loadSettings() {
   // GPU backend
   gpuBackendSelect.value = currentSettings.gpuBackend || "auto";
   refreshDetectedGpus();
-
-  // Groq key
-  groqKey.value = currentSettings.groqApiKey;
-  renderCloudNote();
 
   // GPU management
   gameFreeToggle.checked = currentSettings.freeGpuForGames ?? false;
@@ -349,19 +350,22 @@ function setRecordingMode(mode: string) {
   renderHome();
 }
 
-async function isCurrentModelDownloaded(): Promise<boolean> {
+/** Is this speech model on disk? Without an id: the one the dropdown is on. */
+async function isModelDownloaded(model = modelSelect.value): Promise<boolean> {
   return await invoke<boolean>("check_model_downloaded", {
-    modelSize: modelSelect.value,
+    modelSize: model,
   });
 }
 
 /** The Download button shows only while the chosen model is missing (a
  *  downloaded one has its tick in the list), with the model's note under the label. */
 async function refreshModelStatusUI() {
-  const downloaded = await isCurrentModelDownloaded();
+  const downloaded = await isModelDownloaded();
   renderDownloadButton();
-  downloadBtn.classList.toggle("hidden", downloaded);
-  // A download that runs keeps its button resting (this is also called on a language change).
+  // A download that runs keeps its button as it is (this is also called on a
+  // language change): resting where Download was pressed, and not there at
+  // all where the dropdown started it.
+  if (!downloadInFlight) downloadBtn.classList.toggle("hidden", downloaded);
   (downloadBtn as HTMLButtonElement).disabled = downloadInFlight;
   renderModelNote();
   await refreshModelDropdownLabels();
@@ -370,6 +374,21 @@ async function refreshModelStatusUI() {
 /** The speech model whose download did not finish. The row says so until
  *  the next choice or a download that works; a new try starts clean. */
 let downloadFailed: string | null = null;
+/** Why it did not finish, as the backend said it: a full disk is not a bad connection. */
+let downloadReason = "";
+
+/** The failure's sentence with its reason (src/progress.ts); `name`: the model with its size. */
+const failureSaid = (name: string) => downloadFailure(name, downloadReason);
+
+/** What was said of the last download is over: the row's failure, and the
+ *  line a screen reader was given. That line is not on screen, but someone
+ *  who reads the page with a screen reader still finds it: left alone, it
+ *  went on saying an old failure under a row that no longer shows one. */
+function forgetDownload() {
+  downloadFailed = null;
+  downloadReason = "";
+  downloadLive.textContent = "";
+}
 
 /** The one line about the model the dropdown is on. After a download that
  *  did not finish it says that instead, in the colour of an error: which
@@ -386,7 +405,7 @@ function renderModelNote() {
   }
   // The name with its size stays on one line.
   const name = modelLabel(downloadFailed).replace(/ /g, "\u00a0");
-  modelNote.textContent = t("setup_download_failed").replace("{model}", () => name);
+  modelNote.textContent = failureSaid(name);
   modelNote.dataset.tone = "error";
   if (modelSelect.value === downloadFailed) return;
   const retry = document.createElement("button");
@@ -435,7 +454,7 @@ async function downloadCurrentModel(): Promise<boolean> {
   const at = document.activeElement;
   const focused = at === modelSelect || at === downloadBtn || modelNote.contains(at);
   // A new try starts clean: the last one's failure, its "Retry" and its numbers are gone.
-  downloadFailed = null;
+  forgetDownload();
   renderModelNote();
   renderDownloadButton();
   (downloadBtn as HTMLButtonElement).disabled = true;
@@ -447,13 +466,16 @@ async function downloadCurrentModel(): Promise<boolean> {
   let ok = false;
   try {
     await invoke("download_model", { modelSize: model });
+    // It is on disk: a save may store it from here on.
+    verifiedModel = model;
     downloadBtn.classList.add("hidden");
     downloadLive.textContent = t("download_done").replace("{model}", () => name);
     ok = true;
     return true;
   } catch (e) {
     downloadFailed = model;
-    downloadLive.textContent = t("setup_download_failed").replace("{model}", () => name);
+    downloadReason = String(e ?? "");
+    downloadLive.textContent = failureSaid(name);
     (downloadBtn as HTMLButtonElement).disabled = false;
     console.error("Download failed:", e);
     return false;
@@ -487,8 +509,8 @@ async function downloadSettled() {
 
 async function saveSettings() {
   currentSettings.microphone = micSelect.value;
-  // Not a model that is still on its way (src/models.ts).
-  currentSettings.whisperModel = modelToSave(modelSelect.value, lastSavedModel, downloadInFlight);
+  // Only a model that is known to be on disk (src/models.ts).
+  currentSettings.whisperModel = modelToSave(modelSelect.value, lastSavedModel, modelSelect.value !== verifiedModel);
   currentSettings.groqApiKey = groqKey.value;
   currentSettings.language = languageSelect.value;
   currentSettings.uiLanguage = uiLanguageSelect.value;
@@ -678,6 +700,8 @@ uiLanguageSelect.addEventListener("change", async () => {
   renderHotkeys();
   renderDetectedGpus();
   renderCloudNote();
+  // What a screen reader was told of the last download is in the old language; the row's note is drawn again below.
+  downloadLive.textContent = "";
   await refreshModelStatusUI();
   await saveSettings();
   await refreshHistory();
@@ -714,21 +738,37 @@ autostartToggle.addEventListener("change", async () => {
 });
 
 let lastSavedModel = "";
+/** The speech model a save may store (saveSettings): the one last known to
+ *  be on disk. At the start it is the saved one (saving that again changes
+ *  nothing, also where it is missing: the first run); then the model a check
+ *  found, the one a download brought, and after a download that failed the
+ *  saved one the dropdown goes back to. The dropdown itself says too little:
+ *  it is on a model before that model is known to be there, and whether a
+ *  download runs covers only a part of that time. Two saves fell in the
+ *  rest: one in the moment after a failed download, before the dropdown was
+ *  back (the rows' ticks are asked for first), and the save of an earlier
+ *  choice that found the dropdown already on the next, missing one. */
+let verifiedModel = "";
 /** The model in the dropdown was chosen: one that is missing is downloaded
  *  first. True when it is there and saved. */
 async function chooseModel(): Promise<boolean> {
+  const model = modelSelect.value;
   const previousSaved = lastSavedModel || currentSettings.whisperModel;
   // A new choice: what the row said of a download that did not finish is over.
-  if (!downloadInFlight) downloadFailed = null;
+  if (!downloadInFlight) forgetDownload();
   // The note follows the dropdown at once, also through the download of a model that is missing.
   renderModelNote();
-  if (await isCurrentModelDownloaded()) {
+  if (await isModelDownloaded(model)) {
+    // The answer is about `model`. Where the dropdown has moved on meanwhile
+    // (arrow keys go through the list), that choice has a call of its own,
+    // and this one must not vouch for it.
+    if (modelSelect.value === model) verifiedModel = model;
     await refreshModelStatusUI();
     await saveSettings();
-    // What the save took from the dropdown, which may have moved on while the model was looked for.
+    // What the save stored: this model, or the saved one where the dropdown moved on to a model that is not known yet.
     lastSavedModel = currentSettings.whisperModel;
     await renderUnusedModels();
-    return true;
+    return lastSavedModel === model;
   }
   // A download runs already, and the dropdown rests on its model: this is a
   // second word for the same choice (the list is disabled meanwhile, so it
@@ -736,6 +776,8 @@ async function chooseModel(): Promise<boolean> {
   // find the download refused, and put the dropdown back on the old model
   // under a download that then counts as failed.
   if (downloadInFlight) return false;
+  // The dropdown moved on while this model was looked for: the newer choice has its own call.
+  if (modelSelect.value !== model) return false;
   // Missing -> auto-download. Don't persist until success.
   const ok = await downloadCurrentModel();
   if (ok) {
@@ -747,9 +789,11 @@ async function chooseModel(): Promise<boolean> {
     lastSavedModel = currentSettings.whisperModel;
     await refreshModelStatusUI();
     await renderUnusedModels();
-  } else {
-    // Revert dropdown to last working choice
+  } else if (modelSelect.value === model) {
+    // Revert dropdown to last working choice (unless the user has chosen
+    // another model since: the list is free again once the download ended).
     modelSelect.value = previousSaved;
+    verifiedModel = previousSaved;
     await refreshModelStatusUI();
   }
   return ok;
@@ -1004,6 +1048,7 @@ function startHome() {
     microphones: () => (micsListed ? mics.length : null),
     findMicrophones: listMicrophones,
     microphone: () => savedMicrophone,
+    speechFailure: () => (downloadFailed === null ? null : { model: downloadFailed, reason: downloadReason }),
     ai: aiSummary,
     aiModel: aiModelInfo,
     addWords,

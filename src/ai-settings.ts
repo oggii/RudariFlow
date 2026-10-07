@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { t, getLang } from "./i18n";
 import { populateLanguageSelect } from "./languages";
-import { NOT_STARTED, showProgress, type DownloadProgress } from "./progress";
+import { downloadFailure, NOT_STARTED, showProgress, type DownloadProgress } from "./progress";
 import { onRoute } from "./shell";
 import { setDownload } from "./activity";
 import { sizeText } from "./setup.ts";
@@ -121,13 +121,15 @@ function say(text: string, tone: string, kind: AiKind) {
  *  say so until another model is chosen or a download works; a new try
  *  starts clean. */
 let downloadFailed: string | null = null;
+/** Why it did not finish, as the backend said it: a full disk is not a bad connection. */
+let downloadReason = "";
 /** The whole percent of the download that runs; null: none runs. */
 let downloadPercent: number | null = null;
 
-/** "The download of Gemma 4 12B · 7.1 GB did not finish. …": the same sentence as for the speech model. */
+/** "The download of Gemma 4 12B · 7.1 GB did not finish. … Reason: …": the same sentence as for the speech model. */
 function failureText(model: AiModelInfo): string {
   const name = `${model.label} · ${sizeText(model.bytes)}`.replace(/ /g, "\u00a0");
-  return t("setup_download_failed").replace("{model}", () => name);
+  return downloadFailure(name, downloadReason);
 }
 
 /** The percent after "Downloading the model…". Apart from the state line:
@@ -155,18 +157,22 @@ export function aiActivity(): { loading: boolean; freed: boolean } {
 }
 
 /** For Home: the AI model in use, the state line as it reads in Settings (its text, tone and kind), whether
- *  the model is downloaded, and "Retry" while the line offers it. */
+ *  the model is downloaded, and "Retry" while the line names it: after the
+ *  AI did not start, and after the model's download did not finish (the
+ *  line says "try again"; in Settings the Download buttons beside it read
+ *  "Retry", Home has only this one). */
 export function aiSummary(): { name: string; state: string; tone: string; kind: AiKind; downloaded: boolean; failed: boolean; retry: (() => void) | null } {
   const model = selectedModel();
+  // The model's download did not finish (the state line says so).
+  const failed = !!model && !model.downloaded && downloadFailed === model.id;
   return {
     name: model?.label ?? "",
     state: said.text,
     tone: said.tone,
     kind: said.kind,
     downloaded: !!model?.downloaded,
-    // The model's download did not finish (the state line says so).
-    failed: !!model && !model.downloaded && downloadFailed === model.id,
-    retry: said.kind === "failed" ? restart : null,
+    failed,
+    retry: said.kind === "failed" ? restart : failed && said.kind === "missing" ? () => void download() : null,
   };
 }
 
@@ -348,6 +354,7 @@ async function fetchModel() {
   const at = document.activeElement;
   // A new try starts clean: the last one's failure and its numbers are gone.
   downloadFailed = null;
+  downloadReason = "";
   downloadPercent = 0;
   renderModels();
   showProgress(progressParts, NOT_STARTED);
@@ -364,17 +371,23 @@ async function fetchModel() {
   downloadInFlight = true;
   setDownload("ai", 0);
   let failed = false;
+  let reason = "";
   try {
     await invoke("ai_download_model", { id });
   } catch (e) {
     console.error("ai_download_model failed:", e);
     failed = true;
+    reason = String(e ?? "");
   }
   downloadInFlight = false;
   downloadPercent = null;
   setDownload("ai", null);
-  // Said by the model's row and by the state line, which refreshStatus() draws (and draws again later).
-  if (failed) downloadFailed = id;
+  // Said by the model's row and by the state line, which refreshStatus() draws (and draws again later),
+  // with the backend's reason after it.
+  if (failed) {
+    downloadFailed = id;
+    downloadReason = reason;
+  }
   await refreshStatus();
   if (document.activeElement === document.body || document.activeElement === null) {
     if (at === downloadMain) (downloadMain.classList.contains("hidden") ? toggle : downloadMain).focus();
@@ -538,6 +551,7 @@ export function initAiSettings(h: AiSettingsHost) {
   modelSelect.addEventListener("change", async () => {
     // Another choice: what was said of a download that did not finish is over.
     downloadFailed = null;
+    downloadReason = "";
     host.settings().aiModel = modelSelect.value;
     await host.save();
     await refreshStatus();

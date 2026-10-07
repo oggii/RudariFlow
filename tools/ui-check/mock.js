@@ -18,7 +18,10 @@
 // ms), also for the next start of the page; saveDelay makes save_settings
 // take that long, as a busy backend does; speech is laid over what
 // speech_status answers (a model that did not load: { downloaded: true,
-// load: "failed" }).
+// load: "failed" }); answerDelay makes every answer take that many ms on
+// its way back (the command itself arrives at once), as over a busy IPC:
+// what the page does between a question and its answer then has the time
+// to go wrong.
 (() => {
   const CFG = window.__MOCK_CFG__ || { lang: "en", scenario: "populated" };
   const rich = CFG.scenario !== "firstrun";
@@ -208,6 +211,8 @@
     saveDelay: 0,
     /** Laid over the speech model's state; null: as the settings and the downloads have it. */
     speech: null,
+    /** Every answer (and every refusal) is this many ms on its way back to the page. */
+    answerDelay: 0,
     finishDownload: (kind = "speech") => downloads[kind]?.finish(),
     failDownload: (kind = "speech", why = "error sending request") => downloads[kind]?.fail(why),
   };
@@ -447,7 +452,17 @@
       window.__MOCK__.calls.push({ cmd, args: args || {} });
       const h = handlers[cmd];
       if (!h) { if (!unknown.includes(cmd)) unknown.push(cmd); return null; }
-      return h(args || {});
+      const late = window.__MOCK__.answerDelay;
+      if (!late) return h(args || {});
+      // The command has arrived and is done; its answer is late.
+      try {
+        const answer = await h(args || {});
+        await sleep(late);
+        return answer;
+      } catch (e) {
+        await sleep(late);
+        throw e;
+      }
     },
   };
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };

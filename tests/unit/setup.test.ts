@@ -7,6 +7,7 @@ import {
   meterMay,
   meterStep,
   modelStep,
+  failureWords,
   progressWords,
   recommend,
   setup,
@@ -297,4 +298,20 @@ test("a download's numbers: a whole percent, the sizes, and the words a progress
   assert.equal(progressWords({ downloaded: 470e6, total: 466e6, percent: 100.9 }, shown, said).percent, 100);
   assert.equal(progressWords({ downloaded: 0, total: 466e6, percent: -3 }, shown, said).percent, 0);
   assert.equal(progressWords({ downloaded: 0, total: 466e6, percent: Number.NaN }, shown, said).percent, 0);
+});
+
+test("a download that failed says the backend's reason after its sentence", () => {
+  const sentence = "The download of {model} did not finish. Check your internet connection and try again.";
+  const because = "Reason: {reason}";
+  // A full disk is not a bad connection: the reason says which it was.
+  assert.equal(
+    failureWords(sentence, because, "Tiny · 75 MB", "There is not enough space on the disk. (os error 112)"),
+    "The download of Tiny · 75 MB did not finish. Check your internet connection and try again. Reason: There is not enough space on the disk. (os error 112)",
+  );
+  // The reason ends like a sentence, so what follows it (Retry) stands apart.
+  assert.equal(failureWords(sentence, because, "Tiny", " error sending request "), "The download of Tiny did not finish. Check your internet connection and try again. Reason: error sending request.");
+  // No reason: the sentence alone.
+  assert.equal(failureWords(sentence, because, "Tiny", ""), "The download of Tiny did not finish. Check your internet connection and try again.");
+  // A model's name or a reason with "$" in it is text, not a pattern.
+  assert.equal(failureWords("{model} failed.", "Why: {reason}", "$& model", "$1 left"), "$& model failed. Why: $1 left.");
 });

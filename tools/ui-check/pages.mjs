@@ -27,9 +27,9 @@ async function section(page, name) {
   await wait(page);
 }
 
-/** Open a Settings tab. */
+/** Open a Settings tab. The sidebar is pressed only from another page: on Settings already, the press changes nothing and its wait is for nothing. */
 async function settings(page, tab) {
-  await section(page, "settings");
+  if (!(await page.evaluate(() => document.getElementById("section-settings").classList.contains("active")))) await section(page, "settings");
   await page.evaluate((t) => document.getElementById(`tab-${t}`).click(), tab);
   await wait(page);
 }
@@ -876,10 +876,10 @@ async function firstRun(page, run) {
   if (flat.width >= 1200) out.push(...expect(row.shown && row.bar.left > row.text.right && row.bar.top > row.text.top && row.bar.bottom < row.text.bottom && row.bar.width >= 60, "from 1200 px of window the download's bar stands on the row of the card's text", JSON.stringify(row)));
   await awaitError(page, /ai_download_model failed/);
   await page.evaluate(() => window.__MOCK__.failDownload("ai", "error sending request"));
-  await until(page, () => document.getElementById("setup-ai-text").dataset.tone === "warn");
+  await until(page, () => document.getElementById("setup-ai-text").dataset.tone === "error");
   out.push(...expect((await logged(page)) === 1, "the failed AI download is written to the log once"));
   ai = await page.evaluate(() => [document.getElementById("setup-ai-text").dataset.tone, document.getElementById("setup-ai-download").textContent, document.getElementById("setup-ai-progress").checkVisibility(), document.getElementById("home-ai-card").checkVisibility(), document.getElementById("setup-ai-text").textContent, document.getElementById("setup-ai-dismiss").textContent, document.activeElement?.id]);
-  out.push(...expect(ai[0] === "warn" && ai[1] === (de ? "Wiederholen" : "Retry") && !ai[2] && ai[3] && /Gemma\s4\sE4B\s\(5\.0\sGB\)/.test(ai[4]) && ai[5] === (de ? "Jetzt nicht" : "Not now") && ai[6] === "setup-ai-download", "an AI download that fails is said on the card, with the model, its size and Retry, which keeps the focus", JSON.stringify(ai)));
+  out.push(...expect(ai[0] === "error" && ai[1] === (de ? "Wiederholen" : "Retry") && !ai[2] && ai[3] && /Gemma\s4\sE4B\s\(5\.0\sGB\)/.test(ai[4]) && ai[5] === (de ? "Jetzt nicht" : "Not now") && ai[6] === "setup-ai-download", "an AI download that fails is said on the card, with the model, its size and Retry, which keeps the focus", JSON.stringify(ai)));
   stands.failed = await cardNow();
   out.push(...expect(stands.downloads === stands.rests && stands.failed === stands.rests, "the optional card has one height, one place for its text and its button, and the daily view under it stays where it is, while it rests, downloads and after a failure", JSON.stringify(stands)));
   await page.click("#setup-ai-download");
@@ -976,8 +976,36 @@ const liveNoted = (page) =>
     const all = Object.entries(window.__live);
     return { settings: Object.fromEntries(all.filter(([key]) => inSettings(key))), status: window.__live["status-live"] ?? [], all: Object.fromEntries(all) };
   });
+/** What a live region said: a region that was emptied says nothing by that. */
+const spoken = (texts = []) => texts.filter(Boolean);
 /** At most two texts per live region of Settings (the start and the end), and no number in what the sidebar says. */
-const liveOk = (noted) => Object.values(noted.settings).every((texts) => texts.length <= 2) && noted.status.every((text) => !/\d/.test(text));
+const liveOk = (noted) => Object.values(noted.settings).every((texts) => spoken(texts).length <= 2) && noted.status.every((text) => !/\d/.test(text));
+
+/**
+ * What a probe finds out about behaviour (what is saved, what is said, what a button does) is the same in a window
+ * of any size: such a part runs once per data set and language, in the window of this size. What depends on the
+ * window (where something stands, whether it is in view) is looked at in every size, as are the checks of the page
+ * itself and its pictures.
+ */
+const BEHAVIOUR = "1600x900";
+
+/** Every answer of the mocked backend is `ms` late from now on (0: at once again). */
+const slowAnswers = (page, ms) => page.evaluate((ms) => (window.__MOCK__.answerDelay = ms), ms);
+
+/** The download that waits in the mock fails, with the backend's reason; the page's own line in the log about it is expected, not a finding. */
+async function failNow(page, kind, why) {
+  await awaitError(page, kind === "ai" ? /ai_download_model failed/ : /Download failed/);
+  await page.evaluate(([kind, why]) => window.__MOCK__.failDownload(kind, why), [kind, why]);
+  const note = kind === "ai" ? "ai-model-note" : "model-note";
+  const select = kind === "ai" ? "ai-model-select" : "model-select";
+  await until(page, ([note, select]) => document.getElementById(note).dataset.tone === "error" && !document.getElementById(select).disabled, 3000, [note, select]);
+  await wait(page, 150);
+  return logged(page);
+}
+
+/** What the backend says when the disk is full, and when the connection breaks (the mock's own word). */
+const DISK_FULL = "There is not enough space on the disk. (os error 112)";
+const NO_LINE = "error sending request";
 
 /** A model row's download as it shows: the bar and its numbers under the row, and what the bar says to a screen reader. */
 const downloadNow = (page, ids) =>
@@ -1028,7 +1056,7 @@ const barOk = (now, numbers, said) =>
  * a download: of the model chosen in the dropdown where one is there
  * already (populated), with the Download button where none is (first run).
  */
-async function speechDownload(page) {
+async function speechDownload(page, run) {
   const out = [];
   const firstrun = await page.evaluate(() => window.__MOCK_CFG__.scenario === "firstrun");
   const saved = () => page.evaluate(() => window.__MOCK__.settings().whisperModel);
@@ -1037,6 +1065,8 @@ async function speechDownload(page) {
   let now = await downloadNow(page, SPEECH_ROW);
   out.push(...expect(barOk(now, firstrun ? /^43 % · 200 MB \S+ 466 MB$/ : /^43 % · 32 MB \S+ 75 MB$/, /^43 %, \d+ MB \S+ \d+ MB$/), "the speech model's row shows its download: the bar and percent with size, a progress bar named after the row, no live region", JSON.stringify(now)));
   out.push(...expect(now.resting && now.button[0].off, "the dropdown and the button rest while the model downloads", JSON.stringify(now)));
+  // The rest is behaviour: once, not in every window size (the picture stays the download that runs).
+  if (run.size !== BEHAVIOUR) return out;
   // Another setting is saved meanwhile: the model that is on its way is not stored.
   await choose(page, "idle-unload-select", "15");
   await wait(page, 120);
@@ -1053,11 +1083,14 @@ async function speechDownload(page) {
   out.push(...expect(errors === 1 && !now.shown && now.tone === "error" && failedModel.test(now.note) && !now.resting && (await saved()) === before, "a download that fails: the row's note says which model did not finish, in the colour of an error, and the settings keep their model", JSON.stringify({ errors, now, saved: await saved() })));
   const said = await page.evaluate(() => document.getElementById("download-live").textContent);
   out.push(...expect(failedModel.test(said), "the failure is said to a screen reader", said));
+  // With the backend's reason after the sentence: a full disk is not a bad connection.
+  out.push(...expect(now.note.includes(`${NO_LINE}.`) && said.endsWith(`${NO_LINE}.`), "the failure says the backend's reason, on the row and to a screen reader", JSON.stringify([now.note, said])));
   if (firstrun) {
     // The dropdown is still on the model that failed: its button reads Retry, and Home's step says the same.
     const home = await page.evaluate(() => ({ text: document.getElementById("setup-model-text").textContent, tone: document.getElementById("setup-model-text").dataset.tone, button: document.getElementById("setup-model-download").textContent }));
     out.push(...expect(now.select === "small" && now.button[0].shown && now.button[0].key === "retry" && !now.button[0].off && now.button[0].name.length > now.button[0].text.length && now.noteRetry === null, "the Download button reads Retry after the failure and says what it retries", JSON.stringify(now.button)));
-    out.push(...expect(failedModel.test(home.text) && home.tone === "warn" && home.button === now.button[0].text, "Home's step says the same failure and offers Retry", JSON.stringify(home)));
+    // The same sentence in the same colour as on the row: an error, with the reason.
+    out.push(...expect(failedModel.test(home.text) && home.tone === now.tone && home.text.endsWith(`${NO_LINE}.`) && home.button === now.button[0].text, "Home's step says the same failure in the same colour, with its reason, and offers Retry", JSON.stringify(home)));
     // Another model is chosen: its download starts clean, under a button that no longer reads Retry.
     await noteLive(page);
     await page.selectOption("#model-select", "base");
@@ -1071,7 +1104,9 @@ async function speechDownload(page) {
     await until(page, () => window.__MOCK__.settings().whisperModel === "base" && !document.getElementById("download-progress").checkVisibility());
     await wait(page, 150);
     const noted = await liveNoted(page);
-    out.push(...expect(liveOk(noted) && (noted.settings["download-live"] ?? []).length === 2, "a download is read out at its start and its end, not at every step", JSON.stringify(noted.all)));
+    out.push(...expect(liveOk(noted) && spoken(noted.settings["download-live"]).length === 2, "a download is read out at its start and its end, not at every step", JSON.stringify(noted.all)));
+    // The failure's sentence went with the choice, before the new download said its start: nobody finds it later.
+    out.push(...expect((noted.settings["download-live"] ?? [])[0] === "", "the next choice empties what a screen reader was told of the failure", JSON.stringify(noted.settings["download-live"])));
     now = await downloadNow(page, SPEECH_ROW);
     out.push(...expect((await saved()) === "base" && now.select === "base" && now.tone === "" && !now.button[0].shown, "the model that arrived is saved, and the row is as for any model that is there", JSON.stringify(now)));
     return out;
@@ -1092,33 +1127,102 @@ async function speechDownload(page) {
   await until(page, () => window.__MOCK__.settings().whisperModel === "tiny" && !document.getElementById("download-progress").checkVisibility());
   await wait(page, 150);
   const noted = await liveNoted(page);
-  out.push(...expect(liveOk(noted) && (noted.settings["download-live"] ?? []).length === 2, "a download is read out at its start and its end, not at every step", JSON.stringify(noted.all)));
+  out.push(...expect(liveOk(noted) && spoken(noted.settings["download-live"]).length === 2, "a download is read out at its start and its end, not at every step", JSON.stringify(noted.all)));
   now = await downloadNow(page, SPEECH_ROW);
   const focus = await page.evaluate(() => document.activeElement?.id ?? "");
   out.push(...expect((await saved()) === "tiny" && now.select === "tiny" && now.tone === "" && now.noteRetry === null && focus === "model-select", "the model that arrived is saved, the failure is gone, and the keyboard focus is on the dropdown", JSON.stringify({ now, focus })));
   // A failure survives a change of the Display Language, in the new language, and goes with the next choice.
   await page.selectOption("#model-select", "base");
   await asked(page, "download_model", 3);
-  await awaitError(page, /Download failed/);
-  await page.evaluate(() => window.__MOCK__.failDownload("speech"));
-  await until(page, () => document.getElementById("model-note").dataset.tone === "error");
-  await logged(page);
+  await failNow(page, "speech", DISK_FULL);
   const lang = await page.evaluate(() => document.documentElement.lang);
+  const live = () => page.evaluate(() => document.getElementById("download-live").textContent);
   const one = await page.evaluate(() => document.getElementById("model-note").textContent);
+  // A reason that ends like a sentence is left as it is.
+  out.push(...expect(one.includes(DISK_FULL) && !one.includes(`${DISK_FULL}.`) && (await live()).endsWith(DISK_FULL), "a full disk is said as the reason", JSON.stringify([one, await live()])));
   await choose(page, "ui-language-select", lang === "de" ? "en" : "de");
   await wait(page, 300);
   const other = await page.evaluate(() => [document.getElementById("model-note").textContent, document.getElementById("model-note").dataset.tone, document.getElementById("gpu-detected").textContent]);
-  out.push(...expect(other[0] !== one && /Base/.test(other[0]) && other[1] === "error", "the failure stays through a change of the Display Language, in the new language", JSON.stringify([one, other])));
+  out.push(...expect(other[0] !== one && /Base/.test(other[0]) && other[0].includes(DISK_FULL) && other[1] === "error", "the failure stays through a change of the Display Language, in the new language", JSON.stringify([one, other])));
+  // What a screen reader was told is in the old language: it goes, the note on the row says it in the new one.
+  out.push(...expect((await live()) === "", "a change of the Display Language empties what a screen reader was told of the last download", await live()));
   out.push(...expect((lang === "de" ? /^Detected: / : /^Erkannt: /).test(other[2]), "the detected graphics cards follow the Display Language", other[2]));
   await choose(page, "ui-language-select", lang);
   await wait(page, 300);
   await page.selectOption("#model-select", "small");
   await wait(page, 200);
   now = await downloadNow(page, SPEECH_ROW);
-  out.push(...expect(now.tone === "" && !/Base/.test(now.note) && (await saved()) === "small", "the next choice ends the failure's note", JSON.stringify(now)));
+  out.push(...expect(now.tone === "" && !/Base/.test(now.note) && (await saved()) === "small" && (await live()) === "", "the next choice ends the failure's note, also for a screen reader", JSON.stringify([now, await live()])));
+
+  // Only a model that is on disk is saved, also in the two moments in which the dropdown is on another one and no
+  // download runs. The backend answers 150 ms late for these, so each moment lasts.
+  await slowAnswers(page, 150);
+  // (a) After a download that failed: its flag is cleared, the dropdown is free again and still on the model that
+  // failed while the rows' ticks are asked for. Another setting is saved in that moment (the page saves all of them).
+  await page.selectOption("#model-select", "base");
+  await asked(page, "download_model", 4);
+  await page.evaluate(() => {
+    const select = document.getElementById("model-select");
+    window.__between = null;
+    new MutationObserver((_, watch) => {
+      if (select.disabled) return;
+      watch.disconnect();
+      const idle = document.getElementById("idle-unload-select");
+      idle.value = idle.value === "60" ? "30" : "60";
+      idle.dispatchEvent(new Event("change", { bubbles: true }));
+      window.__between = { dropdown: select.value, saved: window.__MOCK__.settings().whisperModel, idle: window.__MOCK__.settings().idleUnloadMinutes };
+    }).observe(select, { attributes: true, attributeFilter: ["disabled"] });
+  });
+  await awaitError(page, /Download failed/);
+  await page.evaluate(() => window.__MOCK__.failDownload("speech"));
+  await until(page, () => window.__between !== null && document.getElementById("model-select").value === "small" && document.getElementById("model-note").dataset.tone === "error");
+  await wait(page, 400);
+  await logged(page);
+  const between = await page.evaluate(() => window.__between);
+  now = await downloadNow(page, SPEECH_ROW);
+  out.push(...expect(between?.dropdown === "base" && [30, 60].includes(between.idle), "the check saves another setting in the moment after a failed download, with the dropdown still on the model that failed", JSON.stringify(between)));
+  out.push(...expect(between?.saved === "small" && (await saved()) === "small" && now.select === "small", "a save in the moment after a failed download keeps the model that is on disk", JSON.stringify({ between, saved: await saved(), dropdown: now.select })));
+  // (b) Two choices in quick succession, as the arrow keys make them: a model that is there, then a missing one
+  // while the first one's ticks are asked for. The first choice's save comes before the second one's download starts.
+  await page.selectOption("#model-select", "small");
+  await wait(page, 700);
+  await page.evaluate(async () => {
+    const select = document.getElementById("model-select");
+    const checks = () => window.__MOCK__.calls.filter((c) => c.cmd === "check_model_downloaded").length;
+    const pick = (value) => {
+      select.value = value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    const from = checks();
+    pick("medium");
+    // The choice's own question, the row's, then the eight ticks: with the tenth question out, the ticks are on their way.
+    while (checks() < from + 10) await new Promise((r) => setTimeout(r, 5));
+    pick("base");
+  });
+  const started = await asked(page, "download_model", 5);
+  // What the first choice's save stored, before the second one's download ends.
+  const meanwhile = await saved();
+  await awaitError(page, /Download failed/);
+  await page.evaluate(() => window.__MOCK__.failDownload("speech"));
+  await until(page, () => document.getElementById("model-note").dataset.tone === "error" && document.getElementById("model-select").value !== "base");
+  await wait(page, 400);
+  await logged(page);
+  now = await downloadNow(page, SPEECH_ROW);
+  const there = ["small", "medium", "tiny", "large-v3-turbo-q8_0"];
+  out.push(...expect(started && meanwhile !== "base", "two choices in quick succession: the first one's save does not store the second, missing model", JSON.stringify({ started, meanwhile })));
+  out.push(...expect(there.includes(await saved()) && now.select === (await saved()), "two choices in quick succession, the second one's download fails: the settings and the dropdown are on a model that is on disk", JSON.stringify({ saved: await saved(), dropdown: now.select })));
+  await slowAnswers(page, 0);
+
   // For the screenshot: a download that runs.
   await page.selectOption("#model-select", "large-v3");
-  await asked(page, "download_model", 4);
+  await asked(page, "download_model", 6);
+  // A change of the Display Language meanwhile brings no Download button: the dropdown started this download, and there was none.
+  await choose(page, "ui-language-select", lang === "de" ? "en" : "de");
+  await wait(page, 300);
+  now = await downloadNow(page, SPEECH_ROW);
+  out.push(...expect(now.shown && now.resting && !now.button[0].shown, "a change of the Display Language while the dropdown's download runs shows no Download button", JSON.stringify(now.button)));
+  await choose(page, "ui-language-select", lang);
+  await wait(page, 300);
   await report(page, "download-progress", 2.9e9);
   return out;
 }
@@ -1128,7 +1232,7 @@ async function speechDownload(page) {
  * `open` has opened the fold, chosen a model that is not there and scrolled
  * its row to the middle of the window, as a click on it would have it.
  */
-async function aiDownload(page) {
+async function aiDownload(page, run) {
   const out = [];
   const main = () => page.evaluate(() => ({ text: document.getElementById("ai-status-line").textContent, percent: document.getElementById("ai-status-percent").textContent, tone: document.getElementById("ai-status-line").dataset.tone ?? "" }));
   // Downloading: the bar and its numbers on the model's row, in view, and the percent beside the switch.
@@ -1141,30 +1245,45 @@ async function aiDownload(page) {
   let line = await main();
   out.push(...expect(line.percent === "43 %" && line.text.length > 8 && !/\d/.test(line.text), "the state line beside the switch has the percent after it, outside what is read out", JSON.stringify(line)));
   out.push(...expect(now.resting && now.button.every((b) => b.off && b.name.length > b.text.length), "the dropdown and both Download buttons rest, and each says what it downloads", JSON.stringify(now.button)));
+  // The rest is behaviour: once, not in every window size (the picture stays the download that runs).
+  if (run.size !== BEHAVIOUR) return out;
 
   // It fails: the model's row and the state line say which model, in the colour of an error; both buttons read Retry.
-  await awaitError(page, /ai_download_model failed/);
-  await page.evaluate(() => window.__MOCK__.failDownload("ai"));
-  await until(page, () => !document.getElementById("ai-download-progress").checkVisibility());
-  await wait(page, 200);
-  const errors = await logged(page);
+  const errors = await failNow(page, "ai", DISK_FULL);
   now = await downloadNow(page, AI_ROW);
   line = await main();
   const model = /Gemma\s4\s12B\s·\s7\.1\sGB/;
   out.push(...expect(errors === 1 && !now.shown && now.tone === "error" && model.test(now.note) && model.test(line.text) && line.tone === "error" && line.percent === "", "a download that fails: the model's row and the state line beside the switch say which model did not finish, in the colour of an error", JSON.stringify({ errors, now, line })));
+  // With the backend's reason after the sentence: a full disk is not a bad connection.
+  out.push(...expect(now.note.endsWith(DISK_FULL) && line.text.endsWith(DISK_FULL), "the failure says the backend's reason, on the model's row and beside the switch", JSON.stringify([now.note, line.text])));
   out.push(...expect(now.button.every((b) => b.shown && b.key === "retry" && !b.off && b.name.length > b.text.length), "both Download buttons read Retry and say what they retry", JSON.stringify(now.button)));
   // The failure is still there after the backend reported its state again.
   await page.evaluate(() => window.__MOCK__.emit("ai-status", null));
   await wait(page, 150);
   out.push(...expect(model.test((await main()).text) && (await downloadNow(page, AI_ROW)).tone === "error", "the failure stays when the AI's state is read again", JSON.stringify(await main())));
-  // Home says it under its switch, as Settings does.
-  const home = await page.evaluate(() => [document.getElementById("home-ai-status").textContent, document.getElementById("home-ai-status").dataset.tone]);
-  out.push(...expect(model.test(home[0]) && home[1] === "error", "Home says the same failure under its AI cleanup switch", JSON.stringify(home)));
+  // Home says it under its switch, as Settings does, and has the Retry its sentence names ("try again").
+  await section(page, "home");
+  const home = await page.evaluate(() => {
+    const said = document.getElementById("home-ai-status");
+    const retry = document.getElementById("home-ai-retry");
+    return { text: said.textContent, tone: said.dataset.tone, retry: retry.checkVisibility(), after: said.nextElementSibling === retry, name: retry.getAttribute("aria-label") ?? "", word: retry.textContent };
+  });
+  out.push(...expect(model.test(home.text) && home.text.endsWith(DISK_FULL) && home.tone === "error", "Home says the same failure under its AI cleanup switch, with its reason", JSON.stringify(home)));
+  out.push(...expect(home.retry && home.after && home.name.length > home.word.length + 3, "Home has the Retry its failure names, after the sentence, and it says what it retries", JSON.stringify(home)));
 
-  // Retry starts clean and is read out twice: at its start and at its end.
+  // Retry, pressed on Home, starts clean and is read out twice: at its start and at its end.
   await noteLive(page);
-  await page.click("#ai-download-btn");
+  await page.click("#home-ai-retry");
   await asked(page, "ai_download_model", 2);
+  await wait(page, 100);
+  // The button rests where it is while its download runs: it has the keyboard focus, which a button that goes would drop.
+  const pressed = await page.evaluate(() => {
+    const retry = document.getElementById("home-ai-retry");
+    return { shown: retry.checkVisibility(), rests: retry.getAttribute("aria-disabled") === "true", focus: document.activeElement === retry, said: document.getElementById("home-ai-status").textContent };
+  });
+  out.push(...expect(pressed.shown && pressed.rests && pressed.focus && !model.test(pressed.said) && pressed.said.length > 8, "Retry on Home starts the download again and rests with the keyboard focus while it runs", JSON.stringify(pressed)));
+  await settings(page, "ai");
+  await page.evaluate(() => document.getElementById("ai-model-select").scrollIntoView({ block: "center" }));
   await wait(page, 100);
   now = await downloadNow(page, AI_ROW);
   line = await main();
@@ -1179,11 +1298,13 @@ async function aiDownload(page) {
   out.push(...expect(liveOk(noted) && (noted.settings["ai-status-line"] ?? []).length === 2, "the AI model's download is read out at its start and its end, not at every step", JSON.stringify(noted.all)));
   now = await downloadNow(page, AI_ROW);
   out.push(...expect(now.tone === "" && !model.test(now.note) && now.button.every((b) => !b.shown) && (await main()).percent === "", "with the model there the row is as for any model that is there", JSON.stringify(now)));
+  const gone = await page.evaluate(() => [document.getElementById("home-ai-retry").classList.contains("hidden"), document.getElementById("home-ai-retry").hasAttribute("aria-disabled")]);
+  out.push(...expect(gone[0] && !gone[1], "Home's Retry goes with the failure", JSON.stringify(gone)));
   return out;
 }
 
 /** The cloud engine without its key: the main card of Models & GPU says so and leads to the key field in the fold. */
-async function cloudKey(page) {
+async function cloudKey(page, run) {
   const out = [];
   const note = () =>
     page.evaluate(() => {
@@ -1208,6 +1329,8 @@ async function cloudKey(page) {
   await wait(page, 150);
   now = await note();
   out.push(...expect(!now.fold, "after the visit the fold is closed again", JSON.stringify(now)));
+  // So far every window size: the key field must come into view in each. The rest is behaviour: once.
+  if (run.size !== BEHAVIOUR) return out;
   // The user opens it: that is remembered.
   await page.click('details.fold[data-fold="models"] > summary');
   await wait(page, 150);
@@ -1298,7 +1421,7 @@ async function controlNames(page) {
 /** The parts of each Settings tab in the order of the page, and the column each stands in when the tab has two. */
 const COLUMNS = {
   dictation: [[".card", 0], [".fold", 1]],
-  ai: [[".card:has(#ai-toggle)", 0], [".card:has(#ai-rule-list)", 1], [".fold", 0]],
+  ai: [[".card:has(#ai-toggle)", 0], [".card:has(#ai-rule-list)", 1], [".fold", 1]],
   dictionary: [["#dict-suggest", 0], [".card:has(#dict-list)", 0], [".card:has(#replacement-list)", 1], [".card:has(#swiss-toggle)", 1], [".fold", 1]],
   models: [[".card", 0], [".fold", 1]],
   general: [[".card:has(#ui-language-select)", 0], [".card:has(#history-mode-select)", 1]],
@@ -1308,17 +1431,18 @@ const COLUMNS = {
  * A Settings tab as it is laid out, with its Advanced fold closed and open:
  * two columns from 1600 px beside the sidebar (one left edge, one top edge,
  * each at most 900 px, the parts of a column 16 px apart, every part in its
- * column), one column below that. The order in the page is the same in both.
+ * column), one column below that. The order in the page is the same in both,
+ * and in two columns it goes down the left one and then down the right one:
+ * Tab changes column once. AI cleanup is measured with the rules it has
+ * (three, or none on a new PC) and with ten: the fold stands under the rules
+ * however long the card beside them is.
  */
 async function columns(page, run) {
   const out = [];
   const size = await page.evaluate(() => `${window.innerWidth}x${window.innerHeight}`);
-  for (const tab of TABS) {
-    await page.evaluate((t) => document.getElementById(`tab-${t}`).click(), tab);
-    for (const open of tab === "general" ? [false] : [false, true]) {
-      await page.evaluate(([t, open]) => document.querySelector(`details.fold[data-fold="${t}"]`) && (document.querySelector(`details.fold[data-fold="${t}"]`).open = open), [tab, open]);
-      await wait(page, 60);
-      const seen = await page.evaluate(
+  /** The tab as it is laid out now. */
+  const look = (tab) =>
+    page.evaluate(
         ([tab, parts]) => {
           const panel = document.getElementById(`panel-${tab}`);
           const round = (n) => Math.round(n * 2) / 2;
@@ -1349,29 +1473,68 @@ async function columns(page, run) {
           };
         },
         [tab, COLUMNS[tab]],
-      );
-      const what = `${tab}${open ? ", Advanced open" : ""} at ${size}`;
-      const detail = JSON.stringify(seen);
-      out.push(...expect(seen.order, `${what}: the parts are in the order of the page`, detail));
-      out.push(...expect(seen.wider === seen.room >= 1600, `${what}: two columns from 1600 px beside the sidebar, one below`, detail));
-      out.push(...expect(!seen.sideways, `${what}: nothing scrolls sideways`, detail));
-      const col = (n) => seen.boxes.filter((b) => b.column === n);
-      if (!seen.wider) {
-        // One column: every part on the page's left edge, as wide as the next one, one under the other.
-        const one = seen.boxes.every((b, i) => b.left === seen.page && b.right === seen.boxes[0].right && (i === 0 || b.top >= seen.boxes[i - 1].bottom));
-        out.push(...expect(one && seen.boxes[0].right - seen.boxes[0].left <= 1080.5, `${what}: one column of at most 1080 px on the page's left edge`, detail));
-        continue;
+    );
+  /** What must hold of it. */
+  const judge = (seen, what) => {
+    const out = [];
+    const detail = JSON.stringify(seen);
+    out.push(...expect(seen.order, `${what}: the parts are in the order of the page`, detail));
+    out.push(...expect(seen.wider === seen.room >= 1600, `${what}: two columns from 1600 px beside the sidebar, one below`, detail));
+    out.push(...expect(!seen.sideways, `${what}: nothing scrolls sideways`, detail));
+    const col = (n) => seen.boxes.filter((b) => b.column === n);
+    if (!seen.wider) {
+      // One column: every part on the page's left edge, as wide as the next one, one under the other.
+      const one = seen.boxes.every((b, i) => b.left === seen.page && b.right === seen.boxes[0].right && (i === 0 || b.top >= seen.boxes[i - 1].bottom));
+      out.push(...expect(one && seen.boxes[0].right - seen.boxes[0].left <= 1080.5, `${what}: one column of at most 1080 px on the page's left edge`, detail));
+      return out;
+    }
+    const [left, right] = [col(0), col(1)];
+    const width = (b) => b.right - b.left;
+    out.push(...expect(left.length > 0 && right.length > 0 && left.every((b) => b.left === seen.page) && right.every((b) => b.left === right[0].left && b.left >= left[0].right + 8), `${what}: two columns, the left one on the page's left edge`, detail));
+    out.push(...expect(left[0].top === right[0].top, `${what}: both columns start on one top edge`, detail));
+    // The parts are listed in the order of the page, which is the order Tab takes: where each one stands
+    // (not where the list above expects it), the left column comes first and is never gone back to.
+    const tabbed = seen.boxes.map((b) => (b.left === seen.page ? 0 : 1));
+    out.push(...expect(tabbed.every((c, i) => i === 0 || c >= tabbed[i - 1]), `${what}: Tab goes down the left column and then down the right one, it changes column once`, `${tabbed.join("")} ${detail}`));
+    out.push(...expect(seen.boxes.every((b) => width(b) === width(seen.boxes[0]) && width(b) <= 900.5 && width(b) >= 700), `${what}: every part is as wide as its column, at most 900 px`, detail));
+    const apart = (list) => list.every((b, i) => i === 0 || Math.abs(b.top - list[i - 1].bottom - 16) <= 1);
+    out.push(...expect(apart(left) && apart(right), `${what}: the parts of a column stand 16 px apart, none is pushed away`, detail));
+    out.push(...expect(seen.tabs[0] === seen.page && Math.abs(seen.tabs[1] - seen.pageRight) <= 1, `${what}: the tab bar spans the whole width`, detail));
+    if (seen.fold) out.push(...expect(seen.fold.shown && seen.fold.width === width(seen.boxes[0]) && seen.fold.height >= 40 && !/rgba\(0, 0, 0, 0\)|transparent/.test(seen.fold.ground), `${what}: the fold's heading is a bar as wide as its column`, detail));
+    out.push(...expect(seen.hints.length === 0, `${what}: every hint is one line`, seen.hints.join(" | ")));
+    return out;
+  };
+  /** Rules per app with ten rows, or as it was again. The rows are the page's own ("Add rule"); nothing is saved, and they go without a save. */
+  const tenRules = (on) =>
+    page.evaluate((on) => {
+      const list = document.getElementById("ai-rule-list");
+      if (on) {
+        for (let n = list.children.length; n < 10; n++) {
+          document.getElementById("ai-rule-add").click();
+          list.lastElementChild.dataset.check = "1";
+        }
+        document.activeElement?.blur?.();
+        return list.children.length;
       }
-      const [left, right] = [col(0), col(1)];
-      const width = (b) => b.right - b.left;
-      out.push(...expect(left.length > 0 && right.length > 0 && left.every((b) => b.left === seen.page) && right.every((b) => b.left === right[0].left && b.left >= left[0].right + 8), `${what}: two columns, the left one on the page's left edge`, detail));
-      out.push(...expect(left[0].top === right[0].top, `${what}: both columns start on one top edge`, detail));
-      out.push(...expect(seen.boxes.every((b) => width(b) === width(seen.boxes[0]) && width(b) <= 900.5 && width(b) >= 700), `${what}: every part is as wide as its column, at most 900 px`, detail));
-      const apart = (list) => list.every((b, i) => i === 0 || Math.abs(b.top - list[i - 1].bottom - 16) <= 1);
-      out.push(...expect(apart(left) && apart(right), `${what}: the parts of a column stand 16 px apart, none is pushed away`, detail));
-      out.push(...expect(seen.tabs[0] === seen.page && Math.abs(seen.tabs[1] - seen.pageRight) <= 1, `${what}: the tab bar spans the whole width`, detail));
-      if (seen.fold) out.push(...expect(seen.fold.shown && seen.fold.width === width(seen.boxes[0]) && seen.fold.height >= 40 && !/rgba\(0, 0, 0, 0\)|transparent/.test(seen.fold.ground), `${what}: the fold's heading is a bar as wide as its column`, detail));
-      out.push(...expect(seen.hints.length === 0, `${what}: every hint is one line`, seen.hints.join(" | ")));
+      for (const row of list.querySelectorAll("[data-check]")) row.remove();
+      document.getElementById("ai-rule-empty").classList.toggle("hidden", list.children.length > 0);
+      return list.children.length;
+    }, on);
+  for (const tab of TABS) {
+    await page.evaluate((t) => document.getElementById(`tab-${t}`).click(), tab);
+    for (const open of tab === "general" ? [false] : [false, true]) {
+      await page.evaluate(([t, open]) => document.querySelector(`details.fold[data-fold="${t}"]`) && (document.querySelector(`details.fold[data-fold="${t}"]`).open = open), [tab, open]);
+      await wait(page, 60);
+      const seen = await look(tab);
+      const what = `${tab}${open ? ", Advanced open" : ""} at ${size}`;
+      out.push(...judge(seen, what));
+      if (tab !== "ai" || !seen.wider) continue;
+      // The rules' card ten rows long: it is the higher side then, and the fold still stands 16 px under it.
+      const rows = await tenRules(true);
+      await wait(page, 60);
+      out.push(...expect(rows === 10, `${what}: the check has ten rules to measure`, String(rows)));
+      out.push(...judge(await look(tab), `${what}, ten rules`));
+      await tenRules(false);
     }
   }
   // The folds as the window found them (the tool set them, the page remembers them as the user's).
@@ -1380,18 +1543,20 @@ async function columns(page, run) {
   });
   await page.evaluate(() => document.getElementById("tab-dictation").click());
   await wait(page, 200);
-  // The step with the scrollbar drawn: once per run.
-  if (run.lang === "en" && run.size === "1600x900") out.push(...(await settingsHold(run)));
+  // The step with the scrollbar drawn: once per run (it opens its own window, on the populated data set).
+  if (run.scenario === "populated" && run.lang === "en" && run.size === BEHAVIOUR) out.push(...(await settingsHold(run)));
   return out;
 }
 
 /**
  * The step to two columns (1600 px beside the sidebar) in a window that
  * draws its scrollbar, as Home's steps are tried (`layoutHolds`): one pixel
- * below, at and above it, at the window heights where the tab just fits and
- * just does not, for every tab with its fold closed and open. Nothing may
- * change by itself: the two forms differ in height, and a step decided on a
- * width the scrollbar takes away would flip in every frame.
+ * below it and at it (the last width of one form and the first of the
+ * other; a pixel above the step is the second form again), at the window
+ * heights where the tab just fits and just does not, for every tab with its
+ * fold closed and open. Nothing may change by itself: the two forms differ
+ * in height, and a step decided on a width the scrollbar takes away would
+ * flip in every frame.
  */
 async function settingsHold(run) {
   const win = await run.openWindow({ scenario: "populated", lang: run.lang, size: "1800x1000", url: "/", scrollbars: true });
@@ -1401,7 +1566,7 @@ async function settingsHold(run) {
   try {
     await section(page, "settings");
     const side = await page.evaluate(() => window.innerWidth - document.getElementById("content").offsetWidth);
-    const widths = [1599, 1600, 1601].map((w) => w + side);
+    const widths = [1599, 1600].map((w) => w + side);
     for (const tab of TABS) {
       await page.evaluate((t) => document.getElementById(`tab-${t}`).click(), tab);
       for (const open of tab === "general" ? [false] : [false, true]) {
@@ -1771,14 +1936,14 @@ export const PAGES = [
   ...TABS.filter((tab) => tab !== "general").map((tab) => ({
     id: `settings-${tab}-advanced`,
     open: async (page) => {
-      await settings(page, tab);
+      // The fold first, in its panel that may not show yet, then the tab: one wait is for both.
       await page.evaluate((t) => (document.querySelector(`details.fold[data-fold="${t}"]`).open = true), tab);
-      await wait(page);
+      await settings(page, tab);
     },
     probe:
       tab !== "models"
         ? undefined
-        : async (page) => {
+        : async (page, run) => {
             const out = [];
             // "More" opens the long hint in place.
             const more = page.locator("#panel-models .hint-more").first();
@@ -1814,6 +1979,8 @@ export const PAGES = [
               return out;
             });
             out.push(...expect(moved.length === 0, "More opens the long text without moving its row's control", moved.join("; ")));
+            // What is remembered over a new start is the same in a window of any size: once.
+            if (run.size !== BEHAVIOUR) return out;
             // The fold stays open over a new start.
             await page.reload({ waitUntil: "networkidle" });
             await wait(page, 500);
@@ -1841,7 +2008,8 @@ export const PAGES = [
       await page.evaluate(() => (document.querySelector('details.fold[data-fold="dictation"]').open = true));
       await wait(page);
     },
-    probe: async (page) => [...(await keyEdges(page)), ...(await controlNames(page))],
+    // Where the key boxes end depends on the window; what the buttons are called does not.
+    probe: async (page, run) => [...(await keyEdges(page)), ...(run.size === BEHAVIOUR ? await controlNames(page) : [])],
   },
   // The cloud engine without its key: the notice in the main card leads to the key field in the closed fold.
   {
@@ -1888,6 +2056,37 @@ export const PAGES = [
       await wait(page, 150);
     },
     probe: aiDownload,
+  },
+  // A download that failed, as it stays on its row until the next try. The two pages above end on a download that
+  // runs or on one that worked, and a page is measured before its probe: without these the failure (a note in the
+  // colour of an error with the backend's reason, Retry in the note or on the button) was never measured or in a picture.
+  {
+    id: "settings-models-failed",
+    fresh: true,
+    open: async (page) => {
+      await settings(page, "models");
+      const firstrun = await page.evaluate(() => window.__MOCK_CFG__.scenario === "firstrun");
+      await page.evaluate(() => (document.querySelector('details.fold[data-fold="models"]').open = false));
+      // Without a model, Download is pressed (the button then reads Retry); with one, another is chosen (Retry stands in the note).
+      if (firstrun) await page.click("#download-btn");
+      else await page.selectOption("#model-select", "tiny");
+      await asked(page, "download_model");
+      await failNow(page, "speech", NO_LINE);
+    },
+  },
+  // No new start: the page above had one and leaves the AI's side as it found it.
+  {
+    id: "settings-ai-failed",
+    scenarios: ["populated"],
+    open: async (page) => {
+      await settings(page, "ai");
+      await page.evaluate(() => (document.querySelector('details.fold[data-fold="ai"]').open = true));
+      await wait(page, 150);
+      await page.selectOption("#ai-model-select", "gemma-4-12b");
+      await asked(page, "ai_download_model");
+      // The long reason: the state line beside the switch and the model's note both carry it.
+      await failNow(page, "ai", DISK_FULL);
+    },
   },
   {
     id: "files-result",

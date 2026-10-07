@@ -7,6 +7,7 @@
 //   node tools/ui-check/run.mjs --pages home,settings-*   only these pages
 //   --scenario populated|firstrun   --lang en|de   --size 900x600
 //   --no-build   use the build of the last run     --no-shots   no screenshots
+//   --times      also print the seconds each page took, over all its views
 //   --root <dir> the repo to check (default: two folders up)
 //   --task N     the run that verifies task N of the plan: allow.json entries
 //                with "until" <= N no longer count. What they covered is new
@@ -54,7 +55,7 @@ const stop = (message) => {
 };
 // A mistyped argument (--task=2, --tsak 2) must not run as if it were not there.
 const WITH_VALUE = ["pages", "scenario", "lang", "size", "root", "task"];
-const BARE = ["no-build", "no-shots"];
+const BARE = ["no-build", "no-shots", "times"];
 for (let i = 0; i < args.length; i++) {
   if (WITH_VALUE.some((name) => args[i] === `--${name}`)) i++;
   else if (!BARE.some((name) => args[i] === `--${name}`)) stop(`unknown argument "${args[i]}"`);
@@ -93,6 +94,15 @@ function report(page, where, list) {
     known.where.add(where);
     findings.set(key, known);
   }
+}
+
+/** --times: what each page took, over all its views; "(window)" is the start of the windows the pages share. */
+const times = new Map();
+function timed(id, since) {
+  const sum = times.get(id) ?? { ms: 0, views: 0 };
+  sum.ms += performance.now() - since;
+  sum.views++;
+  times.set(id, sum);
 }
 
 const contract = JSON.parse(fs.readFileSync(path.join(here, "contract.json"), "utf8"));
@@ -227,9 +237,12 @@ for (const scenario of SCENARIOS) {
       const defs = PAGES.filter((p) => (p.url ?? "/") === url && wanted(p.id) && (p.scenarios ?? ["populated", "firstrun"]).includes(scenario));
       for (const size of new Set(defs.flatMap(sizesOf))) {
         const where = `${scenario} ${lang} ${size}`;
+        const opening = performance.now();
         const win = await openWindow({ scenario, lang, size, url });
+        timed("(window)", opening);
         for (const def of defs.filter((p) => sizesOf(p).includes(size))) {
           opened++;
+          const began = performance.now();
           try {
             if (def.fresh) await win.load();
             await def.open?.(win.page);
@@ -262,6 +275,7 @@ for (const scenario of SCENARIOS) {
           const unknown = await win.page.evaluate(() => window.__MOCK__.unknown.splice(0)).catch(() => []);
           report(def.id, where, unknown.map((cmd) => ({ check: "mock", what: `command ${cmd}`, detail: "mock.js has no answer for it" })));
           report(def.id, where, win.problems.splice(0));
+          timed(def.id, began);
         }
         await win.context.close();
       }
@@ -272,6 +286,7 @@ for (const scenario of SCENARIOS) {
 // ── The settings round trip ───────────────────────────
 if (wanted("roundtrip") && SCENARIOS.includes("populated") && LANGS.includes("en")) {
   opened++;
+  const began = performance.now();
   const where = "populated en 1600x900";
   const win = await openWindow({ scenario: "populated", lang: "en", size: "1600x900", url: "/" });
   try {
@@ -284,6 +299,7 @@ if (wanted("roundtrip") && SCENARIOS.includes("populated") && LANGS.includes("en
   report("settings", where, unknown.map((cmd) => ({ check: "mock", what: `command ${cmd}`, detail: "mock.js has no answer for it" })));
   report("settings", where, win.problems.splice(0));
   await win.context.close();
+  timed("roundtrip", began);
 }
 
 await browser.close();
@@ -335,6 +351,11 @@ const leftover = TASK === null ? [] : past.filter((a) => a.until < TASK);
 if (leftover.length) {
   console.log(`\nallow.json entries of an earlier task than ${TASK} (they should be gone; remove them):`);
   for (const a of leftover) console.log(`  ${JSON.stringify(a)}`);
+}
+if (flag("times")) {
+  const total = [...times.values()].reduce((sum, t) => sum + t.ms, 0);
+  console.log(`\ntimes (${Math.round(total / 1000)} s in the pages):`);
+  for (const [id, t] of [...times].sort((a, b) => b[1].ms - a[1].ms)) console.log(`  ${id.padEnd(28)} ${(t.ms / 1000).toFixed(1).padStart(6)} s  ${String(t.views).padStart(3)} views`);
 }
 console.log(`\ndetails: ${path.join(here, "report.json")}`);
 process.exit(fresh.length || stale.length || leftover.length ? 1 : 0);

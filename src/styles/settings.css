@@ -66,14 +66,23 @@
   border-bottom: none;
 }
 
-/* The AI's state and, while its model downloads, the percent after it are
-   one line of text (two elements: only the first is read out). */
-#ai-status-line,
-#ai-status-percent {
-  display: inline;
+/* The AI's state and, while its model downloads, the percent after it
+   stand on one line (two elements: only the first is read out). Side by
+   side as boxes of the label, not as text in a line of it: such a line is
+   as high as the label's own type asks, 3 px more than a hint's, and the
+   row stood that much higher than its neighbours. */
+.setting-label:has(> #ai-status-line) {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 0.3em;
+}
+
+.setting-label:has(> #ai-status-line) > .label-text {
+  flex: 0 0 100%;
 }
 
 #ai-status-percent {
+  flex: none;
   font-variant-numeric: tabular-nums;
 }
 
@@ -121,23 +130,25 @@
 /* Dictation, Models & GPU: the main card left, the Advanced fold right.
    General: its two cards side by side. All three place themselves.
 
-   AI cleanup: the main card and the fold left, "Rules per app" right over
-   both rows. The last row takes what is left, so the rules' height never
-   pushes the fold away from the card above it. */
+   AI cleanup: the main card left over both rows, "Rules per app" right
+   and the fold under it. That is the order of the page (main card, rules,
+   fold), so Tab changes column once, as on the other tabs, and the common
+   rows come before Advanced. The last row takes what is left, so the main
+   card's height never pushes the fold away from the rules above it. */
 #section-settings.wider #panel-ai {
   grid-template-rows: auto auto 1fr;
 }
 
 #section-settings.wider #panel-ai > .panel-lead + .card {
-  grid-area: 2 / 1;
+  grid-area: 2 / 1 / span 2;
 }
 
 #section-settings.wider #panel-ai > .card:has(#ai-rule-list) {
-  grid-area: 2 / 2 / span 2;
+  grid-area: 2 / 2;
 }
 
 #section-settings.wider #panel-ai > .fold {
-  grid-area: 3 / 1;
+  grid-area: 3 / 2;
 }
 
 /* Dictionary: the suggestions and the words left; the replacements, Swiss
