@@ -59,6 +59,10 @@
   --fs-xl: 22px;
   --font: "IBM Plex Sans", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  /* The widest a paragraph of running text gets: 42 times its type size,
+     which is 90 to 100 characters a line. A frame may be wider; the lines in
+     it are not. */
+  --measure: 42em;
 
   /* Motion: a page change and a fold opening, nothing else. */
   --ease: 150ms ease-out;

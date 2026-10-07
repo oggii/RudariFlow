@@ -269,10 +269,15 @@ for (const scenario of SCENARIOS) {
               await shoot(win, `${def.id}-${scenario}-${lang}-${size}`);
               shots += 2;
             }
-            // What the page changed for its picture is put back for the pages that follow.
-            await def.after?.(win.page);
           } catch (e) {
             report(def.id, where, [{ check: "page-error", what: "the page could not be opened", detail: String(e).split("\n")[0] }]);
+          } finally {
+            // What the page changed for its picture is put back for the pages that follow, also when its probe threw.
+            try {
+              await def.after?.(win.page);
+            } catch (e) {
+              report(def.id, where, [{ check: "page-error", what: "the page could not be put back as it was", detail: String(e).split("\n")[0] }]);
+            }
           }
           const unknown = await win.page.evaluate(() => window.__MOCK__.unknown.splice(0)).catch(() => []);
           report(def.id, where, unknown.map((cmd) => ({ check: "mock", what: `command ${cmd}`, detail: "mock.js has no answer for it" })));

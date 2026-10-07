@@ -906,6 +906,7 @@ kbd {
 /* ── Empty state ────────────────────────────────────── */
 
 .empty-state {
+  max-width: var(--measure);
   padding: var(--s4) 0;
   color: var(--text-2);
 }

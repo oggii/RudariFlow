@@ -14,11 +14,6 @@
   max-width: calc(1080px + 2 * var(--s5));
 }
 
-/* The paragraph that opens a tab is as wide as the cards under it. */
-.panel-lead {
-  max-width: none;
-}
-
 /* A row's label is its top, and the control stands beside the label and
    its one line of hint. So a control keeps its place when "More" opens the
    long text, when a hint takes two lines and when a state line comes or goes. */
@@ -199,8 +194,10 @@
   margin-bottom: var(--s2);
 }
 
-/* A hint or a notice that stands in a card by itself, under its heading. */
+/* A hint or a notice that stands in a card by itself, under its heading:
+   a sentence or two, in the measure of running text. */
 .card > .label-hint {
+  max-width: var(--measure);
   padding-bottom: var(--s2);
 }
 
@@ -375,6 +372,13 @@
   field-sizing: content;
   resize: none;
   overflow: hidden;
+}
+
+/* A text box as wide as its card keeps the measure of running text inside:
+   what is left at the right is the box's own padding. */
+.rule-instructions,
+#ai-test-input {
+  padding-right: max(12px, calc(100% - var(--measure) - 12px));
 }
 
 /* ── AI cleanup: rules per app ──────────────────────── */

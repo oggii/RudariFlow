@@ -219,6 +219,7 @@
 }
 
 .history-text {
+  max-width: var(--measure);
   white-space: pre-wrap;
   user-select: text;
   -webkit-user-select: text;

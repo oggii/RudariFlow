@@ -15,7 +15,7 @@
 //              run = { openWindow, scenario, lang, size }, openWindow as in
 //              run.mjs (`scrollbars: true` draws them, as the app's window does)
 //   after      puts back what the page changed for its picture: async (page),
-//              called after the screenshots
+//              called after the screenshots, also when the probe threw
 //
 // Pages with the same url share one window per data set, language and size,
 // in this order; put a state that changes the window after the plain pages
@@ -395,8 +395,11 @@ async function restsAlone(run) {
 async function firstRun(page, run) {
   const out = [];
   const de = run.lang === "de";
-  const once = run.size === "1600x900"; // what does not depend on the window's size
-  const slow = once && !de; // what takes seconds: once per run
+  // What the setup does (when the microphone opens and closes, what a button starts, what a new start
+  // remembers) depends neither on the window's size nor on the language: it is walked through in one view.
+  // Every view goes through the states the steps can be in, for how they look and where they stand.
+  const once = run.size === BEHAVIOUR && !de;
+  const slow = once; // what takes seconds
   const starts = async () => (await levelNow(page)).starts;
   /** A new start of the page on Home; with `user`, someone is at the window from then on. */
   const fresh = async (user = true) => {
@@ -428,14 +431,16 @@ async function firstRun(page, run) {
   out.push(...expect(level.starts === 0 && !level.open && level.rests && level.hint.length > 20, "a window nobody has touched opens no microphone: the step says in words that the level rests", JSON.stringify(level)));
   await place("nobody has touched the window");
   const atRest = level.height;
-  // The window stands open beside other work and is not the one in front: a pointer that crosses it is no use of it.
-  await page.evaluate(() => (document.hasFocus = () => false));
-  await page.mouse.move(400, 300);
-  await page.mouse.move(410, 310);
-  await wait(page, 300);
-  const crossed = await levelNow(page);
-  await page.evaluate(() => delete document.hasFocus);
-  out.push(...expect(crossed.starts === 0 && !crossed.open && crossed.rests, "a pointer that moves over a window without the focus opens no microphone", JSON.stringify(crossed)));
+  if (once) {
+    // The window stands open beside other work and is not the one in front: a pointer that crosses it is no use of it.
+    await page.evaluate(() => (document.hasFocus = () => false));
+    await page.mouse.move(400, 300);
+    await page.mouse.move(410, 310);
+    await wait(page, 300);
+    const crossed = await levelNow(page);
+    await page.evaluate(() => delete document.hasFocus);
+    out.push(...expect(crossed.starts === 0 && !crossed.open && crossed.rests, "a pointer that moves over a window without the focus opens no microphone", JSON.stringify(crossed)));
+  }
   // The first touch brings the level, without a click.
   await page.mouse.move(420, 320);
   let mic = await micOpen(page);
@@ -443,65 +448,65 @@ async function firstRun(page, run) {
   out.push(...expect(mic.ok && level.bar && !level.rests && level.height === atRest, "the first touch of the window starts the level, without a click, and the step keeps its height", JSON.stringify({ mic, level, atRest })));
   await place("the level runs");
   await present(page);
-  const moved = await page.evaluate(() => {
-    window.__MOCK__.emit("mic-level", 0.5);
-    return [document.getElementById("setup-level-fill").style.width, document.getElementById("setup-level").getAttribute("aria-valuenow")];
-  });
-  out.push(...expect(moved[0] === "50%" && moved[1] === "50", "the level bar follows the microphone", JSON.stringify(moved)));
-  await section(page, "files");
-  mic = await micClosed(page);
-  out.push(...expect(mic.ok, "leaving Home closes the microphone", mic.log));
-  await section(page, "home");
-  mic = await micOpen(page);
-  out.push(...expect(mic.ok, "back on Home the microphone is open again", mic.log));
-  // The window hides: the webview says so, …
-  await page.evaluate(() => {
-    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
-    document.dispatchEvent(new Event("visibilitychange"));
-  });
-  mic = await micClosed(page);
-  out.push(...expect(mic.ok, "a hidden page closes the microphone", mic.log));
-  await page.evaluate(() => {
-    delete document.hidden;
-    document.dispatchEvent(new Event("visibilitychange"));
-  });
-  mic = await micOpen(page);
-  out.push(...expect(mic.ok, "the page shows again: the microphone is open", mic.log));
-  // … or it does not (a window in the tray or minimized still calls its page visible): the window is asked.
-  for (const [how, name] of [[{ visible: false }, "closed to the tray"], [{ minimized: true }, "minimized"]]) {
-    await windowGoes(page, how);
-    mic = await micClosed(page);
-    out.push(...expect(mic.ok, `a window that is ${name} closes the microphone`, mic.log));
-    await windowComes(page);
-    mic = await micOpen(page);
-    out.push(...expect(mic.ok, `back from being ${name} the microphone is open again`, mic.log));
-  }
-  // Start, stop, start in quick succession, the first start slow to open: its "stopped" arrives after the
-  // second start's answer. The page must still know that the microphone is open (it starts nothing a third
-  // time), and close it.
-  await section(page, "files");
-  const startsBefore = await starts();
-  await page.evaluate(() => {
-    const go = (name) => document.querySelector(`.nav-item[data-section="${name}"]`).click();
-    window.__MOCK__.meter.delay = 250;
-    go("home");
-    go("files");
-    window.__MOCK__.meter.delay = 20;
-    go("home");
-  });
-  await wait(page, 600);
-  mic = await micOpen(page);
-  const startsAdded = (await starts()) - startsBefore;
-  out.push(...expect(mic.ok && startsAdded === 2, "after start, stop, start in quick succession the microphone is open, by the second start", `${mic.log}, ${startsAdded} starts`));
-  await page.evaluate(() => {
-    window.__MOCK__.meter.delay = 0;
-    document.querySelector('.nav-item[data-section="files"]').click();
-  });
-  mic = await micClosed(page);
-  out.push(...expect(mic.ok, "and it is closed again when Home is left: an overtaken start's late answer changes nothing", mic.log));
-  await section(page, "home");
-
   if (once) {
+    const moved = await page.evaluate(() => {
+      window.__MOCK__.emit("mic-level", 0.5);
+      return [document.getElementById("setup-level-fill").style.width, document.getElementById("setup-level").getAttribute("aria-valuenow")];
+    });
+    out.push(...expect(moved[0] === "50%" && moved[1] === "50", "the level bar follows the microphone", JSON.stringify(moved)));
+    await section(page, "files");
+    mic = await micClosed(page);
+    out.push(...expect(mic.ok, "leaving Home closes the microphone", mic.log));
+    await section(page, "home");
+    mic = await micOpen(page);
+    out.push(...expect(mic.ok, "back on Home the microphone is open again", mic.log));
+    // The window hides: the webview says so, …
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    mic = await micClosed(page);
+    out.push(...expect(mic.ok, "a hidden page closes the microphone", mic.log));
+    await page.evaluate(() => {
+      delete document.hidden;
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    mic = await micOpen(page);
+    out.push(...expect(mic.ok, "the page shows again: the microphone is open", mic.log));
+    // … or it does not (a window in the tray or minimized still calls its page visible): the window is asked.
+    for (const [how, name] of [[{ visible: false }, "closed to the tray"], [{ minimized: true }, "minimized"]]) {
+      await windowGoes(page, how);
+      mic = await micClosed(page);
+      out.push(...expect(mic.ok, `a window that is ${name} closes the microphone`, mic.log));
+      await windowComes(page);
+      mic = await micOpen(page);
+      out.push(...expect(mic.ok, `back from being ${name} the microphone is open again`, mic.log));
+    }
+    // Start, stop, start in quick succession, the first start slow to open: its "stopped" arrives after the
+    // second start's answer. The page must still know that the microphone is open (it starts nothing a third
+    // time), and close it.
+    await section(page, "files");
+    const startsBefore = await starts();
+    await page.evaluate(() => {
+      const go = (name) => document.querySelector(`.nav-item[data-section="${name}"]`).click();
+      window.__MOCK__.meter.delay = 250;
+      go("home");
+      go("files");
+      window.__MOCK__.meter.delay = 20;
+      go("home");
+    });
+    await wait(page, 600);
+    mic = await micOpen(page);
+    const startsAdded = (await starts()) - startsBefore;
+    out.push(...expect(mic.ok && startsAdded === 2, "after start, stop, start in quick succession the microphone is open, by the second start", `${mic.log}, ${startsAdded} starts`));
+    await page.evaluate(() => {
+      window.__MOCK__.meter.delay = 0;
+      document.querySelector('.nav-item[data-section="files"]').click();
+    });
+    mic = await micClosed(page);
+    out.push(...expect(mic.ok, "and it is closed again when Home is left: an overtaken start's late answer changes nothing", mic.log));
+    await section(page, "home");
+
     // Every call to the backend is a request of its own: two that are sent in one go can arrive swapped.
     // Start, stop, and the stop arrives first: the start opens the microphone after the page's last word.
     await section(page, "files");
@@ -693,13 +698,14 @@ async function firstRun(page, run) {
     await fresh();
   }
   await page.evaluate(() => window.__MOCK__.keep({ mics: null }));
-  await page.click("#setup-mic-retry");
-  mic = await micOpen(page);
-  now = await stepsNow(page);
-  out.push(...expect(mic.ok && now.states === "done,todo,done" && now.meter && !now.retry, "Check again finds the microphone that was plugged in", JSON.stringify({ mic, now })));
-  out.push(...expect(now.focus === "setup-mic-change", "Check again goes when it has found one: the keyboard focus it had is on Change", now.focus));
 
   if (once) {
+    await page.click("#setup-mic-retry");
+    mic = await micOpen(page);
+    now = await stepsNow(page);
+    out.push(...expect(mic.ok && now.states === "done,todo,done" && now.meter && !now.retry, "Check again finds the microphone that was plugged in", JSON.stringify({ mic, now })));
+    out.push(...expect(now.focus === "setup-mic-change", "Check again goes when it has found one: the keyboard focus it had is on Change", now.focus));
+
     // Another microphone, chosen in place. The save takes a moment (a busy backend) and the page is drawn
     // again meanwhile: the level opens the new microphone only once it is saved, and it is that one's.
     const usb = "Headset (USB Audio)";
@@ -816,9 +822,11 @@ async function firstRun(page, run) {
   out.push(...expect(done.focus === "home-title" && !/Welcome|Willkommen/.test(done.title), "the focus the steps had is on Home's heading, which is the daily one", JSON.stringify(done)));
   mic = await micClosed(page);
   out.push(...expect(mic.ok, "the setup is done: the microphone is closed", mic.log));
-  await wait(page, 1300);
-  const after = await meterLog(page);
-  out.push(...expect(!after.open && after.calls.at(-1) === "stop", "and it stays closed", JSON.stringify(after.calls.slice(-4))));
+  if (once) {
+    await wait(page, 1300);
+    const after = await meterLog(page);
+    out.push(...expect(!after.open && after.calls.at(-1) === "stop", "and it stays closed", JSON.stringify(after.calls.slice(-4))));
+  }
 
   // The steps stood at one place in every state, under a heading of one line with the pill beside it.
   const where = JSON.stringify(places.map((p) => [p.state, p.top, p.pill, p.beside, p.lines]));
@@ -891,16 +899,16 @@ async function firstRun(page, run) {
   const on = await page.evaluate(() => [document.getElementById("home-ai-card").checkVisibility(), window.__MOCK__.settings().aiCleanup, window.__MOCK__.settings().aiModel, document.getElementById("home-ai-toggle").checked, document.activeElement?.id]);
   out.push(...expect(!on[0] && on[1] === true && on[2] === "gemma-4-e4b" && on[3] && on[4] === "home-title", "with its model the card goes and AI cleanup is on", JSON.stringify(on)));
 
-  // ── "Not now" closes the card, and it stays closed after a new start. ──
-  await fresh();
-  out.push(...expect(await shows(page, "home-ai-card"), "a new first run shows the optional card again"));
-  await page.click("#setup-ai-dismiss");
-  await wait(page, 100);
-  const gone = [await shows(page, "home-ai-card"), await shows(page, "home-setup"), await page.evaluate(() => document.activeElement?.id ?? "")];
-  await fresh();
-  out.push(...expect(!gone[0] && gone[1] && !(await shows(page, "home-ai-card")) && (await shows(page, "home-setup")), "Not now closes the card for good, and the steps stay", JSON.stringify(gone)));
-  out.push(...expect(gone[2] === "home-title", "the focus Not now had is on Home's heading", gone[2]));
   if (once) {
+    // ── "Not now" closes the card, and it stays closed after a new start. ──
+    await fresh();
+    out.push(...expect(await shows(page, "home-ai-card"), "a new first run shows the optional card again"));
+    await page.click("#setup-ai-dismiss");
+    await wait(page, 100);
+    const gone = [await shows(page, "home-ai-card"), await shows(page, "home-setup"), await page.evaluate(() => document.activeElement?.id ?? "")];
+    await fresh();
+    out.push(...expect(!gone[0] && gone[1] && !(await shows(page, "home-ai-card")) && (await shows(page, "home-setup")), "Not now closes the card for good, and the steps stay", JSON.stringify(gone)));
+    out.push(...expect(gone[2] === "home-title", "the focus Not now had is on Home's heading", gone[2]));
     // Hidden while its download runs: the download goes on, and AI cleanup turns on at its end, as the card said.
     await page.evaluate(() => localStorage.removeItem("rudariflow-ui"));
     await fresh();
@@ -913,10 +921,10 @@ async function firstRun(page, run) {
     const turned = await until(page, () => window.__MOCK__.settings().aiCleanup === true && document.getElementById("home-ai-toggle").checked);
     out.push(...expect(hidden && turned, "a card that is hidden while it downloads still ends with AI cleanup on", JSON.stringify([hidden, turned])));
     await fresh();
-  }
 
-  // A speech model that is there and does not load is no step: the notice, not the steps.
-  out.push(...(await loadFailed(page)));
+    // A speech model that is there and does not load is no step: the notice, not the steps.
+    out.push(...(await loadFailed(page)));
+  }
 
   // Every start of the microphone was matched: it is closed on another page, and the page's last word was "stop".
   await section(page, "files");
@@ -2493,6 +2501,8 @@ const filesNow = (page) =>
       room: document.getElementById("content").offsetWidth,
       loaded: section.classList.contains("has-file"),
       zone: box(document.getElementById("file-drop")),
+      // The zone's one-line form: its title and its button side by side, the formats gone.
+      oneLine: getComputedStyle(document.getElementById("file-drop")).flexDirection === "row" && !document.querySelector("#file-drop .label-hint").checkVisibility(),
       options: box(section.querySelector(".files-options")),
       title: section.querySelector(".section-title").textContent,
       transcript: document.getElementById("file-text").getAttribute("aria-label") ?? "",
@@ -2500,7 +2510,7 @@ const filesNow = (page) =>
     };
   });
 
-/** In a large window the zone and the options stand side by side; else the options under the zone, which is one line once a file is loaded. */
+/** In a large window the zone and the options stand side by side; else the options under the zone. Once a file is loaded the zone is one line, in both. */
 function filesLayout(see, lang) {
   const side = see.zone.right <= see.options.left && see.zone.top === see.options.top && see.zone.height === see.options.height;
   return [
@@ -2508,7 +2518,7 @@ function filesLayout(see, lang) {
     ...expect(see.inCard && see.transcript.length > 0, "the options stand in a card and the transcript has a name", JSON.stringify(see)),
     ...expect(see.wider === see.room >= 1600, "Files is two columns from 1600 px beside the sidebar", JSON.stringify(see)),
     ...expect(see.wider ? side : see.options.top >= see.zone.top + see.zone.height, "in a large window the drop zone and the options stand side by side, else the options under the zone", JSON.stringify(see)),
-    ...expect(!see.loaded || see.wider || see.zone.height <= 56, "with a file loaded the drop zone is one line", `${see.zone.height} px`),
+    ...expect(see.loaded ? see.oneLine && (see.wider || see.zone.height <= 56) : !see.oneLine, "with a file loaded the drop zone is one line, and only then", JSON.stringify(see)),
   ];
 }
 
@@ -2841,7 +2851,6 @@ export const PAGES = [
       // No setup means no microphone held open, and no optional card when the AI model is there.
       const quiet = await page.evaluate(() => [window.__MOCK__.calls.some((c) => c.cmd === "mic_meter_start"), document.getElementById("home-ai-card").checkVisibility()]);
       out.push(...expect(!quiet[0] && !quiet[1], "the daily view opens no microphone and shows no setup card", JSON.stringify(quiet)));
-      out.push(...(await loadFailed(page)));
       // One column: the recent dictations follow the quick switches; two columns: they are the right column.
       // The width with the scrollbar's room, as src/home.ts decides it.
       const wide = await page.evaluate(() => document.getElementById("content").offsetWidth >= 900);
@@ -2868,6 +2877,10 @@ export const PAGES = [
       out.push(...expect(rowsAre.list === "list" && rowsAre.named && rowsAre.ids, "every dictation is a list item named after its text", JSON.stringify(rowsAre)));
       out.push(...expect(rowsAre.shapes === 1, "the actions stand beside the text in every row or below it in every row", JSON.stringify(rowsAre)));
       out.push(...expect(rowsAre.parts, "no part of a row's second line is broken", JSON.stringify(rowsAre)));
+      // So far how the page is laid out, in every view. From here on what it does, which depends neither on
+      // the window's size nor on the language: in one view.
+      if (!(run.lang === "en" && run.size === BEHAVIOUR)) return out;
+      out.push(...(await loadFailed(page)));
       // A key that is not set: only "Set" is underlined, and while it listens it is the accent box of any key.
       const unset = await page.evaluate(() => {
         const key = document.getElementById("home-free-gpu-text");
@@ -2975,8 +2988,8 @@ export const PAGES = [
         const at = await page.evaluate(() => [document.activeElement.id, document.activeElement.checkVisibility()]);
         out.push(...expect(at[0] === id && at[1], `the loaded card's line leads to #${id}`, JSON.stringify(at)));
       }
-      // The layout's steps with the scrollbar drawn: once per run is enough.
-      if (run.lang === "en" && run.size === "1600x900") out.push(...(await layoutHolds(run)));
+      // The layout's steps with the scrollbar drawn.
+      out.push(...(await layoutHolds(run)));
       // A new start, and back from Settings (the window remembers the place): the screenshot is Home's.
       await again(page);
       return out;
@@ -3084,7 +3097,10 @@ export const PAGES = [
       out.push(...expect(see.panel === !see.wide && see.expanded === String(!see.wide), "Soundboard settings opens and closes the panel and says which", JSON.stringify(see)));
       out.push(...expect(see.switchShown, "the virtual microphone's switch shows whether the panel is open or not", JSON.stringify(see)));
       out.push(...(await tiles(page)));
-      if (run.size === BEHAVIOUR || run.size === "900x600") out.push(...(await panelByKeyboard(page)));
+      // What the keyboard does with the button and what a new start remembers depend neither on the data nor on
+      // the language or the window's size: once (the pop-out's page tries the keyboard where the panel is no column).
+      if (!(run.scenario === "populated" && run.lang === "en" && run.size === BEHAVIOUR)) return out;
+      out.push(...(await panelByKeyboard(page)));
       // The choice is remembered for this layout.
       await page.reload({ waitUntil: "networkidle" });
       await wait(page, 500);

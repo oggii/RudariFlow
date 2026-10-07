@@ -137,8 +137,13 @@
 
 /* ── Content area ───────────────────────────────────── */
 
+/* What is read out and not shown (.sr-only) is placed inside the content
+   area and scrolls with the page. Placed against the window, such a line far
+   down a long page made the window's own document higher than the window,
+   and bringing it into view moved everything, title bar and sidebar too. */
 #content {
   flex: 1;
+  position: relative;
   overflow-y: auto;
 }
 

@@ -250,13 +250,16 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       render();
     });
     onSwitch.querySelector("input")!.disabled = switching;
-    const text = el("div", "sb-bar-text");
+    // What the switch does stands with it, in the form of every setting's
+    // label: one line and "More"; then what it does right now.
+    const text = labelWithMore("switch", t("sb_switch_label"), t("sb_switch_hint"), t("sb_switch_more"));
+    text.classList.add("sb-bar-text");
     const status = el("span", "label-hint sb-status status-line", statusText(s.status));
     status.dataset.tone = s.status.state;
     // The switch is read out with what it does right now ("On: your mic + sounds → …").
     status.id = `${PANEL_ID}-status`;
     onSwitch.querySelector("input")!.setAttribute("aria-describedby", status.id);
-    text.append(el("span", "label-text", t("sb_switch_label")), status);
+    text.append(status);
     const mic = el("div", "sb-bar-mic");
     mic.append(onSwitch, text);
 
@@ -272,7 +275,8 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       render();
     });
     settings.setAttribute("aria-expanded", String(open));
-    settings.setAttribute("aria-controls", PANEL_ID);
+    // It names its panel only while there is one in the page.
+    if (open) settings.setAttribute("aria-controls", PANEL_ID);
     actions.append(settings);
     b.append(mic, actions);
     return b;
@@ -285,6 +289,23 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
   /** A row whose one-line hint has a longer text behind "More" (`id` keeps it open over redraws). */
   function rowWithMore(id: string, label: string, hint: string, more: string, ...controls: HTMLElement[]): HTMLElement {
     const r = el("div", "setting-row");
+    const c = el("div", "setting-control sb-control");
+    c.append(...controls);
+    r.append(labelWithMore(id, label, hint, more), c);
+    return r;
+  }
+
+  /** A key's row: the label and its hint above, the key box below. The box asks
+   *  for its key in a sentence and says in one why a key was refused, and
+   *  beside the label that would cover the label's end and the hint. */
+  function keyRow(id: string, label: string, hint: string, more: string, control: HTMLElement): HTMLElement {
+    const r = rowWithMore(id, label, hint, more, control);
+    r.classList.add("stack");
+    return r;
+  }
+
+  /** A setting's label: its name, its one-line hint and, behind "More", the longer text. */
+  function labelWithMore(id: string, label: string, hint: string, more: string): HTMLElement {
     const l = el("div", "setting-label");
     l.append(el("span", "label-text", label));
     if (hint) {
@@ -312,10 +333,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
         l.append(long);
       }
     }
-    const c = el("div", "setting-control sb-control");
-    c.append(...controls);
-    r.append(l, c);
-    return r;
+    return l;
   }
 
   function toggle(key: string, label: string, checked: boolean, onChange: (on: boolean, input: HTMLInputElement) => void): HTMLElement {
@@ -396,14 +414,14 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
         t("sb_sound_hotkeys_more"),
         toggle("sound-hotkeys", t("sb_sound_hotkeys_label"), b.soundHotkeys, (on) => void api.setSoundHotkeys(on).catch(fail)),
       ),
-      rowWithMore(
+      keyRow(
         "toggle-hotkey",
         t("sb_toggle_hotkey_label"),
         t("sb_toggle_hotkey_hint"),
         t("sb_hotkey_more"),
         hotkeyControl("toggle-hotkey", b.toggleHotkey, s.hotkeysTaken.includes("toggleSoundHotkeys"), (combo) => api.setToggleHotkey(combo)),
       ),
-      rowWithMore(
+      keyRow(
         "stop-hotkey",
         t("sb_stop_hotkey_label"),
         t("sb_stop_hotkey_hint"),
@@ -414,7 +432,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     if (options.popOut) {
       list.append(row(t("sb_always_on_top"), "", toggle("on-top", t("sb_always_on_top"), b.window.alwaysOnTop, (on) => void api.setAlwaysOnTop(on).catch(fail))));
     }
-    box.append(el("p", "label-hint sb-panel-lead", t("sb_switch_hint")), list, devicesBox(s), ...discordHint());
+    box.append(list, devicesBox(s), ...discordHint(s));
     return box;
   }
 
@@ -460,21 +478,27 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     return box;
   }
 
-  /** No virtual cable: the board cannot work, so this shows whether the panel is open or not. */
+  function noCable(s: BoardState): boolean {
+    return devices !== null && !devices.automatic.cable && !s.board.devices.cable;
+  }
+
+  /** No virtual cable: the board cannot work, so this shows whether the panel is open or not.
+   *  With it, how to choose the cable in Discord: who installs the cable needs that next,
+   *  also when "Got it" was pressed on an earlier day. */
   function cableHint(s: BoardState): HTMLElement[] {
-    const noCable = devices !== null && !devices.automatic.cable && !s.board.devices.cable;
-    if (!noCable) return [];
+    if (!noCable(s)) return [];
     const box = el("div", "sb-hint");
     box.append(
       el("p", "", t("sb_cable_missing")),
       button("btn-secondary", t("sb_cable_link"), "cable-link", () => void openExternal(CABLE_URL).catch(console.error)),
+      el("p", "", t("sb_discord_hint")),
     );
     return [box];
   }
 
-  /** How to choose the cable in Discord, in the panel until "Got it". */
-  function discordHint(): HTMLElement[] {
-    if (hintSeen()) return [];
+  /** How to choose the cable in Discord, in the panel until "Got it" (without a cable the box above says it). */
+  function discordHint(s: BoardState): HTMLElement[] {
+    if (noCable(s) || hintSeen()) return [];
     const box = el("div", "sb-hint");
     box.append(
       el("p", "", t("sb_discord_hint")),

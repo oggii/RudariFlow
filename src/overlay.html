@@ -3,6 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <style>
+      /* The pill has its own small palette (it floats over any desktop) and
+         takes two things from the window's standard: its sizes are on the
+         type scale, and what fades does so like a page of the window
+         (src/styles/tokens.css, --ease). */
+      :root { --ease: 150ms ease-out; }
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body {
         background: transparent;
@@ -83,7 +88,6 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        transition: background 120ms ease;
       }
       .cancel:hover { background: rgba(255, 92, 92, 0.85); }
       .cancel svg { width: 10px; height: 10px; stroke: #fff; }
@@ -106,7 +110,7 @@
         text-overflow: ellipsis;
         overflow: hidden;
         white-space: nowrap;
-        transition: opacity 120ms ease;
+        transition: opacity var(--ease);
       }
       body[data-state="transcribing"] .transcript,
       body[data-state="polishing"] .transcript { opacity: 1; }
@@ -123,7 +127,7 @@
         border-radius: 999px;
         background: rgba(124, 138, 255, 0.22);
         color: #c9cfff;
-        font-size: 11px;
+        font-size: 12px;
         font-weight: 600;
       }
       @keyframes polish {
@@ -157,7 +161,7 @@
         text-align: center;
         opacity: 0;
         pointer-events: none;
-        transition: opacity 200ms ease;
+        transition: opacity var(--ease);
       }
       body[data-state="notice"] .notice { opacity: 1; }
 
@@ -171,7 +175,7 @@
         border-radius: 999px;
         background: rgba(124, 138, 255, 0.22);
         color: #c9cfff;
-        font-size: 11px;
+        font-size: 12px;
         font-weight: 600;
         white-space: nowrap;
       }

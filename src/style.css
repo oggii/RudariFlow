@@ -100,18 +100,12 @@
 #section-files.wider > .files-options {
   grid-column: 2;
 }
-/* Beside the options the zone has their height anyway: it stays as it is. */
+/* With a file loaded the zone is its one line here too. Beside the options
+   it keeps their height, so the two boxes stay one row with one top and one
+   bottom edge. */
 #section-files.wider.has-file .file-drop {
-  flex-direction: column;
-  gap: 6px;
-  padding: 22px 16px 18px;
+  align-items: center;
   margin-bottom: 16px;
-}
-#section-files.wider.has-file .file-drop .btn-secondary {
-  margin-top: 6px;
-}
-#section-files.wider.has-file .file-drop .label-hint {
-  display: block;
 }
 .file-drop-icon {
   color: var(--text-secondary);
@@ -221,11 +215,13 @@
 .export-list button:focus-visible {
   background: var(--bg);
 }
+/* The frame keeps the page's width; the text keeps its measure (what is
+   left at the right is the frame's own padding). */
 .file-text {
   width: 100%;
   min-height: 220px;
   resize: vertical;
-  padding: 12px 14px;
+  padding: 12px max(14px, calc(100% - var(--measure) - 14px)) 12px 14px;
   font: inherit;
   font-size: var(--fs);
   line-height: 1.55;
@@ -256,6 +252,7 @@
   color: var(--text-secondary);
 }
 .file-summary-text {
+  max-width: var(--measure);
   font-size: var(--fs);
   line-height: 1.55;
   color: var(--text);
@@ -312,6 +309,7 @@
   gap: 6px;
 }
 .ai-test-result p {
+  max-width: var(--measure);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
@@ -438,28 +436,31 @@
   border-radius: var(--radius-card);
   background: var(--surface);
 }
-/* A device's dropdown takes the panel's width, under its label. */
-.sb-devices .setting-row {
-  flex-direction: column;
-  align-items: stretch;
-}
-.sb-devices .setting-control {
-  max-width: none;
-  justify-content: flex-start;
-}
-.sb-devices select {
-  width: 100%;
-  max-width: none;
-}
 .sb-control {
   align-items: center;
   flex-wrap: wrap;
   min-width: 0;
   gap: 8px;
 }
-.sb-control > .switch,
-.sb-control > .hotkey-control {
+.sb-control > .switch {
   flex-shrink: 0;
+}
+/* A key box of the board with its x and, where another program has the key,
+   the note after it: one line that may shrink. What the box says then breaks
+   inside the box, and the note wraps beside it. */
+.sb-hotkey {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+}
+.sb-hotkey > .hotkey-btn {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.sb-hotkey > .sb-note {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: var(--s1);
 }
 .sb-status {
   margin-top: 6px;
@@ -490,6 +491,8 @@
 }
 .sb-devices > summary {
   min-height: 24px;
+  /* The shape of its focus ring. */
+  border-radius: var(--radius-s);
   cursor: pointer;
   font-size: var(--fs);
   font-weight: 500;
@@ -509,6 +512,9 @@
   color: var(--text);
   font-size: 12px;
   line-height: 1.5;
+}
+.sb-hint p {
+  max-width: var(--measure);
 }
 .sb-toolbar {
   display: flex;
@@ -541,27 +547,31 @@
 /* The sounds are tiles that fill the library's width: one column in a narrow
    window and in the pop-out, more with room (two beside the open panel at
    1600 px of window, four at 2560 px). A narrower library has fewer columns
-   and is the higher one, so a scrollbar never takes a column back and forth. */
+   and is the higher one, so a scrollbar never takes a column back and forth.
+   The tiles of a row share its height: one that says "File missing", or whose
+   second line wrapped, is not higher than its neighbours. */
 .sb-col-library {
   container: sblib / inline-size;
 }
 .sb-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr));
-  align-items: start;
   gap: var(--s2);
   padding-bottom: 24px;
 }
 .sb-list > .empty-state {
   grid-column: 1 / -1;
 }
+/* A tile's first line stands at its top and its second at its bottom, also
+   in a tile that is higher than its own content. */
 .sb-row {
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr) auto;
   grid-template-areas:
     "play main side"
     "controls controls controls";
-  align-items: center;
+  grid-template-rows: auto 1fr;
+  align-items: start;
   gap: var(--s2) 12px;
   padding: 10px 12px;
   border: 1px solid transparent;
@@ -610,6 +620,8 @@
   min-height: 24px;
   padding: 0;
   border: none;
+  /* The shape of its focus ring. */
+  border-radius: var(--radius-s);
   background: none;
   color: var(--text);
   font: inherit;
@@ -640,6 +652,8 @@
   grid-area: side;
   display: flex;
   align-items: center;
+  /* As high as the play button: both stand on one middle line. */
+  min-height: 32px;
   gap: 6px;
 }
 /* Loop on: the accent, also on a playing row's tinted background. */
@@ -653,43 +667,44 @@
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
-/* A tile's second line: category, hotkey, volume. Three columns of the same
-   width in every tile (a tile is 440 px or more), so the controls of the
-   tiles stand under each other; only a combination longer than the usual
-   ones makes its own column wider. */
+/* A tile's second line: category, hotkey, volume. The first two have the
+   same width in every tile (a tile is 440 px or more) and the volume ends at
+   the tile's right edge like the first line, so the controls of the tiles
+   stand under each other. What does not fit goes to a line of its own inside
+   the tile and never leaves it: the volume while the key box asks for its
+   key or says why not, beside a combination of four keys and beside "Taken
+   by another program"; in the pop-out, whose tile is narrower than the three
+   together, always. */
 .sb-controls {
   grid-area: controls;
-  display: grid;
-  grid-template-columns: 140px minmax(140px, max-content) minmax(0, 1fr);
+  align-self: end;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--s2) 10px;
+  min-width: 0;
 }
 .sb-controls select {
-  width: 100%;
+  flex: 0 0 140px;
+  width: 140px;
   min-width: 0;
   padding-top: 4px;
   padding-bottom: 4px;
   font-size: 12px;
 }
+.sb-controls .sb-hotkey {
+  min-width: 140px;
+}
 .sb-controls .sb-slider {
+  flex: 1 1 110px;
   display: flex;
-  min-width: 0;
+  justify-content: flex-end;
+  min-width: 110px;
 }
 .sb-controls .sb-slider input[type="range"] {
   flex: 1 1 auto;
   width: auto;
   max-width: 160px;
-}
-/* A library narrower than one tile's three columns (the pop-out): the volume
-   has a line of its own. */
-@container sblib (max-width: 439px) {
-  .sb-controls {
-    grid-template-columns: 140px minmax(140px, max-content);
-    justify-content: start;
-  }
-  .sb-controls .sb-slider {
-    grid-column: 1 / -1;
-  }
 }
 .sb-note {
   font-size: var(--fs-s);
@@ -715,6 +730,21 @@
   .sb-control {
     justify-content: flex-start;
   }
+}
+/* A device's dropdown takes the panel's width, under its label: all three
+   are one width, in the pop-out too (so after the rule above, which would
+   leave each as wide as its own name). */
+.sb .sb-devices .setting-row {
+  flex-direction: column;
+  align-items: stretch;
+}
+.sb-devices .setting-control {
+  max-width: none;
+  justify-content: flex-start;
+}
+.sb-devices select {
+  width: 100%;
+  max-width: none;
 }
 @media (prefers-reduced-motion: reduce) {
   .sb,
@@ -858,6 +888,7 @@ body.sb-page {
   flex-shrink: 0;
 }
 .mt-warning {
+  max-width: var(--measure);
   font-size: 12px;
   line-height: 1.45;
   color: var(--yellow);
@@ -871,6 +902,9 @@ body.sb-page {
   font-size: 12px;
   color: var(--text-secondary);
   margin-bottom: 8px;
+}
+.mt-reminder > span {
+  max-width: var(--measure);
 }
 .mt-finishing-line,
 .mt-hint-row[data-tone="busy"] .mt-hint-text {
@@ -996,6 +1030,7 @@ body.sb-page {
 .mt-hint-text {
   flex: 1 1 260px;
   min-width: 0;
+  max-width: var(--measure);
   overflow-wrap: anywhere;
 }
 .mt-hint-row button {
@@ -1070,6 +1105,7 @@ body.sb-page {
   -webkit-user-select: none;
 }
 .mt-notes-text {
+  max-width: var(--measure);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.55;
@@ -1082,6 +1118,7 @@ body.sb-page {
   line-height: 1.55;
 }
 .mt-notes li {
+  max-width: var(--measure);
   overflow-wrap: anywhere;
 }
 .mt-notes ul.mt-checklist {
@@ -1166,8 +1203,10 @@ body.sb-page {
 .mt-para[data-track="you"] .mt-para-who {
   color: var(--text-accent);
 }
-/* Under the time, past the play button. */
+/* Under the time, past the play button. The frame is as wide as the page;
+   the text keeps a measure a line can be read in (about 100 characters). */
 .mt-para-text {
+  max-width: calc(var(--measure) + 32px);
   padding-left: 32px;
   line-height: 1.55;
   overflow-wrap: anywhere;
@@ -1261,14 +1300,13 @@ body.sb-page {
   font: inherit;
   color: var(--text);
   background: var(--surface);
-  border: 1px solid var(--border);
+  /* A row of the card family, like a sound's tile: the surface, no edge. */
+  border: 1px solid transparent;
   border-radius: var(--radius-lg);
   cursor: pointer;
-  transition: background var(--transition), border-color var(--transition);
 }
 .mt-item:hover {
   background: var(--surface-hover);
-  border-color: var(--border-strong);
 }
 .mt-item-title,
 .mt-item-meta {
