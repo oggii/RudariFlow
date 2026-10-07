@@ -56,11 +56,8 @@ export function staticChecks(root, contract) {
   for (const file of ["index.html", "soundboard.html"]) {
     for (const m of read(file).matchAll(/data-i18n(?:-title|-placeholder|-aria-label)?="([^"]+)"/g)) use(m[1], file);
   }
-  const sources = filesUnder(path.join(root, "src"), ".ts");
-  let code = "";
-  for (const file of sources) {
+  for (const file of filesUnder(path.join(root, "src"), ".ts")) {
     const text = fs.readFileSync(file, "utf8");
-    code += text + "\n";
     const name = path.relative(root, file).replace(/\\/g, "/");
     for (const m of text.matchAll(/\bt\(\s*"([A-Za-z0-9_]+)"\s*\)/g)) use(m[1], name);
     for (const m of text.matchAll(/"data-i18n(?:-title|-placeholder|-aria-label)?",\s*"([A-Za-z0-9_]+)"/g)) use(m[1], name);
@@ -78,15 +75,16 @@ export function staticChecks(root, contract) {
     }
   }
 
-  // Every command the frontend called before is still called.
-  code += read("src/overlay.html");
+  // Every command the frontend called before is still called: an invoke("…")
+  // of it, not the word in quotes (a text key can have a command's name).
+  const called = new Set(commandsCalled(root));
   for (const cmd of contract.commands) {
-    if (!code.includes(`"${cmd}"`)) add("contract", `command ${cmd}`, "the frontend no longer calls it");
+    if (!called.has(cmd)) add("contract", `command ${cmd}`, "the frontend no longer calls it");
   }
   return out;
 }
 
-/** The commands the frontend calls now (used once, to write contract.json). */
+/** The commands the frontend calls now: every invoke("name", …) in src/ and in the pill. */
 export function commandsCalled(root) {
   const names = new Set();
   const texts = filesUnder(path.join(root, "src"), ".ts").map((f) => fs.readFileSync(f, "utf8"));

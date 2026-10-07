@@ -8,10 +8,16 @@
 //   --scenario populated|firstrun   --lang en|de   --size 900x600
 //   --no-build   use the build of the last run     --no-shots   no screenshots
 //   --root <dir> the repo to check (default: two folders up)
+//   --task N     the run that verifies task N of the plan: allow.json entries
+//                with "until" <= N no longer count. What they covered is new
+//                again, and they are not listed as stale; delete them once
+//                the run is clean.
 //
 // Exit code 0: nothing new. Findings listed in allow.json are known and
 // belong to a later task; a full run also fails when an entry of allow.json
-// no longer matches anything (remove it).
+// no longer matches anything (remove it). Exit code 2: the run could not
+// start (no build, a --pages filter that names no page, a --task that is no
+// number).
 import { chromium } from "playwright";
 import { execFileSync } from "node:child_process";
 import http from "node:http";
@@ -38,9 +44,22 @@ const SIZES = option("size") ? [option("size")] : ["2560x1392", "1600x900", "900
 /** The size and language the keyboard walk runs at (once per page and data set; a page with sizes of its own walks at those). */
 const WALK = { size: "1600x900", lang: "en" };
 const glob = (pattern) => new RegExp("^" + pattern.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
-const pageFilter = option("pages")?.split(",").map(glob);
+const stop = (message) => {
+  console.error(`ui-check: ${message}`);
+  process.exit(2);
+};
+const pagePatterns = flag("pages") ? (option("pages") ?? "").split(",") : null;
+const pageFilter = pagePatterns?.map(glob);
 const wanted = (id) => !pageFilter || pageFilter.some((re) => re.test(id));
 const fullRun = !pageFilter && !option("scenario") && !option("lang") && !option("size");
+// A filter that names nothing would check nothing and report "0 findings".
+const pageIds = [...PAGES.map((p) => p.id), "roundtrip"];
+for (const [i, pattern] of (pagePatterns ?? []).entries()) {
+  if (!pageIds.some((id) => pageFilter[i].test(id))) stop(`--pages "${pattern}" matches no page. The pages are: ${pageIds.join(", ")}`);
+}
+/** The task this run verifies: entries of allow.json with `until` <= TASK are ignored. */
+const TASK = flag("task") ? Number(option("task")) : null;
+if (TASK !== null && !(Number.isInteger(TASK) && TASK >= 1)) stop(`--task needs the number of a task, got "${option("task") ?? ""}"`);
 
 // ── Build ─────────────────────────────────────────────
 if (!flag("no-build")) {
@@ -50,10 +69,7 @@ if (!flag("no-build")) {
     stdio: "inherit",
   });
 }
-if (!fs.existsSync(path.join(BUILD, "index.html"))) {
-  console.error(`no build in ${BUILD}; run without --no-build`);
-  process.exit(2);
-}
+if (!fs.existsSync(path.join(BUILD, "index.html"))) stop(`no build in ${BUILD}; run without --no-build`);
 if (!flag("no-shots")) fs.mkdirSync(SHOTS, { recursive: true });
 
 // ── Findings ──────────────────────────────────────────
@@ -104,16 +120,29 @@ async function openWindow({ scenario, lang, size, url }) {
   });
   await context.addInitScript(`window.__MOCK_CFG__ = ${JSON.stringify({ lang, scenario })};`);
   await context.addInitScript(MOCK);
+  // The keys of the settings before the page touched them (roundtrip.mjs: none may get lost).
+  await context.addInitScript("window.__MOCK_KEYS__ = Object.keys(window.__MOCK__.settings());");
   await context.addInitScript(INPAGE);
   const page = await context.newPage();
   const problems = [];
   page.on("pageerror", (e) => problems.push({ check: "page-error", what: String(e).split("\n")[0] }));
   page.on("console", (m) => {
+    // "Failed to load resource" is counted where it happens: `response` and `requestfailed` below, `external` for another origin.
     if (m.type() === "error" && !/Failed to load resource/.test(m.text())) problems.push({ check: "page-error", what: m.text().split("\n")[0] });
   });
   page.on("request", (r) => {
     const u = r.url();
     if (!u.startsWith(BASE) && !/^(data|blob|about):/.test(u)) problems.push({ check: "external", page: "window", what: new URL(u).origin, detail: "the page asks another computer for something" });
+  });
+  // A file of the page's own that does not load: a font, a script, an image.
+  const own = (u) => u.startsWith(BASE + "/");
+  const lost = (u, why) => problems.push({ check: "page-error", page: "window", what: `${decodeURIComponent(new URL(u).pathname)} does not load`, detail: `${why}; the page asks for a file of its own that is not there` });
+  page.on("response", (r) => {
+    if (own(r.url()) && r.status() >= 400) lost(r.url(), `status ${r.status()}`);
+  });
+  page.on("requestfailed", (r) => {
+    const why = r.failure()?.errorText ?? "failed";
+    if (own(r.url()) && !/ERR_ABORTED/.test(why)) lost(r.url(), why); // aborted: the window was reloaded or closed
   });
   const load = async () => {
     await page.goto(BASE + url, { waitUntil: "networkidle" });
@@ -173,6 +202,7 @@ async function keyboardWalk(page, scope) {
 // ── The pages ─────────────────────────────────────────
 const urls = [...new Set(PAGES.map((p) => p.url ?? "/"))];
 let shots = 0;
+let opened = 0;
 for (const scenario of SCENARIOS) {
   for (const lang of LANGS) {
     for (const url of urls) {
@@ -181,6 +211,7 @@ for (const scenario of SCENARIOS) {
         const where = `${scenario} ${lang} ${size}`;
         const win = await openWindow({ scenario, lang, size, url });
         for (const def of defs.filter((p) => (p.sizes ?? SIZES).includes(size))) {
+          opened++;
           try {
             if (def.fresh) await win.load();
             await def.open?.(win.page);
@@ -222,15 +253,32 @@ for (const scenario of SCENARIOS) {
 
 // ── The settings round trip ───────────────────────────
 if (wanted("roundtrip") && SCENARIOS.includes("populated") && LANGS.includes("en")) {
-  report("settings", "populated en 1600x900", await roundtrip(async () => (await openWindow({ scenario: "populated", lang: "en", size: "1600x900", url: "/" })).page));
+  opened++;
+  const where = "populated en 1600x900";
+  const win = await openWindow({ scenario: "populated", lang: "en", size: "1600x900", url: "/" });
+  try {
+    report("settings", where, await roundtrip(win.page));
+  } catch (e) {
+    report("settings", where, [{ check: "roundtrip", what: "the round trip stopped", detail: String(e).split("\n")[0] }]);
+  }
+  // What went wrong in this window while the settings were changed counts like on any page.
+  const unknown = await win.page.evaluate(() => window.__MOCK__.unknown.splice(0)).catch(() => []);
+  report("settings", where, unknown.map((cmd) => ({ check: "mock", what: `command ${cmd}`, detail: "mock.js has no answer for it" })));
+  report("settings", where, win.problems.splice(0));
+  await win.context.close();
 }
 
 await browser.close();
 server.close();
+if (!opened) stop(`nothing was checked: no page of ${option("pages") ?? "the list"} is opened with --scenario ${SCENARIOS.join(",")}, --lang ${LANGS.join(",")}, --size ${SIZES.join(",")}`);
 
 // ── Report ────────────────────────────────────────────
 const allow = JSON.parse(fs.readFileSync(path.join(here, "allow.json"), "utf8"));
-const rules = allow.map((a) => ({ ...a, check_: glob(a.check), page_: glob(a.page ?? "*"), what_: glob(a.what ?? "*"), hits: 0 }));
+// --task N: an entry whose task is done (until <= N) covers nothing any more.
+const past = allow.filter((a) => TASK !== null && !(a.until > TASK));
+const rules = allow
+  .filter((a) => !past.includes(a))
+  .map((a) => ({ ...a, check_: glob(a.check), page_: glob(a.page ?? "*"), what_: glob(a.what ?? "*"), hits: 0 }));
 const fresh = [];
 const known = [];
 for (const f of findings.values()) {
@@ -248,6 +296,7 @@ fs.writeFileSync(
 );
 
 console.log(`\nui-check: ${findings.size} findings, ${known.length} known (allow.json), ${fresh.length} new${flag("no-shots") ? "" : `; ${shots} screenshots in ${SHOTS}`}`);
+if (past.length) console.log(`--task ${TASK}: ${past.length} of ${allow.length} allow.json entries are past their task (until <= ${TASK}) and were ignored; delete them once nothing is new`);
 if (known.length) {
   const tally = {};
   for (const f of known) tally[`${f.check} (until Task ${f.until})`] = (tally[`${f.check} (until Task ${f.until})`] ?? 0) + 1;

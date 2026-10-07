@@ -27,7 +27,7 @@ P=$W/wip-prototype                # the prototype
 # If the worktree is missing: git -C $R worktree add --detach /c/t/rf-proto a076a16
 ```
 
-- **Interface only.** No feature changes. No `config.json` key is lost or renamed. Every control of 0.16.0 keeps its id and its handler wherever it moves; the tool's `roundtrip` check (`tools/ui-check/roundtrip.mjs`: 32 shown values, 39 changes against the mocked backend) and its `contract` check (`contract.json`: 76 commands still called, 177 ids still there, except `removedIds`) must stay green in every task.
+- **Interface only.** No feature changes. No `config.json` key is lost or renamed. Every control of 0.16.0 keeps its id and its handler wherever it moves; the tool's `roundtrip` check (`tools/ui-check/roundtrip.mjs`: 32 shown values, 39 changes against the mocked backend, and every save still carries every settings key) and its `contract` check (`contract.json`: 76 commands still called, 177 ids still there, except `removedIds`) must stay green in every task.
 - **Strings:** every UI string in English and German in `src/i18n.ts`; the pill's texts in `NOTICE_TEXT` in `src/overlay.html`; the tray's in `main.rs`. **No em dash and no en dash between words in a new or changed string** (rebuild the sentence); the tool's `dash` check enforces it. The spec quotes two texts with a dash; they are rewritten (Tasks 3 and 5).
 - **Rust tests only filtered.** From `src-tauri`: `<RUST-ENV> cargo test --no-default-features --lib <filter>` (tests in the library) or `--bins <filter>` (tests in `main.rs`). NEVER the unfiltered suite: the `paste.rs` tests overwrite the system clipboard.
 - **Commits:** `feat:`, `fix:`, `docs:`, `test:` or `build:` plus a subject, then an EMPTY line, then exactly `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`. Use `git commit -F -` with a heredoc. No version bump in any task; the release is a separate step after the user's try-out.
@@ -39,11 +39,11 @@ P=$W/wip-prototype                # the prototype
 npx tsc --noEmit                         # no output
 npx vite build                           # "built in …", no warning about an unresolved import
 npm run test:unit                        # "fail 0"; the task says how many tests
-node tools/ui-check/run.mjs --no-shots   # exit 0; the task says how many findings are known
+node tools/ui-check/run.mjs --no-shots --task <N>   # N = the task's number; exit 0; the task says how many findings are known
 ```
 
-  A full `--no-shots` run takes 2 to 7 minutes. For the reviewer add screenshots of the task's pages: `node tools/ui-check/run.mjs --no-build --pages <ids> --size 1600x900` and `--size 900x600` (files in `tools/ui-check/shots/`, not committed). A filtered run does not report stale `allow.json` entries; only the full run is the gate.
-- **`allow.json` only shrinks.** Task 1 records the known findings of 0.16.0 as 22 entries, each with `until: <task>`. A task removes exactly the entries whose `until` is its number (the full run lists them as "match nothing any more") and adds none. Task 8 leaves `[]`.
+  A full `--no-shots` run takes 2 to 7 minutes. For the reviewer add screenshots of the task's pages: `node tools/ui-check/run.mjs --no-build --pages <ids> --size 1600x900` and `--size 900x600` (files in `tools/ui-check/shots/`, not committed). A filtered run does not report stale `allow.json` entries; only the full run is the gate. `--task <N>` makes the run ignore every `allow.json` entry with `until` <= N: what such an entry covered counts as new, and the run says how many entries it ignored instead of listing them as stale. So where a task below says "exit 1 only because … entries match nothing any more", the run with `--task <N>` exits 0 and names them as past their task; delete them as the task says.
+- **`allow.json` only shrinks.** Task 1 records the known findings of 0.16.0 as 25 entries, each with `until: <task>`. A task removes exactly the entries whose `until` is its number (its run with `--task <N>` ignores them, so what they covered must be gone; a run without `--task` lists them as "match nothing any more") and adds none. Task 8 leaves `[]`.
 - **How a task takes its code from the prototype.** The prototype holds whole-file snapshots ("stages"): `$W/src` (0.16.0), `$P/app_src_task3`, `$P/app_src_task5`, `$P/app_src_task6`, `$P/app_src_task7`, `$P/app/src` (final); `index.html` as `$W/index.html`, `$P/app_index_task3.html`, `…task5.html`, `…task6.html`, `…task7.html`, `$P/app/index.html`; the tool as `$P/tool`, `tool3`, `tool5`, `tool6`, `tool7`, `tool8`. The change of a task is the difference between two stages. Merge that difference into the repo's files; never copy a stage's file over a repo file an earlier task touched, or its corrections and review fixes are lost. Paste this helper into the shell (not committed):
 
 ```bash
@@ -74,9 +74,11 @@ apply_stage() {
 | `$P/tool8` on `$P/app`, full run (2 data sets, 2 languages, 3 sizes, pop-out, pill; 456 screenshots) | exit 1, 6 findings: transcript below the first screen at 900×600 with a summary open; suggestion buttons English in a German window; `select[device-cable]` cut by 1 px; a Soundboard hint on two lines |
 | `$P/tool` on 0.16.0 | runs clean; 309 findings (focus 103, target 81, contrast 42, name 32, hint-lines 17, tab 10, contrast-token 10, clipped 7, sidebar 3, overlap 2, external 2) |
 | Stages rebuilt and checked with their tool | stage 3: 50 findings, stage 5: 49, stage 6: 19 (2 of them i18n keys used by a file nothing imports yet, see Task 6), stage 7: 7; all four type-check and build |
-| Scratch builds of what has no stage | Task 1's tool as specified below on 0.16.0: 309 known, 0 new. Task 2 (recipe below): 72 findings, 0 new. Task 4 (the cut below): 49, 0 new. The final stage with every correction of this plan: 0 findings, 33 unit tests pass |
+| Scratch builds of what has no stage | Task 1's tool before the hardening of its review on 0.16.0: 309 known, 0 new (hardened: 312, see below the table). Task 2 (recipe below): 72 findings, 0 new. Task 4 (the cut below): 49, 0 new. The final stage with every correction of this plan: 0 findings, 33 unit tests pass |
 | The merges, rehearsed in order on a scratch copy (Tasks 2 to 8 with their corrections) | the conflicts each task names and no other; the result type-checks, passes the 33 unit tests and equals the corrected final stage |
 | Rust (`$P/rs`) | NOT compiled or run while this plan was written (no cargo allowed). The diff against 0.16.0 is `audio.rs`, `whisper_engine.rs`, `main.rs` (476 insertions, 25 deletions); the correction in Task 3 Step 2 is new, uncompiled code |
+
+**After the review of Task 1 (the hardening of `ui-check`).** The counts in this table and in Tasks 2 to 8 were measured before the tool was hardened (text cut by a box around it, 24 px for every control that is not `display: inline`, a colour the tool cannot read, a file of the page's own that does not load, a settings key lost in a save), so the `clipped`, `target` and `contrast` counts there can be higher now, and every such finding on a page the task builds has to be fixed, not allowed. Measured with the hardened tool on 2026-10-07: 0.16.0 has 312 findings (3 more `clipped`: the sidebar's last three texts, cut by the window at 900×600, allowed until Task 3), so Task 2 should end with 75 known findings (clipped 9) and 18 entries, and Task 3 removes seven entries, not four. The final stage (`$P/tool8`'s pages on `$P/app`) has 21 findings more than before: `target` for `button.hint-more` (32×17 px, 20 findings: every page that shows a "More"), and one `page-error` for `/src/sidebar-logo.png`, the file only the prototype lacks. The remedy for "More", tried on a scratch copy: in `components.css` (Task 2) `.hint-more` gets `padding: 4px 2px; margin: -4px 0;` instead of `padding: 0 2px;`, which makes it 32×25 px and leaves the hint one line high; `display: inline` does not help, a `<button>` computes to `inline-block`.
 
 ## File map
 
@@ -110,8 +112,8 @@ apply_stage() {
 **Interfaces:**
 - Consumes: the frontend as `vite build` makes it (built by the tool into `tools/ui-check/.build`); `window.__TAURI_INTERNALS__`, replaced by `mock.js`.
 - Produces:
-  - CLI `node tools/ui-check/run.mjs [--pages a,b*] [--scenario populated|firstrun] [--lang en|de] [--size WxH] [--no-build] [--no-shots] [--root <dir>]`. Exit 0: no new finding, and on a full run no stale `allow.json` entry. Writes `report.json` (`{ new, known }`), `shots/<page>-<scenario>-<lang>-<size>[-fold].png`.
-  - Check ids: `overflow`, `clipped`, `overlap`, `contrast` (4.5:1, 3:1 large), `contrast-token`, `name`, `tab`, `focus`, `target` (24 px), `hint-lines`, `sidebar` (fits 900×600), `contract`, `i18n`, `dash`, `roundtrip`, `behaviour` (a probe's expectation), `external` (a request to another origin), `page-error`, `mock`.
+  - CLI `node tools/ui-check/run.mjs [--pages a,b*] [--scenario populated|firstrun] [--lang en|de] [--size WxH] [--no-build] [--no-shots] [--root <dir>] [--task N]`. Exit 0: no new finding, and on a full run no stale `allow.json` entry. Exit 2: the run could not start (no build, a `--pages` filter that names no page, a `--task` that is no number). `--task N`: entries of `allow.json` with `until` <= N are ignored. Writes `report.json` (`{ new, known }`), `shots/<page>-<scenario>-<lang>-<size>[-fold].png`.
+  - Check ids: `overflow`, `clipped` (by its own box or by a box around it with `overflow: hidden` or `clip`), `overlap`, `contrast` (4.5:1, 3:1 large; a colour the tool cannot read is a finding), `contrast-token` (also: no token found), `name`, `tab`, `focus`, `target` (24 px; only a control with `display: inline` inside a sentence is exempt), `hint-lines`, `sidebar` (fits 900×600; also: no sidebar found), `contract`, `i18n`, `dash`, `roundtrip` (also: a settings key lost in a save), `behaviour` (a probe's expectation), `external` (a request to another origin), `page-error` (also: a file of the page's own that does not load, reported for the page `window`), `mock`.
   - `pages.mjs`: `PAGES` (`{ id, url, scope, scenarios, sizes, fresh, open, checks, skip, probe }`), `USER_TEXT`. `mock.js`: `window.__MOCK_CFG__ = { lang, scenario }`, `window.__MOCK__ = { calls, unknown, settings(), emit(event, payload), meetingRecording() }`. `static.mjs`: `staticChecks(root, contract)`, `commandsCalled(root)`, `literal(source, marker)`, `DASH`.
   - `allow.json`: `[{ check, page, what, until }]`, `*` globs. `contract.json`: `{ commands[76], ids[177], removedIds{}, dashKeys[11] }`.
   - npm scripts `ui-check`, `test:unit`.
@@ -166,13 +168,21 @@ Create `tools/ui-check/gen-contract.mjs`:
 // Writes contract.json from the frontend as it is NOW: the backend commands
 // it calls, the ids of index.html and the texts that carry a dash. Run once,
 // on the untouched 0.16.0 frontend (Task 1 of the UI redesign); never
-// again: the file is the record of what the redesign has to keep.
+// again: the file is the record of what the redesign has to keep. So it
+// refuses when contract.json exists: a second run would record the changed
+// frontend as the thing to keep and empty removedIds. `--force` overwrites.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DASH, commandsCalled, literal } from "./static.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const target = path.join(here, "contract.json");
+if (fs.existsSync(target) && !process.argv.includes("--force")) {
+  console.error(`gen-contract: ${target} exists and is the record of 0.16.0; not overwritten.`);
+  console.error("Writing it again from a changed frontend would lose that record (commands, ids, removedIds, dashKeys). Only with --force.");
+  process.exit(2);
+}
 const root = path.resolve(here, "../..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
@@ -181,11 +191,11 @@ const en = literal(i18n, "const en: Translations = {");
 const de = literal(i18n, "const de: Translations = {");
 const dashKeys = Object.keys(en).filter((key) => DASH.test(en[key]) || DASH.test(de[key] ?? ""));
 const commands = commandsCalled(root);
-fs.writeFileSync(path.join(here, "contract.json"), JSON.stringify({ commands, ids, removedIds: {}, dashKeys }, null, 1) + "\n");
+fs.writeFileSync(target, JSON.stringify({ commands, ids, removedIds: {}, dashKeys }, null, 1) + "\n");
 console.log(`${commands.length} commands, ${ids.length} ids, ${dashKeys.length} texts with a dash`);
 ```
 
-Run `node tools/ui-check/gen-contract.mjs`. Expected: `76 commands, 177 ids, 11 texts with a dash`, and `git diff --no-index $P/tool/contract.json tools/ui-check/contract.json` shows one change only, the added `dashKeys` (`unused_model_links`, six `model_*` labels, four `mt_warn_*`).
+Run `node tools/ui-check/gen-contract.mjs --force` (`--force` because Step 1 copied the prototype's `contract.json`; in every later task the script must refuse, which is what it does without the option). Expected: `76 commands, 177 ids, 11 texts with a dash`, and `git diff --no-index $P/tool/contract.json tools/ui-check/contract.json` shows one change only, the added `dashKeys` (`unused_model_links`, six `model_*` labels, four `mt_warn_*`).
 
 - [ ] **Step 4: The hint rule knows the Soundboard's narrow panel**
 
@@ -208,6 +218,16 @@ with
       const allowed = window.innerWidth >= 1600 && !el.closest(".sb-col-settings") ? 1 : 2;
 ```
 
+- [ ] **Step 4b: The hardening from the review (the prototype's tool has none of it)**
+
+These changes are not in `$P/tool` or in any later stage of the tool; they are in the repo since the commit "fix: ui-check review fixes: …". The later tasks take only `pages.mjs`, `mock.js` and `contract.json` from a stage, never the files below.
+
+- `static.mjs`: the `contract` check asks `commandsCalled(root)`, so only a real `invoke("name", …)` counts as a call, not the quoted word (a text key such as `history_delete` has a command's name).
+- `inpage.js`: `clipped` also reports a text cut by a box around it, an ancestor whose `overflow-x` or `overflow-y` is `hidden` or `clip` (helpers `textRects`, `inkInset`, `cutByBoxAround`; a box that scrolls cuts nothing; the window counts when it does not scroll; an element is reported once). `target` exempts only a control with `display: inline` inside a sentence (a link; never a `<button>`, which computes to `inline-block`). A colour `parseColor` cannot read is a `contrast` finding "colour not understood: …" (for a token a `contrast-token` finding). `contrast-token` reports when `:root` has no `--text*` or no `--bg`, `--surface*`, `--sidebar*` token. `sidebar` reports when it finds no `#sidebar .nav-item`.
+- `run.mjs`: `--task N`; exit 2 for a `--pages` pattern that matches no page and for a run that opened nothing; a response of 400 or more, or a failed request, for a file of the page's own origin is a `page-error` on the page `window`; the round trip's window reports its `page-error`, `external` and `mock` findings like every page; `window.__MOCK_KEYS__` holds the settings keys before the page ran.
+- `roundtrip.mjs`: `roundtrip(page)` (the caller opens and closes the window); every `save_settings` the page sends must carry every key of `__MOCK_KEYS__`, otherwise `roundtrip`, "settings key <name>".
+- `gen-contract.mjs`: refuses with exit 2 when `contract.json` exists, unless `--force` (Step 3 shows the file).
+
 - [ ] **Step 5: Scripts and ignores**
 
 Root `package.json`, in `"scripts"`, add `"ui-check": "node tools/ui-check/run.mjs"` and `"test:unit": "node --test \"tests/unit/*.test.ts\""`. Append to `.gitignore`:
@@ -226,7 +246,7 @@ cd $R/tools/ui-check && npm install && npx playwright install chromium
 cd $R && echo "[]" > tools/ui-check/allow.json && node tools/ui-check/run.mjs --no-shots
 ```
 
-Expected: exit 1, `ui-check: 309 findings, 0 known (allow.json), 309 new`, no `roundtrip`, `contract`, `i18n`, `dash`, `page-error` or `mock` line (the tool itself works on 0.16.0). The counts by check are in "The prototype's measured state".
+Expected: exit 1, `ui-check: 312 findings, 0 known (allow.json), 312 new`, no `roundtrip`, `contract`, `i18n`, `dash`, `page-error` or `mock` line (the tool itself works on 0.16.0). By check: focus 103, target 81, contrast 42, name 32, hint-lines 17, clipped 10, tab 10, contrast-token 10, sidebar 3, overlap 2, external 2. That is the prototype's 309 plus three `clipped` on `shell` that only the hardened check sees: at 900×600 the sidebar's "Soundboard", version and credit are cut by the window, which does not scroll.
 
 - [ ] **Step 7: Record the known findings**
 
@@ -251,6 +271,9 @@ Write `tools/ui-check/allow.json` (order matters: the first matching entry takes
  { "check": "hint-lines", "page": "soundboard*", "what": "*", "until": 8 },
  { "check": "hint-lines", "page": "popout*", "what": "*", "until": 8 },
  { "check": "hint-lines", "page": "*", "what": "*", "until": 6 },
+ { "check": "clipped", "page": "shell", "what": "span[nav_soundboard]", "until": 3 },
+ { "check": "clipped", "page": "shell", "what": "span#version-text", "until": 3 },
+ { "check": "clipped", "page": "shell", "what": "a#credit-link", "until": 3 },
  { "check": "clipped", "page": "soundboard*", "what": "*", "until": 8 },
  { "check": "clipped", "page": "*", "what": "select.rule-language", "until": 7 },
  { "check": "clipped", "page": "*", "what": "span.history-meta", "until": 4 },
@@ -259,7 +282,7 @@ Write `tools/ui-check/allow.json` (order matters: the first matching entry takes
 ]
 ```
 
-Run `node tools/ui-check/run.mjs --no-shots --no-build`. Expected: exit 0, `309 findings, 309 known (allow.json), 0 new`, no "match nothing any more" list. Then prove the gate: delete the `sidebar` line, run `node tools/ui-check/run.mjs --no-shots --no-build --pages shell`, expected exit 1 with three NEW `sidebar` lines (Soundboard, version and credit below 600 px); put the line back.
+Run `node tools/ui-check/run.mjs --no-shots --no-build --task 1`. Expected: exit 0, `312 findings, 312 known (allow.json), 0 new`, no "match nothing any more" list (no entry has `"until": 1`, so `--task 1` ignores none). Keep this rule of the order: no entry stands before a wider one of the same check with a higher `until`, or `--task` would hand its findings on to that one. Then prove the gate: delete the `sidebar` line, run `node tools/ui-check/run.mjs --no-shots --no-build --pages shell`, expected exit 1 with three NEW `sidebar` lines (Soundboard, version and credit below 600 px); put the line back.
 
 - [ ] **Step 8: The rest still works**
 

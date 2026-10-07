@@ -68,14 +68,19 @@
     const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
     return (hi + 0.05) / (lo + 0.05);
   };
-  /** The colour behind `el`: every background from the page down to it, painted in order. */
-  const backgroundOf = (el) => {
+  /**
+   * The colour behind `el`: every background from the page down to it, painted in order.
+   * `unread(text, element)` hears of a background colour parseColor does not understand.
+   */
+  const backgroundOf = (el, unread = null) => {
     const chain = [];
     for (let n = el; n; n = n.parentElement) chain.unshift(n);
     let bg = [255, 255, 255, 1];
     for (const n of chain) {
-      const c = parseColor(getComputedStyle(n).backgroundColor);
-      if (c && c[3] > 0) bg = over(c, bg);
+      const text = getComputedStyle(n).backgroundColor;
+      const c = parseColor(text);
+      if (!c) unread?.(text, n);
+      else if (c[3] > 0) bg = over(c, bg);
     }
     return bg;
   };
@@ -84,30 +89,122 @@
     for (let n = el; n; n = n.parentElement) o *= parseFloat(getComputedStyle(n).opacity || "1");
     return o;
   };
-  /** A colour token's value, whatever notation the stylesheet uses. */
+  /** A colour token's value as the browser computes it: { text, colour }; colour is null when parseColor does not understand it. */
   const tokenColor = (name) => {
     const probe = document.createElement("span");
     probe.style.color = `var(${name})`;
     document.body.appendChild(probe);
-    const c = parseColor(getComputedStyle(probe).color);
+    const text = getComputedStyle(probe).color;
     probe.remove();
-    return c;
+    return { text, colour: parseColor(text) };
   };
   const rootTokens = () => {
     const names = new Set();
+    const walk = (rules) => {
+      for (const rule of rules) {
+        if (rule.selectorText === ":root") {
+          for (const prop of rule.style) if (prop.startsWith("--")) names.add(prop);
+        } else if (rule.cssRules && !rule.selectorText) walk(rule.cssRules); // inside @media, @layer, @supports
+      }
+    };
     for (const sheet of document.styleSheets) {
-      let rules = [];
       try {
-        rules = [...sheet.cssRules];
+        walk(sheet.cssRules);
       } catch {
         continue; // a stylesheet from another origin
       }
-      for (const rule of rules) {
-        if (rule.selectorText !== ":root") continue;
-        for (const prop of rule.style) if (prop.startsWith("--")) names.add(prop);
-      }
     }
     return [...names];
+  };
+
+  // ── Text cut by a box around it ───────────────────────
+  const pen = document.createElement("canvas").getContext("2d");
+  /** Where the text nodes of `el` itself are drawn. */
+  const textRects = (el) => {
+    const rects = [];
+    const range = document.createRange();
+    for (const node of el.childNodes) {
+      if (node.nodeType !== 3 || !node.textContent.trim()) continue;
+      range.selectNodeContents(node);
+      for (const r of range.getClientRects()) if (r.width > 0 && r.height > 0) rects.push(r);
+    }
+    return rects;
+  };
+  /**
+   * How far the ink of `text` stays inside its line's rectangle, above and
+   * below: the rectangle is as high as the font, the letters are not. Without
+   * this a label in a tight pill counts as cut where only empty space is.
+   */
+  const inkInset = (cs, text, height) => {
+    pen.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const drawn = cs.textTransform === "uppercase" ? text.toUpperCase() : cs.textTransform === "lowercase" ? text.toLowerCase() : text;
+    const m = pen.measureText(drawn);
+    const font = m.fontBoundingBoxAscent + m.fontBoundingBoxDescent;
+    if (!(font > 0) || Math.abs(font - height) > 2) return { top: 0, bottom: 0 }; // not the font the line is drawn in
+    return { top: Math.max(0, m.fontBoundingBoxAscent - m.actualBoundingBoxAscent), bottom: Math.max(0, m.fontBoundingBoxDescent - m.actualBoundingBoxDescent) };
+  };
+  const CLIPS = /^(hidden|clip)$/;
+  const SCROLLS = /^(auto|scroll)$/;
+  /**
+   * The box around `el` that cuts its text: an ancestor with overflow hidden
+   * or clip that the text leaves by more than 1 px. { by, px, side } or null.
+   * A box that scrolls (auto, scroll) cuts nothing, and neither does anything
+   * further out in that direction: what lies outside is reached by scrolling.
+   */
+  const cutByBoxAround = (el, cs, text) => {
+    const rects = textRects(el);
+    if (!rects.length) return null;
+    const inset = inkInset(cs, text, rects[0].height);
+    const html = document.documentElement;
+    const htmlCs = getComputedStyle(html);
+    let position = cs.position;
+    let x = cs.display === "inline" || !SCROLLS.test(cs.overflowX);
+    let y = cs.display === "inline" || !SCROLLS.test(cs.overflowY);
+    for (let box = el.parentElement; box && (x || y); box = box.parentElement) {
+      const bs = getComputedStyle(box);
+      // A positioned element is cut only by the boxes it is placed in.
+      if (box !== html) {
+        const holdsAll = bs.transform !== "none" || bs.perspective !== "none" || bs.filter !== "none" || /paint|layout|strict|content/.test(bs.contain);
+        if (position === "fixed" && !holdsAll) continue;
+        if (position === "absolute" && bs.position === "static" && !holdsAll) continue;
+      }
+      position = bs.position;
+      let ox = bs.overflowX;
+      let oy = bs.overflowY;
+      let left = 0;
+      let top = 0;
+      let right = window.innerWidth;
+      let bottom = window.innerHeight;
+      if (box === html) {
+        // The window: it takes <body>'s overflow when <html> has none, and "visible" means it scrolls.
+        if (ox === "visible" && oy === "visible") ({ overflowX: ox, overflowY: oy } = getComputedStyle(document.body));
+        if (ox === "visible") ox = "auto";
+        if (oy === "visible") oy = "auto";
+      } else {
+        if (box === document.body && htmlCs.overflowX === "visible" && htmlCs.overflowY === "visible") continue; // its overflow is the window's
+        if (bs.display === "inline" || bs.display === "contents") continue; // no box that cuts
+        const r = box.getBoundingClientRect();
+        left = r.left + box.clientLeft;
+        top = r.top + box.clientTop;
+        right = left + box.clientWidth;
+        bottom = top + box.clientHeight;
+        if (right - left <= 2 || bottom - top <= 2) return null; // read out and not shown, or folded away
+      }
+      const cutsX = x && CLIPS.test(ox);
+      const cutsY = y && CLIPS.test(oy);
+      let px = 0;
+      let side = "";
+      for (const r of rects) {
+        const over = [];
+        if (cutsX) over.push([r.right - right, "on the right"], [left - r.left, "on the left"]);
+        if (cutsY) over.push([r.bottom - inset.bottom - bottom, "at the bottom"], [top - r.top - inset.top, "at the top"]);
+        for (const [by, where] of over) if (by > px) [px, side] = [by, where];
+      }
+      if (px > 1) return { by: box, px: Math.round(px), side };
+      if (SCROLLS.test(ox)) x = false;
+      if (SCROLLS.test(oy)) y = false;
+    }
+    return null;
   };
 
   /** Name a screen reader announces: label, aria-label, aria-labelledby, a button's text, or a title. A placeholder is no name. */
@@ -184,18 +281,23 @@
       if (r.right > window.innerWidth + 1 || r.left < -1) add("overflow", `${desc(el)} leaves the window`, `x ${Math.round(r.left)}–${Math.round(r.right)} of ${window.innerWidth}`);
     }
 
-    // 2. Clipped text: cut by its own box, and a select whose chosen option does not fit.
+    // 2. Clipped text: cut by its own box or by a box around it (a card, a
+    // button whose label sits in a <span>), and a select whose chosen option
+    // does not fit. Each element once.
     for (const el of all) {
       const text = ownText(el);
       if (!text || el.matches("option, textarea, input, select") || (userText && el.matches(userText))) continue;
       const cs = getComputedStyle(el);
-      if (cs.display === "inline" || el.clientWidth <= 2) continue; // in a line of text, or read out and not shown
-      const cutX = el.scrollWidth > el.clientWidth + 1 && /(hidden|clip)/.test(cs.overflowX);
-      const cutY = el.scrollHeight > el.clientHeight + 1 && /(hidden|clip)/.test(cs.overflowY);
+      const inline = cs.display === "inline"; // in a line of text: no box of its own that could cut
+      if (!inline && el.clientWidth <= 2) continue; // read out, not shown
+      const cutX = !inline && el.scrollWidth > el.clientWidth + 1 && /(hidden|clip)/.test(cs.overflowX);
+      const cutY = !inline && el.scrollHeight > el.clientHeight + 1 && /(hidden|clip)/.test(cs.overflowY);
       if (cutX) add("clipped", desc(el), `"${short(text)}" needs ${el.scrollWidth} px, has ${el.clientWidth} px`);
       else if (cutY) add("clipped", desc(el), `"${short(text)}" needs ${el.scrollHeight} px of height, has ${el.clientHeight} px`);
+      if (cutX || cutY || (userText && el.closest(userText))) continue; // said once; or inside the user's own text
+      const cut = cutByBoxAround(el, cs, text);
+      if (cut) add("clipped", desc(el), `"${short(text)}" is cut by ${cut.by === document.documentElement ? "the window, which does not scroll" : desc(cut.by)}, ${cut.px} px ${cut.side}`);
     }
-    const pen = document.createElement("canvas").getContext("2d");
     for (const el of all) {
       if (!el.matches("select")) continue;
       const cs = getComputedStyle(el);
@@ -229,11 +331,16 @@
     // 4. Contrast of the text as drawn: 4.5:1, or 3:1 for large text.
     const pairs = new Map();
     /** `placeholder`: the placeholder's own opacity when it is the placeholder that is judged. */
+    const unread = new Map();
+    const notUnderstood = (text, el) => unread.has(text) || unread.set(text, `e.g. ${desc(el)}`);
     const judge = (el, colourText, placeholder = null) => {
       const colour = parseColor(colourText);
-      if (!colour) return;
       const cs = getComputedStyle(el);
-      const bg = backgroundOf(el);
+      const bg = backgroundOf(el, notUnderstood);
+      if (!colour) {
+        notUnderstood(colourText, el);
+        return;
+      }
       const fg = over([colour[0], colour[1], colour[2], colour[3] * opacityOf(el) * (placeholder ?? 1)], bg);
       const size = parseFloat(cs.fontSize);
       const large = size >= 24 || (size >= 18.66 && parseInt(cs.fontWeight, 10) >= 700);
@@ -253,20 +360,30 @@
       if (ownText(el)) judge(el, getComputedStyle(el).color);
     }
     for (const [key, detail] of pairs) add("contrast", key, detail);
+    // A notation parseColor does not know (oklch, lab, another colour space) is a finding, not a pass.
+    for (const [text, detail] of unread) add("contrast", `colour not understood: ${text}`, detail);
 
     // 5. Contrast of the tokens: every --text* on every --bg / --surface* / --sidebar*.
-    const tokens = opts.tokens ? rootTokens() : [];
-    const texts = tokens.filter((n) => /^--text(-|$)/.test(n));
-    const surfaces = tokens.filter((n) => /^--(bg|surface|sidebar)(-|$)/.test(n));
-    for (const s of surfaces) {
-      const sc = tokenColor(s);
-      if (!sc) continue;
-      const bg = over(sc, [255, 255, 255, 1]);
-      for (const t of texts) {
-        const tc = tokenColor(t);
-        if (!tc) continue;
-        const value = ratio(over(tc, bg), bg);
-        if (value < 4.495) add("contrast-token", `${t} on ${s}`, `${value.toFixed(2)}:1`);
+    if (opts.tokens) {
+      const tokens = rootTokens();
+      const texts = tokens.filter((n) => /^--text(-|$)/.test(n));
+      const surfaces = tokens.filter((n) => /^--(bg|surface|sidebar)(-|$)/.test(n));
+      if (!texts.length) add("contrast-token", "no --text* token on :root", "the check found nothing to measure");
+      if (!surfaces.length) add("contrast-token", "no --bg, --surface* or --sidebar* token on :root", "the check found nothing to measure");
+      const value = new Map();
+      for (const name of [...texts, ...surfaces]) {
+        const { text, colour } = tokenColor(name);
+        if (colour) value.set(name, colour);
+        else add("contrast-token", name, `colour not understood: ${text}`);
+      }
+      for (const s of surfaces) {
+        if (!value.has(s)) continue;
+        const bg = over(value.get(s), [255, 255, 255, 1]);
+        for (const t of texts) {
+          if (!value.has(t)) continue;
+          const got = ratio(over(value.get(t), bg), bg);
+          if (got < 4.495) add("contrast-token", `${t} on ${s}`, `${got.toFixed(2)}:1`);
+        }
       }
     }
 
@@ -277,10 +394,12 @@
       if (el.matches(":disabled, [aria-disabled='true']")) continue;
       if (el.tabIndex < 0 && !rovingTab(el)) add("tab", desc(el), "not a Tab stop");
       if (el.matches("input[type=range]")) continue; // the browser's own control
-      // A link inside a sentence ("More" after a hint) is as high as its line.
+      // A link inside a sentence is as high as its line. Only what flows in
+      // the line (display: inline): an inline-block control beside a text has
+      // a size of its own and must have 24 px. A <button> is never inline
+      // (the browser computes inline-block), so "More" after a hint needs them.
       const parent = el.parentElement;
-      const inline = /^inline/.test(getComputedStyle(el).display) && parent && !/(flex|grid)/.test(getComputedStyle(parent).display);
-      if (inline && parent.textContent.trim() !== el.textContent.trim()) continue;
+      if (getComputedStyle(el).display === "inline" && parent && parent.textContent.trim() !== el.textContent.trim()) continue;
       const box = el.matches("input[type=checkbox], input[type=radio]") && el.closest("label") ? el.closest("label") : el;
       const r = box.getBoundingClientRect();
       if (Math.min(r.width, r.height) < 23.5) add("target", desc(el), `${Math.round(r.width)}×${Math.round(r.height)} px`);
@@ -306,11 +425,14 @@
 
     // 10. The sidebar fits the window (asked for at 900×600).
     if (opts.sidebar) {
+      let items = 0;
       for (const el of document.querySelectorAll("#sidebar .app-logo, #sidebar #status-indicator, #sidebar .nav-item, #sidebar .sidebar-footer > *")) {
         const r = el.getBoundingClientRect();
         if (r.height <= 0) continue;
+        if (el.matches(".nav-item")) items++;
         if (r.bottom > window.innerHeight + 0.5 || r.top < -0.5) add("sidebar", desc(el), `y ${Math.round(r.top)}–${Math.round(r.bottom)}, the window is ${window.innerHeight} px high`);
       }
+      if (!items) add("sidebar", "no #sidebar .nav-item", "the check found no sidebar to measure");
     }
 
     // 11. Ids other code relies on.

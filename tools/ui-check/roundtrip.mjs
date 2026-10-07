@@ -138,11 +138,33 @@ function readShown([selector, property]) {
   return el[property];
 }
 
-/** `open()` gives a freshly loaded main window (populated, English). Returns findings. */
-export async function roundtrip(open) {
+/**
+ * `page` is a freshly loaded main window (populated, English); the caller
+ * closes it. Returns findings.
+ */
+export async function roundtrip(page) {
   const out = [];
   const add = (what, detail) => out.push({ check: "roundtrip", page: "settings", what, detail });
-  const page = await open();
+  // The redesign may lose or rename no key of config.json: whatever the page
+  // saves must still have every key the settings had when it loaded.
+  const keys = await page.evaluate(() => window.__MOCK_KEYS__ ?? []);
+  if (!keys.length) add("the settings at the start", "the mocked backend holds no settings, so no key can be watched");
+  const lost = new Set();
+  let watched = 0;
+  /** Every save the page sent since the last look still has every key; `when` names the moment in a finding. */
+  const keepsKeys = async (when) => {
+    const calls = await page.evaluate((from) => window.__MOCK__.calls.slice(from), watched);
+    watched += calls.length;
+    for (const call of calls) {
+      if (call.cmd !== "save_settings") continue;
+      for (const key of keys) {
+        if (lost.has(key) || (call.args.settings && key in call.args.settings)) continue;
+        lost.add(key);
+        add(`settings key ${key}`, `gone from the settings the page saved ${when}`);
+      }
+    }
+  };
+  await keepsKeys("while it loaded");
   for (const row of SHOWN) {
     const got = await page.evaluate(readShown, row);
     if (got !== row[2]) add(`${row[0]} shows the saved value`, `expected ${JSON.stringify(row[2])}, got ${JSON.stringify(got)}`);
@@ -157,6 +179,7 @@ export async function roundtrip(open) {
     }
     await page.waitForTimeout(120);
     const { calls, settings } = await page.evaluate((from) => ({ calls: window.__MOCK__.calls.slice(from), settings: window.__MOCK__.settings() }), before);
+    await keepsKeys(`after “${name}”`);
     if (want.kind === "hotkey") {
       const call = calls.find((c) => c.cmd === "change_hotkey");
       const ok = call && call.args.target === want.target && call.args.newHotkey === want.combo;
@@ -172,6 +195,5 @@ export async function roundtrip(open) {
     }
     if (want.kind === "check" && !want.test(settings)) add(name, `expected ${want.expected}`);
   }
-  await page.context().close();
   return out;
 }
