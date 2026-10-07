@@ -82,6 +82,8 @@ apply_stage() {
 
 **After the review of Task 2 (the components).** Task 2's review changed `components.css`, `tokens.css` and `style.css`: one progress bar (the leftover 3 px track is gone), disabled states for fields and every button kind, list rows and setting controls that wrap, a key box that breaks instead of running over its label, armed and pressed states (`--accent-active`), round focus rings on tabs, sliders and links, `--line-strong` at `#727284`, and cards with 8 px of vertical padding instead of 4. So pixel positions in later tasks' probes can differ slightly from the ones measured here; a "first screen" probe that fails by a few pixels is fixed in that page's layout, not by reverting the component. The merges were rehearsed again with these fixes in place (stages 3, 5, 6, 7, final for `style.css`; 5 to 6 for `components.css`): Task 3 needs the three-way merge of its Step 6, Task 7 gets one more conflict in `style.css`, Task 8 keeps its one; each task names them. Resolve a conflict in an editor: Git Bash's `sed -i` writes LF line ends, and the next merge against the stages (CRLF) then conflicts on every line.
 
+**After the review of Task 3 (the shell).** What later tasks build on changed in five places. (1) The status: the missing speech model's own download is the status `downloading` with its percent (before "Setup needed"), `StatusInput` has `speechDownload`, `activity()` also says which download runs and the speech model's percent, a download no longer makes Home's heading "Getting ready…", and what is read out is `#status-live` (`statusSaid`, no percent) while `#status-text` is `aria-hidden`. `ui-check` does not measure the contrast of `aria-hidden` text; the pill's five tones were measured by hand: 6.5:1 to 9.0:1. (2) `announceRoute()` tells every `onRoute` listener the place the window starts on, once, at the end of `main.ts`'s start; a listener a later task adds (Home's `renderHome`) hears of it too. (3) The sidebar has one left edge at x 20 (logo mark, pill, icons, version; 12 px inside the items) and the pages' padding is 24 px (`--s5`) instead of 32 and 40: every page starts at x 224 and is 16 px wider, so a pixel position measured before can differ by that much. (4) `resolve("settings/<no tab>")` keeps the tab; `sizeText` never says "1000 MB". (5) Unit tests: 31 after Task 3 instead of 23, so every later count is 8 higher (the tasks below carry the new numbers). The merges of the next stage were rehearsed again with these fixes in place (`main.ts`, `ai-settings.ts`, `i18n.ts`, `style.css`, `index.html`, `pages.mjs`, `mock.js` from stage 3 to 5; `components.css` from 5 to 6): no conflict.
+
 ## File map
 
 | File | Change | Task |
@@ -376,17 +378,17 @@ This task carries all Rust of the redesign, including the first run's microphone
 
 **Interfaces:**
 - Produces (Rust, `rudariflow_lib::whisper_engine`): `pub enum LoadState { Unloaded, Loading, Loaded, Failed }` (serde lowercase); `WhisperEngine::load_state(&self) -> LoadState`, `device(&self) -> String`, `on_load_change(&self, Box<dyn Fn() + Send + Sync>)`, `loaded_once(&self) -> bool` (this plan's addition).
-- Produces (Rust, `rudariflow_lib::audio`): `pub struct MicMeter` with `new()`, `start(&self, app: &AppHandle, mic_name: &str) -> Result<(String, u64), String>`, `stop(&self)`, `running(&self) -> bool`, `run(&self) -> u64`; `pub(crate) fn meter_level(data: &[f32]) -> f32`.
-- Produces (commands in `main.rs`): `speech_status() -> SpeechStatus`; `mic_meter_start() -> Result<String, String>` (the device's name; stops itself after 120 s); `mic_meter_stop()`. `SpeechStatus` (serde camelCase): `{ engine: "local"|"cloud", model: String, downloaded: bool, load: LoadState, freed: bool, cloudKey: bool, device: String }`.
-- Produces (events): `speech-status` (a `SpeechStatus`, on every change of the load state, after `save_settings`, after a model download); `speech-notice` (payload `"no_model"`, to the pill, when a dictation hotkey finds no downloaded model for the local engine; nothing is recorded); `ui-language` (payload the saved `uiLanguage` string, when the Display Language changes); `mic-level` (f32 0 to 1, about 30 per second while the meter runs).
+- Produces (Rust, `rudariflow_lib::audio`): `pub struct MicMeter` with `new()`, `start(&self, app: &AppHandle, mic_name: &str) -> Result<(String, u64), String>`, `stop(&self)`, `running(&self) -> bool` (false again once the device was lost), `run(&self) -> u64`; `pub(crate) fn meter_level(data: &[f32]) -> f32`; `pub fn open_with_fallback<T>(mic_name, open) -> Result<T, String>` (the microphone, once more, then the default input: a dictation and the meter open their device through it).
+- Produces (commands in `main.rs`): `speech_status() -> SpeechStatus`; `mic_meter_start() -> Result<String, String>` (the name of the device really open; `Err("stopped")` when a stop or a newer start came while it opened; stops itself after 120 s without an event, and when the main window closes to the tray); `mic_meter_stop()`. Pure helpers with tests: `speech_freed(released, idle_unloaded, loaded_once)`, `speech_reload(prev, next) -> (drop, load)` (a switch from the cloud to the local engine loads the model), `dictation_blocked_now(state)` (also asked by Rewrite last before it selects anything). `SpeechStatus` (serde camelCase): `{ engine: "local"|"cloud", model: String, downloaded: bool, load: LoadState, freed: bool, cloudKey: bool, device: String }`.
+- Produces (events): `speech-status` (a `SpeechStatus`, on every change of the load state, after `save_settings`, after a model download); `speech-notice` (payload `"no_model"`, to the pill, when a dictation hotkey finds no downloaded model for the local engine; nothing is recorded); `ui-language` (payload the saved `uiLanguage` string, when the Display Language changes); `mic-level` (f32 0 to 1, about 30 per second while the meter runs; one last 0 when the device is lost).
 - Produces (tray): "Show RudariFlow" / "RudariFlow anzeigen", "Quit" / "Beenden" follow the Display Language (`tray_show_text`, `tray_quit_text`).
-- Produces (`src/status.ts`, pure): types `LoadState`, `SpeechStatus`, `StatusInput`, `Missing` (`"microphone"|"model"|"key"|"load"`), `StatusKind` (`"setup"|"downloading"|"recording"|"transcribing"|"meeting"|"file"|"loading"|"game"|"freed"|"ready"`), `Tone`, `Status { kind, tone, missing, percent, marker }`; `missing(input)`, `status(input)`, `statusText(s) -> { key, n }`, `homeTitle(s)`.
+- Produces (`src/status.ts`, pure): types `LoadState`, `SpeechStatus`, `StatusInput` (with `download`, the first download's percent, and `speechDownload`, the speech model's own), `Missing` (`"microphone"|"model"|"key"|"load"`), `StatusKind` (`"setup"|"downloading"|"recording"|"transcribing"|"meeting"|"file"|"loading"|"game"|"freed"|"ready"`), `Tone`, `Status { kind, tone, missing, percent, marker }`; `missing(input)`, `status(input)`, `statusText(s) -> { key, n }`, `statusSaid(s) -> { key, marker }` (what a screen reader is told: no percent), `homeTitle(s)`. One case comes before "Setup needed": the speech model is the only thing missing and its download runs; the status is then `downloading` with that percent, `missing` stays `["model"]` and `homeTitle` is `home_title_setup`. Any other download leaves `homeTitle` at `home_title_ready`.
 - Produces (`src/route.ts`, pure): `SECTIONS`, `TABS`, types `Section`, `Tab`, `Route`; `HOME`, `route(section, tab)`, `startRoute(saved, setupNeeded)`, `resolve(name, from)` (also the ten section names of 0.16.0).
 - Produces (`src/prefs.ts`, pure): `Store`, `Prefs { section, tab, folds, panels, aiCardDismissed }`, `PREFS_KEY = "rudariflow-ui"` (localStorage; view state only, never settings), `defaultPrefs()`, `loadPrefs(store)`, `savePrefs(store, prefs)`, `changePrefs(store, current, change)`.
 - Produces (`src/setup.ts`, pure; Task 5 shows it): `SetupInput`, `Setup { needed, microphone, model, aiCard }`, `setup(input)`, `Gpu`, `Recommendation`, `recommend(gpus)`, `sizeText(bytes)`.
-- Produces (`src/shell.ts`): `prefs`, `updatePrefs(change)`, `currentRoute()`, `onRoute(fn)`, `go(name)`, `startOn(setupNeeded)`, `reveal(id)`, `initShell()`. (`src/status-view.ts`): `StatusHost`, `statusInput()`, `currentStatus()`, `currentSpeech()`, `onStatus(fn)`, `renderStatus()`, `refreshSpeech()`, `initStatus(host)`. (`src/activity.ts`): `setDownload(kind, percent|null)`, `setFileRunning(on)`, `activity()`, `onActivity(fn)`. (`src/ai-settings.ts`): `aiActivity()`, `AiSettingsHost.changed`.
-- Produces (markup): `#sidebar` with `#status-indicator.status-pill[data-tone][data-kind]` (`role="status"`), `#status-text`, `#status-marker`; `button.nav-item[data-section]` × 5 with `aria-current="page"`; sections `#section-home|files|meetings|soundboard|settings`; `#settings-tabs` (`role="tablist"`), `#tab-<tab>`, `#panel-<tab>`.
-- Produces (i18n): `status_setup_microphone|model|key|load`, `status_downloading`, `status_meeting`, `status_file`, `status_loading`, `status_game`, `status_freed`, `status_marker_meeting|file`, `nav_label`, `nav_home`, `nav_settings`, `settings_title`, `tab_dictation|ai|dictionary|models|general`, `home_title_ready|setup|loading`. Removed: the nav and title keys of the seven pages that became tabs.
+- Produces (`src/shell.ts`): `prefs`, `updatePrefs(change)`, `currentRoute()`, `onRoute(fn)`, `announceRoute()` (once, at the end of `main.ts`'s start: tells every `onRoute` listener the place the window starts on, with `before` equal to `now`; a listener must bear hearing of a place twice), `go(name)`, `startOn(setupNeeded)`, `reveal(id)`, `initShell()`. (`src/status-view.ts`): `StatusHost`, `statusInput()`, `currentStatus()`, `currentSpeech()`, `onStatus(fn)`, `renderStatus()`, `refreshSpeech()`, `initStatus(host)`. (`src/activity.ts`): `DownloadKind` (`"speech"|"ai"|"speaker"`), `setDownload(kind, percent|null)`, `setFileRunning(on)`, `activity() -> { download, kind, speech, fileRunning }` (the first download's percent and which it is, the speech model's percent), `onActivity(fn)`. (`src/ai-settings.ts`): `aiActivity()`, `AiSettingsHost.changed`.
+- Produces (markup): `#sidebar` with `#status-indicator.status-pill[data-tone][data-kind]`, `#status-text` (`aria-hidden`: it changes with every percent; a setup text's reason is a `span.status-reason`), `#status-marker` (a ring, `role="img"`), `#status-live.sr-only` (`role="status"`: what is read out, `statusSaid`); `button.nav-item[data-section]` × 5 with `aria-current="page"`; sections `#section-home|files|meetings|soundboard|settings`; `#settings-tabs` (`role="tablist"`), `#tab-<tab>`, `#panel-<tab>`.
+- Produces (i18n): `status_setup_microphone|model|key|load`, `status_downloading`, `status_downloading_said`, `status_meeting`, `status_file`, `status_loading`, `status_game`, `status_freed`, `status_marker_meeting|file`, `nav_label`, `nav_home`, `nav_settings`, `settings_title`, `tab_dictation|ai|dictionary|models|general`, `home_title_ready|setup|loading`. Removed: the nav and title keys of the seven pages that became tabs.
 
 - [ ] **Step 1: The Rust additions**
 
@@ -553,15 +555,17 @@ The spec's first status is "Setup needed (what is missing)"; the prototype shows
   status_setup_microphone: "Setup needed: no microphone",
   status_setup_model: "Setup needed: no speech model",
   status_setup_key: "Setup needed: Groq key missing",
-  status_setup_load: "Setup needed: the speech model did not load",
+  status_setup_load: "Setup needed: model did not load",
 ```
 
 ```ts
   status_setup_microphone: "Einrichtung nötig: kein Mikrofon",
   status_setup_model: "Einrichtung nötig: kein Sprachmodell",
   status_setup_key: "Einrichtung nötig: Groq-Schlüssel fehlt",
-  status_setup_load: "Einrichtung nötig: Sprachmodell lädt nicht",
+  status_setup_load: "Einrichtung nötig: Modell lädt nicht",
 ```
+
+(The two load texts were shortened in the review: in the 164 px pill every setup text takes two lines, "Setup needed:" and its reason. `status-view.ts` puts the reason, the part after ": ", into a `span.status-reason` that wraps as one.)
 
 - [ ] **Step 10: The tool learns the new shell**
 
@@ -584,17 +588,19 @@ In `tools/ui-check/pages.mjs`:
       await section(page, "home");
 ```
 
+- added in the review, both in the `shell` probe: for the first run (in place of `if (firstrun) return out;`) Settings › Models & GPU, Download, 201 progress events: the status is `downloading` and ends in "43 %", and `#status-live` changed once; then a reload, because the mock's download never ends. For the populated data set, after "the section and the tab are remembered": opened on Settings › AI cleanup, `list_open_apps` is asked for once; opened on the Soundboard, `tauri://drag-enter` gives `#sb-root` the class `dragging`.
+
 In `tools/ui-check/contract.json` set `removedIds` to the seven entries of `$P/tool3/contract.json` (`section-general`, `section-engine`, `section-recording`, `section-dictionary`, `section-replacements`, `section-ai`: "Task 3: the page became a tab of Settings"; `section-history`: "Task 3: the list is on Home, its setting in Settings > General"). Keep `dashKeys`.
 
 - [ ] **Step 11: Verify**
 
-`npx tsc --noEmit` clean; `npx vite build` clean; `npm run test:unit`: `tests 23`, `fail 0` (status 9, setup 7, prefs 4, route 3).
+`npx tsc --noEmit` clean; `npx vite build` clean; `npm run test:unit`: `tests 31`, `fail 0` (status 15, setup 8, prefs 4, route 4; 23 before the review: status 9, setup 7, prefs 4, route 3).
 
-`node tools/ui-check/run.mjs --no-shots --task 3`: `50 findings, 50 known` (clipped 6, hint-lines 12, name 32), 0 new, and seven entries past their task, the seven with `"until": 3`; delete them (11 remain), run again: exit 0. The run includes: the sidebar fits 900×600, Tab reaches the five nav buttons and they show focus, the status probe (ready, recording, a meeting's marker, the remembered section and tab), the left-edge probe, both pill probes, the 39 round-trip changes on the moved controls.
+`node tools/ui-check/run.mjs --no-shots --task 3`: `50 findings, 50 known` (clipped 6, hint-lines 12, name 32), 0 new, and seven entries past their task, the seven with `"until": 3`; delete them (11 remain), run again: exit 0. The run includes: the sidebar fits 900×600, Tab reaches the five nav buttons and they show focus, the status probe (ready, recording, a meeting's marker, the remembered section and tab; since the review also the first model's download, announced once, and a window opened on Settings › AI cleanup or on the Soundboard), the left-edge probe, both pill probes, the 39 round-trip changes on the moved controls. After the review the count is unchanged: 50 known (clipped 6, hint-lines 12, name 32), 0 new.
 
 Screenshots: `--pages "shell,home,settings-*" --size 1600x900` and `--size 900x600`, `--pages "pill-*"`. The logo is one line, the status pill sits under it, Settings is at the bottom above the version; the five tabs hold the old pages' rows (not yet regrouped: that is Task 6); Home is a heading and the old history list.
 
-`diff -ru --strip-trailing-cr $P/app_src_task3 src` shows only: Steps 7 to 9, the two deleted files, `overlay.html` (Step 4), the logo, and Task 2's review fixes in `style.css`, `styles/tokens.css` and `styles/components.css` (Step 6 lists them).
+`diff -ru --strip-trailing-cr $P/app_src_task3 src` shows only: Steps 7 to 9, the two deleted files, `overlay.html` (Step 4), the logo, and Task 2's review fixes in `style.css`, `styles/tokens.css` and `styles/components.css` (Step 6 lists them). After this task's own review also: `status.ts`, `status-view.ts`, `activity.ts`, `shell.ts`, `route.ts`, `setup.ts`, `prefs.ts`, `styles/shell.css` (the paragraph "After the review of Task 3" says what), the marker's ring in `styles/components.css`, and small edits in `main.ts` (`announceRoute`, the sidebar's scrollbar), `ai-settings.ts` (`downloadInFlight`) and `i18n.ts` (the two load texts, `status_downloading_said`).
 
 - [ ] **Step 12: Commit**
 
@@ -636,7 +642,7 @@ git merge-file tools/ui-check/pages.mjs $P/tool3/pages.mjs $P/tool5/pages.mjs
 git merge-file tools/ui-check/mock.js $P/tool3/mock.js $P/tool5/mock.js
 ```
 
-Expected: `merged` for `ai-settings.ts`, `dictionary.ts`, `i18n.ts`, `main.ts`, `style.css`; `new` for `history.ts`, `home.ts`, `mirror.ts`, `styles/home.css`; no conflict (checked on a copy that had Task 3's corrections; `style.css` rehearsed again with Task 2's review fixes: clean).
+Expected: `merged` for `ai-settings.ts`, `dictionary.ts`, `i18n.ts`, `main.ts`, `style.css`; `new` for `history.ts`, `home.ts`, `mirror.ts`, `styles/home.css`; no conflict (checked on a copy that had Task 3's corrections; `style.css` rehearsed again with Task 2's review fixes: clean; all seven merged files rehearsed again with Task 3's review fixes: clean, and the fixes are still in the result: `announceRoute` at the end of `main.ts`, `downloadInFlight` in `ai-settings.ts`, `#status-live` in `index.html`, the two added parts of the `shell` probe).
 
 - [ ] **Step 2: Leave the first run to Task 5**
 
@@ -644,13 +650,14 @@ Expected: `merged` for `ai-settings.ts`, `dictionary.ts`, `i18n.ts`, `main.ts`, 
 - `src/main.ts`: delete `hotkeyView("dictation", "setup-hotkey"),` and its comment; in `startHome` delete `microphones`, `aiModel`, `setUpAi`; drop `aiModelInfo` and `setUpAi` from the import.
 - `src/ai-settings.ts`: delete `aiModelInfo` and `setUpAi` (keep `aiSummary`).
 - `src/styles/home.css`: delete from `/* ── First run ─` to the end.
+- `src/status-view.ts`: Task 3 wrote Home's heading there, because nothing else set it (in `renderStatus`: the constant `homeHeading` and the block `if (homeHeading) { … }` with `homeTitle(now)`). `home.ts` takes the heading over (`renderHeader`, from `onStatus`): delete the constant, that block with its comment, and `homeTitle` from the import. `status-view.ts` is in no stage, so this is an edit by hand.
 - `index.html`: delete `<div id="home-setup" …>` and `<div id="home-ai-card" …>` (everything between `#home-notice`'s closing tag and `<div id="home-daily"`).
 - `src/i18n.ts`: delete the 17 `setup_*` keys and `progress_numbers`, in both tables (36 lines).
 - `tools/ui-check/pages.mjs`, probe of the page `home`: replace the whole block `if (firstrun) { … return out; }` with `if (firstrun) return out; // the first run: Task 5`, and the line that expects `"the daily view shows once the setup is done"` with `out.push(...expect(await shown("home-daily"), "Home shows the daily view"));`.
 
 - [ ] **Step 3: Verify**
 
-`npx tsc --noEmit` clean; `npx vite build` clean; `npm run test:unit`: `tests 27` (+ search 4).
+`npx tsc --noEmit` clean; `npx vite build` clean; `npm run test:unit`: `tests 35` (+ search 4).
 
 `node tools/ui-check/run.mjs --no-shots --task 4`: `49 findings, 49 known`, one stale entry (`span.history-meta`, `"until": 4`); delete it (10 remain); exit 0. The `home` probe checks: two columns from 900 px of content and the recent dictations after the quick switches below it; Home's AI switch, Language and a hotkey set on Home change the setting and show in Settings at once; "Add a word" lands in the dictionary; the search finds a dictation by its app. `home-all` checks Show all (50), Show more (+50), the end of the list, Show fewer (8).
 
@@ -683,7 +690,13 @@ EOF
 
 - [ ] **Step 1: Put back what Task 4 left out**
 
-Everything in Task 4 Step 2's list, taken from `$P/app_src_task5/` (`home.ts`, `main.ts`, `ai-settings.ts`, `i18n.ts`, `styles/home.css`), `$P/app_index_task5.html` (lines 85 to 149) and `$P/tool5/pages.mjs` (the `home` probe's first-run branch and its original daily-view line). Afterwards `diff -ru --strip-trailing-cr $P/app_src_task5 src` shows only the corrections of Tasks 3 to 5 and review fixes.
+Everything in Task 4 Step 2's list, taken from `$P/app_src_task5/` (`home.ts`, `main.ts`, `ai-settings.ts`, `i18n.ts`, `styles/home.css`), `$P/app_index_task5.html` (lines 85 to 149) and `$P/tool5/pages.mjs` (the `home` probe's first-run branch and its original daily-view line). Afterwards `diff -ru --strip-trailing-cr $P/app_src_task5 src` shows only the corrections of Tasks 3 to 5 and review fixes. (Not the heading lines Task 4 deleted from `status-view.ts`: they stay deleted.)
+
+Notes from the review of Task 3, for `home.ts`:
+
+- **"Setup needed" has two definitions.** `status.ts` counts a speech model that failed to load as setup (`missing` is `["load"]`), `setup.ts` does not (`setup(...).needed` asks only for a microphone and a downloaded model or the cloud key). So with a failed load the pill says "Setup needed: model did not load" while the steps do not show. Home must then show its load-failed notice with the link to Models & GPU (Task 4's `#home-notice`, `home_load_failed`, `home_open_models`). Verify it with a probe in the `home` page of `pages.mjs`: emit `speech-status` with `downloaded: true, load: "failed"` and expect `#home-notice` shown, `#home-setup` hidden and the pill's kind `setup`.
+- **The first model's download is a status of its own.** While the only thing missing is the speech model and its download runs, the status is `downloading` with that percent, its `missing` stays `["model"]` and `homeTitle` gives `home_title_setup`. `setup(...).needed` is still true, so the steps stay on screen with their progress bar.
+- **The microphone meter, three facts.** (1) The backend stops the meter after 120 s without a word to the page (`MIC_METER_MAX`; no event). A page that shows the level for longer needs its own timer that starts the meter again, or the bar stays at zero. (2) `mic_meter_start` answering `Err("stopped")` means a stop or a newer start came while the device opened; it is no error to show or to log as one. (3) The prototype's `meter()` sets `metering = false` in its `catch` also when a newer start has succeeded in the meantime (start, stop, start in quick succession: the first start's "stopped" arrives last). The page then believes the meter is off and never sends `mic_meter_stop`: the microphone stays open until the backend's limit. Fix it in `home.ts`: number the calls and let only the latest one's answer set `metering`. Also: the name `mic_meter_start` returns is the device really open (the default input when the saved microphone is unplugged, as for a dictation), a lost device ends the meter with one last `mic-level` of 0, and closing the window to the tray stops it.
 
 - [ ] **Step 2: Corrections**
 
@@ -702,7 +715,7 @@ Everything in Task 4 Step 2's list, taken from `$P/app_src_task5/` (`home.ts`, `
 
 - [ ] **Step 3: Verify**
 
-`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 27`. `node tools/ui-check/run.mjs --no-shots --task 5`: `49 findings, 49 known`, exit 0 (no entry has `"until": 5`). The first-run branch of the `home` probe checks: the steps show instead of the daily view; `mic_meter_start` is called and the level bar follows `mic-level`; Download asks for the model `recommend` suggests for the graphics card (`large-v3-turbo-q8_0` in the mock); the progress reads "43 % · 374 MB of 870 MB"; leaving Home calls `mic_meter_stop`. The `shell` probe: the first run starts on Home with the status kind `setup`.
+`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 35`. `node tools/ui-check/run.mjs --no-shots --task 5`: `49 findings, 49 known`, exit 0 (no entry has `"until": 5`). The first-run branch of the `home` probe checks: the steps show instead of the daily view; `mic_meter_start` is called and the level bar follows `mic-level`; Download asks for the model `recommend` suggests for the graphics card (`large-v3-turbo-q8_0` in the mock); the progress reads "43 % · 374 MB of 870 MB" (the sidebar's status says "Downloading 43 %" meanwhile, since Task 3's review); leaving Home calls `mic_meter_stop`. The `shell` probe: the first run starts on Home with the status kind `setup`.
 
 Screenshots: `--pages home --scenario firstrun`, both sizes and both languages; compare with the first-run mockup in `mockups/home.html`.
 
@@ -761,7 +774,7 @@ Seven texts still name tabs that no longer exist (the prototype never changed th
 
 - [ ] **Step 3: Verify**
 
-`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 29` (+ models 2).
+`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 37` (+ models 2).
 
 `node tools/ui-check/run.mjs --no-shots --task 6`: `17 findings, 17 known` (name 9: the rule rows, the replacement rows, the Files transcript; clipped 5: the rule-language selects, the Soundboard's device selects; hint-lines 3: the Soundboard), three stale entries (`name *`, `hint-lines *`, `select#*model-select`, all `"until": 6`); delete them (7 remain); exit 0. The run covers: every tab and every tab with Advanced open at three sizes in both languages; every hint on one line at 1600 px (two below); every control named; the `settings-models-advanced` probe (More opens the long hint in place, an open fold is remembered over a new start); the `shell` probe (the tab is remembered); and `roundtrip`: all 32 values shown, all 39 changes saved, among them every hotkey from its new place.
 
@@ -825,7 +838,7 @@ function renderSuggestions(now: Suggestion[] = suggestions) {
 
 - [ ] **Step 3: Verify**
 
-`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 33` (+ arm 4).
+`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 41` (+ arm 4).
 
 `node tools/ui-check/run.mjs --no-shots --task 7`: `7 findings, 7 known` (clipped 3 and hint-lines 3 on the Soundboard, name 1 on the Files transcript), three stale entries (`*.rule-*`, `*.replacement-*`, `select.rule-language`, all `"until": 7`); delete them (4 remain); exit 0. The `settings-dictionary` probe checks: the first click on Delete only arms, Esc disarms, a click elsewhere disarms, the second click deletes; the suggestions are in the Display Language; the word search finds "Zürich" for "zurich"; the replacement search hides rows and a save while searching keeps the hidden ones; a replacement needs two clicks. `grep -rn "armedDelete\|armedTimer\|_delete_confirm\|replacement_remove" src` prints nothing.
 
@@ -930,7 +943,7 @@ Corrections 6 to 8 come from Task 2's review. They sit in page rules the prototy
 
 - [ ] **Step 3: Verify**
 
-`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 33`.
+`npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 41`.
 
 `node tools/ui-check/run.mjs --no-shots --task 8`: `0 findings`, four stale entries (the last four); set `tools/ui-check/allow.json` to `[]`; run again: `0 findings, 0 known, 0 new`, exit 0. (Measured on a scratch copy with every correction of this plan.) The run covers: the Soundboard probes (the panel is open only where it has its own column, the switch always shows, the first sound is on the first screen also at 900×600, the panel's state is remembered, the pop-out opens on the sounds with its settings closed); `files-loaded` and `files-result`; every pill probe.
 
@@ -1055,7 +1068,7 @@ Under `## [Unreleased]` add:
 
 - [ ] **Step 5: Verify and commit**
 
-`npx tsc --noEmit`, `npx vite build`, `npm run test:unit` (33), `node tools/ui-check/run.mjs --no-shots --task 9` (0 findings, `allow.json` is `[]`). `git status --short` shows only the three docs and the deletion.
+`npx tsc --noEmit`, `npx vite build`, `npm run test:unit` (41), `node tools/ui-check/run.mjs --no-shots --task 9` (0 findings, `allow.json` is `[]`). `git status --short` shows only the three docs and the deletion.
 
 ```bash
 git add README.md README.de.md CHANGELOG.md
@@ -1073,7 +1086,7 @@ EOF
 Run by the controller after the whole-branch review and its fix wave.
 
 - [ ] **1. The full `ui-check`, with screenshots:** `node tools/ui-check/run.mjs` with `tools/ui-check/allow.json` equal to `[]`. Expected: exit 0, `0 findings, 0 known (allow.json), 0 new`, about 460 screenshots (both data sets, both languages, 2560×1392, 1600×900, 900×600, the pop-out at 460×680, the pill at 320×64). Allow 15 minutes. Look at Home, the first run, each Settings tab (also with Advanced open), Files with a result, Meetings open and recording, the Soundboard with its panel open and closed, the pop-out, in both languages at 1600×900 and 900×600, against the four mockups.
-- [ ] **2. The unit tests and the frontend build:** `npm run test:unit` (33 pass), `npx tsc --noEmit`, `npx vite build`.
+- [ ] **2. The unit tests and the frontend build:** `npm run test:unit` (41 pass), `npx tsc --noEmit`, `npx vite build`.
 - [ ] **3a. Not yet run anywhere: the library's new tests.** On the PC where Task 3 was built, Windows Smart App Control refused to start the library's test binary (os error 4551), so `--lib meter` and `--lib the_load_state` (four tests: `the_meter_level_is_zero_for_silence_and_capped_for_loud`, `a_meter_that_is_not_running_stops_quietly`, `the_loudest_meter_level_wins_as_bits`, `the_load_state_follows_loads_and_unloads`) only compile there; the three `--bins` tests ran and pass. Run the two `--lib` commands on a PC that lets the binary start (the PC that makes the release build) before the release. The policy is not to be changed or worked around.
 - [ ] **3. The Rust tests, filtered:** the five commands of Task 3 Step 3, and `<RUST-ENV> cargo test --no-default-features --bins hotkey` (see Build environment note).
 - [ ] **4. Against the real app** (the spec's list). This needs a test instance, which takes the keyboard focus when it starts and writes into the installed app's `startup.log`: the controller tells the user first, starts it only when the user is not typing, with its own data folder (`RUDARIFLOW_DATA_DIR`), and stops it right after. Never the installed app or its data.

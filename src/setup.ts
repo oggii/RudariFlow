@@ -68,7 +68,8 @@ export function recommend(gpus: Gpu[]): Recommendation {
   };
 }
 
-/** A file size in words: "870 MB", "5.0 GB". */
+/** A file size in words: "870 MB", "5.0 GB". What would round to "1000 MB" is "1.0 GB". */
 export function sizeText(bytes: number): string {
-  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`;
+  const mb = Math.max(1, Math.round(bytes / 1e6));
+  return mb >= 1000 ? `${(bytes / 1e9).toFixed(1)} GB` : `${mb} MB`;
 }

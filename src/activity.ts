@@ -4,8 +4,11 @@
 
 type Listener = () => void;
 
-/** "speech", "ai", "speaker" → percent. */
-const downloads = new Map<string, number>();
+/** The models that download: the speech model, the AI model, the speaker model. */
+export type DownloadKind = "speech" | "ai" | "speaker";
+
+/** Each download that runs → its percent, in the order they started. */
+const downloads = new Map<DownloadKind, number>();
 let fileRunning = false;
 const listeners: Listener[] = [];
 
@@ -14,7 +17,7 @@ function changed() {
 }
 
 /** A download's progress in percent; null when it is over (done or failed). */
-export function setDownload(kind: "speech" | "ai" | "speaker", percent: number | null) {
+export function setDownload(kind: DownloadKind, percent: number | null) {
   const before = downloads.get(kind) ?? null;
   if (percent === null) downloads.delete(kind);
   else downloads.set(kind, percent);
@@ -27,10 +30,24 @@ export function setFileRunning(on: boolean) {
   changed();
 }
 
-/** The download to show (the one that started first), and whether a file runs. */
-export function activity(): { download: number | null; fileRunning: boolean } {
-  const first = downloads.values().next();
-  return { download: first.done ? null : first.value, fileRunning };
+export interface Activity {
+  /** Percent of the download to show (the one that started first); null: none runs. */
+  download: number | null;
+  /** Which download that is. */
+  kind: DownloadKind | null;
+  /** Percent of the speech model's download, also while another one started first; null: it does not run. */
+  speech: number | null;
+  fileRunning: boolean;
+}
+
+export function activity(): Activity {
+  const first = downloads.entries().next();
+  return {
+    download: first.done ? null : first.value[1],
+    kind: first.done ? null : first.value[0],
+    speech: downloads.get("speech") ?? null,
+    fileRunning,
+  };
 }
 
 export function onActivity(fn: Listener) {

@@ -13,10 +13,11 @@
       <aside id="sidebar">
         <div class="sidebar-header">
           <img class="app-logo" src="/src/sidebar-logo.png" alt="RudariFlow" />
-          <div id="status-indicator" class="status-pill" role="status" aria-live="polite" data-tone="busy">
+          <div id="status-indicator" class="status-pill" data-tone="busy">
             <span id="status-dot" class="status-dot" aria-hidden="true"></span>
-            <span id="status-text" data-i18n="status_loading">Loading models…</span>
+            <span id="status-text" aria-hidden="true" data-i18n="status_loading">Loading models…</span>
             <span id="status-marker" class="status-marker hidden" role="img"></span>
+            <span id="status-live" class="sr-only" role="status" aria-live="polite"></span>
           </div>
         </div>
         <nav id="sidebar-nav" data-i18n-aria-label="nav_label" aria-label="Sections">

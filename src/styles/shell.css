@@ -31,22 +31,24 @@
   overflow-y: auto;
 }
 
+/* One left edge for the whole sidebar, 12 px inside its items: the logo's
+   mark, the status pill, the items' icons and the version. */
 .sidebar-header {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--s3);
-  padding: var(--s1) var(--s2) var(--s4);
+  padding: var(--s1) var(--s2) var(--s4) var(--s3);
 }
 
 /* The PNG is a square with the mark in its middle band: one line of it is
    shown. The mark begins 18 px into the 136 px, so the box is pulled left
-   until the mark stands above the icons of the items and the version. */
+   by as much and the mark stands on the sidebar's edge. */
 .app-logo {
   display: block;
   width: 136px;
   height: 30px;
-  margin-left: -16px;
+  margin-left: -18px;
   object-fit: cover;
   object-position: center;
 }
@@ -54,6 +56,12 @@
 /* A long status ("Für ein Spiel freigegeben") takes a second line. */
 #status-indicator {
   border-radius: var(--radius-card);
+}
+
+/* "Setup needed: no speech model": the reason stays together, the line
+   breaks after the colon. */
+.status-reason {
+  display: inline-block;
 }
 
 #sidebar-nav {
@@ -69,7 +77,7 @@
   gap: var(--s2);
   width: 100%;
   min-height: 36px;
-  padding: var(--s2) 10px;
+  padding: var(--s2) var(--s3);
   border: none;
   border-radius: var(--radius);
   background: transparent;
@@ -105,7 +113,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  padding: var(--s2) 10px 0;
+  padding: var(--s2) var(--s3) 0;
 }
 
 .version-text {
@@ -138,7 +146,7 @@
   display: none;
   max-width: 880px;
   margin: 0;
-  padding: var(--s2) 32px 40px;
+  padding: var(--s2) var(--s5) var(--s5);
 }
 
 .content-section.active {

@@ -806,17 +806,18 @@ kbd {
   animation: pulse 1.4s ease-in-out infinite;
 }
 
-/* A meeting records or a file runs while the pill says something else. */
+/* A meeting records or a file runs while the pill says something else.
+   A ring, so it does not read as a second status dot. */
 .status-marker {
   flex-shrink: 0;
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--text-danger);
   border-radius: 50%;
-  background: var(--text-danger);
 }
 
 .status-marker[data-marker="file"] {
-  background: var(--text-accent);
+  border-color: var(--text-accent);
 }
 
 @keyframes pulse {

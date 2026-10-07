@@ -12,7 +12,7 @@ import { initMeetingQuit, initMeetings, renderMeetings } from "./meetings";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
 import { hotkeyLabel, startCapture } from "./hotkey-capture";
 import { mountBoard } from "./soundboard/board";
-import { currentRoute, go, initShell, onRoute, startOn } from "./shell";
+import { announceRoute, currentRoute, go, initShell, onRoute, startOn } from "./shell";
 import { setDownload } from "./activity";
 import { currentSpeech, initStatus, onStatus, renderStatus } from "./status-view";
 import { setup } from "./setup.ts";
@@ -161,6 +161,8 @@ titlebar.addEventListener("mousedown", (e) => {
 
 sidebar.addEventListener("mousedown", (e) => {
   if ((e.target as HTMLElement).closest("button, select, input, a, .nav-item")) return;
+  // The sidebar's own scrollbar (a very low window) scrolls, it does not move the window.
+  if (e.target === sidebar && e.offsetX >= sidebar.clientWidth) return;
   appWindow.startDragging();
 });
 
@@ -1016,4 +1018,6 @@ loadSettings()
       showSection: () => go("meetings"),
     }),
   )
-  .catch((err) => console.error("the Meetings tab did not start:", err));
+  .catch((err) => console.error("the Meetings tab did not start:", err))
+  // Every page is wired: tell them the place the window starts on (a remembered one makes no change).
+  .then(announceRoute);

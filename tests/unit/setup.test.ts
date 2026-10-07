@@ -55,8 +55,26 @@ test("the models suggested for a PC", () => {
   });
 });
 
+test("the bigger AI model from more than 8.5 GB of video memory", () => {
+  const ai = (memory_mib: number) => recommend([{ name: "card", integrated: false, memory_mib }]).ai;
+  assert.equal(ai(8.5 * 1024), "gemma-4-e2b", "8.5 GB itself is still the small one");
+  assert.equal(ai(8.5 * 1024 + 1), "gemma-4-e4b");
+  assert.equal(ai(8188), "gemma-4-e2b", "an 8 GB card reports a little less than 8192 MiB");
+  assert.equal(ai(12 * 1024), "gemma-4-e4b");
+  // The best dedicated card decides, not the first one listed.
+  const two = [
+    { name: "old", integrated: false, memory_mib: 4096 },
+    { name: "new", integrated: false, memory_mib: 9000 },
+  ];
+  assert.deepEqual([recommend(two).ai, recommend(two).gpu], ["gemma-4-e4b", "new"]);
+});
+
 test("sizes in words", () => {
   assert.equal(sizeText(870_000_000), "870 MB");
   assert.equal(sizeText(4_977_171_584), "5.0 GB");
   assert.equal(sizeText(10), "1 MB");
+  // Never "1000 MB": what rounds up to it is a gigabyte.
+  assert.equal(sizeText(999_400_000), "999 MB");
+  assert.equal(sizeText(999_600_000), "1.0 GB");
+  assert.equal(sizeText(1_000_000_000), "1.0 GB");
 });

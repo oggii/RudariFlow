@@ -72,7 +72,26 @@ export const PAGES = [
       }
       out.push(...expect(new Set(lefts).size === 1, "every page starts at the same left edge", JSON.stringify(lefts)));
       await section(page, "home");
-      if (firstrun) return out;
+      if (firstrun) {
+        // The first speech model downloads: the status shows its percent, and a
+        // screen reader is told of the download once, not of every percent.
+        await settings(page, "models");
+        await page.evaluate(() => {
+          const live = document.getElementById("status-live");
+          window.__said = [];
+          new MutationObserver((changes) => window.__said.push(...changes.map(() => live.textContent))).observe(live, { childList: true, characterData: true, subtree: true });
+          document.getElementById("download-btn").click();
+          for (let i = 0; i <= 200; i++) window.__MOCK__.emit("download-progress", { downloaded: i * 1e6, total: 465e6, percent: i * 0.215 });
+        });
+        await wait(page, 150);
+        const fetching = { ...(await read()), said: await page.evaluate(() => window.__said) };
+        out.push(...expect(fetching.kind === "downloading" && / 43 %$/.test(fetching.text) && fetching.said.length === 1, "the first model's download shows its percent and is announced once", JSON.stringify(fetching)));
+        // The download never ends in the mock: a new start for the pages that follow.
+        await page.reload({ waitUntil: "networkidle" });
+        await wait(page, 500);
+        await section(page, "home");
+        return out;
+      }
       // A dictation, then a meeting with a dictation on top: the marker.
       await page.evaluate(() => window.__MOCK__.emit("recording-state", "Recording"));
       await wait(page, 100);
@@ -93,6 +112,21 @@ export const PAGES = [
       await wait(page, 500);
       const place = await page.evaluate(() => ({ nav: document.querySelector('.nav-item[aria-current="page"]')?.dataset.section, tab: document.querySelector('#settings-tabs [aria-selected="true"]')?.dataset.tab, shown: !document.getElementById("panel-general").hidden }));
       out.push(...expect(place.nav === "settings" && place.tab === "general" && place.shown, "the section and the tab are remembered", JSON.stringify(place)));
+      // A window that opens on a remembered place tells the page that it is shown.
+      // Settings > AI cleanup asks for the open apps (the rule suggestions), once.
+      await settings(page, "ai");
+      await page.reload({ waitUntil: "networkidle" });
+      await wait(page, 500);
+      const asked = await page.evaluate(() => window.__MOCK__.calls.filter((c) => c.cmd === "list_open_apps").length);
+      out.push(...expect(asked === 1, "opened on Settings > AI cleanup, the open apps are asked for once", String(asked)));
+      // The Soundboard takes a file that is dragged over the window.
+      await section(page, "soundboard");
+      await page.reload({ waitUntil: "networkidle" });
+      await wait(page, 500);
+      await page.evaluate(() => window.__MOCK__.emit("tauri://drag-enter", { paths: ["C:\\sound.wav"], position: { x: 400, y: 300 } }));
+      await wait(page, 100);
+      out.push(...expect(await page.evaluate(() => document.getElementById("sb-root").classList.contains("dragging")), "opened on the Soundboard, a dragged file is for the board"));
+      await page.evaluate(() => window.__MOCK__.emit("tauri://drag-leave", {}));
       await section(page, "home");
       return out;
     },

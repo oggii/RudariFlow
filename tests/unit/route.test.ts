@@ -26,4 +26,17 @@ test("the old section names lead to their new places", () => {
   assert.deepEqual(resolve("settings", from), { section: "settings", tab: "ai" }, "Settings opens on the tab it was left on");
   assert.deepEqual(resolve("settings/models", from), { section: "settings", tab: "models" });
   assert.deepEqual(resolve("nowhere", from), { section: "home", tab: "ai" });
+  // Two old names are tab names now: alone they still mean the old page.
+  const general = route("files", "general");
+  assert.deepEqual(resolve("ai", general), { section: "settings", tab: "ai" });
+  assert.deepEqual(resolve("dictionary", general), { section: "settings", tab: "dictionary" });
+  assert.deepEqual(resolve("history", general), { section: "home", tab: "general" });
+  for (const name of ["home", "files", "meetings", "soundboard"]) assert.deepEqual(resolve(name, general), { section: name, tab: "general" });
+});
+
+test("a tab that does not exist keeps the tab the window was on", () => {
+  const from = route("home", "models");
+  assert.deepEqual(resolve("settings/bogus", from), { section: "settings", tab: "models" });
+  assert.deepEqual(resolve("settings/", from), { section: "settings", tab: "models" });
+  assert.deepEqual(resolve("bogus/ai", from), { section: "home", tab: "ai" });
 });

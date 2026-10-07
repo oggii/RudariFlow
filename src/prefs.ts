@@ -69,6 +69,7 @@ export function savePrefs(store: Store | null, prefs: Prefs): boolean {
  * `current` is this window's copy; it gets the change too. Returns the
  * preferences to go on with: the saved ones, or `current` when the store
  * refused.
+ * `change` runs twice, once on each copy, so it must be a plain assignment.
  */
 export function changePrefs(store: Store | null, current: Prefs, change: (prefs: Prefs) => void): Prefs {
   change(current);

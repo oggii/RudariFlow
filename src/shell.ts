@@ -30,9 +30,21 @@ export function currentRoute(): Route {
   return current;
 }
 
-/** Called after every change of the section or the Settings tab. */
+/** Called after every change of the section or the Settings tab, and once
+ *  for the place the window starts on (`announceRoute`). */
 export function onRoute(fn: Listener) {
   listeners.push(fn);
+}
+
+/** Tell every `onRoute` listener the place that shows, as if the window had
+ *  just come to it. Called once at the start, after all of them registered:
+ *  a window that opens on a remembered place makes no change, and a page
+ *  that waits to be shown (the Soundboard for a dropped sound, AI cleanup
+ *  for the open apps) would never learn that it is. A listener may hear of
+ *  the same place twice (a change during the start), so what it does must
+ *  bear repeating. */
+export function announceRoute() {
+  for (const fn of listeners) fn(current, current);
 }
 
 function draw() {

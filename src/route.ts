@@ -39,10 +39,10 @@ const OLD: Record<string, [Section, Tab | null]> = {
   history: ["home", null],
 };
 
-/** A name from 0.16 ("engine") or a new one ("settings", "settings/models") as a route; `from` keeps its tab where none is named. */
+/** A name from 0.16 ("engine") or a new one ("settings", "settings/models") as a route; `from` keeps its tab where the name has none or one that does not exist. */
 export function resolve(name: string, from: Route): Route {
   const [first, second] = name.split("/");
   const old = OLD[first];
   if (old) return { section: old[0], tab: old[1] ?? from.tab };
-  return route(first, second ?? from.tab);
+  return route(first, isTab(second) ? second : from.tab);
 }

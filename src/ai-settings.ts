@@ -220,6 +220,9 @@ async function refreshOpenApps() {
   }
 }
 
+/** A download started here runs: only then its progress counts for the status. */
+let downloadInFlight = false;
+
 async function download() {
   const id = host.settings().aiModel;
   progressFill.style.width = "0%";
@@ -229,6 +232,7 @@ async function download() {
   modelSelect.disabled = true;
   statusLine.textContent = t("ai_status_downloading");
   statusLine.dataset.tone = "";
+  downloadInFlight = true;
   setDownload("ai", 0);
   try {
     await invoke("ai_download_model", { id });
@@ -237,6 +241,7 @@ async function download() {
     statusLine.textContent = `${t("ai_download_failed")}: ${e}`;
     statusLine.dataset.tone = "error";
   }
+  downloadInFlight = false;
   setDownload("ai", null);
   await refreshStatus();
 }
@@ -451,7 +456,8 @@ export function initAiSettings(h: AiSettingsHost) {
     progress.classList.remove("hidden");
     progressFill.style.width = `${percent}%`;
     progressText.textContent = total ? `${gb(downloaded)} / ${gb(total)} GB` : "";
-    setDownload("ai", percent);
+    // A progress event that arrives after the download ended must not bring it back into the status.
+    if (downloadInFlight) setDownload("ai", percent);
   });
 }
 
