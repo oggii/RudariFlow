@@ -700,6 +700,7 @@ Notes from the review of Task 3, for `home.ts`:
 
 - [ ] **Step 2: Corrections**
 
+- `src/main.ts` (found by the re-review of Task 3): when the first model's download ends, the status steps back to "Setup needed: no speech model" before "Loading models…". `downloadCurrentModel` clears the speech download in its `finally` and only then are the labels refreshed and (on the `model-select` change path, which the first run's Download uses) the settings saved, so for that gap the backend still reports the saved model as missing. Clear the speech download only once the status is known: on the change path after `saveSettings()`, on the button path after `await refreshSpeech()`. Make the mock's download end (`tools/ui-check/mock.js`: a `download-progress` run that reaches 100 % and resolves the invoke) and add a probe to the `home` page's first-run branch that records every text `#status-text` takes from the click on Download to "Ready" and expects no "Setup needed" after the first "Downloading".
 - `src/home.ts`: the prototype calls `rememberPrefs`. Import `prefs, reveal, updatePrefs` from `./shell` and write the dismissal as `updatePrefs((p) => (p.aiCardDismissed = true));`.
 - `src/i18n.ts`, no dash (the spec quotes the sentence with one):
 
