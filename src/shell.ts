@@ -145,9 +145,13 @@ export function roomBeside(): number {
   return document.getElementById("content")?.offsetWidth ?? 0;
 }
 
-/** Settings is two columns in a large window (styles/settings.css). */
-function layoutSettings() {
-  document.getElementById("section-settings")?.classList.toggle("wider", roomBeside() >= WIDER);
+/** The pages that are two columns in a large window: Settings (styles/settings.css),
+ *  Files (the drop zone beside its options) and the Meetings library (style.css). */
+const WIDER_PAGES = ["section-settings", "section-files", "section-meetings"];
+
+function layoutWider() {
+  const wider = roomBeside() >= WIDER;
+  for (const id of WIDER_PAGES) document.getElementById(id)?.classList.toggle("wider", wider);
 }
 
 /** Wire the sidebar, the tab bar and the folds, and show the remembered place. */
@@ -186,8 +190,8 @@ export function initShell() {
   }
 
   const content = document.getElementById("content");
-  if (content) new ResizeObserver(layoutSettings).observe(content);
-  layoutSettings();
+  if (content) new ResizeObserver(layoutWider).observe(content);
+  layoutWider();
 
   draw();
 }

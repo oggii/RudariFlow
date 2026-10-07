@@ -14,6 +14,8 @@
 //   probe      extra findings: async (page, run) => [{ check, what, detail }];
 //              run = { openWindow, scenario, lang, size }, openWindow as in
 //              run.mjs (`scrollbars: true` draws them, as the app's window does)
+//   after      puts back what the page changed for its picture: async (page),
+//              called after the screenshots
 //
 // Pages with the same url share one window per data set, language and size,
 // in this order; put a state that changes the window after the plain pages
@@ -2220,6 +2222,378 @@ async function popoutDeletes(page, run) {
   return out;
 }
 
+// ── The tool pages (Task 8) ───────────────────────────
+
+/** From this much room beside the sidebar the Soundboard's settings panel is a column of its own (`WIDE` in src/shell.ts). */
+const BOARD_STEP = 900;
+
+/**
+ * The Soundboard as its page shows it at its top (the keyboard walk before a probe leaves the page where its last
+ * control is). `wide` is decided as src/soundboard/board.ts decides it: on the room beside the sidebar with the
+ * scrollbar's own room in it.
+ */
+const boardNow = (page) =>
+  page.evaluate((step) => {
+    const content = document.getElementById("content");
+    for (const el of [document.scrollingElement, content]) if (el) el.scrollTop = 0;
+    const button = document.querySelector('#sb-root [data-key="settings"]');
+    const panel = document.getElementById("sb-panel");
+    const first = document.querySelector("#sb-root .sb-row, #sb-root .sb-list .empty-state");
+    const toggle = document.querySelector('#sb-root .sb-bar [data-key="enabled"]')?.closest("label")?.getBoundingClientRect();
+    return {
+      wide: content ? content.offsetWidth >= step : false,
+      popOut: !content,
+      panel: !!panel,
+      expanded: button?.getAttribute("aria-expanded"),
+      controls: !!panel && button?.getAttribute("aria-controls") === panel.id,
+      switchShown: !!toggle && toggle.width > 0 && toggle.top >= 0 && toggle.bottom <= window.innerHeight,
+      firstSound: first ? Math.round(first.getBoundingClientRect().top) : -1,
+      height: window.innerHeight,
+      focus: document.activeElement?.dataset?.key ?? "",
+      inPanel: !!document.activeElement?.closest("#sb-panel"),
+    };
+  }, BOARD_STEP);
+
+/** The panel as a window without a choice has it: open only where it has a column of its own. A page that changed it for its picture puts it back. */
+async function panelAtRest(page) {
+  const now = await boardNow(page);
+  if (now.expanded === undefined || now.panel === (now.wide && !now.popOut)) return;
+  await page.click('#sb-root [data-key="settings"]');
+  await wait(page, 150);
+}
+
+/**
+ * The sound tiles: they fill the library's width (the last of a row ends at
+ * its right edge), and the controls of every tile stand under each other
+ * (category, hotkey and volume start at the same place in each tile).
+ */
+async function tiles(page) {
+  const see = await page.evaluate(() => {
+    const library = document.querySelector("#sb-root .sb-col-library").getBoundingClientRect();
+    const rows = [...document.querySelectorAll("#sb-root .sb-row")].map((row) => {
+      const r = row.getBoundingClientRect();
+      const at = (sel) => Math.round(row.querySelector(sel).getBoundingClientRect().left - r.left);
+      return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), width: Math.round(r.width), controls: [at(".sb-category"), at(".sb-hotkey"), at(".sb-controls .sb-slider")].join("/") };
+    });
+    return { library: [Math.round(library.left), Math.round(library.right)], rows };
+  });
+  if (!see.rows.length) return [];
+  const columns = new Set(see.rows.map((r) => r.left)).size;
+  const reach = Math.max(...see.rows.filter((r) => r.top === see.rows[0].top).map((r) => r.right));
+  const fits = Math.max(1, Math.floor((see.library[1] - see.library[0] + 8) / 448));
+  return [
+    ...expect(new Set(see.rows.map((r) => r.controls)).size === 1, "the controls of every sound tile stand under each other", JSON.stringify(see.rows.map((r) => r.controls))),
+    ...expect(columns === Math.min(fits, see.rows.length) || (columns === fits && see.rows.length >= fits), "the sound tiles take as many columns as the library has room for", `${columns} columns, room for ${fits}, ${JSON.stringify(see.library)}`),
+    ...expect(see.rows.length < fits || Math.abs(reach - see.library[1]) <= 1, "a row of sound tiles ends at the library's right edge", `${reach} of ${see.library[1]}`),
+    ...expect(see.rows.every((r) => r.left >= see.library[0] - 1 && r.right <= see.library[1] + 1), "no sound tile leaves the library", JSON.stringify(see)),
+  ];
+}
+
+/** The "More" of the panel's rows: named after its row like every "More" of Settings, opened in place, the focus stays. */
+async function panelMore(page) {
+  const out = [];
+  const mores = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll("#sb-panel .hint-more")].map((b) => ({
+        text: b.textContent,
+        name: b.getAttribute("aria-label") ?? "",
+        label: b.closest(".setting-row").querySelector(".label-text").textContent,
+        open: b.getAttribute("aria-expanded"),
+        long: !document.getElementById(b.getAttribute("aria-controls")).hidden,
+        focused: document.activeElement === b,
+      })),
+    );
+  let now = await mores();
+  out.push(...expect(now.length === 3 && now.every((m) => m.name.length > m.text.length && m.name.includes(m.label)), 'every "More" of the Soundboard\'s panel is named after its row', JSON.stringify(now.map((m) => m.name))));
+  await page.focus("#sb-panel .hint-more");
+  await page.keyboard.press("Enter");
+  await wait(page, 150);
+  now = await mores();
+  out.push(...expect(now[0]?.open === "true" && now[0].long && now[0].focused && now[0].name !== now[1]?.name && !now[1]?.long, "More opens its row's long text in place and keeps the focus", JSON.stringify(now[0])));
+  await page.keyboard.press("Enter");
+  await wait(page, 150);
+  now = await mores();
+  out.push(...expect(now[0]?.open === "false" && !now[0].long && now[0].focused, "Less closes it again", JSON.stringify(now[0])));
+  await page.evaluate(() => document.activeElement?.blur?.());
+  return out;
+}
+
+/** "Soundboard settings" is a disclosure: it says whether its panel is open, the keyboard opens and closes it without losing its place, and the panel holds no one. */
+async function panelByKeyboard(page) {
+  const out = [];
+  const before = await boardNow(page);
+  await page.focus('#sb-root [data-key="settings"]');
+  await page.keyboard.press("Enter");
+  await wait(page, 150);
+  let now = await boardNow(page);
+  out.push(...expect(now.panel === !before.panel && now.expanded === String(now.panel) && now.focus === "settings", "Enter on Soundboard settings opens or closes the panel and the focus stays on the button", JSON.stringify(now)));
+  await page.keyboard.press("Enter");
+  await wait(page, 150);
+  now = await boardNow(page);
+  out.push(...expect(now.panel === before.panel && now.focus === "settings", "and Enter again puts it back", JSON.stringify(now)));
+  if (!now.panel) {
+    await page.keyboard.press("Enter");
+    await wait(page, 150);
+  }
+  now = await boardNow(page);
+  out.push(...expect(now.panel && now.controls && now.expanded === "true", "the open panel is the one its button names (aria-controls, aria-expanded)", JSON.stringify(now)));
+  // Tab goes from the button into the panel (past the link of the missing-cable hint, where that shows),
+  // Esc changes nothing there, and Tab leaves it at its end.
+  await page.keyboard.press("Tab");
+  if (!(await boardNow(page)).inPanel) await page.keyboard.press("Tab");
+  now = await boardNow(page);
+  out.push(...expect(now.inPanel, "Tab goes from the button into its panel", JSON.stringify(now)));
+  await page.keyboard.press("Escape");
+  await wait(page, 100);
+  now = await boardNow(page);
+  out.push(...expect(now.panel && now.inPanel, "Esc in the panel closes nothing and moves nothing", JSON.stringify(now)));
+  let left = false;
+  for (let i = 0; i < 40 && !left; i++) {
+    await page.keyboard.press("Tab");
+    left = !(await boardNow(page)).inPanel;
+  }
+  out.push(...expect(left, "Tab leaves the panel at its end"));
+  if (!before.panel) await page.click('#sb-root [data-key="settings"]');
+  await wait(page, 150);
+  await page.evaluate(() => document.activeElement?.blur?.());
+  return out;
+}
+
+/**
+ * The Soundboard's step (900 px beside the sidebar: from there the settings
+ * panel is open as a column of its own) in a window that draws its scrollbar,
+ * as Home's and Settings' steps are tried (`layoutHolds`, `settingsHold`).
+ * With no sound in the library the form with the panel is much higher than
+ * the one without: a step decided on a width the scrollbar takes away would
+ * open the panel, get a scrollbar, close it, lose the scrollbar, and so on in
+ * every frame. Tried around the step and across the scrollbar's own width,
+ * at the window heights where each form just fits and just does not and at
+ * one between the two. Nothing may change by itself, and the same width is
+ * the same form whatever the page's height.
+ */
+async function boardHolds(run) {
+  const win = await run.openWindow({ scenario: "firstrun", lang: run.lang, size: "1300x1000", url: "/", scrollbars: true });
+  const { page } = win;
+  const tried = [];
+  const forms = new Set();
+  try {
+    await section(page, "soundboard");
+    const side = await page.evaluate(() => window.innerWidth - document.getElementById("content").offsetWidth);
+    const fit = async (width) => {
+      await page.setViewportSize({ width: width + side, height: 3000 });
+      await wait(page, 120);
+      return page.evaluate(() => Math.round(window.innerHeight - document.getElementById("content").clientHeight + document.getElementById("section-soundboard").getBoundingClientRect().height));
+    };
+    const low = await fit(BOARD_STEP - 1);
+    const high = await fit(BOARD_STEP);
+    const heights = [...new Set([low - 1, low + 1, Math.round((low + high) / 2), high - 1, high + 1])];
+    for (const width of [BOARD_STEP - 1, BOARD_STEP, BOARD_STEP + 1, BOARD_STEP + 3, BOARD_STEP + 6, BOARD_STEP + 10, BOARD_STEP + 15, BOARD_STEP + 16]) {
+      for (const height of heights) {
+        await page.setViewportSize({ width: width + side, height });
+        await wait(page, 60);
+        const seen = await page.evaluate(
+          (step) =>
+            new Promise((done) => {
+              const root = document.getElementById("sb-root");
+              const content = document.getElementById("content");
+              const look = () => `${root.classList.contains("wide") ? "wide" : "narrow"} ${document.getElementById("sb-panel") ? "open" : "closed"} ${content.offsetWidth - content.clientWidth}`;
+              let was = look();
+              let n = 0;
+              const end = performance.now() + 150;
+              const frame = () => {
+                const now = look();
+                if (now !== was) n++;
+                was = now;
+                if (performance.now() < end) requestAnimationFrame(frame);
+                else done({ changes: n, form: now, right: now.startsWith(content.offsetWidth >= step ? "wide open" : "narrow closed") });
+              };
+              requestAnimationFrame(frame);
+            }),
+          BOARD_STEP,
+        );
+        forms.add(seen.form);
+        tried.push({ size: `${width}x${height}`, changes: seen.changes, form: seen.form, right: seen.right });
+      }
+    }
+    const moved = tried.filter((t) => t.changes > 0);
+    const wrong = tried.filter((t) => !t.right);
+    const kinds = new Set([...forms].map((f) => `${f.split(" ")[0]} ${f.split(" ")[2] === "0" ? "without" : "with"}`));
+    return [
+      ...expect(high > low + 100, "the layout check of the Soundboard has a form with the panel that is much the higher one", `${low} and ${high} px`),
+      ...expect(kinds.size === 4, "the layout check of the Soundboard sees the panel as a column and closed, each with and without the scrollbar", JSON.stringify([...forms])),
+      ...expect(moved.length === 0, "the Soundboard's layout holds still at its step with a scrollbar", `${moved.length} of ${tried.length} sizes change by themselves, e.g. ${JSON.stringify(moved.slice(0, 3))}`),
+      ...expect(wrong.length === 0, "the Soundboard's panel follows the room beside the sidebar alone, with or without a scrollbar", `${wrong.length} of ${tried.length} sizes, e.g. ${JSON.stringify(wrong.slice(0, 3))}`),
+    ];
+  } finally {
+    await win.context.close();
+  }
+}
+
+/**
+ * The main window and the pop-out share the store of what is remembered.
+ * Each keeps the panel's state for its own layout, and neither writes back
+ * what it read at its own start: a change in one window does not undo the
+ * other's (the rule itself is pinned in tests/unit/prefs.test.ts).
+ */
+async function twoWindows(page) {
+  const out = [];
+  const saved = (p) => p.evaluate(() => JSON.parse(localStorage.getItem("rudariflow-ui") ?? "{}").panels ?? {});
+  const press = async (p) => {
+    await p.click('#sb-root [data-key="settings"]');
+    await wait(p, 150);
+  };
+  const pop = await page.context().newPage();
+  try {
+    await pop.setViewportSize({ width: 460, height: 680 });
+    await pop.goto(new URL("/soundboard.html", page.url()).href, { waitUntil: "networkidle" });
+    await wait(pop, 400);
+    const mainWas = await boardNow(page);
+    const popWas = await boardNow(pop);
+    // Both windows are open. The main window changes its panel, then the pop-out its own,
+    // then the main window remembers something else (the place it is on).
+    await press(page);
+    await press(pop);
+    await settings(page, "general");
+    await section(page, "soundboard");
+    let panels = await saved(page);
+    const layout = mainWas.wide ? "wide" : "narrow";
+    out.push(...expect(panels[layout] === !mainWas.panel && panels.popout === !popWas.panel, "the main window and the pop-out each keep their panel's state, and neither undoes the other's", JSON.stringify(panels)));
+    // The other way round: the pop-out first, then the main window, then the pop-out again.
+    await press(pop);
+    await press(page);
+    await press(pop);
+    panels = await saved(pop);
+    out.push(...expect(panels[layout] === mainWas.panel && panels.popout === !popWas.panel, "also when the pop-out writes last", JSON.stringify(panels)));
+    // A new start of each window shows its own choice.
+    await page.reload({ waitUntil: "networkidle" });
+    await wait(page, 400);
+    await section(page, "soundboard");
+    await pop.reload({ waitUntil: "networkidle" });
+    await wait(pop, 400);
+    const mainNow = await boardNow(page);
+    const popNow = await boardNow(pop);
+    out.push(...expect(mainNow.panel === mainWas.panel && popNow.panel === !popWas.panel, "after a new start each window shows the state it was left in", JSON.stringify({ main: mainNow.panel, popOut: popNow.panel })));
+    await press(pop);
+  } finally {
+    await pop.close();
+  }
+  return out;
+}
+
+/** Files: the drop zone and the options, alone and with a file loaded. */
+const filesNow = (page) =>
+  page.evaluate(() => {
+    const section = document.getElementById("section-files");
+    const box = (el) => {
+      const r = el.getBoundingClientRect();
+      return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), height: Math.round(r.height) };
+    };
+    return {
+      wider: section.classList.contains("wider"),
+      room: document.getElementById("content").offsetWidth,
+      loaded: section.classList.contains("has-file"),
+      zone: box(document.getElementById("file-drop")),
+      options: box(section.querySelector(".files-options")),
+      title: section.querySelector(".section-title").textContent,
+      transcript: document.getElementById("file-text").getAttribute("aria-label") ?? "",
+      inCard: section.querySelector(".files-options").classList.contains("card"),
+    };
+  });
+
+/** In a large window the zone and the options stand side by side; else the options under the zone, which is one line once a file is loaded. */
+function filesLayout(see, lang) {
+  const side = see.zone.right <= see.options.left && see.zone.top === see.options.top && see.zone.height === see.options.height;
+  return [
+    ...expect(see.title === (lang === "de" ? "Dateien" : "Files"), "the page is called Files", see.title),
+    ...expect(see.inCard && see.transcript.length > 0, "the options stand in a card and the transcript has a name", JSON.stringify(see)),
+    ...expect(see.wider === see.room >= 1600, "Files is two columns from 1600 px beside the sidebar", JSON.stringify(see)),
+    ...expect(see.wider ? side : see.options.top >= see.zone.top + see.zone.height, "in a large window the drop zone and the options stand side by side, else the options under the zone", JSON.stringify(see)),
+    ...expect(!see.loaded || see.wider || see.zone.height <= 56, "with a file loaded the drop zone is one line", `${see.zone.height} px`),
+  ];
+}
+
+/**
+ * With "prefers-reduced-motion: reduce" nothing moves: no element of the
+ * window, the pop-out or the pill has an animation or a transition with a
+ * duration, in the states that move without the setting (a page that comes,
+ * a fold that opens, a meeting that records, a file's bar, a sound that
+ * plays, the pill while it transcribes and polishes).
+ */
+async function reducedMotion(page, run) {
+  const out = [];
+  if (run.lang !== "en") return out;
+  const moving = (p) => p.evaluate(() => window.__uic.stillMoving());
+  await section(page, "home");
+  out.push(...expect((await moving(page)).some((m) => m.includes("page-in")), "the motion check sees the page's own animation while motion is allowed", JSON.stringify((await moving(page)).slice(0, 4))));
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const places = [
+    ["Home", () => section(page, "home")],
+    [
+      "Files with a file",
+      async () => {
+        await section(page, "files");
+        await page.click("#file-choose");
+        await wait(page, 500);
+      },
+    ],
+    [
+      "a meeting that records",
+      async () => {
+        await section(page, "meetings");
+        await page.evaluate(() => window.__MOCK__.emit("meeting-status", window.__MOCK__.meetingRecording()));
+        await wait(page, 500);
+      },
+    ],
+    [
+      "the Soundboard with a sound playing",
+      async () => {
+        await section(page, "soundboard");
+        await page.evaluate(() => window.__MOCK__.emit("soundboard-playing", [{ id: "s4", posMs: 31000, durationMs: 94000 }]));
+        await wait(page, 200);
+      },
+    ],
+    ...TABS.map((tab) => [
+      `Settings, ${tab}, with its fold open`,
+      async () => {
+        await page.evaluate((t) => document.querySelector(`details.fold[data-fold="${t}"]`) && (document.querySelector(`details.fold[data-fold="${t}"]`).open = true), tab);
+        await settings(page, tab);
+      },
+    ]),
+  ];
+  for (const [name, open] of places) {
+    await open();
+    const left = await moving(page);
+    out.push(...expect(left.length === 0, `with reduced motion nothing moves: ${name}`, left.slice(0, 5).join("; ")));
+  }
+  await page.emulateMedia({ reducedMotion: null });
+  // The pop-out and the pill are windows of their own, the pill with its own styles.
+  const others = [
+    ["the pop-out", "/soundboard.html", "460x680", `window.__MOCK__.emit("soundboard-playing", [{ id: "s4", posMs: 31000, durationMs: 94000 }]);`],
+    ["the pill while it transcribes", "/src/overlay.html", "320x64", `window.__overlayUpdate("recording"); window.__overlayUpdate("transcribing");`],
+    ["the pill while it polishes", "/src/overlay.html", "320x64", `window.__overlayUpdate("recording"); window.__overlayUpdate("transcribing"); window.__overlayUpdate("polishing");`],
+    ["the pill with a notice", "/src/overlay.html", "320x64", `window.__MOCK__.emit("gpu-notice", "freed");`],
+  ];
+  for (const [name, url, size, script] of others) {
+    const win = await run.openWindow({ scenario: run.scenario, lang: run.lang, size, url });
+    try {
+      await win.page.evaluate(script);
+      await wait(win.page, 200);
+      const free = await moving(win.page);
+      await win.page.emulateMedia({ reducedMotion: "reduce" });
+      await wait(win.page, 100);
+      const left = await moving(win.page);
+      // The pill moves while motion is allowed: the check has something to find there.
+      if (url.includes("overlay")) out.push(...expect(free.length > 0, `the motion check sees what moves in ${name}`, String(free.length)));
+      out.push(...expect(left.length === 0, `with reduced motion nothing moves: ${name}`, left.slice(0, 5).join("; ")));
+    } finally {
+      await win.context.close();
+    }
+  }
+  // A new start: the meeting no longer records for the pages that follow.
+  await again(page);
+  return out;
+}
+
 const pill = (id, script, probe) => ({
   id: `pill-${id}`,
   url: "/src/overlay.html",
@@ -2645,9 +3019,83 @@ export const PAGES = [
       return out;
     },
   },
-  { id: "files", open: (page) => section(page, "files") },
-  { id: "meetings", open: (page) => section(page, "meetings") },
-  { id: "soundboard", open: (page) => section(page, "soundboard") },
+  {
+    id: "files",
+    // Also at the first width that is two columns (1600 px beside the sidebar) and at the common large one.
+    alsoSizes: ["1920x1080"],
+    open: (page) => section(page, "files"),
+    probe: async (page, run) => filesLayout(await filesNow(page), run.lang),
+  },
+  {
+    id: "meetings",
+    alsoSizes: ["1920x1080"],
+    open: (page) => section(page, "meetings"),
+    // The library is as wide as a Settings tab (1080 px in one column, or the window), and two columns of rows in a large window.
+    probe: async (page) => {
+      const see = await page.evaluate(() => {
+        const content = document.getElementById("content");
+        const layout = document.querySelector("#section-meetings .mt-layout").getBoundingClientRect();
+        const items = [...document.querySelectorAll("#mt-list .mt-item")].map((el) => Math.round(el.getBoundingClientRect().left));
+        const start = document.getElementById("mt-start").getBoundingClientRect();
+        return { room: content.offsetWidth, inner: content.clientWidth - 48, width: Math.round(layout.width), columns: new Set(items).size, items: items.length, start: Math.round(start.width) };
+      });
+      const wider = see.room >= 1600;
+      return [
+        ...expect(see.width === Math.min(see.inner, wider ? 1816 : 1080), "the Meetings library is as wide as a Settings tab: 1080 px or the window, two columns of 900 px in a large one", JSON.stringify(see)),
+        ...expect(see.items < 2 || see.columns === (wider ? 2 : 1), "the meetings are two columns in a large window, else one", JSON.stringify(see)),
+        ...expect(!wider || Math.abs(see.start - (see.width - 16) / 2) <= 1, "in a large window the start row keeps the first column", JSON.stringify(see)),
+      ];
+    },
+  },
+  {
+    id: "soundboard",
+    // Also where the panel is a column at its narrowest, and at the common large size.
+    alsoSizes: ["1200x800", "1920x1080"],
+    open: (page) => section(page, "soundboard"),
+    // The sounds first: the panel is the left column with room, closed without; the switch always shows.
+    probe: async (page, run) => {
+      const out = [];
+      const see = await boardNow(page);
+      out.push(...expect(see.panel === see.wide && see.expanded === String(see.wide), "the settings panel is open only where it has its own column", JSON.stringify(see)));
+      out.push(...expect(see.switchShown, "the virtual microphone's switch is always visible", JSON.stringify(see)));
+      out.push(...expect(see.firstSound >= 0 && see.firstSound < see.height, "the first sound is on the first screen", JSON.stringify(see)));
+      out.push(...(await tiles(page)));
+      // Once per run, in windows of their own: the step with the scrollbar drawn, and the two windows that share the store.
+      if (run.scenario === "populated" && run.lang === "en" && run.size === BEHAVIOUR) {
+        out.push(...(await boardHolds(run)));
+        out.push(...(await twoWindows(page)));
+      }
+      return out;
+    },
+  },
+  {
+    id: "soundboard-settings",
+    fresh: true,
+    alsoSizes: ["1200x800", "1920x1080"],
+    // The other state of the panel: opened in a narrow window, closed in a wide one.
+    open: async (page) => {
+      await section(page, "soundboard");
+      await page.click('#sb-root [data-key="settings"]');
+      await wait(page);
+    },
+    probe: async (page, run) => {
+      const out = [];
+      let see = await boardNow(page);
+      out.push(...expect(see.panel === !see.wide && see.expanded === String(!see.wide), "Soundboard settings opens and closes the panel and says which", JSON.stringify(see)));
+      out.push(...expect(see.switchShown, "the virtual microphone's switch shows whether the panel is open or not", JSON.stringify(see)));
+      out.push(...(await tiles(page)));
+      if (run.size === BEHAVIOUR || run.size === "900x600") out.push(...(await panelByKeyboard(page)));
+      // The choice is remembered for this layout.
+      await page.reload({ waitUntil: "networkidle" });
+      await wait(page, 500);
+      await section(page, "soundboard");
+      see = await boardNow(page);
+      out.push(...expect(see.panel === !see.wide, "the panel's state is remembered", JSON.stringify(see)));
+      return out;
+    },
+    // The picture shows the other state; the pages that follow get the panel as a window without a choice has it.
+    after: panelAtRest,
+  },
   ...TABS.map((tab) => ({ id: `settings-${tab}`, open: (page) => settings(page, tab), probe: tab === "dictionary" ? dictionaryProbe : undefined })),
   // The same tabs with Advanced open (General has no fold).
   ...TABS.filter((tab) => tab !== "general").map((tab) => ({
@@ -2839,6 +3287,15 @@ export const PAGES = [
     probe: deletesProbe,
   },
   {
+    id: "reduced-motion",
+    scenarios: ["populated"],
+    sizes: [BEHAVIOUR],
+    fresh: true,
+    checks: false,
+    open: (page) => again(page),
+    probe: reducedMotion,
+  },
+  {
     id: "popout-deletes",
     url: "/soundboard.html",
     scope: "body",
@@ -2847,6 +3304,22 @@ export const PAGES = [
     checks: false,
     open: (page) => wait(page),
     probe: popoutDeletes,
+  },
+  {
+    id: "files-loaded",
+    scenarios: ["populated"],
+    alsoSizes: ["1920x1080"],
+    fresh: true,
+    open: async (page) => {
+      await section(page, "files");
+      await page.click("#file-choose");
+      await wait(page, 500);
+    },
+    // With a file loaded the transcript starts on the first screen.
+    probe: async (page, run) => {
+      const at = await page.evaluate(() => [Math.round(document.getElementById("file-text").getBoundingClientRect().top), window.innerHeight]);
+      return [...expect(at[0] < at[1], "the transcript starts on the first screen", `y ${at[0]} of ${at[1]}`), ...filesLayout(await filesNow(page), run.lang)];
+    },
   },
   {
     id: "files-result",
@@ -2858,6 +3331,11 @@ export const PAGES = [
       await wait(page, 500);
       await page.click("#file-summarize");
       await wait(page, 400);
+    },
+    // The summary is on top of the transcript: it starts on the first screen.
+    probe: async (page) => {
+      const at = await page.evaluate(() => [Math.round(document.getElementById("file-summary-box").getBoundingClientRect().top), window.innerHeight]);
+      return expect(at[0] < at[1], "the summary starts on the first screen", `y ${at[0]} of ${at[1]}`);
     },
   },
   {
@@ -2886,11 +3364,51 @@ export const PAGES = [
     fresh: true,
     open: async (page) => {
       await section(page, "soundboard");
+      if (!(await page.evaluate(() => !!document.getElementById("sb-panel")))) await page.click('#sb-root [data-key="settings"]');
       await page.click(".sb-devices > summary");
       await wait(page, 400);
     },
+    probe: panelMore,
+    after: panelAtRest,
   },
-  { id: "popout", url: "/soundboard.html", scope: "body", sizes: ["460x680"], open: (page) => wait(page) },
+  {
+    id: "popout",
+    url: "/soundboard.html",
+    scope: "body",
+    sizes: ["460x680"],
+    open: (page) => wait(page),
+    probe: async (page) => {
+      const see = await boardNow(page);
+      return [
+        ...expect(!see.panel && see.expanded === "false", "the pop-out opens on the sounds, its settings closed", JSON.stringify(see)),
+        ...expect(see.switchShown, "the pop-out shows the virtual microphone's switch", JSON.stringify(see)),
+        ...expect(see.firstSound >= 0 && see.firstSound < see.height, "the pop-out's first sound is on its first screen", JSON.stringify(see)),
+        ...(await tiles(page)),
+      ];
+    },
+  },
+  {
+    id: "popout-settings",
+    url: "/soundboard.html",
+    scope: "body",
+    sizes: ["460x680"],
+    fresh: true,
+    open: async (page) => {
+      await page.click('[data-key="settings"]');
+      await page.click(".sb-devices > summary");
+      await wait(page, 400);
+    },
+    probe: async (page) => {
+      const see = await boardNow(page);
+      return [
+        ...expect(see.panel && see.controls && see.expanded === "true", "Soundboard settings opens the pop-out's panel", JSON.stringify(see)),
+        ...expect(see.switchShown, "the pop-out's switch shows with the panel open", JSON.stringify(see)),
+        ...(await panelMore(page)),
+        ...(await panelByKeyboard(page)),
+      ];
+    },
+    after: panelAtRest,
+  },
   pill("recording", `window.__overlayUpdate("recording"); for (let i = 0; i < 32; i++) window.__MOCK__.emit("audio-level", 0.15 + 0.7 * Math.abs(Math.sin(i * 0.7)));`),
   pill("transcribing", `window.__overlayUpdate("recording"); window.__overlayUpdate("transcribing"); window.__MOCK__.emit("partial-transcript", { text: "Could you send me the quote for the move by tomorrow", is_final: false });`),
   pill("notice", `window.__MOCK__.emit("gpu-notice", "freed");`, async (page) => {

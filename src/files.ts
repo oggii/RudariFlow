@@ -51,6 +51,7 @@ interface DownloadProgress {
 
 const EXTENSIONS = ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "oga", "wma", "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "3gp", "amr"];
 
+const section = document.getElementById("section-files")!;
 const drop = document.getElementById("file-drop")!;
 const chooseBtn = document.getElementById("file-choose") as HTMLButtonElement;
 const languageSelect = document.getElementById("file-language") as HTMLSelectElement;
@@ -252,6 +253,8 @@ async function transcribe(path: string) {
   fileName = path.split(/[\\/]/).pop() ?? path;
   nameEl.textContent = fileName;
   job.classList.remove("hidden");
+  // A file is loaded: the drop zone shrinks, so the transcript starts on the first screen.
+  section.classList.add("has-file");
   cancelBtn.classList.remove("hidden");
   result.classList.remove("hidden");
   summaryRun++;
@@ -475,6 +478,7 @@ function clearFile() {
   setProgress(0);
   job.classList.add("hidden");
   result.classList.add("hidden");
+  section.classList.remove("has-file");
   // The Clear button went with the file line.
   chooseBtn.focus();
 }

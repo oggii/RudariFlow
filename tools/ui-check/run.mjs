@@ -220,7 +220,7 @@ async function keyboardWalk(page, scope) {
     seen.add(stop.stop);
     if (stop.n === null) continue; // outside the scope
     reached.add(stop.n);
-    if (!stop.ring) out.push({ check: "focus", what: stop.what, detail: "has the keyboard focus and does not show it" });
+    if (stop.ring) out.push({ check: "focus", what: stop.what, detail: stop.ring });
   }
   for (const c of expected) if (!reached.has(c.n)) out.push({ check: "tab", what: c.what, detail: "Tab never reaches it" });
   await page.evaluate(() => document.activeElement?.blur?.());
@@ -269,6 +269,8 @@ for (const scenario of SCENARIOS) {
               await shoot(win, `${def.id}-${scenario}-${lang}-${size}`);
               shots += 2;
             }
+            // What the page changed for its picture is put back for the pages that follow.
+            await def.after?.(win.page);
           } catch (e) {
             report(def.id, where, [{ check: "page-error", what: "the page could not be opened", detail: String(e).split("\n")[0] }]);
           }

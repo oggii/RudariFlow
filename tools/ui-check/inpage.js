@@ -231,17 +231,83 @@
   const rovingTab = (el) =>
     el.matches("[role=tab]") && [...(el.closest("[role=tablist]")?.querySelectorAll("[role=tab]") ?? [])].some((t) => t.tabIndex >= 0);
 
-  /** The focus ring of the focused control: an outline of 2 px or more with 3:1 against the page, on it or on the part that stands for it. */
-  const hasFocusRing = (el) => {
+  /**
+   * The focus ring of the focused control: an outline of 2 px or more with
+   * 3:1 against the page, on it or on the part that stands for it, in the
+   * one colour of the token --focus (a page without the token, the pill, is
+   * not asked for the colour). "" when it is there, or what is wrong with it.
+   */
+  const focusRing = (el) => {
     const parts = [el, ...el.children, el.nextElementSibling, el.closest("label")].filter(Boolean);
-    return parts.some((part) => {
+    const one = rootTokens().includes("--focus") ? tokenColor("--focus").colour : null;
+    let other = "";
+    for (const part of parts) {
       const cs = getComputedStyle(part);
-      if (cs.outlineStyle === "none" || parseFloat(cs.outlineWidth) < 1.5) return false;
+      if (cs.outlineStyle === "none" || parseFloat(cs.outlineWidth) < 1.5) continue;
       const colour = parseColor(cs.outlineColor);
-      if (!colour || colour[3] < 0.5) return false;
+      if (!colour || colour[3] < 0.5) continue;
       const bg = backgroundOf(part.parentElement ?? part);
-      return ratio(over(colour, bg), bg) >= 3;
-    });
+      if (ratio(over(colour, bg), bg) < 3) continue;
+      if (!one || [0, 1, 2, 3].every((i) => Math.abs(colour[i] - one[i]) < (i === 3 ? 0.01 : 1))) return "";
+      other = `its ring is ${hex(colour)}, not the one of --focus (${hex(one)})`;
+    }
+    return other || "has the keyboard focus and does not show it";
+  };
+
+  // ── Motion ────────────────────────────────────────────
+  /** Where a state may show itself by pulsing (the element or its ::before). */
+  const PULSES = ".status-dot, .mt-bar-dot, .mt-finishing-line, .mt-hint-text";
+  /** Bars whose width follows a value. */
+  const FILLS = ".progress-fill, #progress-fill, .sb-progress-fill";
+  const seconds = (text) => text.split(",").map((s) => (s.trim().endsWith("ms") ? parseFloat(s) / 1000 : parseFloat(s)));
+  /**
+   * Everything in the document that has an animation or a transition with a
+   * duration, shown or not: [{ el, pseudo, what, kind: "animation" |
+   * "transition", name, duration, timing, count }].
+   */
+  const moving = () => {
+    const out = [];
+    for (const el of document.querySelectorAll("*")) {
+      for (const pseudo of ["", "::before", "::after"]) {
+        const cs = getComputedStyle(el, pseudo || undefined);
+        if (pseudo && (cs.content === "none" || cs.content === "normal")) continue; // no such part
+        const what = () => desc(el) + pseudo; // asked for only where something moves
+        const names = cs.animationName.split(",").map((n) => n.trim());
+        const lasts = seconds(cs.animationDuration);
+        names.forEach((name, i) => {
+          if (name !== "none") out.push({ el, pseudo, what: what(), kind: "animation", name, duration: lasts[i % lasts.length], timing: cs.animationTimingFunction, count: cs.animationIterationCount });
+        });
+        const props = cs.transitionProperty.split(",").map((n) => n.trim());
+        const times = seconds(cs.transitionDuration);
+        // The longer list rules: a duration without a property of its own belongs to the properties again.
+        for (let i = 0; i < Math.max(props.length, times.length); i++) {
+          const duration = times[i % times.length];
+          if (duration > 0 && props[i % props.length] !== "none") out.push({ el, pseudo, what: what(), kind: "transition", name: props[i % props.length], duration, timing: cs.transitionTimingFunction, count: "1" });
+        }
+      }
+    }
+    return out;
+  };
+  /**
+   * What moves against the standard: only a page that comes (page-in) and a
+   * fold that opens (fold-in) move, once, for 120 to 180 ms, ease-out. A
+   * state may show itself: a dot that pulses, a bar whose width follows its
+   * value. Hover, focus and everything else change at once.
+   */
+  const motion = () => {
+    const out = [];
+    const ms = (m) => `${Math.round(m.duration * 1000)} ms`;
+    for (const m of moving()) {
+      if (m.kind === "animation") {
+        if (m.name === "pulse" && m.el.matches(PULSES)) continue;
+        const where = m.name === "page-in" ? ".content-section" : m.name === "fold-in" ? ".fold-body" : null;
+        if (!where || m.pseudo || !m.el.matches(where)) out.push({ what: m.what, detail: `the animation "${m.name}" is none of the standard's (page-in, fold-in, a state's pulse) or runs in another place` });
+        else if (m.duration < 0.12 - 1e-6 || m.duration > 0.18 + 1e-6 || m.timing !== "ease-out" || m.count !== "1") out.push({ what: m.what, detail: `"${m.name}" runs ${ms(m)} ${m.timing}, ${m.count} times; the standard is 120 to 180 ms, ease-out, once` });
+      } else if (!(m.name === "width" && !m.pseudo && m.el.matches(FILLS))) {
+        out.push({ what: m.what, detail: `a transition of ${m.name} over ${ms(m)}; only a bar's width follows its value, everything else changes at once` });
+      }
+    }
+    return out;
   };
 
   /**
@@ -437,6 +503,11 @@
 
     // 11. Ids other code relies on.
     for (const id of opts.ids ?? []) if (!document.getElementById(id)) add("contract", `#${id}`, "this id is gone from the page");
+
+    // 12. Motion, in the whole document (a rule that is wrong is wrong whether its page shows or not).
+    const moved = new Map();
+    for (const m of motion()) moved.has(m.what) || moved.set(m.what, m.detail);
+    for (const [what, detail] of moved) add("motion", what, detail);
     return out;
   }
 
@@ -460,8 +531,15 @@
     const el = document.activeElement;
     if (!el || el === document.body || el === document.documentElement) return null;
     if (!el.hasAttribute("data-uic-stop")) el.setAttribute("data-uic-stop", String(++stops));
-    return { stop: el.getAttribute("data-uic-stop"), n: el.getAttribute("data-uic"), what: desc(el), ring: hasFocusRing(el) };
+    return { stop: el.getAttribute("data-uic-stop"), n: el.getAttribute("data-uic"), what: desc(el), ring: focusRing(el) };
   }
 
-  window.__uic = { collect, markControls, focusStop };
+  /** With "prefers-reduced-motion: reduce" nothing may move: what still has an animation or a transition with a duration, or runs one right now. */
+  function stillMoving() {
+    const out = moving().map((m) => `${m.what}: ${m.kind} ${m.name}`);
+    for (const a of document.getAnimations()) out.push(`running: ${a.animationName ?? a.transitionProperty ?? "an animation"}`);
+    return [...new Set(out)];
+  }
+
+  window.__uic = { collect, markControls, focusStop, stillMoving };
 })();

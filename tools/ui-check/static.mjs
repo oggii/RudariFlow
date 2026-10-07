@@ -75,6 +75,30 @@ export function staticChecks(root, contract) {
     }
   }
 
+  // The shared standard in the styles (the clean-ups of Task 8 stay done).
+  // The page rules draw no focus ring of their own and take none away
+  // (components.css has the one ring), and write no colour past the tokens;
+  // what stays are shadows and a dialog's backdrop, which have no token. No
+  // style sheet has a font size that is not on the scale (12 / 14 / 16 / 22).
+  const PAGE_RULES = ["src/style.css", "src/styles/shell.css", "src/styles/home.css", "src/styles/settings.css"];
+  for (const file of filesUnder(path.join(root, "src"), ".css").map((f) => path.relative(root, f).replace(/\\/g, "/"))) {
+    let rule = "";
+    read(file)
+      .split(/\r?\n/)
+      .forEach((line, i) => {
+        const at = `${file}:${i + 1}`;
+        const text = line.trim();
+        if (text.endsWith("{")) rule = text;
+        const size = text.match(/font-size:\s*([\d.]+)px/);
+        if (size && ![12, 14, 16, 22].includes(Number(size[1]))) add("standard", at, `font-size ${size[1]} px is not on the type scale (12 / 14 / 16 / 22)`);
+        if (!PAGE_RULES.includes(file)) return;
+        if (/:focus/.test(text) && text !== ".export-list button:focus-visible {") add("standard", at, "a focus rule of a page's own; components.css draws the one ring");
+        if (/outline:\s*(none|0)\b/.test(text)) add("standard", at, "an outline is taken away; the one focus ring must show");
+        const declaration = /^[a-z-]+:.*;$/.test(text);
+        if (declaration && /rgba?\(|hsla?\(|#[0-9a-fA-F]{3,8}\b/.test(text) && !text.startsWith("box-shadow:") && !rule.includes("::backdrop")) add("standard", at, "a colour written past the tokens");
+      });
+  }
+
   // Every command the frontend called before is still called: an invoke("…")
   // of it, not the word in quotes (a text key can have a command's name).
   const called = new Set(commandsCalled(root));

@@ -1,6 +1,1 @@
-[
- { "check": "name", "page": "files*", "what": "*", "until": 8 },
- { "check": "hint-lines", "page": "soundboard*", "what": "*", "until": 8 },
- { "check": "hint-lines", "page": "popout*", "what": "*", "until": 8 },
- { "check": "clipped", "page": "soundboard*", "what": "*", "until": 8 }
-]
+[]

@@ -50,7 +50,8 @@ function nameMore(more: HTMLElement) {
 export function initHints() {
   document.addEventListener("click", (e) => {
     const more = (e.target as HTMLElement).closest<HTMLElement>(".hint-more");
-    if (!more) return;
+    // The Soundboard redraws its rows and keeps their state itself.
+    if (!more || more.dataset.own !== undefined) return;
     const long = document.getElementById(more.getAttribute("aria-controls") ?? "");
     if (!long) return;
     const open = more.getAttribute("aria-expanded") !== "true";

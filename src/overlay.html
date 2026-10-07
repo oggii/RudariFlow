@@ -130,8 +130,14 @@
         0%, 100% { color: rgba(255, 255, 255, 0.95); }
         50% { color: rgba(255, 255, 255, 0.6); }
       }
+      /* Reduced motion: nothing in the pill moves; its states still change, at once. */
       @media (prefers-reduced-motion: reduce) {
-        body[data-state="polishing"] .transcript { animation: none; }
+        *,
+        *::before,
+        *::after {
+          animation: none !important;
+          transition: none !important;
+        }
       }
       .notice {
         position: absolute;

@@ -10,6 +10,7 @@ import { FailureSaid } from "../confirm-delete";
 import { t } from "../i18n";
 import { hotkeyLabel, startCapture } from "../hotkey-capture";
 import { deleteButton } from "../confirm-delete";
+import { prefs, roomBeside, updatePrefs, WIDE } from "../shell";
 import {
   api,
   EXTENSIONS,
@@ -24,6 +25,8 @@ import {
 } from "./api";
 
 const CABLE_URL = "https://vb-audio.com/Cable/";
+/** The settings panel's id (one board per window). */
+const PANEL_ID = "sb-panel";
 /** Set once the Discord hint was dismissed (a per-PC convenience). */
 const HINT_KEY = "rudariflow-soundboard-hint-seen";
 
@@ -128,6 +131,8 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
   /** The category chip that filters the list; "" = All. */
   let category = "";
   let devicesOpen = false;
+  /** Hints whose "More" is open, by row; kept over redraws. */
+  const openHints = new Set<string>();
   /** Rename fields and hotkey captures open: redraws wait until they close. */
   let editing = 0;
   let pending = false;
@@ -190,13 +195,29 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     void refresh().catch(console.error);
   }
 
+  /** The window the board is in: the pop-out, or the tab with room for two columns or not.
+   *  Decided on the room beside the sidebar with the scrollbar's own room in it
+   *  (`roomBeside`): the two forms differ in height, and a step that a
+   *  scrollbar could take back would flip in every frame. */
+  function layout(): "popout" | "wide" | "narrow" {
+    if (options.popOut) return "popout";
+    return roomBeside() >= WIDE ? "wide" : "narrow";
+  }
+
+  /** The settings panel: as the user left it for this layout; else open only where it has a column of its own. */
+  function panelOpen(): boolean {
+    return prefs.panels[layout()] ?? layout() === "wide";
+  }
+
+  /** The sounds first: a bar (virtual microphone, Stop all, Pop out, Soundboard settings),
+   *  then the settings panel if it is open (the left column in a wide window) and the library. */
   function build(s: BoardState): HTMLElement[] {
+    const open = panelOpen();
+    root.classList.toggle("wide", layout() === "wide");
+    root.classList.toggle("panel-open", open);
     if (!options.popOut && s.board.window.poppedOut) return [popped()];
     listBox = el("div", "sb-list");
     fillList(listBox, s);
-    // Two groups: settings (left in a wide main window) and the sound library (right).
-    const settings = el("div", "sb-col sb-col-settings");
-    settings.append(top(s), devicesBox(s), ...hints(s));
     const library = el("div", "sb-col sb-col-library");
     library.append(toolbar(), chips(s));
     if (notice.text) {
@@ -206,14 +227,91 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       library.append(line);
     }
     library.append(listBox);
-    return [settings, library];
+    const body = el("div", "sb-body");
+    if (open) body.append(panel(s));
+    body.append(library);
+    return [bar(s, open), ...cableHint(s), body];
+  }
+
+  function bar(s: BoardState, open: boolean): HTMLElement {
+    const b = el("div", "sb-bar");
+    const onSwitch = toggle("enabled", t("sb_switch_label"), s.status.state === "on", async (wanted, input) => {
+      if (switching) return;
+      switching = true;
+      input.disabled = true;
+      try {
+        const status = await api.setEnabled(wanted);
+        if (state) state.status = status;
+      } catch (e) {
+        console.error("soundboard_set_enabled failed:", e);
+        notice = { text: reasonText(String(e)), tone: "error" };
+      }
+      switching = false;
+      render();
+    });
+    onSwitch.querySelector("input")!.disabled = switching;
+    const text = el("div", "sb-bar-text");
+    const status = el("span", "label-hint sb-status status-line", statusText(s.status));
+    status.dataset.tone = s.status.state;
+    // The switch is read out with what it does right now ("On: your mic + sounds → …").
+    status.id = `${PANEL_ID}-status`;
+    onSwitch.querySelector("input")!.setAttribute("aria-describedby", status.id);
+    text.append(el("span", "label-text", t("sb_switch_label")), status);
+    const mic = el("div", "sb-bar-mic");
+    mic.append(onSwitch, text);
+
+    const actions = el("div", "sb-bar-actions");
+    actions.append(button("btn-secondary", t("sb_stop_all"), "stop-all", () => void api.stopAll().catch(fail)));
+    if (!options.popOut) actions.append(button("btn-secondary", t("sb_pop_out"), "pop-out", () => void api.popOut(true).catch(fail)));
+    // A disclosure: the button says whether its panel is open and keeps the
+    // focus (`render` gives it back by its key). The choice is kept for this
+    // layout; the pop-out and the main window share the store (`updatePrefs`).
+    const settings = button("btn-secondary", t("sb_settings"), "settings", () => {
+      const open = !panelOpen();
+      updatePrefs((p) => (p.panels[layout()] = open));
+      render();
+    });
+    settings.setAttribute("aria-expanded", String(open));
+    settings.setAttribute("aria-controls", PANEL_ID);
+    actions.append(settings);
+    b.append(mic, actions);
+    return b;
   }
 
   function row(label: string, hint: string, ...controls: HTMLElement[]): HTMLElement {
+    return rowWithMore("", label, hint, "", ...controls);
+  }
+
+  /** A row whose one-line hint has a longer text behind "More" (`id` keeps it open over redraws). */
+  function rowWithMore(id: string, label: string, hint: string, more: string, ...controls: HTMLElement[]): HTMLElement {
     const r = el("div", "setting-row");
     const l = el("div", "setting-label");
     l.append(el("span", "label-text", label));
-    if (hint) l.append(el("span", "label-hint", hint));
+    if (hint) {
+      const h = el("span", "label-hint");
+      h.append(el("span", "", hint));
+      l.append(h);
+      if (more) {
+        const open = openHints.has(id);
+        const longId = `${PANEL_ID}-more-${id}`;
+        const b = button("hint-more", t(open ? "hint_less" : "hint_more"), `more-${id}`, () => {
+          if (open) openHints.delete(id);
+          else openHints.add(id);
+          render();
+        });
+        // rows.ts leaves it alone: this board redraws and keeps the state itself.
+        b.dataset.own = "";
+        b.setAttribute("aria-expanded", String(open));
+        b.setAttribute("aria-controls", longId);
+        // Named after its row like every "More" of Settings (rows.ts, `nameMore`).
+        b.setAttribute("aria-label", t(open ? "hint_less_about" : "hint_more_about").replace("{label}", () => label));
+        h.append(" ", b);
+        const long = el("span", "label-hint hint-long", more);
+        long.id = longId;
+        long.hidden = !open;
+        l.append(long);
+      }
+    }
     const c = el("div", "setting-control sb-control");
     c.append(...controls);
     r.append(l, c);
@@ -278,53 +376,46 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     return wrap;
   }
 
-  function top(s: BoardState): HTMLElement {
+  /** "Soundboard settings": what is set once. The virtual microphone's switch is in the bar. */
+  function panel(s: BoardState): HTMLElement {
     const b = s.board;
+    const box = el("div", "sb-col sb-col-settings");
+    box.id = PANEL_ID;
+    // Named like the button that opens it: who comes into it hears where they are.
+    box.setAttribute("role", "group");
+    box.setAttribute("aria-label", t("sb_settings"));
     const list = el("div", "settings-list sb-top");
-    const onSwitch = toggle("enabled", t("sb_switch_label"), s.status.state === "on", async (wanted, input) => {
-      if (switching) return;
-      switching = true;
-      input.disabled = true;
-      try {
-        const status = await api.setEnabled(wanted);
-        if (state) state.status = status;
-      } catch (e) {
-        console.error("soundboard_set_enabled failed:", e);
-        notice = { text: reasonText(String(e)), tone: "error" };
-      }
-      switching = false;
-      render();
-    });
-    onSwitch.querySelector("input")!.disabled = switching;
-    const switchRow = row(t("sb_switch_label"), t("sb_switch_hint"), onSwitch);
-    const status = el("span", "label-hint sb-status", statusText(s.status));
-    status.dataset.tone = s.status.state;
-    switchRow.querySelector(".setting-label")?.append(status);
     list.append(
-      switchRow,
       row(t("sb_others_label"), t("sb_others_hint"), slider("others", t("sb_others_label"), b.othersVolume, (v) => void api.setVolumes(v, b.meVolume).catch(fail))),
       row(t("sb_me_label"), t("sb_me_hint"), slider("me", t("sb_me_label"), b.meVolume, (v) => void api.setVolumes(b.othersVolume, v).catch(fail))),
       row(t("sb_layer_label"), t("sb_layer_hint"), toggle("layer", t("sb_layer_label"), b.layer, (on) => void api.setLayer(on).catch(fail))),
-      row(
-        t("sb_stop_hotkey_label"),
-        t("sb_stop_hotkey_hint"),
-        hotkeyControl("stop-hotkey", b.stopHotkey, s.hotkeysTaken.includes("stopSounds"), (combo) => api.setStopHotkey(combo)),
-      ),
-      row(
+      rowWithMore(
+        "sound-hotkeys",
         t("sb_sound_hotkeys_label"),
         t("sb_sound_hotkeys_hint"),
+        t("sb_sound_hotkeys_more"),
         toggle("sound-hotkeys", t("sb_sound_hotkeys_label"), b.soundHotkeys, (on) => void api.setSoundHotkeys(on).catch(fail)),
       ),
-      row(
+      rowWithMore(
+        "toggle-hotkey",
         t("sb_toggle_hotkey_label"),
         t("sb_toggle_hotkey_hint"),
+        t("sb_hotkey_more"),
         hotkeyControl("toggle-hotkey", b.toggleHotkey, s.hotkeysTaken.includes("toggleSoundHotkeys"), (combo) => api.setToggleHotkey(combo)),
+      ),
+      rowWithMore(
+        "stop-hotkey",
+        t("sb_stop_hotkey_label"),
+        t("sb_stop_hotkey_hint"),
+        t("sb_hotkey_more"),
+        hotkeyControl("stop-hotkey", b.stopHotkey, s.hotkeysTaken.includes("stopSounds"), (combo) => api.setStopHotkey(combo)),
       ),
     );
     if (options.popOut) {
       list.append(row(t("sb_always_on_top"), "", toggle("on-top", t("sb_always_on_top"), b.window.alwaysOnTop, (on) => void api.setAlwaysOnTop(on).catch(fail))));
     }
-    return list;
+    box.append(el("p", "label-hint sb-panel-lead", t("sb_switch_hint")), list, devicesBox(s), ...discordHint());
+    return box;
   }
 
   function devicesBox(s: BoardState): HTMLElement {
@@ -369,18 +460,22 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     return box;
   }
 
-  function hints(s: BoardState): HTMLElement[] {
+  /** No virtual cable: the board cannot work, so this shows whether the panel is open or not. */
+  function cableHint(s: BoardState): HTMLElement[] {
     const noCable = devices !== null && !devices.automatic.cable && !s.board.devices.cable;
+    if (!noCable) return [];
     const box = el("div", "sb-hint");
-    if (noCable) {
-      box.append(
-        el("p", "", t("sb_cable_missing")),
-        button("btn-secondary", t("sb_cable_link"), "cable-link", () => void openExternal(CABLE_URL).catch(console.error)),
-        el("p", "", t("sb_discord_hint")),
-      );
-      return [box];
-    }
+    box.append(
+      el("p", "", t("sb_cable_missing")),
+      button("btn-secondary", t("sb_cable_link"), "cable-link", () => void openExternal(CABLE_URL).catch(console.error)),
+    );
+    return [box];
+  }
+
+  /** How to choose the cable in Discord, in the panel until "Got it". */
+  function discordHint(): HTMLElement[] {
     if (hintSeen()) return [];
+    const box = el("div", "sb-hint");
     box.append(
       el("p", "", t("sb_discord_hint")),
       button("btn-ghost", t("sb_hint_dismiss"), "hint-dismiss", () => {
@@ -406,12 +501,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
         showPlaying(state.playing);
       }
     });
-    bar.append(
-      button("btn-secondary", t("sb_add"), "add", () => void chooseFiles()),
-      search,
-      button("btn-secondary", t("sb_stop_all"), "stop-all", () => void api.stopAll().catch(fail)),
-    );
-    if (!options.popOut) bar.append(button("btn-secondary", t("sb_pop_out"), "pop-out", () => void api.popOut(true).catch(fail)));
+    bar.append(button("btn-secondary", t("sb_add"), "add", () => void chooseFiles()), search);
     return bar;
   }
 
@@ -651,6 +741,16 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       void addPaths(p.paths);
     }
   });
+  // The tab got room for two columns, or lost it: the panel follows its layout's choice.
+  const content = document.getElementById("content");
+  if (content) {
+    let was = layout();
+    new ResizeObserver(() => {
+      if (layout() === was) return;
+      was = layout();
+      render();
+    }).observe(content);
+  }
   void refresh().catch(console.error);
 
   return {

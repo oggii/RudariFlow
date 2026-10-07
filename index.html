@@ -262,7 +262,7 @@
 
         <section id="section-files" class="content-section">
           <div class="section-header">
-            <h2 class="section-title" data-i18n="files_title">Transcribe a file</h2>
+            <h2 class="section-title" data-i18n="files_title">Files</h2>
             <p class="section-desc" data-i18n="files_desc">Audio or video to text: voice messages, meetings, interviews. Runs on your PC with your Whisper model; the file stays where it is.</p>
           </div>
           <div id="file-drop" class="file-drop">
@@ -274,7 +274,7 @@
             <span class="label-hint" data-i18n="files_formats">MP3, M4A, WAV, FLAC, WhatsApp voice messages (OGG), MP4, MOV, MKV, WebM</span>
             <button id="file-choose" class="btn-secondary" data-i18n="files_choose">Choose file…</button>
           </div>
-          <div class="settings-list files-options">
+          <div class="card settings-list files-options">
             <div class="setting-row">
               <div class="setting-label">
                 <span class="label-text" data-i18n="files_language_label">Language</span>
@@ -348,7 +348,7 @@
               </div>
               <div id="file-summary" class="file-summary-text"></div>
             </div>
-            <textarea id="file-text" class="file-text" spellcheck="false"></textarea>
+            <textarea id="file-text" class="file-text" spellcheck="false" data-i18n-aria-label="files_transcript" aria-label="Transcript"></textarea>
           </div>
         </section>
         <section id="section-meetings" class="content-section">
