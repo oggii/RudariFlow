@@ -49,12 +49,18 @@
       }
       body[data-state="transcribing"] .mic-icon { fill: #ffb74d; }
 
+      /* The newest level is the last bar. Where the 32 bars have less room
+         than they need (Edit mode's chip stands beside them), the oldest go,
+         at the left: the cancel button keeps its place inside the pill. */
       .waveform {
         flex: 1 1 auto;
+        min-width: 0;
         height: 28px;
         display: flex;
         align-items: center;
+        justify-content: flex-end;
         gap: 3px;
+        overflow: hidden;
       }
       .bar {
         flex: 1 1 0;
@@ -76,8 +82,8 @@
 
       .cancel {
         flex: 0 0 auto;
-        width: 22px;
-        height: 22px;
+        width: 24px;
+        height: 24px;
         border-radius: 50%;
         background: rgba(255, 255, 255, 0.1);
         border: none;
@@ -91,16 +97,19 @@
       }
       .cancel:hover { background: rgba(255, 92, 92, 0.85); }
       .cancel svg { width: 10px; height: 10px; stroke: #fff; }
+      /* One line in the middle of the window; a text that is longer ends in
+         an ellipsis. A block with a line as high as itself, not a flex box:
+         only a block's own line gets the ellipsis, a flex box cut the text
+         at both of its ends. */
       .transcript {
         position: absolute;
         inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
+        display: block;
         padding: 0 18px;
         font-size: 12px;
         font-weight: 500;
-        line-height: 1.3;
+        line-height: 62px;
+        text-align: center;
         color: rgba(255, 255, 255, 0.95);
         background: rgba(20, 20, 22, 0.92);
         border-radius: 999px;
@@ -116,14 +125,16 @@
       body[data-state="polishing"] .transcript { opacity: 1; }
       /* AI cleanup: the Whisper text stays visible, labelled and gently pulsing. */
       body[data-state="polishing"] .transcript {
-        justify-content: flex-start;
-        gap: 10px;
+        text-align: left;
         animation: polish 1.4s ease-in-out infinite;
       }
       body[data-state="polishing"] .transcript::before {
         content: attr(data-phase);
-        flex: 0 0 auto;
+        display: inline-block;
+        margin-right: 10px;
         padding: 3px 8px;
+        line-height: 1.3;
+        vertical-align: middle;
         border-radius: 999px;
         background: rgba(124, 138, 255, 0.22);
         color: #c9cfff;

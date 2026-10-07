@@ -22,6 +22,23 @@
 // its way back (the command itself arrives at once), as over a busy IPC:
 // what the page does between a question and its answer then has the time
 // to go wrong.
+// The states the page cannot bring about itself (ui-check's state pages):
+// refuseNext(cmd, why) makes the next call of a command fail with the
+// backend's own words; holdNext(cmd) lets the next call wait (a file being
+// transcribed, a summary, the PC check) until release(cmd) answers it or
+// reject(cmd, why) refuses it; sb is the Soundboard beside its saved board
+// (status, missing, taken, playing, devices: null = as the data set has it)
+// and board the saved board itself, to change before a "soundboard-changed";
+// manySounds() fills it with 24 sounds in 5 categories; meetingRecording(patch)
+// and meetingStatus(status) set what "meeting-status" tells; meetings is the
+// library by id, addMeetings(n) fills it; meetingLines(n) is a
+// "meeting-lines" payload with n more paragraphs for the meeting that
+// records; speakerModel says whether the speaker model is downloaded;
+// savePath is what the save dialog answers (null: cancelled); aiFallback is
+// why the AI did not clean up a sample (null: it did). keep({ sb }) lays
+// sb over the next starts of the page too (the board asks for its devices
+// once). The hotkey commands refuse what the backend refuses: a Windows
+// shortcut and a key another hotkey has.
 (() => {
   const CFG = window.__MOCK_CFG__ || { lang: "en", scenario: "populated" };
   const rich = CFG.scenario !== "firstrun";
@@ -139,7 +156,21 @@
     lengthMs: 0, whisperModel: "large-v3-turbo-q8_0", language: "", state: "recording", lines: linesOf(paragraphs1.slice(0, 4)),
     speakerNames: [], audioDeleted: false,
   };
-  const meetings = rich ? { [M1]: { meeting: meeting1, paragraphs: paragraphs1 }, [M2]: { meeting: meeting2, paragraphs: paragraphs1.slice(0, 3) }, [MREC]: { meeting: meetingRec, paragraphs: paragraphs1.slice(0, 4).map((x) => ({ ...x, speaker: undefined })) } } : {};
+  // Finished without notes and without speakers: AI cleanup was off, the speaker model was not there, the audio is gone.
+  const M3 = "m-20260928-0900";
+  const meeting3 = {
+    id: M3, title: de ? "Kundengespräch Keller: Offerte Umzug" : "Client call Keller: quote for the move", startedAt: now - 9 * DAY, utcOffsetMin: 120,
+    lengthMs: 27 * MIN + 41_000, whisperModel: "small, large-v3-turbo-q8_0", language: de ? "de" : "en", state: "finished",
+    lines: linesOf(paragraphs1.map((x) => ({ ...x, speaker: undefined }))), speakerNames: [], notesError: "ai_off", speakersError: "no_model", audioDeleted: true,
+  };
+  const meetings = rich
+    ? {
+        [M1]: { meeting: meeting1, paragraphs: paragraphs1 },
+        [M2]: { meeting: meeting2, paragraphs: paragraphs1.slice(0, 3) },
+        [M3]: { meeting: meeting3, paragraphs: paragraphs1.map((x) => ({ ...x, speaker: undefined })) },
+        [MREC]: { meeting: meetingRec, paragraphs: paragraphs1.slice(0, 4).map((x) => ({ ...x, speaker: undefined })) },
+      }
+    : {};
   const summaryOf = (m) => ({ id: m.id, title: m.title, startedAt: m.startedAt, utcOffsetMin: m.utcOffsetMin, lengthMs: m.lengthMs, state: m.state, audioDeleted: m.audioDeleted });
   let meetingStatus = { recording: null, finishing: [] };
 
@@ -164,6 +195,8 @@
       : [],
   };
   const sbStatus = () => (rich ? { state: "on", cable: "CABLE Input (VB-Audio Virtual Cable)" } : { state: "off" });
+  /** What a check lays over the Soundboard's state; null: as the data set has it. */
+  const sb = { status: null, missing: [], taken: [], playing: null, devices: null, ...kept.sb };
   const sbDevices = rich
     ? {
         inputs: ["Microphone (Fast Track)", "Headset Microphone (Logitech PRO X)", "CABLE Output (VB-Audio Virtual Cable)"],
@@ -189,15 +222,58 @@
     emit(event, payload) {
       for (const id of listeners.get(event) || []) callbacks.get(id)?.({ event, id, payload });
     },
-    ids: { M1, M2, MREC },
+    ids: { M1, M2, M3, MREC },
+    meetings,
+    board,
+    sb,
+    /** 24 sounds in 5 categories: a library in daily use by someone who collects. */
+    manySounds() {
+      const names = ["Airhorn", "Sad trombone", "Bruh", "Lo-fi loop", "Victory fanfare", "Windows XP shutdown", "Rimshot", "Crickets", "Applause", "Dramatic chipmunk", "Vine boom", "Wilhelm scream", "Level up", "Game over", "Nope", "Tada", "Record scratch", "Elevator music", "Drum roll", "Laugh track", "Mission failed", "Oof", "Countdown", de ? "Kuhglocke aus dem Appenzell, lange Fassung" : "Cowbell from Appenzell, the long version"];
+      board.categories = [...cats, { id: "c4", name: de ? "Arbeit" : "Work" }, { id: "c5", name: "Stream" }];
+      board.sounds = names.map((name, i) => snd(`s${i + 1}`, name, i % 6 === 5 ? "" : `c${(i % 5) + 1}`, i < 9 ? `Numpad${i + 1}` : i < 14 ? `CmdOrCtrl+Numpad${i - 9}` : "", 900 + ((i * 2731) % 9000), i === 3 || i === 17, i % 4 === 1 ? 0.7 : 1));
+    },
+    /** `n` more finished meetings in the library. */
+    addMeetings(n) {
+      const titles = de
+        ? ["Sprint-Planung", "Budget 2027", "Jour fixe Marketing", "Bewerbungsgespräch", "Retro Oktober", "Kundentermin Brunner AG", "Elternabend 5b", "Roadmap Q1", "Support-Übergabe", "Lieferanten-Call"]
+        : ["Sprint planning", "Budget 2027", "Marketing weekly", "Job interview", "Retro October", "Client meeting Brunner AG", "Parents' evening 5b", "Roadmap Q1", "Support handover", "Supplier call"];
+      for (let i = 0; i < n; i++) {
+        const id = `m-more-${i}`;
+        meetings[id] = { meeting: { ...meeting1, id, title: titles[i % titles.length], startedAt: now - (12 + 3 * i) * DAY - i * HOUR, lengthMs: (11 + 7 * i) * MIN, audioDeleted: i % 4 === 3 }, paragraphs: paragraphs1 };
+      }
+    },
+    /** A "meeting-lines" payload: `n` more paragraphs for the meeting that records. */
+    meetingLines(n) {
+      const view = meetings[MREC];
+      const from = view.paragraphs.length;
+      for (let i = 0; i < n; i++) {
+        const x = paragraphs1[i % paragraphs1.length];
+        view.paragraphs.push({ startMs: 140_000 + i * 21_000, track: x.track, speaker: undefined, text: x.text });
+      }
+      return { id: MREC, from, paragraphs: view.paragraphs.slice(from) };
+    },
+    meetingStatus(next) {
+      meetingStatus = next;
+      return meetingStatus;
+    },
+    /** Whether the speaker model is on disk (Files, and a meeting's "Download"). */
+    speakerModel: { downloaded: rich },
+    /** What the save dialog answers; null: the user cancelled it. */
+    savePath: null,
+    /** Why the AI did not clean up the sample of "Try it" (polish.rs's words); null: it did. */
+    aiFallback: null,
+    refuseNext: (cmd, why) => (refusals[cmd] = why),
+    holdNext: (cmd) => holds.add(cmd),
+    release: (cmd) => waiting[cmd]?.finish(),
+    reject: (cmd, why) => waiting[cmd]?.fail(why),
     /** `n` more dictations in the history (for "Show all" and its pages). */
     addHistory(n) {
       for (let i = 0; i < n; i++) {
         history.push({ id: now - 4 * DAY - i * HOUR, text: `${de ? "Notiz" : "Note"} ${i + 1}: ${de ? "Bitte die Unterlagen bis Freitag schicken." : "Please send the documents by Friday."}`, durationMs: 3000 + i * 10, model: "small", hasAudio: false, app: i % 2 ? "olk" : "notepad" });
       }
     },
-    meetingRecording() {
-      meetingStatus = { recording: { id: MREC, title: meetingRec.title, startedAt: meetingRec.startedAt, warnings: [], paused: false }, finishing: [] };
+    meetingRecording(patch = {}) {
+      meetingStatus = { recording: { id: MREC, title: meetingRec.title, startedAt: meetingRec.startedAt, warnings: [], paused: false, ...patch }, finishing: [] };
       return meetingStatus;
     },
     settings: () => settings,
@@ -216,6 +292,38 @@
     finishDownload: (kind = "speech") => downloads[kind]?.finish(),
     failDownload: (kind = "speech", why = "error sending request") => downloads[kind]?.fail(why),
   };
+
+  // ── Commands a check refuses or holds ──
+  const refusals = {};
+  const holds = new Set();
+  const waiting = {};
+
+  // ── Hotkeys: what the backend refuses (main.rs: change_hotkey, check_board_hotkey) ──
+  const windowsShortcut = (hotkey) => {
+    const parts = hotkey.toLowerCase().split("+");
+    const key = parts.at(-1).replace(/^key/, "");
+    return parts.length === 2 && ["cmdorctrl", "ctrl", "control"].includes(parts[0]) && "acvxzys".includes(key) && key.length === 1;
+  };
+  /** Every hotkey with its action: [action, hotkey, the owner as an error names it]. */
+  const allHotkeys = () => [
+    ["dictation", settings.hotkey, "dictation"],
+    ["pasteLast", settings.pasteLastHotkey, "pasteLast"],
+    ["rewriteLast", settings.rewriteLastHotkey, "rewriteLast"],
+    ["freeGpu", settings.freeGpuHotkey, "freeGpu"],
+    ["meeting", settings.meetingHotkey, "meeting"],
+    ["stopSounds", board.stopHotkey, "stopSounds"],
+    ["toggleSoundHotkeys", board.toggleHotkey, "toggleSoundHotkeys"],
+    ...board.sounds.map((s) => [s.id, s.hotkey, `sound:${s.name}`]),
+  ];
+  const takenBy = (action, hotkey) => allHotkeys().find(([a, h]) => a !== action && h && h.toLowerCase() === hotkey.toLowerCase());
+  const checkBoardHotkey = (action, hotkey) => {
+    if (!hotkey) return;
+    if (windowsShortcut(hotkey)) throw `'${hotkey}' is a Windows shortcut (select all, copy, paste, ...)`;
+    const owner = takenBy(action, hotkey);
+    if (owner) throw `'${hotkey}' is already used by ${owner[2]}`;
+  };
+  const boardChanged = () => setTimeout(() => window.__MOCK__.emit("soundboard-changed", null), 0);
+  const SETTING_OF = { dictation: "hotkey", pasteLast: "pasteLastHotkey", rewriteLast: "rewriteLastHotkey", freeGpu: "freeGpuHotkey", meeting: "meetingHotkey" };
 
   // ── Model downloads ──
   // A download waits until a check ends it: finish() reports the rest of
@@ -365,12 +473,96 @@
     },
     list_open_apps: () => ["chrome", "code", "discord", "explorer", "olk", "whatsapp.root"],
     learn_suggestions: () => rich ? [{ word: "Shiggy", heard: "Shiggi", count: 3 }, { word: "Temporal", heard: "temporäl", count: 1 }] : [],
-    speaker_model_status: () => ({ downloaded: rich, runtime: true, downloading: false }),
+    speaker_model_status: () => ({ downloaded: window.__MOCK__.speakerModel.downloaded, runtime: true, downloading: !!downloads.speaker }),
+    speaker_model_download: () => {
+      if (downloads.speaker) throw "busy";
+      return download("speaker", "speaker-model-progress", 45e6, () => (window.__MOCK__.speakerModel.downloaded = true));
+    },
     format_file_text: (a) => a.segments.map((s) => `${a.times ? `[${clockFmt(s.startMs)}] ` : ""}${a.names[s.speaker] ?? ""}: ${s.text}`).join("\n\n"),
     transcribe_file: () => fileTranscript(),
     summarize_text: () => meeting1.notes.summary + (de ? "\n\n- Launch neu am 14. Oktober\n- Mehrwertsteuer-Anzeige bis Mittwoch\n- Produktfotos am Donnerstag" : "\n\n- Launch moved to 14 October\n- VAT display by Wednesday\n- Product photos on Thursday"),
-    soundboard_state: () => ({ board, status: sbStatus(), playing: rich && CFG.playing ? [{ id: "s4", posMs: 31000, durationMs: 94000 }] : [], missing: [], hotkeysTaken: [] }),
-    soundboard_devices: () => sbDevices,
+    soundboard_state: () => ({ board, status: sb.status ?? sbStatus(), playing: sb.playing ?? (rich && CFG.playing ? [{ id: "s4", posMs: 31000, durationMs: 94000 }] : []), missing: sb.missing, hotkeysTaken: sb.taken }),
+    soundboard_devices: () => sb.devices ?? sbDevices,
+    soundboard_set_enabled: (a) => (sb.status = a.enabled ? { state: "on", cable: (sb.devices ?? sbDevices).automatic.cable ?? "" } : { state: "off" }),
+    soundboard_set_hotkey: (a) => {
+      checkBoardHotkey(a.id, a.hotkey);
+      const sound = board.sounds.find((s) => s.id === a.id);
+      if (!sound) throw "no_sound";
+      sound.hotkey = a.hotkey;
+      boardChanged();
+      return null;
+    },
+    soundboard_set_stop_hotkey: (a) => {
+      checkBoardHotkey("stopSounds", a.hotkey);
+      board.stopHotkey = a.hotkey;
+      boardChanged();
+      return null;
+    },
+    soundboard_set_toggle_hotkey: (a) => {
+      checkBoardHotkey("toggleSoundHotkeys", a.hotkey);
+      board.toggleHotkey = a.hotkey;
+      boardChanged();
+      return null;
+    },
+    soundboard_set_sound_hotkeys: (a) => {
+      board.soundHotkeys = a.enabled;
+      boardChanged();
+      return null;
+    },
+    // What was added and what was not, file by file: a text file is no sound, a file named "long…" is over the limit.
+    soundboard_add: (a) => {
+      const results = a.paths.map((path, i) => {
+        const file = path.split(/[\\/]/).pop();
+        const name = file.replace(/\.[^.]+$/, "");
+        const error = /\.(txt|pdf|png)$/i.test(file) ? "unsupported" : /^long/i.test(file) ? "too_long" : null;
+        const id = error ? null : `s-added-${board.sounds.length + i}`;
+        if (id) board.sounds.push(snd(id, name, "", "", 4200));
+        return { path, name: file, id, error };
+      });
+      boardChanged();
+      return results;
+    },
+    change_hotkey: (a) => {
+      if (!(a.target in SETTING_OF)) throw `unknown hotkey target '${a.target}'`;
+      if (!a.newHotkey && a.target === "dictation") throw "The dictation hotkey cannot be empty";
+      const owner = a.newHotkey ? takenBy(a.target, a.newHotkey) : null;
+      if (owner) throw `'${a.newHotkey}' is already used by ${owner[2]}`;
+      if (a.newHotkey && windowsShortcut(a.newHotkey)) throw `'${a.newHotkey}' is a Windows shortcut (select all, copy, paste, ...)`;
+      settings = { ...settings, [SETTING_OF[a.target]]: a.newHotkey };
+      return null;
+    },
+    // The PC check's report as main.rs writes it (always English: it is made to be sent on).
+    pc_check: () => ({
+      report: [
+        "RudariFlow 0.17.0 PC check, 07.10.2026 15:42",
+        "Windows 11 Pro 26200; AMD Ryzen 7 9800X3D 8-Core Processor (16 threads); 64 GB RAM",
+        "GPUs: NVIDIA GeForce RTX 5080 (CUDA, 16 GB); NVIDIA GeForce RTX 5080 (Vulkan, 16 GB); AMD Radeon(TM) Graphics (Vulkan, 2 GB, integrated)",
+        `Whisper ${settings.whisperModel} on a 6.2 s recording:`,
+        "  CUDA NVIDIA GeForce RTX 5080: 212 ms (load 1.4 s)",
+        "  CUDA NVIDIA GeForce RTX 5080, flash attention: 164 ms (load 1.3 s)  <- in use",
+        "  Vulkan NVIDIA GeForce RTX 5080: 371 ms (load 2.9 s)",
+        "  Vulkan NVIDIA GeForce RTX 5080, flash attention: failed: the device does not support it",
+        `Setting: GPU backend ${settings.gpuBackend}, flash attention ${settings.whisperFlashAttn} (unchanged)`,
+        "AI cleanup: Gemma 4 E4B on NVIDIA GeForce RTX 5080 (CUDA): 263 ms median of 3 (241, 263, 301)",
+      ].join("\n"),
+      gpuBackend: settings.gpuBackend,
+      whisperFlashAttn: settings.whisperFlashAttn,
+      changed: false,
+    }),
+    // The sample as polish.rs answers: cleaned up with the AI's time, or as it was typed with the reason.
+    ai_test: (a) =>
+      window.__MOCK__.aiFallback
+        ? { text: a.text, raw: null, fallback: window.__MOCK__.aiFallback, aiMs: 0 }
+        : { text: de ? "Ich denke, wir treffen uns am Mittwoch um 15 Uhr. Bitte bring die Folien mit." : "I think we should meet on Wednesday at 3. Please bring the slides.", raw: a.text, fallback: null, aiMs: 412 },
+    meeting_start: () => {
+      if (meetingStatus.recording) throw "already_recording";
+      window.__MOCK__.meetingRecording();
+      setTimeout(() => {
+        window.__MOCK__.emit("meetings-changed", null);
+        window.__MOCK__.emit("meeting-status", meetingStatus);
+      }, 0);
+      return MREC;
+    },
     meeting_state: () => ({ status: meetingStatus, meeting: null }),
     meeting_list: (a) => Object.values(meetings).filter((v) => v.meeting.id !== MREC || meetingStatus.recording).map((v) => summaryOf(v.meeting)).filter((s) => !a?.query || s.title.toLowerCase().includes(a.query.toLowerCase())).sort((x, y) => y.startedAt - x.startedAt),
     meeting_get: (a) => { const v = meetings[a.id]; if (!v) throw "no_meeting"; return JSON.parse(JSON.stringify(v)); },
@@ -379,7 +571,7 @@
     "plugin:event|listen": (a) => { const l = listeners.get(a.event) || []; l.push(a.handler); listeners.set(a.event, l); return a.handler; },
     "plugin:event|unlisten": () => null,
     "plugin:dialog|open": () => (de ? "C:\\Users\\Oggi\\Downloads\\Kundengespräch Keller 2026-10-05.m4a" : "C:\\Users\\Oggi\\Downloads\\Client call Keller 2026-10-05.m4a"),
-    "plugin:dialog|save": () => null,
+    "plugin:dialog|save": () => window.__MOCK__.savePath,
     mic_meter_start: () => {
       // The start as it arrives at the backend.
       const arrive = () =>
@@ -430,11 +622,10 @@
   };
   // Commands that only do something in the real backend.
   for (const cmd of [
-    "set_hotkey_paused", "change_hotkey", "copy_text", "diag_log", "set_autostart", "cancel_recording", "cancel_file", "ai_restart",
-    "history_clear", "delete_unused_model", "export_file", "speaker_model_download", "dictionary_export",
+    "set_hotkey_paused", "copy_text", "diag_log", "set_autostart", "cancel_recording", "cancel_file", "ai_restart",
+    "history_clear", "delete_unused_model", "export_file", "dictionary_export",
     "soundboard_set_volumes", "soundboard_set_layer", "soundboard_remove", "soundboard_rename", "soundboard_set_category",
-    "soundboard_set_sound_volume", "soundboard_set_sound_loop", "soundboard_set_hotkey", "soundboard_set_stop_hotkey",
-    "soundboard_set_sound_hotkeys", "soundboard_set_toggle_hotkey", "soundboard_stop_all", "soundboard_category_rename",
+    "soundboard_set_sound_volume", "soundboard_set_sound_loop", "soundboard_stop_all", "soundboard_category_rename",
     "soundboard_category_remove", "soundboard_pop_out", "soundboard_dock", "soundboard_set_always_on_top",
     "meeting_stop", "meeting_rename", "meeting_rename_speaker", "meeting_set_action_done", "meeting_delete", "meeting_finish",
     "meeting_write_notes", "meeting_play", "meeting_stop_playing", "meeting_quit",
@@ -450,8 +641,27 @@
     convertFileSrc: (p) => p,
     async invoke(cmd, args) {
       window.__MOCK__.calls.push({ cmd, args: args || {} });
-      const h = handlers[cmd];
-      if (!h) { if (!unknown.includes(cmd)) unknown.push(cmd); return null; }
+      const handler = handlers[cmd];
+      if (!handler) { if (!unknown.includes(cmd)) unknown.push(cmd); return null; }
+      const h = (a) => {
+        // Refused once, in the backend's words.
+        if (cmd in refusals) {
+          const why = refusals[cmd];
+          delete refusals[cmd];
+          throw why;
+        }
+        // Held: the answer waits until a check gives or refuses it.
+        if (holds.delete(cmd)) {
+          return new Promise((resolve, reject) => {
+            const end = (go) => () => {
+              delete waiting[cmd];
+              go();
+            };
+            waiting[cmd] = { finish: end(() => new Promise((r) => r(handler(a))).then(resolve, reject)), fail: (why) => end(() => reject(why))() };
+          });
+        }
+        return handler(a);
+      };
       const late = window.__MOCK__.answerDelay;
       if (!late) return h(args || {});
       // The command has arrived and is done; its answer is late.

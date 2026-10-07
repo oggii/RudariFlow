@@ -6,6 +6,12 @@
   /** What a keyboard or mouse user can operate. */
   const CONTROLS =
     "button, select, textarea, input:not([type=hidden]), summary, a[href], [role=button], [role=tab], [role=switch]";
+  /**
+   * Boxes that are drawn: a card, a sound's tile, a bar, a notice. What stands
+   * in one stays in it. (A row of a list or of the settings is no such box:
+   * its buttons may reach into the card's own padding.)
+   */
+  const BOXES = ".card, .sb-row, .sb-bar, .sb-col-settings, .sb-devices, .sb-hint, .mt-item, .mt-bar, .mt-hint-row, .mt-notes, .mt-modal-box, .file-drop, .file-summary, .ai-test-result, .notice, .pill";
   /** Hints that are status lines: they may be longer than one line. */
   const NOT_A_HINT = ".hint-long, .status-line, .ai-status, .sb-status, .ai-output-warn, #gpu-detected, #ai-model-note";
 
@@ -259,6 +265,11 @@
   const PULSES = ".status-dot, .mt-bar-dot, .mt-finishing-line, .mt-hint-text";
   /** Bars whose width follows a value. */
   const FILLS = ".progress-fill, #progress-fill, .sb-progress-fill";
+  /** The pill (src/overlay.html): its bars follow the voice and shimmer while it transcribes, its text pulses while it polishes. */
+  const PILL_SHOWS = { shimmer: ".waveform .bar", polish: ".transcript" };
+  const PILL_FOLLOWS = { height: ".waveform .bar", background: ".waveform .bar" };
+  /** The pill's text and its notice come and go like a page of the window. */
+  const PILL_FADES = "body > .transcript, body > .notice";
   const seconds = (text) => text.split(",").map((s) => (s.trim().endsWith("ms") ? parseFloat(s) / 1000 : parseFloat(s)));
   /**
    * Everything in the document that has an animation or a transition with a
@@ -300,10 +311,13 @@
     for (const m of moving()) {
       if (m.kind === "animation") {
         if (m.name === "pulse" && m.el.matches(PULSES)) continue;
+        if (PILL_SHOWS[m.name] && !m.pseudo && m.el.matches(PILL_SHOWS[m.name])) continue;
         const where = m.name === "page-in" ? ".content-section" : m.name === "fold-in" ? ".fold-body" : null;
         if (!where || m.pseudo || !m.el.matches(where)) out.push({ what: m.what, detail: `the animation "${m.name}" is none of the standard's (page-in, fold-in, a state's pulse) or runs in another place` });
         else if (m.duration < 0.12 - 1e-6 || m.duration > 0.18 + 1e-6 || m.timing !== "ease-out" || m.count !== "1") out.push({ what: m.what, detail: `"${m.name}" runs ${ms(m)} ${m.timing}, ${m.count} times; the standard is 120 to 180 ms, ease-out, once` });
-      } else if (!(m.name === "width" && !m.pseudo && m.el.matches(FILLS))) {
+      } else if (m.name === "opacity" && !m.pseudo && m.el.matches(PILL_FADES)) {
+        if (m.duration < 0.12 - 1e-6 || m.duration > 0.18 + 1e-6 || m.timing !== "ease-out") out.push({ what: m.what, detail: `the pill's fade runs ${ms(m)} ${m.timing}; the standard is 120 to 180 ms, ease-out` });
+      } else if (!(m.name === "width" && !m.pseudo && m.el.matches(FILLS)) && !(PILL_FOLLOWS[m.name] && !m.pseudo && m.el.matches(PILL_FOLLOWS[m.name]))) {
         out.push({ what: m.what, detail: `a transition of ${m.name} over ${ms(m)}; only a bar's width follows its value, everything else changes at once` });
       }
     }
@@ -345,6 +359,32 @@
       const r = el.getBoundingClientRect();
       if (r.width <= 2) continue; // read out, not shown
       if (r.right > window.innerWidth + 1 || r.left < -1) add("overflow", `${desc(el)} leaves the window`, `x ${Math.round(r.left)}–${Math.round(r.right)} of ${window.innerWidth}`);
+    }
+
+    // 1b. What stands in a drawn box stays in it: a control or a text that
+    // reaches past its card or its tile lies on the page or on the neighbour.
+    // Not what is laid over the page on purpose (a menu, a button that floats)
+    // and not what a box in between scrolls or cuts (that is "clipped").
+    for (const box of all) {
+      if (!box.matches(BOXES)) continue;
+      const bs = getComputedStyle(box);
+      if (!/^visible$/.test(bs.overflowX) || !/^visible$/.test(bs.overflowY)) continue;
+      const b = box.getBoundingClientRect();
+      for (const el of box.querySelectorAll("*")) {
+        if (!(el.matches(`${CONTROLS}, kbd`) || ownText(el)) || !shown(el)) continue;
+        // A switch's input covers its switch: the switch is what is seen.
+        const seen = el.matches(".switch input") ? el.closest(".switch") : el;
+        let held = true;
+        for (let n = seen; n && n !== box; n = n.parentElement) {
+          const cs = getComputedStyle(n);
+          if (/^(absolute|fixed)$/.test(cs.position) || (n !== seen && (cs.overflowX !== "visible" || cs.overflowY !== "visible"))) held = false;
+        }
+        if (!held) continue;
+        const r = seen.getBoundingClientRect();
+        if (r.width <= 2 || r.height <= 2) continue; // read out, not shown
+        const by = Math.max(r.right - b.right, b.left - r.left, r.bottom - b.bottom, b.top - r.top);
+        if (by > 1) add("overflow", `${desc(el)} leaves ${desc(box)}`, `by ${Math.round(by)} px`);
+      }
     }
 
     // 2. Clipped text: cut by its own box or by a box around it (a card, a

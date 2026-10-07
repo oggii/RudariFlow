@@ -186,6 +186,8 @@ function renameSpeaker(i: number, chip: HTMLButtonElement) {
   const input = document.createElement("input");
   input.className = "speaker-chip-input";
   input.value = names[i];
+  // Named like the same field of a meeting: "Rename Speaker 1".
+  input.setAttribute("aria-label", t("mt_rename_speaker").replace("{name}", () => names[i]));
   chip.replaceWith(input);
   input.focus();
   input.select();

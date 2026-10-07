@@ -46,8 +46,9 @@ const LANGS = option("lang") ? [option("lang")] : ["en", "de"];
 const SIZES = option("size") ? [option("size")] : ["2560x1392", "1600x900", "900x600"];
 /** The sizes a page is opened at: its own, or the run's and (in a run without --size) the ones the page adds. */
 const sizesOf = (p) => p.sizes ?? [...SIZES, ...(option("size") ? [] : (p.alsoSizes ?? []))];
-/** The size and language the keyboard walk runs at (once per page and data set; a page with sizes of its own walks at those). */
+/** The size and language the keyboard walk runs at (once per page and data set; a page with sizes of its own that is never opened at this one walks at those). */
 const WALK = { size: "1600x900", lang: "en" };
+const walks = (def, lang, size) => def.walk !== false && lang === WALK.lang && (size === WALK.size || (!!def.sizes && !def.sizes.includes(WALK.size)));
 const glob = (pattern) => new RegExp("^" + pattern.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
 const stop = (message) => {
   console.error(`ui-check: ${message}`);
@@ -262,7 +263,7 @@ for (const scenario of SCENARIOS) {
                 ids: shell && scenario === "populated" ? contract.ids.filter((id) => !(id in contract.removedIds)) : [],
               };
               report(def.id, where, await win.page.evaluate((o) => window.__uic.collect(o), opts));
-              if (lang === WALK.lang && (size === WALK.size || def.sizes)) report(def.id, where, await keyboardWalk(win.page, scope));
+              if (walks(def, lang, size)) report(def.id, where, await keyboardWalk(win.page, scope));
             }
             if (def.probe) report(def.id, where, await def.probe(win.page, { openWindow, scenario, lang, size }));
             if (!flag("no-shots")) {
