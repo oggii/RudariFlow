@@ -46,8 +46,12 @@ const FAILED_MS = 2500;
 
 /** The armed button, and when it was last clicked (src/arm.ts). */
 let state: ArmState = AT_REST;
-/** Enter is held down: its clicks are the key's repeat. */
-let keyHeld = false;
+/** When Enter last repeated (the event's time stamp): the click that follows
+ *  it at once is the key's repeat. A time, not a flag: a key that never comes
+ *  up (the window lost the focus while it was held) must not mute the keyboard. */
+let heldAt = -Infinity;
+/** A click this soon after a repeated Enter is that repeat's click. */
+const HELD_MS = 50;
 /** Deletes that run: a second word for one changes nothing. */
 const running = new Set<string>();
 /** Deletes that failed, until their button says "Delete" again. */
@@ -162,7 +166,7 @@ function dispatch(event: ArmEvent, confirmed?: { action: Action; after: After })
     // Armed from the keyboard after the page was scrolled: "Delete?" must be
     // seen before it is answered. (A click is always on a button that shows.)
     const button = buttonOf(state.armed);
-    if (button && !inView(button)) button.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (button && !inView(button)) button.scrollIntoView({ block: "center", inline: "nearest" });
   }
   if (step.fire && confirmed) void carryOut(step.fire, confirmed.action, confirmed.after);
 }
@@ -259,7 +263,7 @@ function wire() {
       // Enter held down clicks again and again: the rule takes those clicks
       // for what they are (src/arm.ts). The click follows its keydown at
       // once. (Space clicks when the key comes up: once, however long it was held.)
-      if (e.key === "Enter") keyHeld = e.repeat;
+      if (e.key === "Enter" && e.repeat) heldAt = e.timeStamp;
       if (e.key === "Escape" && state.armed) {
         // Esc has one meaning at a time: with a button armed it only disarms.
         if (usable(buttonOf(state.armed))) {
@@ -268,13 +272,6 @@ function wire() {
         }
         dispatch({ type: "cancel" });
       }
-    },
-    true,
-  );
-  document.addEventListener(
-    "keyup",
-    (e) => {
-      if (e.key === "Enter") keyHeld = false;
     },
     true,
   );
@@ -328,7 +325,7 @@ export function confirmDelete(button: HTMLButtonElement, id: string, onDelete: A
   button.addEventListener("click", (e) => {
     if (running.has(id)) return;
     // `detail` counts the clicks of a multi-click; the keyboard's click has 0.
-    dispatch({ type: "click", id, at: e.timeStamp, count: e.detail, held: keyHeld && e.detail === 0 }, { action: onDelete, after: options.after });
+    dispatch({ type: "click", id, at: e.timeStamp, count: e.detail, held: e.detail === 0 && e.timeStamp - heldAt < HELD_MS }, { action: onDelete, after: options.after });
   });
   paint(button);
 }

@@ -950,7 +950,7 @@ What else the review of Task 4 built into the rows holds without a change: Delet
 
 `npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 57` (+ arm 4; 53 since the re-review of Task 6). The task's commit had 59 (arm 6), and after its review it is `tests 62` (arm 9).
 
-`node tools/ui-check/run.mjs --no-shots --task 7`: `7 findings, 7 known` (clipped 3 and hint-lines 3 on the Soundboard, name 1 on the Files transcript), three stale entries (`*.rule-*`, `*.replacement-*`, `select.rule-language`, all `"until": 7`); delete them (4 remain); exit 0. The `settings-dictionary` probe checks: the first click on Delete only arms, Esc disarms, a click elsewhere disarms, the second click deletes; the suggestions are in the Display Language; the word search finds "Zürich" for "zurich"; the replacement search hides rows and a save while searching keeps the hidden ones; a replacement needs two clicks. `grep -rn "armedDelete\|armedTimer\|_delete_confirm\|replacement_remove" src` prints nothing.
+`node tools/ui-check/run.mjs --no-shots --task 7`: `8 findings, 8 known` (clipped 3 and hint-lines 4 on the Soundboard, name 1 on the Files transcript), three stale entries (`*.rule-*`, `*.replacement-*`, `select.rule-language`, all `"until": 7`); delete them (4 remain); exit 0. The `settings-dictionary` probe checks: the first click on Delete only arms, Esc disarms, a click elsewhere disarms, the second click deletes; the suggestions are in the Display Language; the word search finds "Zürich" for "zurich"; the replacement search hides rows and a save while searching keeps the hidden ones; a replacement needs two clicks. `grep -rn "armedDelete\|armedTimer\|_delete_confirm\|replacement_remove" src` prints nothing.
 
 Screenshots: `--pages "settings-dictionary*,settings-ai,home,meetings-open,soundboard" --size 1600x900` and `--lang de --size 900x600`: one row design, "Delete" / "Löschen" everywhere; the rule-language select shows "Sprache wie eingestellt" whole (audit, German defect 3).
 
@@ -1059,13 +1059,13 @@ Corrections 6 to 8 come from Task 2's review. They sit in page rules the prototy
 
 Correction 9 comes from the review of Task 6, which gave every "More" of Settings a name that says what it is about (`rows.ts`, `nameMore`: an `aria-label` from `hint_more_about` / `hint_less_about` and the row's label, "More about PC check"). `rows.ts` leaves `.hint-more[data-own]` alone, so the three the board draws itself would be the only buttons left that are named just "More".
 
-9. `src/soundboard/board.ts`: where the board builds a `.hint-more[data-own]` button, give it the same name: `more.setAttribute("aria-label", t(open ? "hint_less_about" : "hint_more_about").replace("{label}", () => label));` with `label` the text of that row's `.label-text` and `open` the state the board keeps for it (it redraws, so the name is set with every draw). Check: in a German window `[...document.querySelectorAll(".hint-more")].every((b) => (b.getAttribute("aria-label") ?? "").length > b.textContent.length)` is true on the Soundboard with its panel open.
+9. `src/soundboard/board.ts`: where the board builds a `.hint-more[data-own]` button, give it the same name: `b.setAttribute("aria-label", t(open ? "hint_less_about" : "hint_more_about").replace("{label}", () => label));` with `label` the text of that row's `.label-text` and `open` the state the board keeps for it (it redraws, so the name is set with every draw). Check: in a German window `[...document.querySelectorAll(".hint-more")].every((b) => (b.getAttribute("aria-label") ?? "").length > b.textContent.length)` is true on the Soundboard with its panel open.
 
 - [ ] **Step 3: Verify**
 
 `npx tsc --noEmit`, `npx vite build` clean; `npm run test:unit`: `tests 62`.
 
-`node tools/ui-check/run.mjs --no-shots --task 8`: `0 findings`, four stale entries (the last four); set `tools/ui-check/allow.json` to `[]`; run again: `0 findings, 0 known, 0 new`, exit 0. (Measured on a scratch copy with every correction of this plan.) The run covers: the Soundboard probes (the panel is open only where it has its own column, the switch always shows, the first sound is on the first screen also at 900×600, the panel's state is remembered, the pop-out opens on the sounds with its settings closed); `files-loaded` and `files-result`; every pill probe.
+`node tools/ui-check/run.mjs --no-shots --task 8`: `0 findings` and the line that 4 of 4 `allow.json` entries are past their task; set `tools/ui-check/allow.json` to `[]`; run again: `0 findings, 0 known, 0 new`, exit 0. (Measured on a scratch copy with every correction of this plan.) The run covers: the Soundboard probes (the panel is open only where it has its own column, the switch always shows, the first sound is on the first screen also at 900×600, the panel's state is remembered, the pop-out opens on the sounds with its settings closed); `files-loaded` and `files-result`; every pill probe.
 
 The greps that prove corrections 6 to 8:
 
@@ -1188,7 +1188,7 @@ Under `## [Unreleased]` add:
 
 - [ ] **Step 5: Verify and commit**
 
-`npx tsc --noEmit`, `npx vite build`, `npm run test:unit` (53), `node tools/ui-check/run.mjs --no-shots --task 9` (0 findings, `allow.json` is `[]`). `git status --short` shows only the three docs and the deletion.
+`npx tsc --noEmit`, `npx vite build`, `npm run test:unit` (62), `node tools/ui-check/run.mjs --no-shots --task 9` (0 findings, `allow.json` is `[]`). `git status --short` shows only the three docs and the deletion.
 
 ```bash
 git add README.md README.de.md CHANGELOG.md
