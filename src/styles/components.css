@@ -255,8 +255,12 @@ select {
 /* Switched off: dimmed, and the pointer says so. (A switch's own input is
    styled further down and stays invisible.) */
 :is(select, input, textarea):disabled {
-  opacity: 0.5;
   cursor: default;
+}
+
+/* A check box or radio is dimmed by the browser already; twice would hide it. */
+:is(select, input:not([type="checkbox"], [type="radio"]), textarea):disabled {
+  opacity: 0.5;
 }
 
 input::placeholder,
@@ -470,8 +474,8 @@ input[type="checkbox"] {
 /* A link inside a sentence. 24 px to hit; the negative margin keeps the
    line's height. */
 .link-btn {
-  padding: 4px 0;
-  margin: -4px 0;
+  padding: 4px 2px;
+  margin: -4px -2px;
   border: none;
   border-radius: var(--radius-s);
   background: none;
@@ -574,6 +578,8 @@ kbd {
 .hotkey-control {
   align-items: center;
   gap: var(--s1);
+  /* The x stays beside its key box; a long combination breaks inside the box. */
+  flex-wrap: nowrap;
 }
 
 /* ── Tab bar ────────────────────────────────────────── */
