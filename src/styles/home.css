@@ -59,6 +59,26 @@
   align-items: start;
 }
 
+/* Hotkeys and quick switches end on one line: the lower card's rows share
+   the height the taller one has. What is loaded and "add a word" take the
+   whole side below them, so a value keeps its one line. */
+.home-grid.wider #home-hotkeys,
+.home-grid.wider #home-switches {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+}
+
+.home-grid.wider #home-hotkeys > .setting-row,
+.home-grid.wider #home-switches > .setting-row {
+  flex: 1 0 auto;
+}
+
+.home-grid.wider #home-loaded,
+.home-grid.wider #home-word-form {
+  grid-column: 1 / -1;
+}
+
 /* One column: the cards of the left column and "Recent dictations" are one list. */
 .home-grid:not(.wide) > .home-col {
   display: contents;

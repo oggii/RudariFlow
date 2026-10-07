@@ -1127,7 +1127,7 @@ Under `## [Unreleased]` add:
 
 - [ ] **Step 5: Verify and commit**
 
-`npx tsc --noEmit`, `npx vite build`, `npm run test:unit` (41), `node tools/ui-check/run.mjs --no-shots --task 9` (0 findings, `allow.json` is `[]`). `git status --short` shows only the three docs and the deletion.
+`npx tsc --noEmit`, `npx vite build`, `npm run test:unit` (43), `node tools/ui-check/run.mjs --no-shots --task 9` (0 findings, `allow.json` is `[]`). `git status --short` shows only the three docs and the deletion.
 
 ```bash
 git add README.md README.de.md CHANGELOG.md
