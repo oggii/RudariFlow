@@ -169,6 +169,12 @@
       for (const id of listeners.get(event) || []) callbacks.get(id)?.({ event, id, payload });
     },
     ids: { M1, M2, MREC },
+    /** `n` more dictations in the history (for "Show all" and its pages). */
+    addHistory(n) {
+      for (let i = 0; i < n; i++) {
+        history.push({ id: now - 4 * DAY - i * HOUR, text: `${de ? "Notiz" : "Note"} ${i + 1}: ${de ? "Bitte die Unterlagen bis Freitag schicken." : "Please send the documents by Friday."}`, durationMs: 3000 + i * 10, model: "small", hasAudio: false, app: i % 2 ? "olk" : "notepad" });
+      }
+    },
     meetingRecording() {
       meetingStatus = { recording: { id: MREC, title: meetingRec.title, startedAt: meetingRec.startedAt, warnings: [], paused: false }, finishing: [] };
       return meetingStatus;
@@ -235,6 +241,8 @@
     "plugin:event|unlisten": () => null,
     "plugin:dialog|open": () => (de ? "C:\\Users\\Oggi\\Downloads\\Kundengespräch Keller 2026-10-05.m4a" : "C:\\Users\\Oggi\\Downloads\\Client call Keller 2026-10-05.m4a"),
     "plugin:dialog|save": () => null,
+    mic_meter_start: () => (rich ? "Microphone (Fast Track)" : "Microphone (Realtek(R) Audio)"),
+    mic_meter_stop: () => null,
     learn_resolve: (a) => (rich ? [{ word: "Shiggy", heard: "Shiggi", count: 3 }, { word: "Temporal", heard: "temporäl", count: 1 }].filter((s) => s.word !== a.word) : []),
   };
   // Commands that only do something in the real backend.

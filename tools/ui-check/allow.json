@@ -8,6 +8,5 @@
  { "check": "hint-lines", "page": "*", "what": "*", "until": 6 },
  { "check": "clipped", "page": "soundboard*", "what": "*", "until": 8 },
  { "check": "clipped", "page": "*", "what": "select.rule-language", "until": 7 },
- { "check": "clipped", "page": "*", "what": "span.history-meta", "until": 4 },
  { "check": "clipped", "page": "*", "what": "select#*model-select", "until": 6 }
 ]

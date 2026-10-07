@@ -70,6 +70,9 @@ export interface Status {
   percent: number;
   /** A meeting records or a file runs while another state has priority. */
   marker: "meeting" | "file" | null;
+  /** Models load or nothing is known yet: kind "loading", and kind
+   *  "downloading" while that is the state the download has priority over. */
+  loading: boolean;
 }
 
 const TONE: Record<StatusKind, Tone> = {
@@ -138,12 +141,15 @@ export function status(input: StatusInput): Status {
   const fetching = fetchingSpeech(input, miss);
   const marker = input.meetingRecording && kind !== "meeting" ? "meeting" : input.fileRunning && kind !== "file" ? "file" : null;
   const percent = fetching ? input.speechDownload : input.download;
+  // What shows once the download is over, when it is not the missing speech model's.
+  const behind = kind === "downloading" && !fetching ? kindOf({ ...input, download: null }, miss) : kind;
   return {
     kind,
     tone: TONE[kind],
     missing: kind === "setup" || fetching ? miss : [],
     percent: kind === "downloading" ? Math.max(0, Math.min(100, Math.round(percent ?? 0))) : 0,
     marker,
+    loading: behind === "loading",
   };
 }
 
@@ -166,9 +172,10 @@ export function statusSaid(s: Status): { key: string; marker: string | null } {
 
 /** The i18n key of Home's heading: a dictation works in every state but
  *  these. A download does not stand in its way (an AI model's 5 GB arrive
- *  beside a loaded speech model), unless it is the missing speech model's. */
+ *  beside a loaded speech model), unless it is the missing speech model's;
+ *  nor does it hide that the speech model is still loading. */
 export function homeTitle(s: Status): string {
   if (s.missing.length > 0) return "home_title_setup";
-  if (s.kind === "loading") return "home_title_loading";
+  if (s.loading) return "home_title_loading";
   return "home_title_ready";
 }

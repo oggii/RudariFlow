@@ -29,7 +29,7 @@ const input = (over: Partial<StatusInput> = {}): StatusInput => ({
 });
 
 test("ready needs a loaded model and a microphone", () => {
-  assert.deepEqual(status(input()), { kind: "ready", tone: "ok", missing: [], percent: 0, marker: null });
+  assert.deepEqual(status(input()), { kind: "ready", tone: "ok", missing: [], percent: 0, marker: null, loading: false });
   assert.equal(status(input({ speech: speech({ downloaded: false, load: "unloaded" }) })).kind, "setup");
   assert.equal(status(input({ microphones: 0 })).kind, "setup");
   assert.equal(status(input({ speech: speech({ load: "loading" }) })).kind, "loading");
@@ -126,11 +126,29 @@ test("the heading of Home", () => {
   assert.deepEqual([first.kind, homeTitle(first)], ["downloading", "home_title_setup"]);
 });
 
+test("the heading of Home under a download says that the speech model still loads", () => {
+  // An AI model downloads while the speech model loads at the start, or loads again after a change of the model.
+  for (const load of ["loading", "unloaded"] as const) {
+    const s = status(input({ speech: speech({ load }), download: 5 }));
+    assert.deepEqual([s.kind, s.percent, homeTitle(s)], ["downloading", 5, "home_title_loading"], load);
+  }
+  // Nothing is known yet, or the AI model loads: as without the download.
+  assert.equal(homeTitle(status(input({ speech: null, microphones: null, download: 5 }))), "home_title_loading");
+  assert.equal(homeTitle(status(input({ aiLoading: true, download: 5 }))), homeTitle(status(input({ aiLoading: true }))));
+  // Freed on purpose is not loading: the next dictation loads the model.
+  assert.equal(homeTitle(status(input({ speech: speech({ load: "unloaded", freed: true }), download: 5 }))), "home_title_ready");
+  // A second speech model downloads beside the loaded one: a dictation works.
+  assert.equal(homeTitle(status(input({ download: 7, speechDownload: 7 }))), "home_title_ready");
+  // The missing speech model's own download stays the setup, and what is missing comes before everything.
+  assert.equal(homeTitle(status(input({ speech: speech({ downloaded: false, load: "unloaded" }), download: 5, speechDownload: 5 }))), "home_title_setup");
+  assert.equal(homeTitle(status(input({ speech: speech({ load: "loading" }), microphones: 0, download: 5 }))), "home_title_setup");
+});
+
 const noModel = speech({ downloaded: false, load: "unloaded" });
 
 test("the first model's download shows its percent instead of the setup", () => {
   const first = status(input({ speech: noModel, download: 43.6, speechDownload: 43.6 }));
-  assert.deepEqual(first, { kind: "downloading", tone: "busy", missing: ["model"], percent: 44, marker: null });
+  assert.deepEqual(first, { kind: "downloading", tone: "busy", missing: ["model"], percent: 44, marker: null, loading: false });
   assert.deepEqual(statusText(first), { key: "status_downloading", n: "44" });
   // An AI model started first: the percent is still the speech model's.
   assert.equal(status(input({ speech: noModel, download: 10, speechDownload: 43 })).percent, 43);
@@ -209,7 +227,7 @@ test("every text of the status exists in English and in German", () => {
   for (const kind of kinds) {
     for (const reason of kind === "setup" ? reasons : [null]) {
       for (const marker of [null, "meeting", "file"] as const) {
-        const s: Status = { kind, tone: "ok", missing: reason ? [reason] : [], percent: 5, marker };
+        const s: Status = { kind, tone: "ok", missing: reason ? [reason] : [], percent: 5, marker, loading: kind === "loading" };
         const said = statusSaid(s);
         for (const key of [statusText(s).key, said.key, said.marker, homeTitle(s)]) if (key) keys.add(key);
       }

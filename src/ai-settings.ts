@@ -115,6 +115,12 @@ export function aiActivity(): { loading: boolean; freed: boolean } {
   return { loading: status.server.state === "loading", freed: status.gpuFreed && status.server.state === "stopped" };
 }
 
+/** For Home: the AI model in use, the state line as it reads in Settings, and whether the model is downloaded. */
+export function aiSummary(): { name: string; state: string; tone: string; downloaded: boolean } {
+  const model = selectedModel();
+  return { name: model?.label ?? "", state: statusLine.textContent ?? "", tone: statusLine.dataset.tone ?? "", downloaded: !!model?.downloaded };
+}
+
 function gb(bytes: number): string {
   return (bytes / 1e9).toFixed(1);
 }

@@ -3,6 +3,7 @@
 @import "./styles/tokens.css";
 @import "./styles/components.css";
 @import "./styles/shell.css";
+@import "./styles/home.css";
 
 /* The Files tab uses the whole window: the transcript takes the height. */
 #section-files {
@@ -147,63 +148,14 @@
   margin-top: 3px;
 }
 
-/* ── History ────────────────────────────────────────── */
+/* ── History: the count and Clear history (Settings > General) ── */
 
 .history-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin: 8px 0 12px;
-  min-height: 31px;
-}
-
-.history-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-bottom: 24px;
-}
-
-.history-item {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 12px 14px 8px;
-}
-
-.history-text {
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  user-select: text;
-  -webkit-user-select: text;
-  cursor: text;
-}
-
-.history-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 8px;
-}
-
-.history-meta {
-  font-size: 11px;
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.history-actions {
-  display: flex;
-  gap: 2px;
-  margin-right: -6px;
+  gap: var(--s4);
+  padding: var(--s3) 0;
 }
 
 /* ── Files ──────────────────────────────────────────── */

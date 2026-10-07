@@ -131,7 +131,86 @@ export const PAGES = [
       return out;
     },
   },
-  { id: "home", open: (page) => section(page, "home") },
+  {
+    id: "home",
+    open: (page) => section(page, "home"),
+    probe: async (page) => {
+      const out = [];
+      const firstrun = await page.evaluate(() => window.__MOCK_CFG__.scenario === "firstrun");
+      const shown = (id) => page.evaluate((id) => !document.getElementById(id).classList.contains("hidden"), id);
+      if (firstrun) return out; // the first run: Task 5
+      out.push(...expect(await shown("home-daily"), "Home shows the daily view"));
+      // One column: the recent dictations follow the quick switches; two columns: they are the right column.
+      const wide = await page.evaluate(() => document.getElementById("content").clientWidth >= 900);
+      const before = await page.evaluate(() => document.getElementById("home-recent").previousElementSibling?.id);
+      out.push(...expect(before === (wide ? "home-controls" : "home-switches"), "the recent dictations are where the layout wants them", `${wide ? "wide" : "narrow"}: after #${before}`));
+      // A quick switch and its setting are one value.
+      await page.click("#home-ai-toggle", { force: true });
+      await wait(page, 150);
+      let both = await page.evaluate(() => [document.getElementById("ai-toggle").checked, window.__MOCK__.settings().aiCleanup]);
+      out.push(...expect(both[0] === false && both[1] === false, "Home's AI cleanup switch changes the setting", JSON.stringify(both)));
+      await page.evaluate(() => document.getElementById("ai-toggle").click());
+      await wait(page, 150);
+      out.push(...expect(await page.evaluate(() => document.getElementById("home-ai-toggle").checked), "Home follows the switch in Settings"));
+      await page.selectOption("#home-language-select", "de");
+      await wait(page, 150);
+      both = await page.evaluate(() => [document.getElementById("language-select").value, window.__MOCK__.settings().language]);
+      out.push(...expect(both[0] === "de" && both[1] === "de", "Home's Language changes the setting", JSON.stringify(both)));
+      // A hotkey is set in place, and Settings shows the same key.
+      await page.click("#home-paste-last-btn");
+      await wait(page, 80);
+      await page.keyboard.press("Control+Alt+KeyP");
+      await wait(page, 200);
+      const keys = await page.evaluate(() => [document.getElementById("home-paste-last-text").textContent, document.getElementById("paste-last-text").textContent]);
+      out.push(...expect(keys[0] === "Ctrl+Alt+P" && keys[1] === "Ctrl+Alt+P", "a hotkey set on Home shows in both places", JSON.stringify(keys)));
+      // Add a word.
+      await page.fill("#home-word-input", "Zeitgeist");
+      await page.press("#home-word-input", "Enter");
+      await wait(page, 150);
+      out.push(...expect(await page.evaluate(() => window.__MOCK__.settings().customPrompt.endsWith(", Zeitgeist")), "a word added on Home is in the dictionary"));
+      // Search over text and app.
+      await page.fill("#history-search", "olk");
+      await wait(page, 150);
+      out.push(...expect((await page.locator("#history-list .history-item").count()) === 2, "the search finds dictations by their app"));
+      await page.fill("#history-search", "");
+      await page.reload({ waitUntil: "networkidle" });
+      await wait(page, 500);
+      return out;
+    },
+  },
+  {
+    id: "home-all",
+    scenarios: ["populated"],
+    fresh: true,
+    open: async (page) => {
+      await section(page, "home");
+      await page.evaluate(() => {
+        window.__MOCK__.addHistory(112);
+        window.__MOCK__.emit("history-updated");
+      });
+      await wait(page);
+      await page.click("#history-more");
+      await wait(page);
+    },
+    probe: async (page) => {
+      const out = [];
+      const rows = () => page.locator("#history-list .history-item").count();
+      out.push(...expect((await rows()) === 50, "Show all shows the first 50", String(await rows())));
+      await page.click("#history-more");
+      await wait(page, 150);
+      out.push(...expect((await rows()) === 100, "Show more adds 50", String(await rows())));
+      await page.click("#history-more");
+      await wait(page, 150);
+      const end = await page.evaluate(() => [document.querySelectorAll("#history-list .history-item").length, document.getElementById("history-more").classList.contains("hidden")]);
+      out.push(...expect(end[0] === 120 && end[1], "the last page ends the list", JSON.stringify(end)));
+      await page.click("#history-less");
+      await wait(page, 150);
+      out.push(...expect((await rows()) === 8, "Show fewer goes back to the newest few", String(await rows())));
+      await page.click("#history-more");
+      await wait(page);
+      return out;
+    },
+  },
   { id: "files", open: (page) => section(page, "files") },
   { id: "meetings", open: (page) => section(page, "meetings") },
   { id: "soundboard", open: (page) => section(page, "soundboard") },

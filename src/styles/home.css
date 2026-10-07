@@ -1,0 +1,185 @@
+/* Home: the dictation page. One column; two from 900 px of content (the
+   class "wide", set by src/home.ts together with the order of the cards);
+   from 1600 px the controls are two columns of cards beside the list (the
+   class "wider"). The page takes the window's whole width. */
+
+#section-home {
+  max-width: none;
+}
+
+.home-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s3);
+}
+
+/* The key in the sentence. No room after it: a comma may follow. */
+#home-how kbd {
+  margin-left: 2px;
+}
+
+#home-notice {
+  margin-bottom: var(--s4);
+}
+
+.home-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.home-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  min-width: 0;
+}
+
+/* Cards in a column are spaced by the column's gap. */
+.home-grid .card + .card {
+  margin-top: 0;
+}
+
+.home-grid.wide {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  align-items: start;
+}
+
+/* A large window: hotkeys and quick switches side by side, what is loaded
+   and "add a word" below them, each pair of one height. No row is
+   stretched over a width it cannot fill. */
+.home-grid.wider {
+  grid-template-columns: minmax(0, 4fr) minmax(0, 3fr);
+}
+
+.home-grid.wider > .home-col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* One column: the cards of the left column and "Recent dictations" are one list. */
+.home-grid:not(.wide) > .home-col {
+  display: contents;
+}
+
+/* A key that is not set reads "Not set · Set", not a key box. The words
+   end where the key boxes above them end. */
+.hotkey-btn.key-unset kbd {
+  padding-right: 0;
+  border-color: transparent;
+  background: none;
+  font-family: var(--font);
+  color: var(--text-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ── What is loaded: three lines that lead to their setting ── */
+
+.home-loaded {
+  padding-top: var(--s2);
+  padding-bottom: var(--s2);
+}
+
+.home-loaded-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+  width: 100%;
+  min-height: 32px;
+  padding: var(--s1) 0;
+  border: none;
+  border-radius: var(--radius-s);
+  background: none;
+  font-size: var(--fs-s);
+  text-align: left;
+  cursor: pointer;
+}
+
+.home-loaded-row:hover .home-loaded-value {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.home-loaded-name {
+  flex-shrink: 0;
+  color: var(--text-2);
+}
+
+.home-loaded-value {
+  min-width: 0;
+  color: var(--text);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.home-loaded-value[data-tone="ok"] {
+  color: var(--text-ok);
+}
+
+.home-loaded-value[data-tone="warn"] {
+  color: var(--text-warn);
+}
+
+.home-loaded-value[data-tone="error"] {
+  color: var(--text-danger);
+}
+
+/* ── Add a word ─────────────────────────────────────── */
+
+.home-word {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding-top: var(--s3);
+  padding-bottom: var(--s3);
+}
+
+.home-word-row {
+  display: flex;
+  gap: var(--s2);
+}
+
+.home-word-row input {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+}
+
+.home-word .status-line:empty {
+  display: none;
+}
+
+/* ── Recent dictations ──────────────────────────────── */
+
+.home-recent {
+  padding-bottom: var(--s2);
+}
+
+.history-text {
+  white-space: pre-wrap;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+/* The words of the row's last action end at the card's right edge, where
+   the search field and the lines between the rows end. */
+.history-actions {
+  margin-right: calc(-1 * var(--s2));
+}
+
+/* "Show all" starts at the rows' left edge. */
+.home-recent-foot {
+  display: flex;
+  gap: var(--s2);
+  margin-left: calc(-1 * var(--s2));
+  padding: var(--s1) 0;
+}
+
+.home-recent-foot:not(:has(button:not(.hidden))) {
+  display: none;
+}

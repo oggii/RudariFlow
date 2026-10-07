@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { t } from "./i18n";
 import { activity, onActivity } from "./activity";
-import { homeTitle, status, statusSaid, statusText, type SpeechStatus, type Status, type StatusInput } from "./status.ts";
+import { status, statusSaid, statusText, type SpeechStatus, type Status, type StatusInput } from "./status.ts";
 
 export interface StatusHost {
   /** Microphones Windows lists; null until they were listed. */
@@ -18,7 +18,6 @@ const pill = document.getElementById("status-indicator")!;
 const text = document.getElementById("status-text")!;
 const marker = document.getElementById("status-marker")!;
 const live = document.getElementById("status-live")!;
-const homeHeading = document.getElementById("home-title");
 
 let host: StatusHost | null = null;
 let speech: SpeechStatus | null = null;
@@ -102,14 +101,6 @@ export function renderStatus() {
   const said = statusSaid(now);
   const spoken = said.marker ? `${t(said.key).replace(/…$/, "")}. ${t(said.marker)}` : t(said.key);
   if (live.textContent !== spoken) live.textContent = spoken;
-  // Home's heading says the same as the status. Until Home has its own page
-  // code (src/home.ts, which then writes the heading from `onStatus` below
-  // and makes these lines superfluous) nothing else would set it.
-  if (homeHeading) {
-    homeHeading.removeAttribute("data-i18n");
-    const title = t(homeTitle(now));
-    if (homeHeading.textContent !== title) homeHeading.textContent = title;
-  }
   for (const fn of listeners) fn(now);
 }
 

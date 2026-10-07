@@ -5,8 +5,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { setLang, getLang, detectDefaultLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
-import { aiActivity, initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
-import { initDictionary, renderDictionary } from "./dictionary";
+import { aiActivity, aiSummary, initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
+import { addWords, initDictionary, renderDictionary } from "./dictionary";
+import { initHistory, refreshHistory } from "./history";
+import { initHome, renderHome } from "./home";
 import { initFiles, renderFiles } from "./files";
 import { initMeetingQuit, initMeetings, renderMeetings } from "./meetings";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
@@ -62,20 +64,6 @@ interface Replacement {
   to: string;
 }
 
-interface HistoryEntry {
-  id: number;
-  text: string;
-  durationMs: number;
-  model: string;
-  hasAudio: boolean;
-  /** Text before AI cleanup, when the AI changed it. */
-  raw?: string | null;
-  /** Program the dictation went into, e.g. "whatsapp.root". */
-  app?: string;
-  /** What was said in Edit mode; `raw` then holds the selected text. */
-  edit?: string | null;
-}
-
 interface MicDevice {
   name: string;
   is_default: boolean;
@@ -105,24 +93,10 @@ const progressFill = document.getElementById("progress-fill")!;
 const groqKey = document.getElementById("groq-key") as HTMLInputElement;
 const modeToggle = document.getElementById("mode-toggle")!;
 const modePtt = document.getElementById("mode-ptt")!;
-const hotkeyText = document.getElementById("hotkey-text")!;
-const hotkeyBtn = document.getElementById("hotkey-btn") as HTMLButtonElement;
-const pasteLastBtn = document.getElementById("paste-last-btn") as HTMLButtonElement;
-const pasteLastText = document.getElementById("paste-last-text")!;
-const pasteLastClear = document.getElementById("paste-last-clear") as HTMLButtonElement;
 const pcCheckBtn = document.getElementById("pc-check-btn") as HTMLButtonElement;
 const pcCheckResult = document.getElementById("pc-check-result")!;
 const pcCheckReport = document.getElementById("pc-check-report")!;
 const pcCheckCopy = document.getElementById("pc-check-copy") as HTMLButtonElement;
-const rewriteLastBtn = document.getElementById("rewrite-last-btn") as HTMLButtonElement;
-const rewriteLastText = document.getElementById("rewrite-last-text")!;
-const rewriteLastClear = document.getElementById("rewrite-last-clear") as HTMLButtonElement;
-const freeGpuBtn = document.getElementById("free-gpu-btn") as HTMLButtonElement;
-const freeGpuText = document.getElementById("free-gpu-text")!;
-const freeGpuClear = document.getElementById("free-gpu-clear") as HTMLButtonElement;
-const meetingHotkeyBtn = document.getElementById("meeting-hotkey-btn") as HTMLButtonElement;
-const meetingHotkeyText = document.getElementById("meeting-hotkey-text")!;
-const meetingHotkeyClear = document.getElementById("meeting-hotkey-clear") as HTMLButtonElement;
 const sendCommandSelect = document.getElementById("send-command-select") as HTMLSelectElement;
 const muteAudioToggle = document.getElementById("mute-audio-toggle") as HTMLInputElement;
 const gameFreeToggle = document.getElementById("game-free-toggle") as HTMLInputElement;
@@ -134,16 +108,14 @@ const replacementList = document.getElementById("replacement-list")!;
 const replacementEmpty = document.getElementById("replacement-empty")!;
 const replacementAdd = document.getElementById("replacement-add") as HTMLButtonElement;
 const historyModeSelect = document.getElementById("history-mode-select") as HTMLSelectElement;
-const historyList = document.getElementById("history-list")!;
-const historyEmpty = document.getElementById("history-empty")!;
-const historyCount = document.getElementById("history-count")!;
-const historyClear = document.getElementById("history-clear") as HTMLButtonElement;
 // The Soundboard tab; the same component runs in the pop-out window.
 const soundboard = mountBoard(document.getElementById("sb-root")!, { popOut: false });
 
 // Sections and Settings tabs (src/shell.ts); what a page needs when it is shown.
 initShell();
 onRoute((now) => {
+  // Home's setup listens to the microphone only while it is on screen.
+  renderHome();
   soundboard.setActive(now.section === "soundboard");
   if (now.section === "meetings") void renderMeetings();
   if (now.section === "settings" && now.tab === "models") void renderUnusedModels();
@@ -192,6 +164,16 @@ function renderMicOptions() {
   micSelect.value = saved;
 }
 
+/** The microphones Windows has now; the dropdown and the status follow. */
+async function listMicrophones() {
+  mics = await invoke<MicDevice[]>("list_microphones");
+  micsListed = true;
+  renderMicOptions();
+  renderStatus();
+}
+// A microphone plugged in while the window was away (the first run waits for one).
+window.addEventListener("focus", () => void listMicrophones().catch(console.error));
+
 async function loadSettings() {
   currentSettings = await invoke<Settings>("get_settings");
 
@@ -212,9 +194,7 @@ async function loadSettings() {
   autostartToggle.checked = currentSettings.autostart;
 
   // Populate mic dropdown
-  mics = await invoke<MicDevice[]>("list_microphones");
-  micsListed = true;
-  renderMicOptions();
+  await listMicrophones();
 
   // Engine
   setEngine(currentSettings.engine);
@@ -309,6 +289,8 @@ function setRecordingMode(mode: string) {
   currentSettings.recordingMode = mode;
   modeToggle.classList.toggle("active", mode === "toggle");
   modePtt.classList.toggle("active", mode === "push-to-talk");
+  // Home says how to dictate: "Hold …" or "Press …".
+  renderHome();
 }
 
 async function isCurrentModelDownloaded(): Promise<boolean> {
@@ -399,7 +381,10 @@ engineCloud.addEventListener("click", () => {
   saveSettings();
 });
 
-micSelect.addEventListener("change", () => saveSettings());
+micSelect.addEventListener("change", async () => {
+  await saveSettings();
+  renderHome();
+});
 
 languageSelect.addEventListener("change", async () => {
   await saveSettings();
@@ -660,24 +645,60 @@ listen<DownloadProgress>("download-progress", (event) => {
 // the Soundboard.
 type HotkeyTarget = "dictation" | "pasteLast" | "rewriteLast" | "freeGpu" | "meeting";
 
-function renderHotkeys() {
-  hotkeyText.textContent = hotkeyLabel(currentSettings.hotkey);
-  pasteLastText.textContent = hotkeyLabel(currentSettings.pasteLastHotkey);
-  pasteLastClear.classList.toggle("hidden", !currentSettings.pasteLastHotkey);
-  rewriteLastText.textContent = hotkeyLabel(currentSettings.rewriteLastHotkey);
-  rewriteLastClear.classList.toggle("hidden", !currentSettings.rewriteLastHotkey);
-  freeGpuText.textContent = hotkeyLabel(currentSettings.freeGpuHotkey);
-  freeGpuClear.classList.toggle("hidden", !currentSettings.freeGpuHotkey);
-  meetingHotkeyText.textContent = hotkeyLabel(currentSettings.meetingHotkey);
-  meetingHotkeyClear.classList.toggle("hidden", !currentSettings.meetingHotkey);
+/** A place that shows a hotkey and sets it when it is clicked. */
+interface HotkeyView {
+  target: HotkeyTarget;
+  btn: HTMLButtonElement;
+  text: HTMLElement;
+  /** "Turn off" (in Settings; the dictation hotkey has none). */
+  clear: HTMLButtonElement | null;
+  /** On Home a key that is not set reads "Not set · Set". */
+  home: boolean;
 }
 
-function captureElements(target: HotkeyTarget) {
-  if (target === "dictation") return { btn: hotkeyBtn, text: hotkeyText };
-  if (target === "pasteLast") return { btn: pasteLastBtn, text: pasteLastText };
-  if (target === "rewriteLast") return { btn: rewriteLastBtn, text: rewriteLastText };
-  if (target === "meeting") return { btn: meetingHotkeyBtn, text: meetingHotkeyText };
-  return { btn: freeGpuBtn, text: freeGpuText };
+/** The view made of `<prefix>-btn`, `<prefix>-text` and, if there is one, `<prefix>-clear`. */
+function hotkeyView(target: HotkeyTarget, prefix: string, home = false): HotkeyView {
+  return {
+    target,
+    btn: document.getElementById(`${prefix}-btn`) as HTMLButtonElement,
+    text: document.getElementById(`${prefix}-text`)!,
+    clear: document.getElementById(`${prefix}-clear`) as HTMLButtonElement | null,
+    home,
+  };
+}
+
+const hotkeyViews: HotkeyView[] = [
+  // Settings > Dictation
+  hotkeyView("dictation", "hotkey"),
+  hotkeyView("pasteLast", "paste-last"),
+  hotkeyView("rewriteLast", "rewrite-last"),
+  hotkeyView("freeGpu", "free-gpu"),
+  hotkeyView("meeting", "meeting-hotkey"),
+  // Home
+  hotkeyView("dictation", "home-hotkey", true),
+  hotkeyView("pasteLast", "home-paste-last", true),
+  hotkeyView("rewriteLast", "home-rewrite-last", true),
+  hotkeyView("freeGpu", "home-free-gpu", true),
+];
+
+function hotkeyOf(target: HotkeyTarget): string {
+  if (target === "dictation") return currentSettings.hotkey;
+  if (target === "pasteLast") return currentSettings.pasteLastHotkey;
+  if (target === "rewriteLast") return currentSettings.rewriteLastHotkey;
+  if (target === "meeting") return currentSettings.meetingHotkey;
+  return currentSettings.freeGpuHotkey;
+}
+
+/** Every place that shows a hotkey, from the settings. */
+function renderHotkeys() {
+  for (const view of hotkeyViews) {
+    const combo = hotkeyOf(view.target);
+    const unset = view.home && !combo;
+    view.text.textContent = unset ? t("home_key_unset") : hotkeyLabel(combo);
+    view.btn.classList.toggle("key-unset", unset);
+    view.clear?.classList.toggle("hidden", !combo);
+  }
+  renderHome();
 }
 
 async function setHotkey(target: HotkeyTarget, combo: string) {
@@ -691,48 +712,20 @@ async function setHotkey(target: HotkeyTarget, combo: string) {
   else currentSettings.freeGpuHotkey = combo;
 }
 
-function capture(target: HotkeyTarget) {
-  const { btn, text } = captureElements(target);
-  startCapture({ button: btn, text, apply: (combo) => setHotkey(target, combo), render: renderHotkeys });
+for (const view of hotkeyViews) {
+  // A click on the key listens for the new one, in place.
+  view.btn.addEventListener("click", () => {
+    startCapture({ button: view.btn, text: view.text, apply: (combo) => setHotkey(view.target, combo), render: renderHotkeys });
+  });
+  view.clear?.addEventListener("click", async () => {
+    try {
+      await setHotkey(view.target, "");
+    } catch (err) {
+      console.error(`turning the ${view.target} hotkey off failed:`, err);
+    }
+    renderHotkeys();
+  });
 }
-
-hotkeyBtn.addEventListener("click", () => capture("dictation"));
-pasteLastBtn.addEventListener("click", () => capture("pasteLast"));
-rewriteLastBtn.addEventListener("click", () => capture("rewriteLast"));
-rewriteLastClear.addEventListener("click", async () => {
-  try {
-    await setHotkey("rewriteLast", "");
-  } catch (err) {
-    console.error("clearing rewrite hotkey failed:", err);
-  }
-  renderHotkeys();
-});
-pasteLastClear.addEventListener("click", async () => {
-  try {
-    await setHotkey("pasteLast", "");
-  } catch (err) {
-    console.error("clearing paste-last hotkey failed:", err);
-  }
-  renderHotkeys();
-});
-freeGpuBtn.addEventListener("click", () => capture("freeGpu"));
-freeGpuClear.addEventListener("click", async () => {
-  try {
-    await setHotkey("freeGpu", "");
-  } catch (err) {
-    console.error("clearing free-GPU hotkey failed:", err);
-  }
-  renderHotkeys();
-});
-meetingHotkeyBtn.addEventListener("click", () => capture("meeting"));
-meetingHotkeyClear.addEventListener("click", async () => {
-  try {
-    await setHotkey("meeting", "");
-  } catch (err) {
-    console.error("clearing the meeting hotkey failed:", err);
-  }
-  renderHotkeys();
-});
 
 // ── Replacements ──────────────────────────────────────
 
@@ -797,169 +790,6 @@ replacementAdd.addEventListener("click", () => {
   (row.querySelector(".replacement-from") as HTMLInputElement).focus();
 });
 
-// ── History ───────────────────────────────────────────
-
-let playing: { audio: HTMLAudioElement; url: string; btn: HTMLButtonElement } | null = null;
-
-function stopPlayback() {
-  if (!playing) return;
-  playing.audio.pause();
-  URL.revokeObjectURL(playing.url);
-  playing.btn.textContent = t("history_play");
-  playing = null;
-}
-
-// Dates follow the system locale (24 h in Switzerland even with an English UI).
-function formatWhen(ms: number): string {
-  const d = new Date(ms);
-  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  if (d.toDateString() === new Date().toDateString()) return time;
-  return `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })}, ${time}`;
-}
-
-function formatDuration(ms: number): string {
-  const secs = Math.max(1, Math.round(ms / 1000));
-  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
-}
-
-function smallButton(label: string, onClick: (btn: HTMLButtonElement) => void): HTMLButtonElement {
-  const b = document.createElement("button");
-  b.className = "btn-ghost";
-  b.textContent = label;
-  b.addEventListener("click", () => onClick(b));
-  return b;
-}
-
-function renderHistoryEntry(e: HistoryEntry): HTMLElement {
-  const item = document.createElement("article");
-  item.className = "history-item";
-
-  const text = document.createElement("p");
-  text.className = "history-text";
-  text.textContent = e.text;
-
-  const footer = document.createElement("div");
-  footer.className = "history-footer";
-  const meta = document.createElement("span");
-  meta.className = "history-meta";
-  const renderMeta = (entry: HistoryEntry) => {
-    const parts = [formatWhen(entry.id), formatDuration(entry.durationMs), entry.model];
-    if (entry.app) parts.push(entry.app);
-    if (entry.edit) parts.push(t("history_edit").replace("{instruction}", entry.edit));
-    meta.textContent = parts.join(" \u00b7 ");
-  };
-  renderMeta(e);
-
-  const actions = document.createElement("div");
-  actions.className = "history-actions";
-  actions.appendChild(
-    smallButton(t("history_copy"), async (b) => {
-      await invoke("copy_text", { text: text.textContent ?? "" });
-      b.textContent = t("history_copied");
-      setTimeout(() => (b.textContent = t("history_copy")), 1200);
-    }),
-  );
-  if (e.raw) {
-    let showingRaw = false;
-    actions.appendChild(
-      smallButton(t("history_original"), (b) => {
-        showingRaw = !showingRaw;
-        text.textContent = showingRaw ? e.raw! : e.text;
-        b.textContent = showingRaw ? t("history_ai_version") : t("history_original");
-      }),
-    );
-  }
-  if (e.hasAudio) {
-    actions.appendChild(
-      smallButton(t("history_play"), async (b) => {
-        const wasThis = playing?.btn === b;
-        stopPlayback();
-        if (wasThis) return;
-        try {
-          const bytes = await invoke<ArrayBuffer>("history_audio", { id: e.id });
-          const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
-          const audio = new Audio(url);
-          playing = { audio, url, btn: b };
-          b.textContent = t("history_stop");
-          audio.addEventListener("ended", stopPlayback);
-          await audio.play();
-        } catch (err) {
-          console.error("playback failed:", err);
-          stopPlayback();
-        }
-      }),
-    );
-    const rerun = smallButton(t("history_rerun"), async (b) => {
-      b.disabled = true;
-      b.textContent = t("history_rerunning");
-      try {
-        const updated = await invoke<HistoryEntry>("history_rerun", { id: e.id });
-        if (playing && item.contains(playing.btn)) stopPlayback();
-        item.replaceWith(renderHistoryEntry(updated));
-        return;
-      } catch (err) {
-        console.error("history_rerun failed:", err);
-        b.textContent = t("history_rerun_failed");
-        setTimeout(() => (b.textContent = t("history_rerun")), 2500);
-      } finally {
-        b.disabled = false;
-      }
-    });
-    rerun.title = t("history_rerun_title");
-    // An edit's recording is the instruction; re-running it as a dictation
-    // would replace the edited text with it.
-    if (!e.edit) actions.appendChild(rerun);
-  }
-  actions.appendChild(
-    smallButton(t("history_delete"), async () => {
-      if (playing && item.contains(playing.btn)) stopPlayback();
-      await invoke("history_delete", { id: e.id });
-      item.remove();
-      await refreshHistory();
-    }),
-  );
-
-  footer.append(meta, actions);
-  item.append(text, footer);
-  return item;
-}
-
-async function refreshHistory() {
-  const entries = await invoke<HistoryEntry[]>("history_list");
-  stopPlayback();
-  historyList.innerHTML = "";
-  for (const e of entries) historyList.appendChild(renderHistoryEntry(e));
-
-  const off = historyModeSelect.value === "off";
-  historyEmpty.textContent = off ? t("history_off") : t("history_empty");
-  historyEmpty.classList.toggle("hidden", entries.length > 0 && !off);
-  historyCount.textContent =
-    entries.length === 1 ? t("history_count_one") : t("history_count").replace("{n}", String(entries.length));
-  historyClear.classList.toggle("hidden", entries.length === 0);
-  resetClearButton();
-}
-
-let clearArmed: number | undefined;
-function resetClearButton() {
-  window.clearTimeout(clearArmed);
-  clearArmed = undefined;
-  historyClear.classList.remove("armed");
-  historyClear.textContent = t("history_clear");
-}
-
-historyClear.addEventListener("click", async () => {
-  if (clearArmed === undefined) {
-    historyClear.classList.add("armed");
-    historyClear.textContent = t("history_clear_confirm");
-    clearArmed = window.setTimeout(resetClearButton, 3000);
-    return;
-  }
-  await invoke("history_clear");
-  await refreshHistory();
-});
-
-listen("history-updated", () => refreshHistory());
-
 // Credit link -> opens 0ggi.ch in default browser
 document.getElementById("credit-link")?.addEventListener("click", async (e) => {
   e.preventDefault();
@@ -970,7 +800,9 @@ document.getElementById("credit-link")?.addEventListener("click", async (e) => {
   }
 });
 
+// The AI's state is part of the status, and Home shows both.
 initAiSettings({ settings: () => currentSettings, save: saveSettings, changed: renderStatus });
+initHistory({ mode: () => historyModeSelect.value });
 initDictionary({ settings: () => currentSettings, save: saveSettings });
 initFiles({
   settings: () => currentSettings,
@@ -992,6 +824,15 @@ onStatus(() => {
   startOn(setup({ speech, microphones: mics.length, aiDownloaded: true, aiDismissed: true }).needed);
 });
 
+function startHome() {
+  initHome({
+    recordingMode: () => currentSettings.recordingMode,
+    dictationKey: () => hotkeyLabel(currentSettings.hotkey),
+    ai: aiSummary,
+    addWords,
+  });
+}
+
 // Initialize
 getVersion()
   .then((v) => (document.getElementById("version-text")!.textContent = `v${v}`))
@@ -1006,7 +847,8 @@ initMeetingQuit();
 loadSettings()
   .catch((err) => console.error("loading the settings failed:", err))
   .then(() => initStatus({ microphones: () => (micsListed ? mics.length : null), ai: aiActivity }))
-  .catch((err) => console.error("the status did not start:", err))
+  .then(startHome)
+  .catch((err) => console.error("the status or Home did not start:", err))
   .then(() =>
     initMeetings({
       settings: () => currentSettings ?? { meetingReminderOff: false, meetingHeadphonesSeen: false },

@@ -55,8 +55,8 @@ async function store(terms: string[]) {
   renderDictionary();
 }
 
-/// Adds the new entries of `text`; returns how many were new.
-async function add(text: string): Promise<number> {
+/// Adds the new entries of `text`; returns how many were new. Also Home's "Add a word".
+export async function addWords(text: string): Promise<number> {
   const current = stored();
   const fresh = parseTerms(text).filter((term) => !current.some((c) => c.toLowerCase() === term.toLowerCase()));
   if (fresh.length) await store([...current, ...fresh]);
@@ -104,7 +104,7 @@ function renderSuggestions(suggestions: Suggestion[]) {
 
 /// Add a suggestion to the dictionary (or dismiss it for good).
 async function resolve(word: string, dismiss: boolean) {
-  if (!dismiss) await add(word);
+  if (!dismiss) await addWords(word);
   renderSuggestions(await invoke<Suggestion[]>("learn_resolve", { word, dismiss }));
 }
 
@@ -140,7 +140,7 @@ async function importDictionary() {
   if (!path || Array.isArray(path)) return;
   try {
     const entries = await invoke<string[]>("dictionary_read_file", { path });
-    const added = await add(entries.join("\n"));
+    const added = await addWords(entries.join("\n"));
     showIoStatus(
       added > 0
         ? t("dictionary_imported").replace("{n}", String(added)).replace("{total}", String(entries.length))
@@ -197,7 +197,7 @@ export function initDictionary(h: DictionaryHost) {
   listen<Suggestion[]>("dictionary-suggestions", (e) => renderSuggestions(e.payload));
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    await add(input.value);
+    await addWords(input.value);
     input.value = "";
     input.focus();
   });
@@ -206,7 +206,7 @@ export function initDictionary(h: DictionaryHost) {
     const text = e.clipboardData?.getData("text") ?? "";
     if (!/[,\n]/.test(text)) return;
     e.preventDefault();
-    await add(text);
+    await addWords(text);
     input.value = "";
   });
 }
