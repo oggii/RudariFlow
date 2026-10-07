@@ -81,14 +81,67 @@
 }
 /* A large window (class "wider", set by shell.ts on the room beside the
    sidebar): the drop zone and the options side by side, each half of the
-   page, so a label is not a window's width away from its control. The file's
-   line and the result keep the whole width. Nothing is moved in the page:
-   the Tab order is the single column's. */
+   page, so a label is not a window's width away from its control. Nothing is
+   moved in the page: the Tab order is the single column's.
+
+   The file's line and the result do not take the page's width there. A
+   transcript's lines end at the measure (tokens.css), and a frame that went
+   on for another 1000 px left "Clear", "Copy" and "Hide" that far from the
+   text they act on, and the transcript's field half empty. The transcript's
+   frame is as wide as its text: the measure, the field's padding and edge,
+   and the room of its scrollbar (--file-frame). With a summary the summary
+   stands beside the transcript as a meeting's notes do: at the left and at
+   the notes' width (--file-side), its head with Hide and Copy above its own
+   text; the transcript at the right under its own toolbar. */
+#section-files.wider {
+  --file-frame: calc(var(--measure) + 46px);
+  --file-side: clamp(340px, 36%, 460px);
+  --file-gap: 20px;
+}
 #section-files.wider.active {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   grid-template-rows: auto auto auto minmax(0, 1fr);
   column-gap: var(--s4);
+}
+#section-files.wider > .file-job,
+#section-files.wider > .file-result {
+  max-width: var(--file-frame);
+}
+#section-files.wider:has(.file-summary:not(.hidden)) > .file-job {
+  max-width: calc(var(--file-side) + var(--file-gap) + var(--file-frame));
+}
+/* Two columns, three lines: the toolbar, the speakers (where there are any)
+   and the transcript at the right, the summary beside all three. The lines'
+   distances are the single column's (10 px, and 8 more under the speakers),
+   as margins: a gap would also stand around the speakers' line where it is
+   empty. */
+#section-files.wider > .file-result:not(.hidden):has(> .file-summary:not(.hidden)) {
+  display: grid;
+  grid-template-columns: var(--file-side) minmax(0, var(--file-frame));
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 0 var(--file-gap);
+  max-width: none;
+}
+#section-files.wider .file-summary:not(.hidden) {
+  grid-area: 1 / 1 / -1 / 2;
+  align-self: start;
+}
+#section-files.wider .file-summary:not(.hidden) ~ .file-text {
+  grid-area: 3 / 2;
+}
+#section-files.wider .file-result:has(> .file-summary:not(.hidden)) > .file-toolbar {
+  grid-area: 1 / 2;
+  margin-bottom: 10px;
+}
+#section-files.wider .file-result:has(> .file-summary:not(.hidden)) > .file-speakers {
+  grid-area: 2 / 2;
+  margin-bottom: 18px;
+}
+/* The field is as wide as its text: no padding that stands in for the rest
+   of a wider frame (see .file-text). */
+#section-files.wider .file-text {
+  padding-right: 14px;
 }
 #section-files.wider > * {
   grid-column: 1 / -1;
@@ -215,8 +268,9 @@
 .export-list button:focus-visible {
   background: var(--bg);
 }
-/* The frame keeps the page's width; the text keeps its measure (what is
-   left at the right is the frame's own padding). */
+/* In one column the frame keeps the page's width and the text its measure
+   (what is left at the right is the frame's own padding). In a large window
+   the frame itself ends at the text (#section-files.wider, above). */
 .file-text {
   width: 100%;
   min-height: 220px;
@@ -400,8 +454,12 @@
   border-radius: var(--radius-card);
   background: var(--surface);
 }
+/* The switch with its text asks for 420 px: where the bar has less beside
+   the three buttons (the smallest window, the pop-out), the buttons go under
+   it in both languages, and the text keeps the bar's width instead of a
+   column of 220 px. */
 .sb-bar-mic {
-  flex: 1 1 240px;
+  flex: 1 1 420px;
   display: flex;
   align-items: center;
   gap: var(--s3);
@@ -561,30 +619,39 @@
    1600 px of window, four at 2560 px). A narrower library has fewer columns
    and is the higher one, so a scrollbar never takes a column back and forth.
    The tiles of a row share its height: one that says "File missing", or whose
-   second line wrapped, is not higher than its neighbours. */
+   second line wrapped, is not higher than its neighbours. They share its
+   three lines too (each tile takes three rows of the list and passes them on
+   to its parts: `subgrid`): the first line, the controls, and the note of a
+   key another program has. So the controls of a row's tiles stand on one
+   level whatever one of them says above or below its own. The space between
+   two rows of tiles is each tile's own margin: a gap of the list would also
+   stand between a tile's three lines. */
 .sb-col-library {
   container: sblib / inline-size;
 }
 .sb-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr));
-  gap: var(--s2);
-  padding-bottom: 24px;
+  gap: 0 var(--s2);
+  padding-bottom: var(--s4);
 }
 .sb-list > .empty-state {
   grid-column: 1 / -1;
 }
-/* A tile's first line stands at its top and its second at its bottom, also
-   in a tile that is higher than its own content. */
+/* A tile's first line stands at its top and its controls at the bottom of
+   their line, also in a tile that is higher than its own content. */
 .sb-row {
+  grid-row: span 3;
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr) auto;
+  grid-template-rows: subgrid;
   grid-template-areas:
     "play main side"
-    "controls controls controls";
-  grid-template-rows: auto 1fr;
+    "controls controls controls"
+    "note note note";
   align-items: start;
-  gap: var(--s2) 12px;
+  gap: 0 12px;
+  margin-bottom: var(--s2);
   padding: 10px 12px;
   border: 1px solid transparent;
   border-radius: var(--radius-lg);
@@ -699,9 +766,8 @@
    the tile's right edge like the first line, so the controls of the tiles
    stand under each other. What does not fit goes to a line of its own inside
    the tile and never leaves it: the volume while the key box asks for its
-   key or says why not, beside a combination of four keys and beside "Taken
-   by another program"; in the pop-out, whose tile is narrower than the three
-   together, always. */
+   key or says why not and beside a combination of three or four keys; in
+   the pop-out, whose tile is narrower than the three together, always. */
 .sb-controls {
   grid-area: controls;
   align-self: end;
@@ -710,6 +776,15 @@
   align-items: center;
   gap: var(--s2) 10px;
   min-width: 0;
+  margin-top: var(--s2);
+}
+/* "Taken by another program" has the tile's third line, under the key box
+   it is about (past the category and the gap after it), so the three
+   controls stay on one line. */
+.sb-row > .sb-note {
+  grid-area: note;
+  margin-top: var(--s1);
+  padding-left: 150px;
 }
 .sb-controls select {
   flex: 0 0 140px;
@@ -830,8 +905,9 @@ body.sb-page {
   margin: 0;
 }
 /* A large window: the measure of Settings' two columns, for the library and
-   for an open meeting (with or without notes), so the page keeps its width
-   when a meeting opens. In the library the start row keeps the first column,
+   for an open meeting with its notes beside the transcript, so the page
+   keeps its width when such a meeting opens (one without notes: see below).
+   In the library the start row keeps the first column,
    the head spans both, and the meetings read across (the page's order, and
    Tab's). */
 #section-meetings.wider .mt-layout,
@@ -840,6 +916,16 @@ body.sb-page {
 }
 #section-meetings.wider .mt-start {
   max-width: calc(50% - var(--s4) / 2);
+}
+/* An open meeting without notes is its transcript, and the transcript's
+   lines end at the measure (.mt-para-text). So its frame ends near its text
+   in every window: 840 px, the width the transcript has beside the notes
+   (the measure, a paragraph's indent, the frame's padding, and the room of
+   the head's buttons). The head's buttons and a hint row's button stay near
+   the text they act on, and a hint row has the line for its sentence. After
+   the rule above, which would make it the page's width in a large window. */
+#section-meetings.mt-open:not(.mt-has-notes) .mt-layout {
+  max-width: 840px;
 }
 #section-meetings.wider .mt-list {
   display: grid;
@@ -915,7 +1001,6 @@ body.sb-page {
   flex-shrink: 0;
 }
 .mt-warning {
-  max-width: var(--measure);
   font-size: 12px;
   line-height: 1.45;
   color: var(--yellow);
@@ -929,9 +1014,6 @@ body.sb-page {
   font-size: 12px;
   color: var(--text-secondary);
   margin-bottom: 8px;
-}
-.mt-reminder > span {
-  max-width: var(--measure);
 }
 .mt-finishing-line,
 .mt-hint-row[data-tone="busy"] .mt-hint-text {
@@ -1054,10 +1136,11 @@ body.sb-page {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
 }
+/* A hint row's sentence has the row's line (a hint, not running text: see
+   --measure in tokens.css). */
 .mt-hint-text {
   flex: 1 1 260px;
   min-width: 0;
-  max-width: var(--measure);
   overflow-wrap: anywhere;
 }
 .mt-hint-row button {

@@ -13,6 +13,12 @@
 //   walk       false: no keyboard walk (a state the walk's first step would end:
 //              a field that renames, an open menu, a key box that listens; its
 //              probe asks for the focus ring itself)
+//   state      true: the page is a state its `open` brings about, not a page
+//              at rest. It must have `shows` (run.mjs stops without one)
+//   shows      the state is really on screen: async (page, run) => findings,
+//              asked right after `open`, before anything is measured (see
+//              `onScreen`); a page whose `open` never got there would measure
+//              the page at rest, and pass
 //   skip       check ids that do not apply to this page
 //   probe      extra findings: async (page, run) => [{ check, what, detail }];
 //              run = { openWindow, scenario, lang, size }, openWindow as in
@@ -43,6 +49,31 @@ const TABS = ["dictation", "ai", "dictionary", "models", "general"];
 
 /** What a probe reports when `ok` is false. */
 const expect = (ok, what, detail = "") => (ok ? [] : [{ check: "behaviour", what, detail }]);
+
+/**
+ * A state page's proof that its state is on screen (its `shows`). `test` runs in the page and answers true, or what
+ * it found instead. Until the re-review of Task 8, 23 of the 55 state pages passed with an `open` that never reached
+ * its state: the checks then measured the page at rest, which is clean.
+ */
+const onScreen = (what, test, arg) => async (page) => {
+  const got = await page.evaluate(test, arg);
+  return expect(got === true, `the page shows its state: ${what}`, got === true ? "" : (JSON.stringify(got) ?? "nothing"));
+};
+
+/**
+ * A key box under `boxes` asks for its key, or (`refused`) says why a key was refused. Both have the box in its
+ * accent form (`.capturing`); the prompt ends in an ellipsis in both languages, a reason does not.
+ */
+const keyBoxShows = (what, boxes, refused = false) =>
+  onScreen(
+    what,
+    ([boxes, refused]) => {
+      const box = [...document.querySelectorAll(boxes)].find((b) => b.classList.contains("capturing"));
+      const text = box?.textContent.trim() ?? "";
+      return (!!box && text.length > 15 && /…$/.test(text) !== refused) || { listens: !!box, text };
+    },
+    [boxes, refused],
+  );
 
 /**
  * Home's two layout steps (900 and 1600 px beside the sidebar) in a window
@@ -2526,6 +2557,53 @@ function filesLayout(see, lang) {
 }
 
 /**
+ * Files with a result. In a large window the transcript's field is as wide as its text (the measure, its own
+ * padding and the room of its scrollbar: no part of it stays empty beside a line that wrapped), the buttons over
+ * it and the file's line end where it ends, and a summary stands beside it at the left, at the width of a
+ * meeting's notes, with Hide and Copy over its own text. In one column the result keeps the page's width.
+ */
+async function resultLayout(page) {
+  const see = await page.evaluate(() => {
+    const box = (el) => {
+      const r = el.getBoundingClientRect();
+      return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), width: Math.round(r.width) };
+    };
+    const section = document.getElementById("section-files");
+    const text = document.getElementById("file-text");
+    const cs = getComputedStyle(text);
+    const summary = document.getElementById("file-summary-box");
+    return {
+      wider: section.classList.contains("wider"),
+      page: Math.round(section.getBoundingClientRect().width - parseFloat(getComputedStyle(section).paddingLeft) - parseFloat(getComputedStyle(section).paddingRight)),
+      text: box(text),
+      // What the field keeps free at its right, past its own padding.
+      empty: Math.round(parseFloat(cs.paddingRight) - parseFloat(cs.paddingLeft)),
+      measure: Math.round(parseFloat(cs.fontSize) * 42),
+      toolbar: box(section.querySelector(".file-toolbar")),
+      actions: box(section.querySelector(".file-actions")),
+      clear: box(document.getElementById("file-clear")),
+      summary: summary.checkVisibility() ? { ...box(summary), copy: box(document.getElementById("file-summary-copy")) } : null,
+    };
+  });
+  const detail = JSON.stringify(see);
+  if (!see.wider) return expect(Math.abs(see.text.width - see.page) <= 1 && (!see.summary || Math.abs(see.summary.width - see.page) <= 1), "in one column a file's result keeps the page's width", detail);
+  const out = [
+    ...expect(see.empty === 0 && see.text.width >= see.measure && see.text.width <= see.measure + 48, "in a large window the transcript's field is as wide as its text, with no part of it left empty", detail),
+    ...expect(Math.abs(see.actions.right - see.text.right) <= 1 && Math.abs(see.clear.right - see.text.right) <= 12 && see.toolbar.left === see.text.left, "the buttons over a transcript, and Clear, end where the transcript ends", detail),
+  ];
+  if (see.summary) {
+    out.push(
+      ...expect(
+        see.summary.right < see.text.left && see.text.left - see.summary.right <= 24 && see.summary.top === see.toolbar.top && see.summary.width >= 340 && see.summary.width <= 460 && see.summary.copy.right <= see.summary.right && see.summary.copy.left >= see.summary.left,
+        "in a large window a file's summary stands beside the transcript, at the left, with Hide and Copy over its own text",
+        detail,
+      ),
+    );
+  }
+  return out;
+}
+
+/**
  * With "prefers-reduced-motion: reduce" nothing moves: no element of the
  * window, the pop-out or the pill has an animation or a transition with a
  * duration, in the states that move without the setting (a page that comes,
@@ -2617,12 +2695,23 @@ async function reducedMotion(page, run) {
 // and at the usual one, in both languages (`state`), and each starts the
 // window anew, because a state would stay: by what the page shows, not by the
 // clock (`restart`).
+//
+// A state page proves its state (re-review of Task 8). 23 of the 55 passed
+// with an `open` that never reached the state: the tray's question was never
+// asked, the key was never refused, and the checks measured the page at rest,
+// which is clean. So every state page has a `shows` (`onScreen`), asked right
+// after `open` and before anything is measured: the dialog is open, the line
+// is red and says the backend's words, the key box listens and shows its
+// prompt, the menu is open. run.mjs does not start with a state page that has
+// none. Proven for five by taking the state out of their `open` in a copy of
+// this file: each then fails.
 
 const STATE_SIZES = ["900x600", "1600x900"];
 
-/** A state page: `open` runs in a window that was just started. */
+/** A state page: `open` runs in a window that was just started. `more.shows` says what the state looks like. */
 const state = (id, open, more = {}) => ({
   id,
+  state: true,
   scenarios: ["populated"],
   sizes: STATE_SIZES,
   ...more,
@@ -2870,16 +2959,93 @@ async function tryIt(page) {
   await wait(page, 250);
 }
 
+/** "Try it" has answered: the result shows, its line under it has `tone` and says `says`. */
+const triedIt = (what, tone, says, cleaned) =>
+  onScreen(
+    `Try it: ${what}`,
+    ([tone, says, cleaned]) => {
+      const meta = document.getElementById("ai-test-meta");
+      const now = { result: document.getElementById("ai-test-result").checkVisibility(), tone: meta.dataset.tone ?? "", meta: meta.textContent, cleaned: document.getElementById("ai-test-output").textContent !== document.getElementById("ai-test-input").value && document.getElementById("ai-test-output").textContent.length > 10 };
+      return (now.result && now.tone === tone && new RegExp(says).test(now.meta) && (!cleaned || now.cleaned)) || now;
+    },
+    [tone, says.source, cleaned],
+  );
+
+/**
+ * The text boxes of AI cleanup for a sentence or two ("Try it", a rule's instructions) are at most 720 px wide and
+ * use all of it: none keeps a part of itself empty by padding (the measure inside the box made typed text wrap at
+ * 588 px of a field of 1048), and the result has its field's width.
+ */
+async function tryItFields(page) {
+  const see = await page.evaluate(() => {
+    const field = (el) => {
+      const cs = getComputedStyle(el);
+      return { width: Math.round(el.getBoundingClientRect().width), empty: Math.round(parseFloat(cs.paddingRight) - parseFloat(cs.paddingLeft)) };
+    };
+    return { input: field(document.getElementById("ai-test-input")), result: Math.round(document.getElementById("ai-test-result").getBoundingClientRect().width), rules: [...document.querySelectorAll("#ai-rule-list .rule-instructions")].map(field) };
+  });
+  const fields = [see.input, ...see.rules];
+  return expect(see.rules.length === 3 && fields.every((f) => f.empty === 0 && f.width <= 720) && see.result === see.input.width, "a text box of AI cleanup is at most 720 px wide and uses its whole width; Try it's result is as wide as its field", JSON.stringify(see));
+}
+
+// ── Running text ──
+
+/**
+ * Running text keeps its measure in a window of 1920 px, where every frame is wide enough to let a line run on
+ * (a meeting's transcript had lines of 265 characters there before the measure). Place by place, and each place
+ * must have such text to show: Home's dictations, a file's summary and transcript, a meeting's notes and transcript
+ * with and without notes, what "Try it" answers, the Soundboard's instructions. With `--measure: 999em` in
+ * tokens.css this page fails. The same is asked of every page that is opened at 1920 px or wider (inpage.js,
+ * check `measure`).
+ */
+async function measureProbe(page) {
+  const out = [];
+  const place = async (name, scope, atLeast = 1) => {
+    const m = await page.evaluate((scope) => window.__uic.runningText(scope), scope);
+    out.push(...expect(m.pieces >= atLeast && m.longest > 20 && m.longest <= m.most, `running text keeps its measure: ${name}`, `${m.pieces} pieces of text, the longest line has ${m.longest} characters (at most ${m.most})`));
+  };
+  await section(page, "home");
+  await place("Home's dictations", "#history-list", 3);
+  await fileLoaded(page);
+  await page.click("#file-summarize");
+  await wait(page, 400);
+  await place("a file's summary", "#file-summary-box");
+  await place("a file's transcript", "#file-result", 2);
+  await meeting(page, M1);
+  await place("a meeting's notes", "#section-meetings .mt-notes", 3);
+  await place("a meeting's transcript beside its notes", "#mt-transcript", 7);
+  await page.click("#mt-back");
+  await wait(page, 300);
+  await meeting(page, M3);
+  await place("the transcript of a meeting without notes", "#mt-transcript", 7);
+  // "Try it" with a long sample that comes back as it was typed.
+  await page.evaluate(() => (window.__MOCK__.aiFallback = "The AI model is not downloaded"));
+  await advanced(page, "ai");
+  await page.fill("#ai-test-input", "um so I think we should uh meet on tuesday no wait wednesday at 3 and bring the slides and also the new price list for the storage rooms because the client asked for it twice last week and nobody had it at hand when he called");
+  await page.click("#ai-test-run");
+  await wait(page, 250);
+  await place("what Try it answers", "#ai-test-result");
+  // The Soundboard without a virtual cable: how to get one, in a box as wide as the board.
+  await page.evaluate((devices) => window.__MOCK__.keep({ sb: { devices, status: { state: "error", problem: { reason: "no_cable", device: "cable", name: "", detail: "" } } } }), NO_CABLE);
+  await restart(page);
+  await boardWith(page, false);
+  await place("the Soundboard's instructions", "#sb-root");
+  return out;
+}
+
 // ── The pill ──
 // A window of its own, 320 × 64 px, transparent over whatever is on the desktop, with a small style sheet of
 // its own. Until the review of Task 8 its pages were pictures only: it has none of the window's tokens, the
 // ground behind it is not known (mid-grey stands in for the desktop here), and it never has the keyboard
 // focus (it opens unfocused over the app the user dictates into, and is used with the mouse). What can be
 // measured is measured now: nothing leaves the window or the pill, no text is cut (the dictated words are the
-// user's and end in an ellipsis), the cancel button has a name and its 24 px, the contrast on the stand-in
-// ground, and what moves. Not the keyboard walk.
-const pill = (id, script, probe) => ({
+// user's: while Whisper sends them the pill keeps their end in view and lets their beginning go, and while the AI
+// works on them they end in an ellipsis), the cancel button has a name and its 24 px, the contrast on the
+// stand-in ground, and what moves. Not the keyboard walk. Every pill page says what its state looks like (`shows`).
+const pill = (id, script, shows, probe) => ({
   id: `pill-${id}`,
+  state: true,
+  shows,
   url: "/src/overlay.html",
   scope: "body",
   scenarios: ["populated"],
@@ -2894,6 +3060,140 @@ const pill = (id, script, probe) => ({
   },
   probe,
 });
+
+/** The pill is in `state`, in Edit mode or not, and the element `text` (an id) says something. */
+const pillShows = (what, state, text, edit = false) =>
+  onScreen(
+    `the pill ${what}`,
+    ([state, text, edit]) => {
+      const now = { state: document.body.dataset.state, edit: document.body.dataset.edit === "1", text: text ? document.getElementById(text).textContent.trim() : "(not asked)" };
+      return (now.state === state && now.edit === edit && now.text.length > 0) || now;
+    },
+    [state, text, edit],
+  );
+
+/** The pill polishes: the label of what the AI does, and the text. */
+const pillPolishes = (what, edit) =>
+  onScreen(
+    `the pill ${what}`,
+    (edit) => {
+      const now = { state: document.body.dataset.state, edit: document.body.dataset.edit === "1", label: document.getElementById("transcript").dataset.phase ?? "", text: document.getElementById("transcript-text").textContent.length };
+      return (now.state === "polishing" && now.edit === edit && now.label.length > 3 && now.text > 10) || now;
+    },
+    edit,
+  );
+
+/** The pill's text is one line and stands inside the pill from top to bottom, however long it is. */
+async function pillOneLine(page) {
+  const see = await page.evaluate(() => {
+    const text = document.getElementById("transcript-text");
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const rects = [...range.getClientRects()].filter((r) => r.width > 0);
+    const box = document.getElementById("transcript").getBoundingClientRect();
+    return { characters: text.textContent.length, lines: new Set(rects.map((r) => Math.round(r.top))).size, inside: rects.every((r) => r.top >= box.top && r.bottom <= box.bottom) };
+  });
+  return expect(see.characters > 0 && see.lines === 1 && see.inside, "the pill's text is one line, inside the pill", JSON.stringify(see));
+}
+
+/** What Whisper sends for a dictation of three sentences: a segment each, one after the other (whisper_engine.rs, the segment callback). */
+const SEGMENTS = {
+  en: ["Could you send me the quote for the move by tomorrow noon?", "I need it for the meeting with Mr Keller on Thursday.", "And please add the price of the storage room."],
+  de: ["Kannst du mir bitte bis morgen Mittag die Offerte für den Umzug schicken?", "Ich brauche sie für die Besprechung mit Herrn Keller am Donnerstag.", "Und schreib bitte den Preis für den Lagerraum dazu."],
+};
+/** The pill's text fades out over this many px at its left end (src/overlay.html, .transcript-line). */
+const PILL_FADE = 16;
+
+/**
+ * The pill is what the user watches while dictating, and what matters there is the end of the text: after every
+ * segment the last word that was said is inside the pill, whole and past the fade at the left, on one line. A
+ * text that fits stands in the middle. Until the re-review of Task 8 the text was one line that ended in an
+ * ellipsis: it showed its first 45 characters and then never changed again, however long the dictation went on.
+ */
+async function pillSegments(page) {
+  const out = [];
+  const lang = await page.evaluate(() => window.__MOCK_CFG__.lang);
+  const say = async (text) => {
+    await emit(page, "partial-transcript", { text, is_final: false });
+    await wait(page, 60);
+  };
+  const see = () =>
+    page.evaluate(() => {
+      const text = document.getElementById("transcript-text");
+      const node = text.firstChild;
+      const whole = document.createRange();
+      whole.selectNodeContents(text);
+      const all = whole.getBoundingClientRect();
+      const at = node ? node.textContent.search(/\S+$/) : -1;
+      const last = document.createRange();
+      if (at >= 0) {
+        last.setStart(node, at);
+        last.setEnd(node, node.textContent.length);
+      }
+      const word = last.getBoundingClientRect();
+      // Where the text can be seen: its line's box, inside the pill's own and the window.
+      const pill = document.getElementById("transcript").getBoundingClientRect();
+      const line = text.parentElement.getBoundingClientRect();
+      return {
+        text: text.textContent,
+        word: at >= 0 ? node.textContent.slice(at) : "",
+        wordAt: [Math.round(word.left), Math.round(word.right)],
+        textAt: [Math.round(all.left), Math.round(all.right)],
+        box: [Math.round(Math.max(pill.left, line.left, 0)), Math.round(Math.min(pill.right, line.right, window.innerWidth))],
+        lines: new Set([...whole.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top))).size,
+        offCentre: Math.round((all.left + all.right) / 2 - window.innerWidth / 2),
+        shown: getComputedStyle(document.getElementById("transcript")).opacity,
+      };
+    });
+  await wait(page, 200); // the pill's text has faded in
+  // A short text: whole, in the middle.
+  await say(lang === "de" ? "Ja, passt." : "Yes, that works.");
+  let now = await see();
+  out.push(...expect(now.shown === "1" && now.lines === 1 && Math.abs(now.offCentre) <= 1 && now.textAt[0] >= now.box[0] + PILL_FADE && now.textAt[1] <= now.box[1], "a short text stands whole in the middle of the pill", JSON.stringify(now)));
+  // A new dictation of three sentences.
+  await page.evaluate(() => {
+    window.__overlayUpdate("recording");
+    window.__overlayUpdate("transcribing");
+  });
+  for (const [i, segment] of SEGMENTS[lang].entries()) {
+    await say(segment);
+    now = await see();
+    out.push(
+      ...expect(
+        now.text.endsWith(segment) && now.word === segment.split(" ").at(-1) && now.lines === 1 && now.wordAt[0] >= now.box[0] + PILL_FADE && now.wordAt[1] <= now.box[1],
+        `after segment ${i + 1} of 3 the pill shows the end of what was said: the last word is inside it, on its one line`,
+        JSON.stringify(now),
+      ),
+    );
+  }
+  // The three together are longer than the pill, and what is cut is the beginning.
+  out.push(...expect(now.textAt[1] - now.textAt[0] > now.box[1] - now.box[0] && now.textAt[0] < now.box[0], "a text longer than the pill loses its beginning, at the left", JSON.stringify(now)));
+  return out;
+}
+
+/**
+ * Edit mode: beside the chip the bars have less room than the 32 need, and each bar that shows is whole. A bar
+ * cut to a sliver of 1 px stood at the left end at some chip widths ("128 Wörter"). Tried from one word to five
+ * digits; the newest bar, the one at the right, always shows.
+ */
+async function wholeBars(page) {
+  const bad = [];
+  for (const words of [1, 12, 128, 1280, 12800]) {
+    await emit(page, "edit-target", words);
+    await wait(page, 40);
+    const see = await page.evaluate(() => {
+      const box = document.getElementById("waveform").getBoundingClientRect();
+      const bars = [...document.querySelectorAll("#waveform .bar")];
+      const seen = bars.map((bar) => bar.getBoundingClientRect()).filter((r) => r.top < box.bottom && r.bottom > box.top && r.right > box.left && r.left < box.right);
+      const newest = bars[0].getBoundingClientRect();
+      return { chip: document.getElementById("edit-chip").textContent, bars: seen.length, cut: seen.filter((r) => r.left < box.left - 0.5 || r.right > box.right + 0.5 || r.width < 1.9).length, newest: newest.top < box.bottom && Math.abs(newest.right - box.right) <= 0.5 };
+    });
+    if (!(see.bars >= 8 && see.cut === 0 && see.newest)) bad.push(JSON.stringify(see));
+  }
+  await emit(page, "edit-target", 128);
+  await wait(page, 40);
+  return expect(bad.length === 0, "beside the edit chip every bar that shows is whole, and the newest one shows", bad.join("; "));
+}
 
 /** The Dictionary tab: the searches, and the one way to delete. */
 async function dictionaryProbe(page, run) {
@@ -3141,6 +3441,14 @@ export const PAGES = [
         const sides = await page.evaluate(() => ["home-controls", "home-recent"].map((id) => document.getElementById(id).getBoundingClientRect()).map((r) => [Math.round(r.top), Math.round(r.width)]));
         out.push(...expect(sides[0][0] === sides[1][0] && sides[1][1] > sides[0][1], "the two sides start on one top edge and the list is the wider one", JSON.stringify(sides)));
       }
+      // A dictation keeps the measure of running text only in the wide list, where it stands beside its actions;
+      // in the narrower forms it has its row's width (capped there, it wrapped early and made the page higher).
+      const texts = await page.evaluate(() => {
+        const list = document.getElementById("history-list");
+        const widths = [...list.querySelectorAll(".history-text")].map((el) => [getComputedStyle(el).maxWidth, Math.round(el.getBoundingClientRect().width), Math.round(el.closest(".history-item").getBoundingClientRect().width)]);
+        return { wideList: getComputedStyle(list).display === "grid", capped: widths.filter((w) => w[0] !== "none").length, short: widths.filter((w) => w[1] < w[2] - 1).length, rows: widths.length };
+      });
+      out.push(...expect(texts.rows > 0 && (texts.wideList ? texts.capped === texts.rows : texts.capped === 0 && texts.short === 0), "a dictation has its row's width, and the measure only in the wide list", JSON.stringify(texts)));
       // Every row is an item of the list, named after its text, and all rows have one shape.
       const rowsAre = await page.evaluate(() => {
         const rows = [...document.querySelectorAll("#history-list .history-item")];
@@ -3353,6 +3661,14 @@ export const PAGES = [
       out.push(...expect(see.switchShown, "the virtual microphone's switch is always visible", JSON.stringify(see)));
       out.push(...expect(see.firstSound >= 0 && see.firstSound < see.height, "the first sound is on the first screen", JSON.stringify(see)));
       out.push(...(await tiles(page)));
+      // The bar: the three buttons stand beside the switch only where its text keeps a line's width, else under
+      // it (English at 900x600 left the text a column of 220 px, with every line of it broken in two).
+      const bar = await page.evaluate(() => {
+        const mic = document.querySelector("#sb-root .sb-bar-mic").getBoundingClientRect();
+        const actions = document.querySelector("#sb-root .sb-bar-actions").getBoundingClientRect();
+        return { beside: actions.top < mic.bottom - 1, room: Math.round(mic.width) };
+      });
+      out.push(...expect(!bar.beside || bar.room >= 419, "the bar's buttons stand beside the switch only where the switch and its text keep 420 px, else under it", JSON.stringify(bar)));
       // Once per run, in windows of their own: the step with the scrollbar drawn, and the two windows that share the store.
       if (run.scenario === "populated" && run.lang === "en" && run.size === BEHAVIOUR) {
         out.push(...(await boardHolds(run)));
@@ -3614,12 +3930,14 @@ export const PAGES = [
     // With a file loaded the transcript starts on the first screen.
     probe: async (page, run) => {
       const at = await page.evaluate(() => [Math.round(document.getElementById("file-text").getBoundingClientRect().top), window.innerHeight]);
-      return [...expect(at[0] < at[1], "the transcript starts on the first screen", `y ${at[0]} of ${at[1]}`), ...filesLayout(await filesNow(page), run.lang)];
+      return [...expect(at[0] < at[1], "the transcript starts on the first screen", `y ${at[0]} of ${at[1]}`), ...filesLayout(await filesNow(page), run.lang), ...(await resultLayout(page))];
     },
   },
   {
     id: "files-result",
     scenarios: ["populated"],
+    // Also at the common large size: the summary beside the transcript.
+    alsoSizes: ["1920x1080"],
     fresh: true,
     open: async (page) => {
       await section(page, "files");
@@ -3631,7 +3949,7 @@ export const PAGES = [
     // The summary is on top of the transcript: it starts on the first screen.
     probe: async (page) => {
       const at = await page.evaluate(() => [Math.round(document.getElementById("file-summary-box").getBoundingClientRect().top), window.innerHeight]);
-      return expect(at[0] < at[1], "the summary starts on the first screen", `y ${at[0]} of ${at[1]}`);
+      return [...expect(at[0] < at[1], "the summary starts on the first screen", `y ${at[0]} of ${at[1]}`), ...(await resultLayout(page))];
     },
   },
   {
@@ -3679,6 +3997,10 @@ export const PAGES = [
       await wait(page, 300);
     },
     {
+      shows: onScreen("taken keys on a tile and in the panel, a missing file, a sound that plays", () => {
+        const now = { notes: document.querySelectorAll("#sb-root .sb-note").length, playing: document.querySelectorAll("#sb-root .sb-row.playing").length, panel: !!document.getElementById("sb-panel") };
+        return (now.notes === 4 && now.playing === 1 && now.panel) || now;
+      }),
       probe: async (page) => {
         const see = await page.evaluate(() => ({
           notes: [...document.querySelectorAll("#sb-root .sb-note")].length,
@@ -3686,11 +4008,33 @@ export const PAGES = [
           playing: document.querySelectorAll("#sb-root .sb-row.playing").length,
           bar: parseFloat(document.querySelector("#sb-root .sb-row.playing .sb-progress-fill")?.style.width ?? "0"),
           stacked: [...document.querySelectorAll("#sb-panel .setting-row:has(.sb-hotkey)")].map((row) => getComputedStyle(row).flexDirection).join(),
+          // The tile whose key another program has: its three controls are one line, and the note has the line
+          // under them, starting under the key box it is about, inside the tile. The tile beside it has its
+          // controls on the same level.
+          taken: (() => {
+            const note = document.querySelector("#sb-root .sb-row > .sb-note");
+            const row = note?.closest(".sb-row");
+            if (!row) return null;
+            const box = (el) => el.getBoundingClientRect();
+            const middle = (el) => Math.round(box(el).top + box(el).height / 2);
+            const controls = [".sb-category", ".sb-hotkey", ".sb-controls .sb-slider"].map((s) => middle(row.querySelector(s)));
+            const words = document.createRange();
+            words.selectNodeContents(note);
+            const mate = [...document.querySelectorAll("#sb-root .sb-row")].find((r) => r !== row && Math.round(box(r).top) === Math.round(box(row).top));
+            return {
+              oneLine: Math.max(...controls) - Math.min(...controls) <= 2,
+              under: box(note).top >= box(row.querySelector(".sb-controls")).bottom,
+              atKey: Math.round(words.getBoundingClientRect().left - box(row.querySelector(".sb-hotkey")).left),
+              inside: box(note).bottom <= box(row).bottom && words.getBoundingClientRect().right <= box(row).right,
+              level: mate ? middle(mate.querySelector(".sb-category")) - controls[0] : 0,
+            };
+          })(),
         }));
         return [
           // On a tile and on the panel's two keys "Taken by another program", and on the tile of the missing file "File missing".
           ...expect(see.notes === 4 && see.notice === 2 && see.playing === 1 && see.bar > 30, "the board shows its hard states: taken keys, a missing file, a sound that plays, the notice of what was added", JSON.stringify(see)),
           ...expect(see.stacked === "column,column", "the panel's two key rows have the key box under the label, in every window", see.stacked),
+          ...expect(!!see.taken && see.taken.oneLine && see.taken.under && see.taken.atKey === 0 && see.taken.inside && see.taken.level === 0, "a tile whose key another program has keeps category, key and volume on one line, with the note under its key box and the next tile's controls on the same level", JSON.stringify(see.taken)),
           ...(await tilesHold(page)),
         ];
       },
@@ -3705,6 +4049,7 @@ export const PAGES = [
       await listen(page, TILE_KEYS);
     },
     {
+      shows: keyBoxShows("a sound's key box asks for its key", TILE_KEYS),
       walk: false,
       probe: async (page) => {
         const out = [...(await tilesHold(page)), ...(await keyBoxes(page, TILE_KEYS))];
@@ -3722,7 +4067,7 @@ export const PAGES = [
       // The key of the next sound: "Already used by …" with the sound's name.
       await refused(page, TILE_KEYS, "Numpad2");
     },
-    { probe: tilesHold, after: endRefusal },
+    { shows: keyBoxShows("a sound's key box says that another sound has the key", TILE_KEYS, true), probe: tilesHold, after: endRefusal },
   ),
   state(
     "soundboard-panel-capture",
@@ -3731,6 +4076,7 @@ export const PAGES = [
       await listen(page, PANEL_KEYS);
     },
     {
+      shows: keyBoxShows("a key box of the panel asks for its key", PANEL_KEYS),
       walk: false,
       probe: async (page) => {
         const out = await keyBoxes(page, PANEL_KEYS);
@@ -3748,22 +4094,36 @@ export const PAGES = [
       await boardWith(page, true);
       await refused(page, PANEL_KEYS);
     },
-    { after: endRefusal },
+    { shows: keyBoxShows("a key box of the panel says why Ctrl+C was refused", PANEL_KEYS, true), after: endRefusal },
   ),
   // The virtual microphone failed while it was on.
-  state("soundboard-error", async (page) => {
-    await boardWith(page, false);
-    await page.evaluate(() => {
-      const m = window.__MOCK__;
-      m.sb.status = { state: "error", problem: { reason: "lost", device: "cable", name: "CABLE Input (VB-Audio Virtual Cable)", detail: "the device was removed" } };
-      m.emit("soundboard-status", m.sb.status);
-    });
-    await wait(page, 200);
-  }),
+  state(
+    "soundboard-error",
+    async (page) => {
+      await boardWith(page, false);
+      await page.evaluate(() => {
+        const m = window.__MOCK__;
+        m.sb.status = { state: "error", problem: { reason: "lost", device: "cable", name: "CABLE Input (VB-Audio Virtual Cable)", detail: "the device was removed" } };
+        m.emit("soundboard-status", m.sb.status);
+      });
+      await wait(page, 200);
+    },
+    {
+      shows: onScreen("the switch's line says in red that the cable is gone", () => {
+        const line = document.querySelector("#sb-root .sb-status");
+        return (line?.dataset.tone === "error" && line.checkVisibility() && line.textContent.includes("CABLE Input")) || { tone: line?.dataset.tone, text: line?.textContent };
+      }),
+    },
+  ),
   // No virtual cable is installed (and "Got it" was pressed on an earlier day): the instructions, the link, and
   // how to choose the cable in Discord, whether the panel is open or not.
   {
     id: "soundboard-no-cable",
+    state: true,
+    shows: onScreen("the box that says how to get a cable, and the switch's line in red", () => {
+      const now = { link: !!document.querySelector('#sb-root > .sb-hint [data-key="cable-link"]'), tone: document.querySelector("#sb-root .sb-status")?.dataset.tone };
+      return (now.link && now.tone === "error") || now;
+    }),
     scenarios: ["populated"],
     sizes: STATE_SIZES,
     open: async (page) => {
@@ -3787,10 +4147,19 @@ export const PAGES = [
         localStorage.removeItem("rudariflow-soundboard-hint-seen");
       }),
   },
-  state("soundboard-popped", async (page) => {
-    await boardWith(page, false);
-    await boardSays(page, () => (window.__MOCK__.board.window.poppedOut = true));
-  }),
+  state(
+    "soundboard-popped",
+    async (page) => {
+      await boardWith(page, false);
+      await boardSays(page, () => (window.__MOCK__.board.window.poppedOut = true));
+    },
+    {
+      shows: onScreen("the board is in its own window: the line that says so and the button that brings it back, no sound", () => {
+        const now = { back: !!document.querySelector('#sb-root [data-key="dock"]')?.checkVisibility(), sounds: document.querySelectorAll("#sb-root .sb-row").length };
+        return (now.back && now.sounds === 0) || now;
+      }),
+    },
+  ),
   state(
     "soundboard-rename",
     async (page) => {
@@ -3799,6 +4168,7 @@ export const PAGES = [
       await wait(page, 100);
     },
     {
+      shows: onScreen("a sound's name is a field that has the focus", () => document.activeElement?.matches("#sb-root .sb-main input") || { focus: document.activeElement?.className ?? "" }),
       walk: false,
       // The fields that rename in place have the size of what they replace: a tile and the chips' bar keep their height.
       probe: async (page) => {
@@ -3826,11 +4196,20 @@ export const PAGES = [
       },
     },
   ),
-  state("soundboard-no-match", async (page) => {
-    await boardWith(page, false);
-    await page.fill("#sb-root .sb-search", "qqq");
-    await wait(page, 150);
-  }),
+  state(
+    "soundboard-no-match",
+    async (page) => {
+      await boardWith(page, false);
+      await page.fill("#sb-root .sb-search", "qqq");
+      await wait(page, 150);
+    },
+    {
+      shows: onScreen("the search finds no sound, and the list says so", () => {
+        const now = { sounds: document.querySelectorAll("#sb-root .sb-row").length, says: document.querySelector("#sb-root .sb-list .empty-state")?.checkVisibility() ?? false };
+        return (now.sounds === 0 && now.says) || now;
+      }),
+    },
+  ),
   state(
     "soundboard-drag",
     async (page) => {
@@ -3839,6 +4218,7 @@ export const PAGES = [
       await wait(page, 100);
     },
     {
+      shows: onScreen("files are dragged over the board", () => document.getElementById("sb-root").classList.contains("dragging")),
       probe: async (page) => {
         const outline = await page.evaluate(() => [document.getElementById("sb-root").classList.contains("dragging"), getComputedStyle(document.getElementById("sb-root")).outlineColor]);
         return expect(outline[0] && !/, 0\)$|transparent/.test(outline[1]), "files dragged over the window outline the board", JSON.stringify(outline));
@@ -3846,17 +4226,32 @@ export const PAGES = [
       after: (page) => emit(page, "tauri://drag-leave", {}),
     },
   ),
-  state("soundboard-keys-off", async (page) => {
-    await boardWith(page, true);
-    await boardSays(page, () => (window.__MOCK__.board.soundHotkeys = false));
-  }),
+  state(
+    "soundboard-keys-off",
+    async (page) => {
+      await boardWith(page, true);
+      await boardSays(page, () => (window.__MOCK__.board.soundHotkeys = false));
+    },
+    {
+      shows: onScreen("the sound hotkeys are off: every sound's key is dimmed", () => {
+        const now = { sounds: document.querySelectorAll("#sb-root .sb-row").length, dimmed: document.querySelectorAll("#sb-root .sb-row .sb-hotkey.off").length };
+        return (now.sounds > 0 && now.dimmed === now.sounds) || now;
+      }),
+    },
+  ),
   state(
     "soundboard-many",
     async (page) => {
       await boardWith(page, false);
       await boardSays(page, () => window.__MOCK__.manySounds());
     },
-    { probe: async (page) => [...(await tiles(page)), ...(await tilesHold(page))] },
+    {
+      shows: onScreen("24 sounds in 5 categories", () => {
+        const now = { sounds: document.querySelectorAll("#sb-root .sb-row").length, chips: document.querySelectorAll("#sb-root .sb-chips .sb-chip").length };
+        return (now.sounds === 24 && now.chips >= 6) || now;
+      }),
+      probe: async (page) => [...(await tiles(page)), ...(await tilesHold(page))],
+    },
   ),
 
   // Meetings.
@@ -3868,7 +4263,14 @@ export const PAGES = [
       await emit(page, "meeting-quit-asked");
       await wait(page, 200);
     },
-    { scope: "#mt-quit", after: (page) => page.evaluate(() => document.getElementById("mt-quit").close()) },
+    {
+      shows: onScreen("the question whether to quit is open over the page", () => {
+        const dialog = document.getElementById("mt-quit");
+        return (dialog.open && dialog.matches(":modal") && dialog.checkVisibility()) || { open: dialog.open };
+      }),
+      scope: "#mt-quit",
+      after: (page) => page.evaluate(() => document.getElementById("mt-quit").close()),
+    },
   ),
   // The library while a meeting records: the bar with every warning and the paused line, the reminder, and
   // another meeting whose end steps run.
@@ -3882,13 +4284,22 @@ export const PAGES = [
       await wait(page, 400);
     },
     {
+      shows: onScreen("the library while a meeting records, with the bar's warnings", () => {
+        const now = { warnings: document.querySelectorAll("#mt-warnings .mt-warning").length, library: document.getElementById("mt-library").checkVisibility() };
+        return (now.warnings === 5 && now.library) || now;
+      }),
       probe: async (page) => {
         const see = await page.evaluate(() => ({ lines: document.querySelectorAll("#mt-warnings .mt-warning").length, finishing: document.querySelectorAll("#mt-finishing .mt-finishing-line").length, reminder: document.getElementById("mt-reminder").checkVisibility(), badge: document.querySelector("#mt-list .mt-badge")?.dataset.state, library: document.getElementById("mt-library").checkVisibility() }));
         return expect(see.lines === 5 && see.finishing === 1 && see.reminder && see.badge === "recording" && see.library, "the library while a meeting records: its four warnings and the paused line, the reminder, the finishing line, the meeting in the list", JSON.stringify(see));
       },
     },
   ),
-  state("meetings-interrupted", (page) => meeting(page, M2)),
+  state("meetings-interrupted", (page) => meeting(page, M2), {
+    shows: onScreen("an open meeting that was cut off: the warning with Finish", () => {
+      const now = { open: document.getElementById("section-meetings").classList.contains("mt-open"), warn: !!document.querySelector('#mt-hint .mt-hint-row[data-tone="warn"] button')?.checkVisibility() };
+      return (now.open && now.warn) || now;
+    }),
+  }),
   // Finished without notes and without speakers: each reason with its way out (Download, Write notes), and the audio that is gone.
   state(
     "meetings-no-notes",
@@ -3897,9 +4308,42 @@ export const PAGES = [
       await meeting(page, M3);
     },
     {
+      // Also at the common large size, where its frame was the page's width.
+      sizes: [...STATE_SIZES, "1920x1080"],
+      shows: onScreen("an open meeting without notes: three hint rows over the transcript", () => {
+        const now = { open: document.getElementById("section-meetings").classList.contains("mt-open"), notes: document.getElementById("section-meetings").classList.contains("mt-has-notes"), rows: document.querySelectorAll("#mt-hint .mt-hint-row").length, said: document.querySelectorAll("#mt-transcript .mt-para").length };
+        return (now.open && !now.notes && now.rows === 3 && now.said === 7) || now;
+      }),
       probe: async (page) => {
         const rows = await page.evaluate(() => [...document.querySelectorAll("#mt-hint .mt-hint-row")].map((row) => row.querySelector("button")?.dataset.action ?? ""));
-        return expect(rows.length === 3 && rows[0] === "speaker-model" && rows[1].startsWith("notes:") && rows[2] === "", "a meeting without speakers and notes says why, with Download and Write notes, and that its audio is deleted", JSON.stringify(rows));
+        // The transcript is the page here: its frame ends near its text (840 px or the window), the head's buttons
+        // end where the frame ends, and a hint's sentence wraps only where its row has no room left for it.
+        const frame = await page.evaluate(() => {
+          const box = (el) => el.getBoundingClientRect();
+          const layout = box(document.querySelector("#section-meetings .mt-layout"));
+          const lines = (el) => {
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+          };
+          return {
+            width: Math.round(layout.width),
+            room: document.getElementById("content").clientWidth - 48,
+            transcript: Math.round(box(document.getElementById("mt-transcript")).width),
+            actions: Math.round(layout.right - box(document.querySelector(".mt-view-actions")).right),
+            // A hint that wraps although its row has 40 px or more left beside it.
+            early: [...document.querySelectorAll("#mt-hint .mt-hint-row")].filter((row) => {
+              const text = row.querySelector(".mt-hint-text");
+              const end = row.querySelector("button") ? box(row.querySelector("button")).left : box(row).right - 12;
+              return lines(text) > 1 && end - box(text).right > 40;
+            }).length,
+          };
+        });
+        return [
+          ...expect(rows.length === 3 && rows[0] === "speaker-model" && rows[1].startsWith("notes:") && rows[2] === "", "a meeting without speakers and notes says why, with Download and Write notes, and that its audio is deleted", JSON.stringify(rows)),
+          ...expect(frame.width === Math.min(frame.room, 840) && frame.transcript === frame.width && Math.abs(frame.actions) <= 1, "without notes a meeting's frame ends near its text (840 px or the window), and the head's buttons end with it", JSON.stringify(frame)),
+          ...expect(frame.early === 0, "a hint row's sentence has the row's line: none wraps while its row has room", JSON.stringify(frame)),
+        ];
       },
     },
   ),
@@ -3917,6 +4361,10 @@ export const PAGES = [
       // button goes before Tab comes to it (or just after: that was a finding in one run of two). The same
       // controls are walked on `meetings-recording`; the button's focus ring is asked for here.
       walk: false,
+      shows: onScreen("a long live transcript, scrolled up: Jump to live", () => {
+        const now = { live: document.getElementById("mt-live").checkVisibility(), said: document.querySelectorAll("#mt-transcript .mt-para").length, at: document.getElementById("mt-transcript").scrollTop };
+        return (now.live && now.said === 40 && now.at === 0) || now;
+      }),
       probe: async (page) => {
         // A key was pressed in the window: from then on a focus shows as the keyboard's.
         await page.keyboard.press("Shift");
@@ -3939,7 +4387,11 @@ export const PAGES = [
       await page.click("#mt-view-title");
       await wait(page, 100);
     },
-    { walk: false, probe: (page) => ring(page, "the field that renames a meeting") },
+    {
+      shows: onScreen("the meeting's title is a field that has the focus", () => document.activeElement?.matches("#section-meetings .mt-title-edit") || { focus: document.activeElement?.className ?? "" }),
+      walk: false,
+      probe: (page) => ring(page, "the field that renames a meeting"),
+    },
   ),
   state(
     "meetings-speaker-edit",
@@ -3948,7 +4400,11 @@ export const PAGES = [
       await page.click("#mt-speaker-chips .speaker-chip");
       await wait(page, 100);
     },
-    { walk: false, probe: (page) => ring(page, "the field that renames a speaker") },
+    {
+      shows: onScreen("a speaker's chip is a field that has the focus", () => document.activeElement?.matches("#mt-speaker-chips .speaker-chip-input") || { focus: document.activeElement?.className ?? "" }),
+      walk: false,
+      probe: (page) => ring(page, "the field that renames a speaker"),
+    },
   ),
   state(
     "meetings-export",
@@ -3957,19 +4413,44 @@ export const PAGES = [
       await page.click("#mt-export");
       await wait(page, 100);
     },
-    { walk: false, probe: (page) => menuItems(page, "#mt-export", "#mt-export-list") },
+    {
+      shows: onScreen("a meeting's Export menu is open", () => {
+        const now = { list: document.getElementById("mt-export-list").checkVisibility(), expanded: document.getElementById("mt-export").getAttribute("aria-expanded") };
+        return (now.list && now.expanded === "true") || now;
+      }),
+      walk: false,
+      probe: (page) => menuItems(page, "#mt-export", "#mt-export-list"),
+    },
   ),
-  state("meetings-start-error", async (page) => {
-    await section(page, "meetings");
-    await page.evaluate(() => window.__MOCK__.refuseNext("meeting_start", "no_model"));
-    await page.click("#mt-start-btn");
-    await wait(page, 200);
-  }),
-  state("meetings-no-match", async (page) => {
-    await section(page, "meetings");
-    await page.fill("#mt-search", "qqq");
-    await wait(page, 450);
-  }),
+  state(
+    "meetings-start-error",
+    async (page) => {
+      await section(page, "meetings");
+      await page.evaluate(() => window.__MOCK__.refuseNext("meeting_start", "no_model"));
+      await page.click("#mt-start-btn");
+      await wait(page, 200);
+    },
+    {
+      shows: onScreen("under the start row, why the meeting did not start", () => {
+        const line = document.getElementById("mt-start-error");
+        return (line.checkVisibility() && line.textContent.trim().length > 10) || { shown: line.checkVisibility(), text: line.textContent };
+      }),
+    },
+  ),
+  state(
+    "meetings-no-match",
+    async (page) => {
+      await section(page, "meetings");
+      await page.fill("#mt-search", "qqq");
+      await wait(page, 450);
+    },
+    {
+      shows: onScreen("the search finds no meeting, and the list says so", () => {
+        const now = { meetings: document.querySelectorAll("#mt-list .mt-item").length, says: document.getElementById("mt-empty").checkVisibility() };
+        return (now.meetings === 0 && now.says) || now;
+      }),
+    },
+  ),
   // Twelve meetings: two columns of rows in a large window, which the 1920 px one shows best.
   state(
     "meetings-many",
@@ -3983,6 +4464,7 @@ export const PAGES = [
     },
     {
       sizes: [...STATE_SIZES, "1920x1080"],
+      shows: onScreen("twelve meetings in the library", () => document.querySelectorAll("#mt-list .mt-item").length === 12 || { meetings: document.querySelectorAll("#mt-list .mt-item").length }),
       probe: async (page) => {
         const see = await page.evaluate(() => {
           const items = [...document.querySelectorAll("#mt-list .mt-item")].map((el) => el.getBoundingClientRect());
@@ -4003,6 +4485,10 @@ export const PAGES = [
       await wait(page, 150);
     },
     {
+      shows: onScreen("a file runs: Cancel, and the speakers' percent in the status line", () => {
+        const now = { cancel: document.getElementById("file-cancel").checkVisibility(), status: document.getElementById("file-status").textContent };
+        return (now.cancel && /43 %$/.test(now.status)) || now;
+      }),
       probe: async (page) => {
         const see = await page.evaluate(() => ({ status: document.getElementById("file-status").textContent, cancel: document.getElementById("file-cancel").checkVisibility(), clear: document.getElementById("file-clear").disabled, text: document.getElementById("file-text").value.length, bar: document.getElementById("file-progress-fill").style.width }));
         return expect(/43 %$/.test(see.status) && see.cancel && see.clear && see.text > 100 && see.bar === "89%", "a file that runs shows its percent, the text so far and Cancel", JSON.stringify(see));
@@ -4022,6 +4508,7 @@ export const PAGES = [
       await wait(page, 150);
     },
     {
+      shows: onScreen("the speaker model downloads: its percent on the Speakers row", () => /43 %$/.test(document.getElementById("file-speakers-hint").textContent) || { hint: document.getElementById("file-speakers-hint").textContent }),
       probe: async (page) => {
         const see = await page.evaluate(() => [document.getElementById("file-speakers-hint").textContent, document.getElementById("file-cancel").checkVisibility(), document.getElementById("status-indicator").dataset.kind]);
         return expect(/43 %$/.test(see[0]) && see[1] && see[2] === "downloading", "the speaker model's download shows its percent on the Speakers row and in the status, with Cancel", JSON.stringify(see));
@@ -4029,12 +4516,21 @@ export const PAGES = [
     },
   ),
   // The file could not be read: the backend's own words after "Did not work".
-  state("files-failed", async (page) => {
-    await section(page, "files");
-    await page.evaluate(() => window.__MOCK__.refuseNext("transcribe_file", "ffmpeg could not read the file: Invalid data found when processing input (moov atom not found)"));
-    await page.click("#file-choose");
-    await wait(page, 300);
-  }),
+  state(
+    "files-failed",
+    async (page) => {
+      await section(page, "files");
+      await page.evaluate(() => window.__MOCK__.refuseNext("transcribe_file", "ffmpeg could not read the file: Invalid data found when processing input (moov atom not found)"));
+      await page.click("#file-choose");
+      await wait(page, 300);
+    },
+    {
+      shows: onScreen("the status line says in red, in the backend's words, why the file could not be read", () => {
+        const line = document.getElementById("file-status");
+        return (line.checkVisibility() && line.dataset.tone === "error" && line.textContent.includes("moov atom")) || { tone: line.dataset.tone, text: line.textContent };
+      }),
+    },
+  ),
   // A second file is dropped while the first one runs.
   state(
     "files-busy",
@@ -4044,6 +4540,10 @@ export const PAGES = [
       await wait(page, 150);
     },
     {
+      shows: onScreen("a second file while one runs: the status line in red, and Cancel still there", () => {
+        const now = { tone: document.getElementById("file-status").dataset.tone, cancel: document.getElementById("file-cancel").checkVisibility() };
+        return (now.tone === "error" && now.cancel) || now;
+      }),
       probe: async (page) => {
         const see = await page.evaluate(() => [document.getElementById("file-status").dataset.tone, document.getElementById("file-cancel").checkVisibility(), document.getElementById("file-name").textContent]);
         return expect(see[0] === "error" && see[1] && /Keller/.test(see[2]), "a second file while one runs: the status says so, and the first one goes on", JSON.stringify(see));
@@ -4060,6 +4560,10 @@ export const PAGES = [
       await wait(page, 200);
     },
     {
+      shows: onScreen("a cancelled file: no Cancel any more, the text so far, nothing to export", () => {
+        const now = { cancel: document.getElementById("file-cancel").checkVisibility(), text: document.getElementById("file-text").value.length, export: document.getElementById("file-export").disabled, status: document.getElementById("file-status").textContent.length };
+        return (!now.cancel && now.text > 100 && now.export && now.status > 5) || now;
+      }),
       probe: async (page) => {
         const see = await page.evaluate(() => ({ text: document.getElementById("file-text").value.length, copy: !document.getElementById("file-copy").disabled, export: document.getElementById("file-export").disabled, cancel: document.getElementById("file-cancel").checkVisibility(), tone: document.getElementById("file-status").dataset.tone }));
         return expect(see.text > 100 && see.copy && see.export && !see.cancel && see.tone === "", "a cancelled file keeps the text so far, to copy, and says so without the colour of an error", JSON.stringify(see));
@@ -4076,21 +4580,45 @@ export const PAGES = [
       await emit(page, "summary-progress", [1, 4]);
       await wait(page, 150);
     },
-    { after: (page) => page.evaluate(() => window.__MOCK__.release("summarize_text")) },
+    {
+      shows: onScreen("a summary is being written: the box says which part of how many, and the button rests", () => {
+        const now = { box: document.getElementById("file-summary-box").checkVisibility(), says: document.getElementById("file-summary").textContent, button: document.getElementById("file-summarize").disabled };
+        return (now.box && /2\D+4$/.test(now.says) && now.button) || now;
+      }),
+      after: (page) => page.evaluate(() => window.__MOCK__.release("summarize_text")),
+    },
   ),
-  state("files-summary-failed", async (page) => {
-    await fileLoaded(page);
-    await page.evaluate(() => window.__MOCK__.refuseNext("summarize_text", "no_ai_model"));
-    await page.click("#file-summarize");
-    await wait(page, 300);
-  }),
-  state("files-summary-hidden", async (page) => {
-    await fileLoaded(page);
-    await page.click("#file-summarize");
-    await wait(page, 300);
-    await page.click("#file-summary-toggle");
-    await wait(page, 100);
-  }),
+  state(
+    "files-summary-failed",
+    async (page) => {
+      await fileLoaded(page);
+      await page.evaluate(() => window.__MOCK__.refuseNext("summarize_text", "no_ai_model"));
+      await page.click("#file-summarize");
+      await wait(page, 300);
+    },
+    {
+      shows: onScreen("the summary's box says in red why there is no summary", () => {
+        const text = document.getElementById("file-summary");
+        return (text.checkVisibility() && text.dataset.tone === "error" && text.textContent.trim().length > 10) || { shown: text.checkVisibility(), tone: text.dataset.tone, text: text.textContent };
+      }),
+    },
+  ),
+  state(
+    "files-summary-hidden",
+    async (page) => {
+      await fileLoaded(page);
+      await page.click("#file-summarize");
+      await wait(page, 300);
+      await page.click("#file-summary-toggle");
+      await wait(page, 100);
+    },
+    {
+      shows: onScreen("the summary is hidden: its head stays, its text is gone, the button says Show", () => {
+        const now = { head: document.getElementById("file-summary-toggle").checkVisibility(), text: document.getElementById("file-summary").checkVisibility(), expanded: document.getElementById("file-summary-toggle").getAttribute("aria-expanded") };
+        return (now.head && !now.text && now.expanded === "false") || now;
+      }),
+    },
+  ),
   // An export that was saved (the status line names the file), and the menu open again.
   state(
     "files-export",
@@ -4105,6 +4633,10 @@ export const PAGES = [
       await wait(page, 100);
     },
     {
+      shows: onScreen("an export was saved, and the Export menu is open again", () => {
+        const now = { list: document.getElementById("file-export-list").checkVisibility(), tone: document.getElementById("file-status").dataset.tone };
+        return (now.list && now.tone === "ok") || now;
+      }),
       walk: false,
       probe: async (page) => {
         const status = await page.evaluate(() => [document.getElementById("file-status").textContent, document.getElementById("file-status").dataset.tone]);
@@ -4123,6 +4655,10 @@ export const PAGES = [
       await wait(page, 100);
     },
     {
+      shows: onScreen("Timestamps is on, and a speaker's chip is a field that has the focus", () => {
+        const now = { times: document.getElementById("file-times").checked, field: !!document.activeElement?.matches("#file-speaker-chips .speaker-chip-input") };
+        return (now.times && now.field) || now;
+      }),
       walk: false,
       probe: async (page) => [...expect(await page.evaluate(() => /^\[0:04\] /.test(document.getElementById("file-text").value)), "with Timestamps on every paragraph starts with its time"), ...(await ring(page, "the field that renames a file's speaker"))],
     },
@@ -4134,7 +4670,10 @@ export const PAGES = [
       await emit(page, "tauri://drag-enter", { paths: ["C:\\Users\\Oggi\\Downloads\\Interview.mp3"], position: { x: 400, y: 300 } });
       await wait(page, 100);
     },
-    { after: (page) => emit(page, "tauri://drag-leave", {}) },
+    {
+      shows: onScreen("a file is dragged over the window: the drop zone is lit", () => document.getElementById("file-drop").classList.contains("dragging")),
+      after: (page) => emit(page, "tauri://drag-leave", {}),
+    },
   ),
 
   // Settings and Home.
@@ -4150,7 +4689,13 @@ export const PAGES = [
       await emit(page, "pc-check-progress", [1, 4, "CUDA NVIDIA GeForce RTX 5080, flash attention"]);
       await wait(page, 100);
     },
-    { after: (page) => page.evaluate(() => window.__MOCK__.release("pc_check")) },
+    {
+      shows: onScreen("the PC check runs: its button rests and counts", () => {
+        const button = document.getElementById("pc-check-btn");
+        return (button.checkVisibility() && button.disabled && /2\/4/.test(button.textContent)) || { shown: button.checkVisibility(), rests: button.disabled, text: button.textContent };
+      }),
+      after: (page) => page.evaluate(() => window.__MOCK__.release("pc_check")),
+    },
   ),
   state(
     "settings-pc-check-report",
@@ -4161,6 +4706,10 @@ export const PAGES = [
       await wait(page, 250);
     },
     {
+      shows: onScreen("the PC check's report, and the line that the GPU is freed for a game", () => {
+        const now = { report: document.getElementById("pc-check-report").checkVisibility() && document.getElementById("pc-check-report").textContent.length > 200, freed: document.getElementById("game-free-status").checkVisibility() };
+        return (now.report && now.freed) || now;
+      }),
       probe: async (page) => {
         const see = await page.evaluate(() => [document.getElementById("pc-check-report").textContent.split("\n").length, document.getElementById("pc-check-copy").checkVisibility(), document.getElementById("game-free-status").checkVisibility()]);
         return expect(see[0] === 10 && see[1] && see[2], "the PC check's report shows with Copy report, and Free GPU for games says that it is freed now", JSON.stringify(see));
@@ -4168,15 +4717,23 @@ export const PAGES = [
     },
   ),
   // "Try it": the cleaned-up sample; the sample as it was typed with the reason; the backend's refusal.
-  state("settings-ai-test", tryIt),
-  state("settings-ai-test-plain", async (page) => {
-    await page.evaluate(() => (window.__MOCK__.aiFallback = "The AI model is not downloaded"));
-    await tryIt(page);
-  }),
-  state("settings-ai-test-error", async (page) => {
-    await page.evaluate(() => window.__MOCK__.refuseNext("ai_test", "error sending request for url (http://127.0.0.1:8173/v1/chat/completions): connection refused"));
-    await tryIt(page);
-  }),
+  state("settings-ai-test", tryIt, { shows: triedIt("the cleaned-up sample with the AI's time", "", /412/, true), probe: tryItFields }),
+  state(
+    "settings-ai-test-plain",
+    async (page) => {
+      await page.evaluate(() => (window.__MOCK__.aiFallback = "The AI model is not downloaded"));
+      await tryIt(page);
+    },
+    { shows: triedIt("the sample as it was typed, with the reason in yellow", "warn", /not downloaded/, false) },
+  ),
+  state(
+    "settings-ai-test-error",
+    async (page) => {
+      await page.evaluate(() => window.__MOCK__.refuseNext("ai_test", "error sending request for url (http://127.0.0.1:8173/v1/chat/completions): connection refused"));
+      await tryIt(page);
+    },
+    { shows: triedIt("the backend's refusal in red", "error", /connection refused/, false) },
+  ),
   // The key boxes of Settings > Dictation: the Dictate row's (it shares its row with Hold / Toggle) asks for
   // its key; the probe brings each of the five into both states.
   state(
@@ -4186,6 +4743,7 @@ export const PAGES = [
       await listen(page, "#hotkey-btn");
     },
     {
+      shows: keyBoxShows("Dictate's key box asks for its key", "#hotkey-btn"),
       walk: false,
       probe: async (page) => {
         const out = await keyBoxes(page, SETTINGS_KEYS);
@@ -4200,7 +4758,7 @@ export const PAGES = [
       await advanced(page, "dictation");
       await refused(page, "#rewrite-last-btn");
     },
-    { after: endRefusal },
+    { shows: keyBoxShows("the key box of Rewrite last says why Ctrl+C was refused", "#rewrite-last-btn", true), after: endRefusal },
   ),
   // Home's card of hotkeys.
   state(
@@ -4212,6 +4770,7 @@ export const PAGES = [
     {
       // Also where the card is narrowest: two columns of cards beside the list, from 1600 px beside the sidebar.
       sizes: [...STATE_SIZES, "1800x1000"],
+      shows: keyBoxShows("the key box of Rewrite last on Home asks for its key", "#home-rewrite-last-btn"),
       walk: false,
       probe: async (page) => {
         const out = await keyBoxes(page, HOME_KEYS);
@@ -4226,11 +4785,13 @@ export const PAGES = [
       await section(page, "home");
       await refused(page, "#home-free-gpu-btn");
     },
-    { sizes: [...STATE_SIZES, "1800x1000"], after: endRefusal },
+    { sizes: [...STATE_SIZES, "1800x1000"], shows: keyBoxShows("the key box of Free GPU on Home says why Ctrl+C was refused", "#home-free-gpu-btn", true), after: endRefusal },
   ),
   // The first run's third step (a new PC's data: the steps show only there). `again` is the new start.
   {
     id: "home-setup-key-capture",
+    state: true,
+    shows: keyBoxShows("the key box of the setup's third step asks for its key", "#setup-hotkey-btn"),
     scenarios: ["firstrun"],
     sizes: STATE_SIZES,
     walk: false,
@@ -4247,6 +4808,8 @@ export const PAGES = [
   },
   {
     id: "home-setup-key-refused",
+    state: true,
+    shows: keyBoxShows("the key box of the setup's third step says why Ctrl+C was refused", "#setup-hotkey-btn", true),
     scenarios: ["firstrun"],
     sizes: STATE_SIZES,
     open: async (page) => {
@@ -4264,7 +4827,13 @@ export const PAGES = [
       await page.press("#dict-input", "Enter");
       await wait(page, 300);
     },
-    { probe: async (page) => expect(await page.evaluate(() => document.getElementById("dict-long").checkVisibility()), "a long dictionary shows the notice that only the last entries are read") },
+    {
+      shows: onScreen("a dictionary of 72 words, with the notice that it is long", () => {
+        const now = { words: document.querySelectorAll("#dict-list .dict-row").length, notice: document.getElementById("dict-long").checkVisibility() };
+        return (now.words === 72 && now.notice) || now;
+      }),
+      probe: async (page) => expect(await page.evaluate(() => document.getElementById("dict-long").checkVisibility()), "a long dictionary shows the notice that only the last entries are read"),
+    },
   ),
   // Write in, with a spoken language set and an app that gets no AI: both of its warnings, in Settings and on Home.
   state(
@@ -4276,6 +4845,10 @@ export const PAGES = [
       await wait(page, 300);
     },
     {
+      shows: onScreen("Write in is English while German is spoken: both of its warnings", () => {
+        const now = { tab: document.getElementById("panel-ai").checkVisibility(), warnings: ["ai-output-skip", "ai-output-warn"].map((id) => document.getElementById(id).checkVisibility()) };
+        return (now.tab && now.warnings.every(Boolean)) || now;
+      }),
       probe: async (page) => {
         const see = await page.evaluate(() => ["ai-output-skip", "ai-output-warn"].map((id) => document.getElementById(id).checkVisibility() && document.getElementById(id).textContent.length > 20));
         return expect(see[0] && see[1], "Write in shows both of its warnings: the apps without AI, and the spoken language that is not Auto-detect", JSON.stringify(see));
@@ -4290,8 +4863,25 @@ export const PAGES = [
       await choose(page, "ai-output-select", "en");
       await section(page, "home");
     },
-    { probe: async (page) => expect(await page.evaluate(() => document.getElementById("home-output-hint").checkVisibility() && document.getElementById("home-output-hint").textContent.length > 20), "Home says under Write in what Settings warns of") },
+    {
+      shows: onScreen("Home, with the warning under Write in", () => {
+        const now = { home: document.getElementById("section-home").classList.contains("active"), warning: document.getElementById("home-output-hint").checkVisibility() };
+        return (now.home && now.warning) || now;
+      }),
+      probe: async (page) => expect(await page.evaluate(() => document.getElementById("home-output-hint").checkVisibility() && document.getElementById("home-output-hint").textContent.length > 20), "Home says under Write in what Settings warns of") },
   ),
+  // Running text keeps its measure where the window is wide (see `measureProbe`). The last page of the main
+  // window: it leaves the Soundboard without a cable and puts that back.
+  {
+    id: "measure",
+    scenarios: ["populated"],
+    sizes: ["1920x1080"],
+    fresh: true,
+    checks: false,
+    open: (page) => section(page, "home"),
+    probe: measureProbe,
+    after: (page) => page.evaluate(() => window.__MOCK__.keep({ sb: null })),
+  },
   {
     id: "popout",
     url: "/soundboard.html",
@@ -4335,6 +4925,11 @@ export const PAGES = [
   // key box that asks for its key, and every key box of the window in both states.
   {
     id: "popout-states",
+    state: true,
+    shows: onScreen("the pop-out with its panel open, taken keys, a missing file and a sound that plays", () => {
+      const now = { notes: document.querySelectorAll(".sb-note").length, playing: document.querySelectorAll(".sb-row.playing").length, panel: !!document.getElementById("sb-panel") };
+      return (now.notes === 4 && now.playing === 1 && now.panel) || now;
+    }),
     url: "/soundboard.html",
     scope: "body",
     scenarios: ["populated"],
@@ -4349,6 +4944,8 @@ export const PAGES = [
   },
   {
     id: "popout-capture",
+    state: true,
+    shows: keyBoxShows("a sound's key box in the pop-out asks for its key", TILE_KEYS),
     url: "/soundboard.html",
     scope: "body",
     scenarios: ["populated"],
@@ -4368,9 +4965,11 @@ export const PAGES = [
     },
     after: (page) => page.keyboard.press("Escape"),
   },
-  pill("recording", `window.__overlayUpdate("recording"); for (let i = 0; i < 32; i++) window.__MOCK__.emit("audio-level", 0.15 + 0.7 * Math.abs(Math.sin(i * 0.7)));`),
-  pill("transcribing", `window.__overlayUpdate("recording"); window.__overlayUpdate("transcribing"); window.__MOCK__.emit("partial-transcript", { text: "Could you send me the quote for the move by tomorrow", is_final: false });`),
-  pill("notice", `window.__MOCK__.emit("gpu-notice", "freed");`, async (page) => {
+  pill("recording", `window.__overlayUpdate("recording"); for (let i = 0; i < 32; i++) window.__MOCK__.emit("audio-level", 0.15 + 0.7 * Math.abs(Math.sin(i * 0.7)));`, pillShows("records", "recording", null)),
+  pill("transcribing", `window.__overlayUpdate("recording"); window.__overlayUpdate("transcribing"); window.__MOCK__.emit("partial-transcript", { text: "Could you send me the quote for the move by tomorrow", is_final: false });`, pillShows("transcribes and shows what was said", "transcribing", "transcript-text"), pillOneLine),
+  // A dictation of three sentences, segment by segment: the pill shows the end of what was said.
+  pill("segments", `window.__overlayUpdate("recording"); window.__overlayUpdate("transcribing");`, pillShows("transcribes", "transcribing", null), async (page) => [...(await pillSegments(page)), ...(await pillOneLine(page))]),
+  pill("notice", `window.__MOCK__.emit("gpu-notice", "freed");`, pillShows("shows a notice", "notice", "notice"), async (page) => {
     // The pill speaks the Display Language, not Windows' language.
     const out = [];
     const lang = await page.evaluate(() => window.__MOCK_CFG__.lang);
@@ -4384,16 +4983,20 @@ export const PAGES = [
     out.push(...expect((await text()) === "Modelle geladen", "the pill follows a change of the Display Language", await text()));
     return out;
   }),
-  pill("no-model", `window.__MOCK__.emit("speech-notice", "no_model");`, async (page) => {
+  pill("no-model", `window.__MOCK__.emit("speech-notice", "no_model");`, pillShows("says that there is no speech model", "notice", "notice"), async (page) => {
     const fits = await page.evaluate(() => {
       const n = document.getElementById("notice");
       return [n.textContent.length > 20, n.scrollWidth <= n.clientWidth, n.scrollHeight <= n.clientHeight];
     });
     return expect(fits.every(Boolean), "the no-model notice shows and fits the pill", JSON.stringify(fits));
   }),
-  pill("meeting-dot", `window.__meetingDot(true);`),
+  pill(
+    "meeting-dot",
+    `window.__meetingDot(true);`,
+    onScreen("the pill shows the red dot of a meeting that records", () => (document.body.dataset.meeting === "1" && document.getElementById("meeting-dot").checkVisibility()) || { meeting: document.body.dataset.meeting ?? "" }),
+  ),
   // Edit mode: the chip that says how many selected words the dictation changes (three digits: the widest it gets).
-  pill("edit", `window.__overlayUpdate("recording"); window.__MOCK__.emit("edit-target", 128); for (let i = 0; i < 32; i++) window.__MOCK__.emit("audio-level", 0.15 + 0.7 * Math.abs(Math.sin(i * 0.7)));`, async (page) => {
+  pill("edit", `window.__overlayUpdate("recording"); window.__MOCK__.emit("edit-target", 128); for (let i = 0; i < 32; i++) window.__MOCK__.emit("audio-level", 0.15 + 0.7 * Math.abs(Math.sin(i * 0.7)));`, pillShows("records in Edit mode, with the chip of the selected words", "recording", "edit-chip", true), async (page) => {
     const see = await page.evaluate(() => {
       const pill = document.getElementById("pill").getBoundingClientRect();
       const inside = (id) => {
@@ -4402,17 +5005,25 @@ export const PAGES = [
       };
       return { chip: document.getElementById("edit-chip").textContent, chipIn: inside("edit-chip"), cancelIn: inside("cancel"), bars: Math.round(document.getElementById("waveform").getBoundingClientRect().width) };
     });
-    return expect(/128/.test(see.chip) && see.chipIn && see.cancelIn && see.bars >= 60, "the pill's edit chip, its bars and its cancel button all stand inside the pill", JSON.stringify(see));
+    return [...expect(/128/.test(see.chip) && see.chipIn && see.cancelIn && see.bars >= 60, "the pill's edit chip, its bars and its cancel button all stand inside the pill", JSON.stringify(see)), ...(await wholeBars(page))];
   }),
   // AI cleanup works on the text: the label of what it does, and the text; in Edit mode the label says so.
-  pill("polishing", `window.__overlayUpdate("recording"); window.__overlayUpdate("transcribing"); window.__MOCK__.emit("partial-transcript", { text: "Could you send me the quote for the move by tomorrow noon", is_final: true }); window.__overlayUpdate("polishing");`),
-  pill("editing", `window.__overlayUpdate("recording"); window.__MOCK__.emit("edit-target", 128); window.__overlayUpdate("transcribing"); window.__MOCK__.emit("partial-transcript", { text: "shorter and more formal please", is_final: true }); window.__overlayUpdate("polishing");`, async (page) => {
+  pill("polishing", `window.__overlayUpdate("recording"); window.__overlayUpdate("transcribing"); window.__MOCK__.emit("partial-transcript", { text: "Could you send me the quote for the move by tomorrow noon", is_final: true }); window.__overlayUpdate("polishing");`, pillPolishes("polishes: the label and the text", false), async (page) => {
+    // The text is done: the label, and the text from its start, ending in an ellipsis where the line ends.
+    const see = await page.evaluate(() => {
+      const line = document.querySelector("#transcript .transcript-line");
+      const text = document.getElementById("transcript-text").getBoundingClientRect();
+      return { startsIn: text.left >= line.getBoundingClientRect().left - 0.5, longer: line.scrollWidth > line.clientWidth, ellipsis: getComputedStyle(line).textOverflow, label: getComputedStyle(document.getElementById("transcript"), "::before").content };
+    });
+    return [...expect(see.startsIn && see.longer && see.ellipsis === "ellipsis" && see.label.length > 4, "while it polishes the pill shows its label and the text from its start, ending in an ellipsis", JSON.stringify(see)), ...(await pillOneLine(page))];
+  }),
+  pill("editing", `window.__overlayUpdate("recording"); window.__MOCK__.emit("edit-target", 128); window.__overlayUpdate("transcribing"); window.__MOCK__.emit("partial-transcript", { text: "shorter and more formal please", is_final: true }); window.__overlayUpdate("polishing");`, pillPolishes("polishes an edit: the label and what was asked for", true), async (page) => {
     const phase = await page.evaluate(() => document.getElementById("transcript").dataset.phase);
     const lang = await page.evaluate(() => window.__MOCK_CFG__.lang);
-    return expect(phase === (lang === "de" ? "Bearbeiten" : "Editing"), "while an edit is polished the pill's label says Editing", phase);
+    return [...expect(phase === (lang === "de" ? "Bearbeiten" : "Editing"), "while an edit is polished the pill's label says Editing", phase), ...(await pillOneLine(page))];
   }),
   // Every notice the pill can show, in the Display Language: each fits the pill in at most two lines.
-  pill("notices", `window.__MOCK__.emit("gpu-notice", "failed");`, async (page) => {
+  pill("notices", `window.__MOCK__.emit("gpu-notice", "failed");`, pillShows("shows a notice", "notice", "notice"), async (page) => {
     const notices = [
       ["audio-empty", null],
       ["speech-notice", "no_model"],

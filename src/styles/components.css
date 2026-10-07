@@ -905,8 +905,9 @@ kbd {
 
 /* ── Empty state ────────────────────────────────────── */
 
+/* A sentence or two: a hint, which has the line it stands on (see --measure
+   in tokens.css). */
 .empty-state {
-  max-width: var(--measure);
   padding: var(--s4) 0;
   color: var(--text-2);
 }

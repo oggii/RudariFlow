@@ -218,8 +218,12 @@
   padding-bottom: var(--s2);
 }
 
+/* A dictation has its row's width. Only in the wide list, where the text
+   stands beside the actions and could run on for 1000 px, does it keep the
+   measure of running text (the @container rule for 840 px below): in the
+   narrower forms a cap made the text wrap earlier than its row and the page
+   higher for nothing. */
 .history-text {
-  max-width: var(--measure);
   white-space: pre-wrap;
   user-select: text;
   -webkit-user-select: text;
@@ -313,6 +317,7 @@
 
   .history-text {
     grid-column: 1;
+    max-width: var(--measure);
   }
 
   .history-actions {

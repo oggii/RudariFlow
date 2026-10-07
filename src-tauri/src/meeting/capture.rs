@@ -58,13 +58,13 @@ const HEARD: f32 = 0.001;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Warning {
-    /// "Microphone lost — retrying"
+    /// "Microphone lost: retrying"
     MicLost,
-    /// "PC sound lost — retrying"
+    /// "PC sound lost: retrying"
     PcLost,
-    /// "No sound from the PC yet — is the call playing on this PC?"
+    /// "No sound from the PC yet. Is the call playing on this PC?"
     NoPcSound,
-    /// "The recording can't be saved — is the disk full?" (a track's file
+    /// "The recording can't be saved. Is the disk full?" (a track's file
     /// refused audio; that track ends there, the other one goes on).
     WriteFailed,
 }

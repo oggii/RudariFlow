@@ -649,18 +649,22 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     cat.append(option("", t("sb_no_category")), ...s.board.categories.map((c) => option(c.id, c.name)));
     cat.value = sound.category;
     cat.addEventListener("change", () => void api.setCategory(sound.id, cat.value).catch(fail));
+    // A key another program has: the note is the tile's own third line, not
+    // a part of the key control, so category, key and volume stay on one line.
+    const hotkey = hotkeyControl(`${sound.id}-hotkey`, sound.hotkey, false, (combo) => api.setHotkey(sound.id, combo), !s.board.soundHotkeys);
     controls.append(
       cat,
-      hotkeyControl(
-        `${sound.id}-hotkey`,
-        sound.hotkey,
-        s.hotkeysTaken.includes(sound.id),
-        (combo) => api.setHotkey(sound.id, combo),
-        !s.board.soundHotkeys,
-      ),
+      hotkey,
       slider(`${sound.id}-volume`, `${t("sb_volume")}: ${sound.name}`, sound.volume, (v) => void api.setSoundVolume(sound.id, v).catch(fail)),
     );
     r.append(play, main, side, controls);
+    if (s.hotkeysTaken.includes(sound.id)) {
+      const note = el("span", "sb-note", t("sb_hotkey_elsewhere"));
+      // Read out with the key it is about.
+      note.id = `sb-taken-${sound.id}`;
+      hotkey.querySelector(".hotkey-btn")?.setAttribute("aria-describedby", note.id);
+      r.append(note);
+    }
     return r;
   }
 

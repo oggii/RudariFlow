@@ -194,10 +194,11 @@
   margin-bottom: var(--s2);
 }
 
-/* A hint or a notice that stands in a card by itself, under its heading:
-   a sentence or two, in the measure of running text. */
+/* A hint that stands in a card by itself, under its heading: a sentence or
+   two, which has the card's width (one line where the card has the room;
+   see --measure in tokens.css). The long text behind "More" is running text
+   and keeps its 72ch (.hint-long, components.css). */
 .card > .label-hint {
-  max-width: var(--measure);
   padding-bottom: var(--s2);
 }
 
@@ -374,11 +375,22 @@
   overflow: hidden;
 }
 
-/* A text box as wide as its card keeps the measure of running text inside:
-   what is left at the right is the box's own padding. */
-.rule-instructions,
-#ai-test-input {
-  padding-right: max(12px, calc(100% - var(--measure) - 12px));
+/* A text box for a sentence or two is at most 720 px wide, and what is
+   typed uses all of it: a field that wrapped its text halfway (a measure
+   kept by padding inside the box) read as a defect. So in a wide card the
+   row ends early: "Try it" with its field, its buttons and its result, and
+   a rule's fields with Delete after them. */
+.ai-test,
+.rule-fields {
+  max-width: 720px;
+}
+
+.rule-row {
+  justify-content: flex-start;
+}
+
+.rule-row > .list-actions {
+  margin-left: 0;
 }
 
 /* ── AI cleanup: rules per app ──────────────────────── */

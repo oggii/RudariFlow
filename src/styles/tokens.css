@@ -59,9 +59,46 @@
   --fs-xl: 22px;
   --font: "IBM Plex Sans", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  /* The widest a paragraph of running text gets: 42 times its type size,
-     which is 90 to 100 characters a line. A frame may be wider; the lines in
-     it are not. */
+  /* The measure: the widest a paragraph of running text gets, 42 times its
+     type size, which is 90 to 100 characters a line.
+
+     One rule says what keeps it. Running text is what is read line after
+     line: a text that takes three lines or more at the measure, or can (a
+     transcript, notes, a summary, a dictation, instructions of several
+     sentences). It keeps the measure, and its frame ends near it where the
+     frame holds nothing else. A hint is a sentence or two of the app's own,
+     at most two lines at the measure (under a heading, in a row, a warning,
+     an empty list): it has the width of its row or card, and is one line
+     where the room is there. A field is never narrowed from the inside: its
+     own width is capped.
+
+     Running text, at the measure:
+       .mt-para-text                 a meeting's transcript (style.css)
+       .mt-notes-text, .mt-notes li  a meeting's notes
+       .file-summary-text            a file's summary
+       .file-text                    a file's transcript: in one column the
+                                     frame's right padding takes the rest, in
+                                     a large window the frame is as wide as
+                                     the text (--file-frame)
+       .history-text                 a dictation on Home, in the wide list
+                                     only (home.css)
+       .ai-test-result p             what "Try it" answers
+       .sb-hint p                    the Soundboard's instructions
+     and at 72ch, which is the same width: .panel-lead and .hint-long, the
+     text behind "More" (components.css).
+
+     Frames that end near their text: an open meeting without notes (840 px,
+     style.css) and Files in a large window (--file-frame). Fields with a
+     width of their own: a rule's instructions and "Try it" (720 px,
+     settings.css).
+
+     Hints, at the width of their place: .card > .label-hint (settings.css),
+     .empty-state (components.css), .mt-hint-text, .mt-warning and
+     .mt-reminder (style.css); a setting's one-line hint is one line by its
+     own rule.
+
+     tools/ui-check holds the first list to it: at 1920 px no line of
+     running text is longer than 110 characters (inpage.js, RUNNING). */
   --measure: 42em;
 
   /* Motion: a page change and a fold opening, nothing else. */

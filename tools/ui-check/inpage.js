@@ -14,6 +14,16 @@
   const BOXES = ".card, .sb-row, .sb-bar, .sb-col-settings, .sb-devices, .sb-hint, .mt-item, .mt-bar, .mt-hint-row, .mt-notes, .mt-modal-box, .file-drop, .file-summary, .ai-test-result, .notice, .pill";
   /** Hints that are status lines: they may be longer than one line. */
   const NOT_A_HINT = ".hint-long, .status-line, .ai-status, .sb-status, .ai-output-warn, #gpu-detected, #ai-model-note";
+  /**
+   * Running text: what is read line after line and keeps the measure (the list
+   * at --measure in src/styles/tokens.css; .panel-lead and .hint-long keep the
+   * same width as 72ch). A hint has the width of its row and is not in here.
+   */
+  const RUNNING = ".mt-para-text, .mt-notes-text, .mt-notes li, .file-summary-text, .file-text, .history-text, .ai-test-result p, .sb-hint p, .panel-lead, .hint-long";
+  /** The most characters a line of running text may have. The measure gives 90 to 100; a line of narrow letters has a few more. */
+  const LINE_MAX = 110;
+  /** From this window width on a frame is wide enough to let a line run on: the measure is asked for there. */
+  const MEASURED_FROM = 1920;
 
   const visible = (el) => {
     const r = el.getBoundingClientRect();
@@ -213,6 +223,66 @@
     return null;
   };
 
+  /**
+   * The part of `el`'s box that the boxes around it leave to be seen,
+   * sideways: { left, right }. A box that cuts sideways (overflow hidden or
+   * clip) hides what lies beyond its edge: the pill's text, which keeps its
+   * end in view and loses its beginning. A box that scrolls hides nothing
+   * (what is beyond its edge is reached by scrolling, and "scrolls sideways"
+   * is a finding of its own), and neither does the window: what leaves the
+   * window is what is asked for.
+   */
+  const seenSideways = (el) => {
+    const r = el.getBoundingClientRect();
+    let left = r.left;
+    let right = r.right;
+    for (let box = el.parentElement; box && box !== document.body && box !== document.documentElement; box = box.parentElement) {
+      const bs = getComputedStyle(box);
+      if (!CLIPS.test(bs.overflowX) || bs.display === "inline" || bs.display === "contents") continue;
+      const b = box.getBoundingClientRect();
+      left = Math.max(left, b.left + box.clientLeft);
+      right = Math.min(right, b.left + box.clientLeft + box.clientWidth);
+    }
+    return { left, right };
+  };
+
+  /**
+   * The lines the text of `el` is drawn in: the number of characters of
+   * each. A text box draws its text itself, so its lines are measured in a
+   * copy of the text that is laid out as the box lays it out (its font, the
+   * width its text has).
+   */
+  const lineLengths = (el) => {
+    let root = el;
+    let copy = null;
+    if (el.matches("textarea")) {
+      const cs = getComputedStyle(el);
+      copy = document.createElement("div");
+      copy.style.cssText = `position:absolute;left:-99999px;top:0;visibility:hidden;box-sizing:content-box;white-space:pre-wrap;overflow-wrap:break-word;width:${el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)}px;font:${cs.font};letter-spacing:${cs.letterSpacing};line-height:${cs.lineHeight}`;
+      copy.textContent = el.value;
+      document.body.appendChild(copy);
+      root = copy;
+    }
+    // top of the line → [characters in its words, words]
+    const lines = new Map();
+    const range = document.createRange();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      for (const word of node.textContent.matchAll(/\S+/g)) {
+        range.setStart(node, word.index);
+        range.setEnd(node, word.index + word[0].length);
+        const rect = range.getClientRects()[0];
+        if (!rect) continue;
+        const top = Math.round(rect.top);
+        const line = lines.get(top) ?? [0, 0];
+        lines.set(top, [line[0] + word[0].length, line[1] + 1]);
+      }
+    }
+    copy?.remove();
+    // The words and the blanks between them.
+    return [...lines.values()].map(([characters, words]) => characters + words - 1);
+  };
+
   /** Name a screen reader announces: label, aria-label, aria-labelledby, a button's text, or a title. A placeholder is no name. */
   const accessibleName = (el) => {
     const ids = (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean);
@@ -356,8 +426,9 @@
     }
     for (const el of all) {
       if (!el.matches("button, select, input, textarea, kbd, span, p, label, a, h1, h2, h3, h4")) continue;
-      const r = el.getBoundingClientRect();
-      if (r.width <= 2) continue; // read out, not shown
+      if (el.getBoundingClientRect().width <= 2) continue; // read out, not shown
+      // What a box around it cuts off sideways is not seen, and leaves nothing ("clipped" asks whether it may be cut).
+      const r = seenSideways(el);
       if (r.right > window.innerWidth + 1 || r.left < -1) add("overflow", `${desc(el)} leaves the window`, `x ${Math.round(r.left)}–${Math.round(r.right)} of ${window.innerWidth}`);
     }
 
@@ -548,7 +619,22 @@
     const moved = new Map();
     for (const m of motion()) moved.has(m.what) || moved.set(m.what, m.detail);
     for (const [what, detail] of moved) add("motion", what, detail);
+
+    // 13. Running text keeps its measure, in a window wide enough to let a line run on.
+    if (window.innerWidth >= MEASURED_FROM) {
+      for (const el of all) {
+        if (!el.matches(RUNNING)) continue;
+        const longest = Math.max(0, ...lineLengths(el));
+        if (longest > LINE_MAX) add("measure", desc(el), `a line of ${longest} characters; running text keeps to about 100 a line (--measure), at most ${LINE_MAX}`);
+      }
+    }
     return out;
+  }
+
+  /** The running text that shows under `scope`: how many pieces of it, and the characters of its longest line. */
+  function runningText(scope) {
+    const found = [...document.querySelectorAll(scope)].flatMap((root) => [...root.querySelectorAll(RUNNING)]).filter(visible);
+    return { pieces: found.length, longest: Math.max(0, ...found.flatMap(lineLengths)), most: LINE_MAX };
   }
 
   let stops = 0;
@@ -581,5 +667,5 @@
     return [...new Set(out)];
   }
 
-  window.__uic = { collect, markControls, focusStop, stillMoving };
+  window.__uic = { collect, markControls, focusStop, stillMoving, runningText };
 })();

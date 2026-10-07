@@ -70,6 +70,10 @@ const pageIds = [...PAGES.map((p) => p.id), "roundtrip"];
 for (const [i, pattern] of (pagePatterns ?? []).entries()) {
   if (!pageIds.some((id) => pageFilter[i].test(id))) stop(`--pages "${pattern}" matches no page. The pages are: ${pageIds.join(", ")}`);
 }
+// A state page says what its state looks like (`shows`): without that it would
+// pass with a window that never got there, measuring the page at rest.
+const blind = PAGES.filter((p) => p.state && typeof p.shows !== "function").map((p) => p.id);
+if (blind.length) stop(`a state page must say what its state looks like (shows): ${blind.join(", ")}`);
 /** The task this run verifies: entries of allow.json with `until` <= TASK are ignored. */
 const TASK = flag("task") ? Number(option("task")) : null;
 if (TASK !== null && !(Number.isInteger(TASK) && TASK >= 1)) stop(`--task needs the number of a task, got "${option("task") ?? ""}"`);
@@ -250,6 +254,8 @@ for (const scenario of SCENARIOS) {
             await win.page.evaluate(() => {
               for (const el of [document.scrollingElement, document.getElementById("content"), document.getElementById("sidebar")]) if (el) el.scrollTop = 0;
             });
+            // First of all: is the state the page is named after really on screen?
+            if (def.shows) report(def.id, where, await def.shows(win.page, { scenario, lang, size }));
             const scope = def.scope ?? "#content";
             if (def.checks !== false) {
               const shell = def.id === "shell";

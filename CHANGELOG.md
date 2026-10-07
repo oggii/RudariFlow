@@ -56,9 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Large windows are used:** Home is one column, two from a window about
   1100 px wide, and from about 1800 px its controls stand in two columns
   as well. From there a Settings tab is two columns, Files puts the drop
-  zone beside its options and the list of meetings has two columns.
-  Running text (a transcript, notes, a summary) keeps a readable line
-  length however wide the window is.
+  zone beside its options and a file's summary beside its transcript, and
+  the list of meetings has two columns. Running text (a transcript, notes,
+  a summary) keeps a readable line length however wide the window is.
 - **Files:** once a file is loaded the drop zone shrinks to one line, so
   the transcript starts higher up.
 - **Soundboard:** the sounds come first, as tiles. A bar above them holds
@@ -91,7 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Search for dictionary words and for replacements.
 - With the cloud engine and no API key, Models & GPU says that nothing is
   transcribed, and "Enter the key" leads to the field.
-- For development: `tools/ui-check`, which opens 100 pages of the
+- For development: `tools/ui-check`, which opens 102 pages of the
   frontend in headless Chromium with a mocked backend and fails on layout,
   accessibility and wording defects, and `npm run test:unit` (62 tests of
   the pure modules, run by Node's own test runner). See the README.
@@ -106,8 +106,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Switching the engine from Groq Cloud to Local Whisper loads the speech
   model at once instead of at the next dictation.
 - The pill in Edit mode: the cancel button was pushed out of the pill and
-  its window beside "12 words". The pill's text was cut at both ends when
-  it was too long; it is one centred line that ends in an ellipsis now.
+  its window beside "12 words", and a bar at the left end could be cut to
+  a sliver. The pill's text was cut at both ends when it was too long; it
+  is one line that shows the end of what was said now: a short text stands
+  in the middle, a longer one loses its beginning, not its end.
 - German: text ran under the Soundboard's key box for sound hotkeys
   on/off, the second line of a history entry lost the app name, and the
   language select of a rule per app was cut.
