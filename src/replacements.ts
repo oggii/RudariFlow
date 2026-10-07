@@ -138,6 +138,12 @@ export function initReplacements(h: ReplacementsHost) {
     sayFound(live, search.value.trim() === "" ? "" : found === 0 ? t("replacement_no_match") : t("replacement_found").replace("{found}", String(found)).replace("{n}", String(all.length)));
   });
   addButton.addEventListener("click", () => {
+    // A search that is on would hide the new row once it has its text (at
+    // the next delete or add, which look at every row again): the search ends.
+    if (search.value !== "") {
+      search.value = "";
+      sayFound(live, "");
+    }
     const row = addRow({ from: "", to: "" });
     filter();
     (row.querySelector(".replacement-from") as HTMLInputElement).focus();

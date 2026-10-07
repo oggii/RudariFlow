@@ -13,7 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { getLang, t } from "./i18n";
-import { confirmDelete, disarmDelete } from "./confirm-delete";
+import { confirmDelete, disarmDelete, FailureSaid, nameDelete } from "./confirm-delete";
 
 export interface MeetingsHost {
   settings(): { meetingReminderOff: boolean; meetingHeadphonesSeen: boolean };
@@ -527,6 +527,8 @@ function renderView() {
   exportBtn.disabled = live || m.lines.length === 0;
   deleteBtn.disabled = live || m.state === "finishing" || !!finishingStep(m.id);
   if (deleteBtn.disabled) disarmDelete("meeting");
+  // Named after the meeting, like a row's Delete ("Delete: Weekly sync"); the title can be edited.
+  if (deleteBtn.dataset.deleteName !== m.title) nameDelete(deleteBtn, m.title);
   transcriptEl.dataset.empty = live ? t("mt_transcript_waiting") : m.state === "finished" ? t("mt_transcript_empty") : "";
   // While lines arrive the transcript is a log (new ones are read out); a
   // saved one is a region to read.
@@ -1076,17 +1078,20 @@ async function exportAs(kind: ExportKind) {
   if (view?.meeting.id === m.id) showFlash(done.text, done.tone);
 }
 
-/** Delete the open meeting (the button asks first: src/confirm-delete.ts). */
+/** Delete the open meeting (the button asks first: src/confirm-delete.ts).
+ *  A failure says why in the meeting's notice (read out from there), and the
+ *  button says that it failed like every other delete. */
 async function deleteMeeting() {
   if (!view) return;
   const id = view.meeting.id;
   try {
     await invoke("meeting_delete", { id });
-    // Its "meetings-changed" may have closed the view already.
-    if (!view || view.meeting.id === id) await closeView();
   } catch (e) {
     showFlash(errorText(e), "error");
+    throw new FailureSaid(String(e));
   }
+  // Its "meetings-changed" may have closed the view already.
+  if (!view || view.meeting.id === id) await closeView();
 }
 
 // ── Library ───────────────────────────────────────────

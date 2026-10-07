@@ -533,7 +533,7 @@ export function initFiles(h: FilesHost) {
   summarizeBtn.addEventListener("click", summarize);
   // The transcript is nowhere but on this page: Clear asks first, like every
   // delete (src/confirm-delete.ts). It keeps its word: no file is deleted.
-  confirmDelete(clearBtn, "file", clearFile, { label: "files_clear", armedLabel: "files_clear_confirm" });
+  confirmDelete(clearBtn, "file", clearFile, { label: "files_clear", armedLabel: "files_clear_confirm", armedSaid: "files_clear_said" });
   listen<FileProgress>("file-progress", (e) => onProgress(e.payload));
   listen<DownloadProgress>("speaker-model-progress", (e) => {
     speakersHint.textContent = t("files_speakers_downloading").replace("{percent}", String(Math.round(e.payload.percent)));

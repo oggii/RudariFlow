@@ -1664,7 +1664,9 @@ const deletes = (page, sel) =>
  *   labels     { en, de }: [at rest, armed] when they are not "Delete" and "Delete?"
  *   named      the button is named after what it deletes
  *   redraw     draws the list again, as a backend event does
- *   told       how a failure shows when the list says it itself (default: on the button and in the live line)
+ *   reason     the page says itself why a delete failed, in a live region of its own: resolves to whether that shows. The
+ *              button says the failure like every other; the line that is read out here stays silent (one of the two speaks)
+ *   said       { en, de }: what is read out when the button is armed, when the button's word is not "Delete"
  *   settles    also wait for the button to read "Delete" again after a failure (2.5 s: once is enough)
  *   gone       the delete closes the page the button is on: one delete, no second one from the keyboard
  *   landed     where the focus must be after a delete from the keyboard (default: on a Delete of the list)
@@ -1696,6 +1698,7 @@ async function deleteRule(page, lang, spec, out = []) {
   say(s.armed.join() === "0" && s.texts[0] === ask && s.focus === 0 && untouched(s), `the first click only arms ("${ask}")`, s);
   say(s.widths[0] === start.widths[0], "arming does not change the button's width", [start.widths[0], s.widths[0]]);
   say(s.live !== "" && (!spec.named || (s.names[0] === `${ask} ${name}` && s.live.includes(name))), "a screen reader hears that the button is armed and for what", [s.names[0], s.live]);
+  if (spec.said) say(s.live === spec.said[lang], "what is read out follows the button's own word", s.live);
   await esc();
   s = await now();
   say(s.armed.length === 0 && s.texts[0] === rest && s.live === "" && s.focus === 0 && untouched(s), "Esc disarms", s);
@@ -1712,6 +1715,17 @@ async function deleteRule(page, lang, spec, out = []) {
   await wait(page, 150);
   s = await now();
   say(s.armed.join() === "0" && untouched(s), "a second click right after the first deletes nothing", s);
+  // Nor does a third, or any burst: the guard counts from the last click, not from the one that armed the button.
+  // Three clicks 160 ms apart: the third comes later than the guard after the first, and too soon after the second.
+  await esc();
+  const box = await button(0).boundingBox();
+  for (let i = 0; i < 3; i++) {
+    if (i) await wait(page, 160);
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  }
+  await wait(page, 150);
+  s = await now();
+  say(s.armed.join() === "0" && untouched(s), "three clicks, each too soon after the one before, delete nothing", s);
   // A click elsewhere disarms.
   await page.click(spec.elsewhere);
   s = await now();
@@ -1746,10 +1760,12 @@ async function deleteRule(page, lang, spec, out = []) {
   s = await now();
   say(s.armed.join() === "0" && untouched(s), "Enter arms, and Enter again at once deletes nothing", s);
   await esc();
+  // The key's repeat starts after a moment that is longer than the guard, as a real keyboard's does.
   await page.keyboard.down("Enter");
+  await wait(page, ANSWER + 100);
   for (let i = 0; i < 12; i++) {
-    await wait(page, 40);
     await page.keyboard.down("Enter");
+    await wait(page, 40);
   }
   await page.keyboard.up("Enter");
   await wait(page, 100);
@@ -1767,8 +1783,11 @@ async function deleteRule(page, lang, spec, out = []) {
     await wait(page, 300);
     s = await deletes(page, spec.buttons);
     const left = spec.left ? await spec.left() : s.n;
-    const told = spec.told ? await spec.told() : s.texts[0] !== rest && s.texts[0] !== ask && s.live.startsWith(s.texts[0]) && (!spec.named || s.names[0] === `${s.texts[0]}: ${name}`);
-    say(told && left === start.left && s.armed.length === 0, "a delete that fails says so and the thing stays", { ...s, left });
+    // On the button and in its name, the same for every delete. Read out by one line: this one, or the page's own with the reason.
+    const onButton = s.texts[0] !== rest && s.texts[0] !== ask && s.texts[0].includes(rest) && (!spec.named || s.names[0] === `${s.texts[0]}: ${name}`);
+    const told = spec.reason ? s.live === "" && (await spec.reason()) : s.live.startsWith(s.texts[0]);
+    say(onButton && left === start.left && s.armed.length === 0, "a delete that fails says so on its button and the thing stays", { ...s, left });
+    say(told, spec.reason ? "a delete that fails is read out once, by the page's own notice with the reason" : "a delete that fails is read out", s.live);
     say(s.focus === 0, "after a delete that failed the focus is on the button again", s);
     if (spec.redraw) {
       // Also in what the list is drawn from.
@@ -1856,6 +1875,11 @@ async function deletesProbe(page, run) {
   page.setDefaultTimeout(5000);
   try {
     await everyDelete(page, run.lang, out);
+    if (run.lang === "en") {
+      // A new start: the history is whole again.
+      await again(page);
+      out.push(...(await scrolledAway(page)));
+    }
   } catch (e) {
     out.push(...expect(false, "the check of the deletes could not go on", String(e).split("\n").slice(0, 3).join(" ")));
   }
@@ -1880,6 +1904,13 @@ async function everyDelete(page, lang, out) {
   // What reads the armed button out stands outside the layout: the page is as high as the window, not a pixel more.
   const high = await page.evaluate(() => [!!document.getElementById("delete-live"), document.documentElement.scrollHeight, window.innerHeight]);
   out.push(...expect(high[0] && high[1] === high[2], "the line that is read out does not make the page higher than the window", JSON.stringify(high)));
+
+  // At the start, with nothing armed yet: every delete button of the window reads in the Display Language, shown or
+  // not. "Delete history" and Files' "Clear" get their words when their pages are wired, before the language is known.
+  const words = lang === "de" ? { rest: "Löschen", "history-clear": "Verlauf löschen", "file-clear": "Leeren" } : { rest: "Delete", "history-clear": "Delete history", "file-clear": "Clear" };
+  const first = await page.evaluate(() => [...document.querySelectorAll("[data-delete-id]")].map((b) => [b.id || b.dataset.deleteId, b.textContent, b.classList.contains("armed")]));
+  const wrong = first.filter(([id, text, armed]) => armed || text !== (words[id] ?? words.rest));
+  out.push(...expect(["history-clear", "file-clear", "mt-delete"].every((id) => first.some((b) => b[0] === id)) && first.length > 20 && wrong.length === 0, "at the start every delete button reads in the Display Language", JSON.stringify(wrong.length ? wrong : first.length)));
 
   // Home's recordings first, while the history is whole.
   if (lang === "en") out.push(...(await playProbe(page)));
@@ -1936,7 +1967,7 @@ async function everyDelete(page, lang, out) {
     cmd: "delete_unused_model",
     named: true,
     stays: true,
-    told: () => page.evaluate(() => [...document.querySelectorAll(".unused-model-error")].some((el) => el.getClientRects().length > 0 && el.textContent.includes("it broke"))),
+    reason: () => page.evaluate(() => [...document.querySelectorAll(".unused-model-error")].some((el) => el.getClientRects().length > 0 && el.textContent.includes("it broke"))),
   });
 
   // Home: a dictation.
@@ -1964,6 +1995,23 @@ async function everyDelete(page, lang, out) {
     stays: true,
   });
   if (lang === "en") {
+    // The Display Language changes while a button is armed (the pop-out learns of it this way: it is in another
+    // window). The button and the line that is read out follow it; nothing is left in the old language.
+    const armedIn = async (to) => {
+      // The change itself, without a touch of the dropdown: the focus stays on the armed button.
+      await page.evaluate((to) => {
+        const select = document.getElementById("ui-language-select");
+        select.value = to;
+        select.dispatchEvent(new Event("change"));
+      }, to);
+      await wait(page, 400);
+      return page.evaluate(() => [document.getElementById("history-clear").textContent, document.getElementById("history-clear").classList.contains("armed"), document.getElementById("delete-live").textContent]);
+    };
+    await page.click("#history-clear");
+    const inGerman = await armedIn("de");
+    const inEnglish = await armedIn("en");
+    out.push(...expect(inGerman.join("|") === "Alles löschen?|true|Nochmals drücken löscht. Esc bricht ab." && inEnglish.join("|") === "Delete all?|true|Press again to delete. Esc cancels.", "an armed button and what is read out of it follow a change of the Display Language", JSON.stringify([inGerman, inEnglish])));
+    await page.keyboard.press("Escape");
     // With the history gone the button goes too: the row above takes the focus.
     await page.evaluate(() => {
       const real = window.__TAURI_INTERNALS__.invoke;
@@ -2000,9 +2048,10 @@ async function everyDelete(page, lang, out) {
     buttons: "#mt-delete",
     elsewhere: "#mt-view-meta",
     cmd: "meeting_delete",
+    named: true,
     stays: true,
     gone: true,
-    told: written(page, "it broke"),
+    reason: written(page, "it broke"),
   });
   if (lang === "en") out.push(...expect(await page.evaluate(() => document.getElementById("mt-view").classList.contains("hidden") && document.activeElement.classList.contains("mt-item")), "after its delete the meeting is closed and the focus is in the library"));
 
@@ -2015,6 +2064,7 @@ async function everyDelete(page, lang, out) {
     buttons: "#file-clear",
     elsewhere: "#file-name",
     labels: { en: ["Clear", "Clear?"], de: ["Leeren", "Leeren?"] },
+    said: { en: "Press again to clear. Esc cancels.", de: "Nochmals drücken leert. Esc bricht ab." },
     left: () => page.evaluate(() => (document.getElementById("file-text").value ? 1 : 0)),
     gone: true,
   });
@@ -2031,7 +2081,7 @@ async function everyDelete(page, lang, out) {
     named: true,
     stays: true,
     redraw: board,
-    told: written(page, "it broke"),
+    reason: written(page, "it broke"),
   });
   await page.click("#sb-root .sb-chip:nth-child(2)");
   await wait(page, 200);
@@ -2043,12 +2093,52 @@ async function everyDelete(page, lang, out) {
     named: true,
     stays: true,
     redraw: board,
-    told: written(page, "it broke"),
+    reason: written(page, "it broke"),
   });
 
   // Nothing else in the window deletes at one click: every button that says "Delete" has the rule.
   const bare = await page.evaluate(() => [...document.querySelectorAll("button")].filter((b) => /^(Delete|Löschen|Remove|Entfernen|Clear|Leeren)/.test(b.textContent.trim()) && !b.dataset.deleteId).map((b) => b.id || b.className));
   out.push(...expect(bare.length === 0, "every Delete button of the window has the rule", bare.join(", ")));
+}
+
+/**
+ * An armed button that is scrolled out of view disarms. It keeps the keyboard focus up there, and Enter would
+ * delete what nobody sees: Enter then only arms it again, and brings it back into view.
+ */
+async function scrolledAway(page) {
+  const out = [];
+  await page.evaluate(() => {
+    window.__MOCK__.addHistory(60);
+    window.__MOCK__.emit("history-updated", null);
+  });
+  await wait(page, 200);
+  await page.click("#history-more");
+  await wait(page, 200);
+  const state = () =>
+    page.evaluate(() => {
+      const b = document.querySelector("#history-list [data-delete-id]");
+      const r = b.getBoundingClientRect();
+      return { armed: b.classList.contains("armed"), focus: document.activeElement === b, shows: r.bottom > 0 && r.top < window.innerHeight, live: document.getElementById("delete-live").textContent, rows: document.querySelectorAll("#history-list .history-item").length, sent: window.__MOCK__.calls.filter((c) => c.cmd === "history_delete").length };
+    });
+  const first = page.locator("#history-list [data-delete-id]").first();
+  await first.click();
+  const start = await state();
+  // A little way, and the button still shows: it stays armed.
+  await page.mouse.wheel(0, 60);
+  await wait(page, 200);
+  let s = await state();
+  out.push(...expect(start.armed && start.rows === 50 && s.armed && s.shows, "a scroll that leaves the armed button in view leaves it armed", JSON.stringify([start, s])));
+  await page.mouse.wheel(0, 3000);
+  await wait(page, 200);
+  s = await state();
+  out.push(...expect(!s.armed && !s.shows && s.live === "", "an armed button that is scrolled out of view disarms", JSON.stringify(s)));
+  // It still has the focus. Enter, and Enter again as an answer would be given: the first only arms it, in view.
+  await page.keyboard.press("Enter");
+  await wait(page, ANSWER);
+  s = await state();
+  out.push(...expect(s.armed && s.shows && s.focus && s.rows === start.rows && s.sent === start.sent, "Enter on a button that was scrolled away arms it and brings it into view: nothing is deleted unseen", JSON.stringify(s)));
+  await page.keyboard.press("Escape");
+  return out;
 }
 
 /** Home's recordings: of two Play clicks only the one clicked last plays, and it can be stopped. */
@@ -2101,6 +2191,9 @@ async function playProbe(page) {
 async function popoutDeletes(page, run) {
   const out = [];
   page.setDefaultTimeout(5000);
+  // The pop-out starts by itself: its delete buttons read in the Display Language from the first draw.
+  const first = await page.evaluate(() => [...document.querySelectorAll("[data-delete-id]")].map((b) => b.textContent));
+  out.push(...expect(first.length > 0 && first.every((text) => text === (run.lang === "de" ? "Löschen" : "Delete")), "at the start every delete button of the pop-out reads in the Display Language", JSON.stringify(first)));
   try {
     await deleteRule(
       page,
@@ -2113,7 +2206,7 @@ async function popoutDeletes(page, run) {
         named: true,
         stays: true,
         redraw: () => page.evaluate(() => window.__MOCK__.emit("soundboard-changed", null)),
-        told: written(page, "it broke", "body"),
+        reason: written(page, "it broke", "body"),
       },
       out,
     );
@@ -2218,6 +2311,46 @@ async function dictionaryProbe(page, run) {
   await del.click();
   await wait(page, 150);
   out.push(...expect((await saved()).replacements.length === 2, "the second click deletes the replacement"));
+  // A word added while the search is on would be hidden by it at once: the search ends, and the list shows the word.
+  await page.fill("#dict-search", "zur");
+  await wait(page, 100);
+  await page.fill("#dict-input", "Winterthur");
+  await page.press("#dict-input", "Enter");
+  await wait(page, 200);
+  const shownWords = () => page.evaluate(() => [document.getElementById("dict-search").value, [...document.querySelectorAll("#dict-list .dict-term")].filter((el) => el.getClientRects().length).map((el) => el.textContent)]);
+  let added = await shownWords();
+  out.push(...expect(added[0] === "" && added[1].length === 12 && added[1].includes("Winterthur"), "a word added while the search is on ends the search and shows", JSON.stringify(added)));
+  // A word that is there already adds nothing: the search stays as it is.
+  await page.fill("#dict-search", "zur");
+  await page.fill("#dict-input", "winterthur");
+  await page.press("#dict-input", "Enter");
+  await wait(page, 200);
+  added = await shownWords();
+  out.push(...expect(added[0] === "zur" && added[1].join() === "Zürich", "an add that adds nothing leaves the search on", JSON.stringify(added)));
+  await page.fill("#dict-search", "");
+  // The same for a replacement: its new row would go as soon as the rows are looked at again.
+  await page.fill("#replacement-search", "signat");
+  await wait(page, 100);
+  await page.click("#replacement-add");
+  await wait(page, 150);
+  const row = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll("#replacement-list .replacement-row")];
+    return [document.getElementById("replacement-search").value, rows.length, rows.filter((r) => !r.classList.contains("hidden")).length, document.activeElement === rows.at(-1).querySelector(".replacement-from")];
+  });
+  out.push(...expect(row[0] === "" && row[1] === 3 && row[2] === 3 && row[3], "a replacement added while the search is on ends the search", JSON.stringify(row)));
+  // The words read downwards, column after column, in the order of the page (the alphabet's, and Tab's); no word
+  // is split over two columns; and the lines under the last words keep a distance from the card's edge.
+  const flow = await page.evaluate(() => {
+    const list = document.getElementById("dict-list");
+    const rows = [...list.children].map((row) => row.getBoundingClientRect());
+    const columns = [...new Set(rows.map((r) => Math.round(r.left)))];
+    // In reading order: down a column, then the next column to the right, never back.
+    const ordered = rows.every((r, i) => i === 0 || (Math.round(r.left) === Math.round(rows[i - 1].left) ? r.top >= rows[i - 1].bottom - 0.5 : r.left > rows[i - 1].left && r.top < rows[i - 1].top));
+    const whole = [...list.children].every((row) => row.getClientRects().length === 1);
+    const under = list.closest(".card").getBoundingClientRect().bottom - Math.max(...rows.map((r) => r.bottom));
+    return { words: rows.length, columns: columns.length, ordered, whole, under: Math.round(under) };
+  });
+  out.push(...expect(flow.words === 12 && flow.columns > 1 && flow.ordered && flow.whole && flow.under >= 16, "the words read downwards in columns, with room under the last line", JSON.stringify(flow)));
   await page.reload({ waitUntil: "networkidle" });
   await wait(page, 500);
   await settings(page, "dictionary");

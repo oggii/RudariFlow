@@ -90,7 +90,15 @@ async function removeWord(term: string) {
 export async function addWords(text: string): Promise<number> {
   const current = stored();
   const fresh = parseTerms(text).filter((term) => !current.some((c) => c.toLowerCase() === term.toLowerCase()));
-  if (fresh.length) await store([...current, ...fresh]);
+  if (!fresh.length) return 0;
+  await store([...current, ...fresh]);
+  // A search that is on would hide the word that was just added (search
+  // "zur", add "Winterthur"): the search ends, so the list shows it.
+  if (search.value !== "") {
+    search.value = "";
+    sayFound(live, "");
+    renderDictionary();
+  }
   return fresh.length;
 }
 

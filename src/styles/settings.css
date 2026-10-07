@@ -272,16 +272,27 @@
   max-width: none;
 }
 
-/* Short rows, several side by side where there is room. */
+/* Short rows in columns, as many as the card has room for (each at least
+   220 px wide). They are columns of text flow, so the words read downwards,
+   column after column, as an alphabetical list is looked through; the
+   order in the page, and with it the Tab order, stays the alphabet's. */
 #dict-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  display: block;
+  columns: 220px;
   column-gap: var(--s5);
 }
 
-/* Every word has its line, the last ones too: the list's last row is not
-   always full, and a line under some of its words only would look torn. */
+/* Room under the lines of the last words: on the card's edge they made the
+   card look cut off. */
+#dict-list:not(:empty) {
+  padding-bottom: var(--s3);
+}
+
+/* Every word has its line, the last of a column too: the columns do not
+   always end on one level, and a line under some of the last words only
+   would look torn. A word's row is never split over two columns. */
 #dict-list .list-row {
+  break-inside: avoid;
   align-items: center;
   padding: var(--s1) 0;
   border-bottom: 1px solid var(--line);
@@ -391,8 +402,10 @@
   max-width: none;
 }
 
+/* Wide enough for its longest option in both languages
+   ("Aserbaidschanisch (Azərbaycan)": 205 px of text, 251 px with the arrow). */
 .rule-language {
-  flex: 0 1 240px;
+  flex: 0 1 260px;
   width: auto;
   min-width: 200px;
 }

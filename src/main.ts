@@ -21,7 +21,7 @@ import { setDownload } from "./activity";
 import { currentSpeech, initStatus, onStatus, refreshSpeech, renderStatus } from "./status-view";
 import { setup } from "./setup.ts";
 import { initHints, nameRows } from "./rows";
-import { deleteButton, repaintDeletes } from "./confirm-delete";
+import { deleteButton, FailureSaid, repaintDeletes } from "./confirm-delete";
 import { initReplacements, readReplacements, renderReplacements, type Replacement } from "./replacements";
 import { modelLabel, speechModel } from "./models.ts";
 
@@ -197,6 +197,9 @@ async function loadSettings() {
   uiLanguageSelect.value = currentSettings.uiLanguage;
   setLang(currentSettings.uiLanguage);
   nameRows();
+  // "Delete history" and "Clear" were given their words when their pages
+  // were wired, before the language was known (src/confirm-delete.ts).
+  repaintDeletes();
   populateLanguageSelect(languageSelect, getLang(), t("language_auto"));
 
   // Volume
@@ -598,7 +601,8 @@ function unusedModelRow(m: ModelFile): HTMLElement {
   info.append(name, meta, error);
 
   // While the file is deleted the button rests (src/confirm-delete.ts). A
-  // delete that fails says why in the row, and the file stays in the list.
+  // delete that fails says why in the row (read out from there), the button
+  // says that it failed like every other delete, and the file stays in the list.
   const del = deleteButton(
     `model-${m.kind}-${m.file}`,
     async () => {
@@ -610,7 +614,7 @@ function unusedModelRow(m: ModelFile): HTMLElement {
         const key = DELETE_ERRORS[code];
         error.textContent = key ? t(key) : t("unused_model_failed").replace("{error}", code);
         error.classList.remove("hidden");
-        return;
+        throw new FailureSaid(code);
       }
       await renderUnusedModels();
       if (m.kind === "ai") await renderAiSettings();

@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { FailureSaid } from "../confirm-delete";
 import { t } from "../i18n";
 import { hotkeyLabel, startCapture } from "../hotkey-capture";
 import { deleteButton } from "../confirm-delete";
@@ -173,6 +174,13 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
   function setNotice(text: string, tone = "") {
     notice = { text, tone };
     render();
+  }
+
+  /** A delete failed: the notice line says why (read out from there), and the
+   *  button says that it failed like every other delete (src/confirm-delete.ts). */
+  function failedDelete(text: string, e: unknown): never {
+    setNotice(text, "error");
+    throw new FailureSaid(String(e));
   }
 
   /** A command failed: say so in the notice line, and redraw from the backend's state. */
@@ -426,7 +434,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
         );
         const remove = deleteButton(
           `category-${c.id}`,
-          () => api.categoryRemove(c.id).catch((e) => setNotice(reasonText(String(e)), "error")),
+          () => api.categoryRemove(c.id).catch((e) => failedDelete(reasonText(String(e)), e)),
           // The chip goes with its category: "All" takes the focus.
           { name: c.name, after: () => root.querySelector<HTMLElement>('[data-key="chip-all"]') },
         );
@@ -560,7 +568,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
   function soundDelete(sound: Sound): HTMLElement {
     const b = deleteButton(
       `sound-${sound.id}`,
-      () => api.remove(sound.id).catch((e) => setNotice(`${sound.name}: ${reasonText(String(e))}`, "error")),
+      () => api.remove(sound.id).catch((e) => failedDelete(`${sound.name}: ${reasonText(String(e))}`, e)),
       // After the last sound "Add sounds…" takes the focus.
       { name: sound.name, after: () => root.querySelector<HTMLElement>('[data-key="add"]') },
     );
