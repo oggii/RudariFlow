@@ -194,3 +194,26 @@
 #content::-webkit-scrollbar-thumb:hover {
   background: var(--line-strong);
 }
+
+/* A contrast theme (see components.css): the sidebar's current page has the
+   theme's colours for what is selected, and the sidebar an edge towards the
+   page (both have the window's ground). */
+@media (forced-colors: active) {
+  #sidebar {
+    border-right: 1px solid CanvasText;
+  }
+
+  /* The logo is a light picture for the app's dark ground: on a theme with a
+     light ground it is turned dark, or it would not be there. */
+  @media (prefers-color-scheme: light) {
+    .app-logo {
+      filter: invert(1);
+    }
+  }
+
+  .nav-item[aria-current="page"] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+}

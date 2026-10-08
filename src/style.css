@@ -1507,3 +1507,66 @@ body.sb-page {
     animation: none;
   }
 }
+
+/* ── Windows contrast themes ────────────────────────── */
+
+/* See components.css. The pages' own shapes and states: the Soundboard's
+   bar, tiles, chips and loop, a file's drop zone, a meeting that records. */
+@media (forced-colors: active) {
+  .sb-bar,
+  .sb-hint,
+  .sb-progress {
+    border: 1px solid CanvasText;
+  }
+
+  /* What is chosen or on: a category's chip, "Soundboard settings" while
+     its panel is open, a sound that loops. */
+  .sb-chip[aria-pressed="true"],
+  .sb-bar-actions [aria-expanded="true"],
+  .sb-loop[aria-pressed="true"] {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+    box-shadow: none;
+    color: HighlightText;
+  }
+
+  /* A sound that plays: a heavier edge in the theme's highlight, and its bar. */
+  .sb-row.playing {
+    border-color: Highlight;
+    outline: 1px solid Highlight;
+  }
+
+  .sb-progress {
+    height: 5px;
+    background: Canvas;
+  }
+
+  .sb-progress-fill {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+
+  /* A file dragged over its place. (The board's dashed outline is see-through
+     at rest, which a contrast theme would paint: the window's ground instead.) */
+  .sb {
+    outline-color: Canvas;
+  }
+
+  .file-drop.dragging {
+    border-style: solid;
+    border-color: Highlight;
+  }
+
+  .sb.dragging {
+    outline-color: Highlight;
+  }
+
+  /* The dot of a meeting that records, and the dot of an end step that runs. */
+  .mt-bar-dot,
+  .mt-finishing-line::before,
+  .mt-hint-row[data-tone="busy"] .mt-hint-text::before {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+}

@@ -629,3 +629,25 @@
 #setup-ai .setup-action > button::after {
   content: attr(data-alt2);
 }
+
+/* A contrast theme (see components.css): a step's mark keeps its round
+   shape, a step that is done has the theme's colours for that, and the
+   microphone's level is filled like every bar. */
+@media (forced-colors: active) {
+  .setup-num,
+  #setup-ai .setup-num {
+    border: 1px solid CanvasText;
+    line-height: 22px;
+  }
+
+  .setup-step[data-state="done"] .setup-num {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  .setup-level .progress-fill {
+    background: Highlight;
+  }
+}

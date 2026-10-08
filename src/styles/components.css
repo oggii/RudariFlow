@@ -955,3 +955,141 @@ kbd {
 [data-tone="error"]:is(.label-hint, .progress-text) {
   color: var(--text-danger);
 }
+
+/* ── Windows contrast themes ────────────────────────── */
+
+/* In a contrast theme (Windows: Settings > Accessibility > Contrast themes)
+   the browser paints with the theme's few colours: every ground is the
+   window's, every text and every edge the text's. A state this app shows
+   with a colour of its own is gone then, and what has a ground and no edge
+   is not there at all: without these rules a switch could only be seen
+   while it had the focus, and no "selected" showed anywhere.
+
+   So every shape has an edge here, and what is on or selected has the
+   theme's own pair for that (Highlight / HighlightText). A colour that is
+   named after the system is kept by the browser; any other is replaced.
+   forced-color-adjust: none is set where a ground has to stay a ground.
+   The focus ring is the theme's and stays as it is. */
+@media (forced-colors: active) {
+  /* Areas that were a ground of their own. */
+  .card,
+  .notice,
+  .status-pill,
+  .toggle-group {
+    border: 1px solid CanvasText;
+  }
+
+  /* A switch: a track with an edge and a thumb in it; on, the track is
+     filled and the thumb stands at its other end. */
+  .switch-slider {
+    border: 1px solid ButtonText;
+    background: Canvas;
+  }
+
+  .switch-slider::before {
+    left: 2px;
+    top: 2px;
+    background: ButtonText;
+  }
+
+  .switch input:checked + .switch-slider {
+    border-color: Highlight;
+    background: Highlight;
+  }
+
+  .switch input:checked + .switch-slider::before {
+    background: HighlightText;
+  }
+
+  .switch input:disabled + .switch-slider {
+    border-color: GrayText;
+    opacity: 1;
+  }
+
+  .switch input:disabled + .switch-slider::before {
+    background: GrayText;
+  }
+
+  .switch input:disabled:checked + .switch-slider {
+    background: GrayText;
+  }
+
+  .switch input:disabled:checked + .switch-slider::before {
+    background: Canvas;
+  }
+
+  /* The chosen half of a segmented choice, and a Delete that is armed. */
+  .toggle-btn.active,
+  .toggle-btn[aria-pressed="true"],
+  :is(.btn-primary, .btn-secondary, .btn-text, .btn-ghost, .icon-btn).armed,
+  :is(.btn-primary, .btn-secondary, .btn-text, .btn-ghost, .icon-btn).armed:is(:hover, :active) {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  /* Dimmed twice (the theme's grey, and the half opacity) could not be read. */
+  :is(.btn-primary, .btn-secondary, .btn-text, .btn-ghost, .icon-btn, .toggle-btn, .hotkey-btn):disabled,
+  :is(select, input:not([type="checkbox"], [type="radio"]), textarea):disabled,
+  [data-delete-id][aria-disabled="true"] {
+    opacity: 1;
+  }
+
+  /* The open tab has its mark; the others have none (their see-through
+     edge, which keeps the bar from moving, would be painted as a line). The
+     tabs stand on the bar's line, not over it: an edge in the window's
+     ground over the line would cut it into pieces. */
+  .tab {
+    margin-bottom: 0;
+    border-bottom-color: Canvas;
+  }
+
+  .tab[aria-selected="true"] {
+    border-bottom-color: Highlight;
+  }
+
+  .tab[aria-selected="true"]::after {
+    background: Highlight;
+  }
+
+  /* A key box that listens for its key. */
+  .hotkey-btn.capturing kbd {
+    border-color: Highlight;
+    border-style: dashed;
+  }
+
+  /* Progress: a track with an edge, filled as far as it has come. */
+  .progress-track,
+  #progress-bar {
+    border: 1px solid CanvasText;
+    box-sizing: content-box;
+    background: Canvas;
+  }
+
+  .progress-fill,
+  #progress-fill {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+
+  /* The dot of a status, and the ring of what runs beside it. */
+  .status-dot {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  .status-marker,
+  .status-marker[data-marker="file"] {
+    border-color: CanvasText;
+  }
+
+  /* A select's arrow is a picture in a colour of the app's own, which stays
+     as it is on any ground: the system's arrow instead. */
+  select {
+    appearance: auto;
+    -webkit-appearance: auto;
+    padding-right: 12px;
+    background-image: none;
+  }
+}
