@@ -14,10 +14,12 @@ import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { getLang, t } from "./i18n";
 import { confirmDelete, disarmDelete, FailureSaid, nameDelete } from "./confirm-delete";
+import { stateOnce } from "./start";
 
 export interface MeetingsHost {
   settings(): { meetingReminderOff: boolean; meetingHeadphonesSeen: boolean };
-  saveSettings(patch: { meetingReminderOff?: boolean; meetingHeadphonesSeen?: boolean }): Promise<void>;
+  /** False when it was not saved (the page has said so, src/main.ts). */
+  saveSettings(patch: { meetingReminderOff?: boolean; meetingHeadphonesSeen?: boolean }): Promise<boolean>;
   /** Show the Meetings section (a meeting started from the tray or hotkey). */
   showSection(): void;
 }
@@ -709,7 +711,8 @@ function renderNotes(m: Meeting) {
     part.className = "mt-notes-section";
     const head = document.createElement("div");
     head.className = "mt-notes-head";
-    const h = document.createElement("h4");
+    // Under the meeting's title, which is the page's second level.
+    const h = document.createElement("h3");
     h.textContent = t(`mt_${key}`);
     const copyOne = document.createElement("button");
     copyOne.className = "btn-ghost";
@@ -1270,8 +1273,11 @@ export async function initMeetings(h: MeetingsHost) {
     if (section.classList.contains("active") && !view && !status.recording) void refreshPlaceholder();
   }, 30_000);
 
-  await listen<Status>("meeting-status", (e) => onStatus(e.payload));
-  await listen<LinesChanged>("meeting-lines", (e) => {
+  // The five listeners are registered together and waited for once: one
+  // after the other, each was a round trip to the backend before the page
+  // could ask how things stand.
+  const onMeetingStatus = listen<Status>("meeting-status", (e) => onStatus(e.payload));
+  const onLines = listen<LinesChanged>("meeting-lines", (e) => {
     linesSeen++;
     const { id, from, paragraphs } = e.payload;
     if (!view || view.meeting.id !== id) return;
@@ -1285,26 +1291,29 @@ export async function initMeetings(h: MeetingsHost) {
     renderSpeakers();
     renderTranscript();
   });
-  await listen("meetings-changed", () => {
+  const onChanged = listen("meetings-changed", () => {
     if (view) void open(view.meeting.id);
     else void refreshList();
   });
-  await listen<Playing | null>("meeting-playing", (e) => {
+  const onPlaying = listen<Playing | null>("meeting-playing", (e) => {
     playing = e.payload;
     syncRows();
   });
-  await listen<{ percent: number }>("speaker-model-progress", (e) => {
+  const onSpeakerModel = listen<{ percent: number }>("speaker-model-progress", (e) => {
     speakerModelPercent = Math.round(e.payload.percent);
     if (running.has("speaker-model")) renderHints();
   });
+  await Promise.all([onMeetingStatus, onLines, onChanged, onPlaying, onSpeakerModel]);
 
   const seen = statusSeen;
   try {
-    const current = await invoke<{ status: Status; meeting: MeetingView | null }>("meeting_state");
-    // A status event during the question is newer than its answer.
+    // The sidebar's status asks the same at the start: asked once (src/start.ts).
+    const current = await stateOnce<{ status: Status; meeting: MeetingView | null }, Status>("meeting_state", "meeting-status");
+    // A status event during the question is newer than its answer: one this
+    // page heard itself, or one that came before its listener was there.
     if (seen === statusSeen) {
-      status = current.status;
-      if (current.meeting && !view) view = current.meeting;
+      status = current.later()?.payload ?? current.answer.status;
+      if (current.answer.meeting && !view) view = current.answer.meeting;
     }
   } catch (e) {
     console.error("meeting_state failed:", e);

@@ -11,7 +11,6 @@ import {
   progressWords,
   recommend,
   setup,
-  sizeText,
   METER_REVIVE_MS,
   METER_SILENT_MS,
   METER_USE_MS,
@@ -33,16 +32,37 @@ const speech = (over: Partial<SpeechStatus> = {}): SpeechStatus => ({
   ...over,
 });
 
-const input = (over: Partial<SetupInput> = {}): SetupInput => ({ speech: speech(), microphones: 1, aiDownloaded: false, aiDismissed: false, ...over });
+const input = (over: Partial<SetupInput> = {}): SetupInput => ({ speech: speech(), microphones: 1, history: 0, aiDownloaded: false, aiDismissed: false, ...over });
 
 test("a new PC needs the setup: no speech model yet", () => {
-  assert.deepEqual(setup(input()), { needed: true, microphone: true, model: false, aiCard: true });
+  assert.deepEqual(setup(input()), { known: true, needed: true, firstRun: true, microphone: true, model: false, aiCard: true });
 });
 
 test("the setup is done with a microphone and a model", () => {
   const done = setup(input({ speech: speech({ downloaded: true }) }));
-  assert.deepEqual(done, { needed: false, microphone: true, model: true, aiCard: true });
+  assert.deepEqual(done, { known: true, needed: false, firstRun: false, microphone: true, model: true, aiCard: true });
   assert.equal(setup(input({ speech: speech({ downloaded: true }), microphones: 0 })).needed, true, "no microphone");
+});
+
+test("a first run is a PC without a speech model and without a history", () => {
+  // Only this is welcomed, and only this opens on Home whatever page the window was left on.
+  assert.equal(setup(input()).firstRun, true);
+  assert.equal(setup(input({ microphones: 0 })).firstRun, true, "no microphone either: still a new PC");
+  // Someone who has dictated before is no newcomer, whatever is missing today.
+  const there = speech({ downloaded: true, load: "loaded" });
+  for (const [what, now] of [
+    ["the only microphone is unplugged", input({ speech: there, microphones: 0, history: 40 })],
+    ["the model file is gone", input({ history: 40 })],
+    ["the cloud key was cleared", input({ speech: speech({ engine: "cloud" }), history: 40 })],
+  ] as const) {
+    assert.equal(setup(now).needed, true, what);
+    assert.equal(setup(now).firstRun, false, what);
+  }
+  // Nor is someone who keeps no history: a model on the PC, or the cloud engine chosen, says they were here before.
+  assert.equal(setup(input({ speech: there, microphones: 0 })).firstRun, false, "a model is there");
+  assert.equal(setup(input({ speech: speech({ engine: "cloud" }) })).firstRun, false, "the cloud engine was chosen");
+  // Done: no first run.
+  assert.equal(setup(input({ speech: there })).firstRun, false);
 });
 
 test("the cloud engine counts with its key", () => {
@@ -58,8 +78,12 @@ test("the AI cleanup card stays until its model is there or it is closed", () =>
 });
 
 test("nothing is asked for before the backend answered", () => {
-  assert.deepEqual(setup(input({ speech: null })), { needed: false, microphone: true, model: true, aiCard: false });
-  assert.equal(setup(input({ microphones: null })).needed, false);
+  const unknown = { known: false, needed: false, firstRun: false, microphone: true, model: true, aiCard: false };
+  assert.deepEqual(setup(input({ speech: null })), unknown);
+  assert.deepEqual(setup(input({ microphones: null })), unknown);
+  // The history too: with it missing, Home would show the daily view and then flip to the steps, or the other way.
+  assert.deepEqual(setup(input({ history: null })), unknown);
+  assert.equal(setup(input({ speech: speech({ downloaded: true }), history: null })).known, false);
 });
 
 test("the models suggested for a PC", () => {
@@ -88,16 +112,6 @@ test("the bigger AI model from more than 8.5 GB of video memory", () => {
   assert.deepEqual([recommend(two).ai, recommend(two).gpu], ["gemma-4-e4b", "new"]);
 });
 
-test("sizes in words", () => {
-  assert.equal(sizeText(870_000_000), "870 MB");
-  assert.equal(sizeText(4_977_171_584), "5.0 GB");
-  assert.equal(sizeText(10), "1 MB");
-  // Never "1000 MB": what rounds up to it is a gigabyte.
-  assert.equal(sizeText(999_400_000), "999 MB");
-  assert.equal(sizeText(999_600_000), "1.0 GB");
-  assert.equal(sizeText(1_000_000_000), "1.0 GB");
-});
-
 // ── Home's heading and the pill beside it ──
 
 const now = (over: Partial<StatusInput> = {}): Status =>
@@ -111,13 +125,34 @@ const now = (over: Partial<StatusInput> = {}): Status =>
     fileRunning: false,
     aiLoading: false,
     aiFreed: false,
+    aiKnown: true,
     gameFreed: false,
     ...over,
   });
-const headerOf = (over: Partial<StatusInput> = {}) => {
+/** The heading for a status; `history`: how many dictations there are (null: not read yet). */
+const headerOf = (over: Partial<StatusInput> = {}, history: number | null = 0) => {
   const seen = { speech: speech(), microphones: 1, ...over };
-  return header(now(over), setup({ speech: seen.speech, microphones: seen.microphones, aiDownloaded: false, aiDismissed: false }), seen.speech?.engine === "cloud");
+  return header(now(over), setup({ speech: seen.speech, microphones: seen.microphones, history, aiDownloaded: false, aiDismissed: false }));
 };
+
+test("the welcome is for a first run only: with a history the heading is the plain one, with the reason", () => {
+  // The model file is gone on a PC that has dictated before: no welcome.
+  assert.deepEqual(headerOf({}, 12), { title: "home_title_setup", pill: "home_reason_model", n: "" });
+  // Its download: the plain heading stays, the pill has the percent.
+  assert.deepEqual(headerOf({ download: 43, speechDownload: 43 }, 12), { title: "home_title_setup", pill: "status_downloading", n: "43" });
+  // The only microphone is unplugged.
+  assert.deepEqual(headerOf({ speech: speech({ downloaded: true, load: "loaded" }), microphones: 0 }, 12), { title: "home_title_setup", pill: "home_reason_microphone", n: "" });
+});
+
+test("before Home knows what it shows, the heading is neutral and never says Ready or what is missing", () => {
+  const there = speech({ downloaded: true, load: "loaded" });
+  // The history is not read yet: neither "Ready to dictate" nor the welcome.
+  assert.deepEqual(headerOf({ speech: there }, null), { title: "home_title_loading", pill: "status_loading", n: "" });
+  assert.deepEqual(headerOf({}, null), { title: "home_title_loading", pill: "status_loading", n: "" });
+  assert.deepEqual(headerOf({ speech: there, microphones: 0 }, null), { title: "home_title_loading", pill: "status_loading", n: "" });
+  // What really runs is said.
+  assert.deepEqual(headerOf({ speech: there, dictation: "Recording" }, null), { title: "home_title_loading", pill: "status_recording", n: "" });
+});
 
 test("beside the welcome the pill is the short state, never the reason", () => {
   assert.deepEqual(headerOf(), { title: "setup_title", pill: "home_title_setup", n: "" });
@@ -165,9 +200,11 @@ test("every text of the heading and its pill exists in English and in German", (
     for (const reason of kind === "setup" ? reasons : [null]) {
       const s: Status = { kind, tone: "ok", missing: reason ? [reason] : [], percent: 5, marker: null, loading: kind === "loading" };
       for (const needed of [true, false]) {
-        for (const cloud of [true, false]) {
-          const said = header(s, { needed, microphone: true, model: !needed, aiCard: false }, cloud);
-          keys.add(said.title).add(said.pill);
+        for (const firstRun of [true, false]) {
+          for (const known of [true, false]) {
+            const said = header(s, { known, needed, firstRun: needed && firstRun, microphone: true, model: !needed, aiCard: false });
+            keys.add(said.title).add(said.pill);
+          }
         }
       }
     }
@@ -300,18 +337,33 @@ test("a download's numbers: a whole percent, the sizes, and the words a progress
   assert.equal(progressWords({ downloaded: 0, total: 466e6, percent: Number.NaN }, shown, said).percent, 0);
 });
 
-test("a download that failed says the backend's reason after its sentence", () => {
-  const sentence = "The download of {model} did not finish. Check your internet connection and try again.";
+test("a download that failed says the backend's reason, and the advice only where no reason is known", () => {
+  const sentence = "The download of {model} did not finish.";
+  const advice = "Check your internet connection and try again.";
   const because = "Reason: {reason}";
-  // A full disk is not a bad connection: the reason says which it was.
+  // A full disk is not a bad connection: the reason stands alone, without the advice that would be wrong beside it.
   assert.equal(
-    failureWords(sentence, because, "Tiny · 75 MB", "There is not enough space on the disk. (os error 112)"),
-    "The download of Tiny · 75 MB did not finish. Check your internet connection and try again. Reason: There is not enough space on the disk. (os error 112)",
+    failureWords(sentence, advice, because, "Tiny · 75 MB", "There is not enough space on the disk. (os error 112)"),
+    "The download of Tiny · 75 MB did not finish. Reason: There is not enough space on the disk. (os error 112)",
   );
   // The reason ends like a sentence, so what follows it (Retry) stands apart.
-  assert.equal(failureWords(sentence, because, "Tiny", " error sending request "), "The download of Tiny did not finish. Check your internet connection and try again. Reason: error sending request.");
-  // No reason: the sentence alone.
-  assert.equal(failureWords(sentence, because, "Tiny", ""), "The download of Tiny did not finish. Check your internet connection and try again.");
+  assert.equal(failureWords(sentence, advice, because, "Tiny", " error sending request "), "The download of Tiny did not finish. Reason: error sending request.");
+  // No reason: the best guess is the connection.
+  assert.equal(failureWords(sentence, advice, because, "Tiny", ""), "The download of Tiny did not finish. Check your internet connection and try again.");
+  assert.equal(failureWords(sentence, advice, because, "Tiny", "   "), "The download of Tiny did not finish. Check your internet connection and try again.");
   // A model's name or a reason with "$" in it is text, not a pattern.
-  assert.equal(failureWords("{model} failed.", "Why: {reason}", "$& model", "$1 left"), "$& model failed. Why: $1 left.");
+  assert.equal(failureWords("{model} failed.", "Try again.", "Why: {reason}", "$& model", "$1 left"), "$& model failed. Why: $1 left.");
+});
+
+test("the failure's three texts exist in English and in German, and the sentence itself gives no advice", () => {
+  const source = readFileSync(new URL("../../src/i18n.ts", import.meta.url), "utf8");
+  for (const lang of ["en", "de"]) {
+    const start = source.indexOf(`const ${lang}: Translations = {`);
+    const table = source.slice(start, source.indexOf("};", start));
+    const text = (key: string) => new RegExp(`^  ${key}: "(.*)",$`, "m").exec(table)?.[1] ?? "";
+    for (const key of ["setup_download_failed", "download_advice", "download_reason"]) assert.ok(text(key).length > 5, `${key} in ${lang}`);
+    // One sentence, about the download: what to do about it is the advice's or the reason's to say.
+    assert.equal(text("setup_download_failed").split(". ").length, 1, lang);
+    assert.ok(text("setup_download_failed").includes("{model}") && text("download_reason").includes("{reason}"), lang);
+  }
 });

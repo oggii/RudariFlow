@@ -29,10 +29,11 @@ export function showProgress(parts: ProgressParts, p: DownloadProgress): number 
   return words.percent;
 }
 
-/** "The download of Tiny · 75 MB did not finish. Check your internet
- *  connection and try again. Reason: …": the one sentence for a model's
- *  download that failed, wherever it is said (the model's row, Home's step,
- *  the AI's state line). `reason` is what the backend answered; "" for none. */
+/** "The download of Tiny · 75 MB did not finish. Reason: There is not enough
+ *  space on the disk.": the one sentence for a model's download that failed,
+ *  wherever it is said (the model's row, Home's step, the AI's state line).
+ *  `reason` is what the backend answered; "" for none, and only then the
+ *  advice to check the connection follows instead. */
 export function downloadFailure(model: string, reason: string): string {
-  return failureWords(t("setup_download_failed"), t("download_reason"), model, reason);
+  return failureWords(t("setup_download_failed"), t("download_advice"), t("download_reason"), model, reason);
 }

@@ -23,9 +23,11 @@ export function route(section: unknown, tab: unknown): Route {
   return { section: isSection(section) ? section : "home", tab: isTab(tab) ? tab : "dictation" };
 }
 
-/** Where the window opens: where it was left, but on Home while the setup is not done. */
-export function startRoute(saved: Route, setupNeeded: boolean): Route {
-  return setupNeeded ? { section: "home", tab: saved.tab } : saved;
+/** Where the window opens: where it was left, but on Home for a first run
+ *  (src/setup.ts, `firstRun`: the steps are there). Someone who has dictated
+ *  before and lacks a microphone today finds the window as they left it. */
+export function startRoute(saved: Route, firstRun: boolean): Route {
+  return firstRun ? { section: "home", tab: saved.tab } : saved;
 }
 
 /** The ten sections of 0.16 and where their content lives now. */

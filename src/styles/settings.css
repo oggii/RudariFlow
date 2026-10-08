@@ -39,7 +39,7 @@
 
 .setting-control .model-row select {
   flex: 0 1 auto;
-  max-width: min(320px, 100%);
+  max-width: min(344px, 100%);
 }
 
 /* A row without a hint has one line of label: it stands at the middle of
@@ -225,11 +225,32 @@
   gap: var(--s2);
 }
 
+/* As wide as the longest option needs: "Large v3 Turbo q8 · 870 MB · recommended ✓". */
 .model-row select {
   flex: 0 1 auto;
   width: auto;
   min-width: 160px;
-  max-width: min(320px, 100%);
+  max-width: min(344px, 100%);
+}
+
+/* Every speech model with its one line, behind the row's "More": the name
+   and size as the dropdown has them, then what the model is. */
+.model-list-item {
+  display: block;
+}
+
+.model-list-item + .model-list-item {
+  margin-top: var(--s1);
+}
+
+.model-list-name {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.model-list-mark {
+  color: var(--text-ok);
+  font-weight: 600;
 }
 
 /* A download's bar and numbers, under the row that started it. */

@@ -11,6 +11,10 @@ import { confirmDelete, deleteButton } from "./confirm-delete";
 export interface HistoryHost {
   /** "Keep history": "audio", "text" or "off". */
   mode(): string;
+  /** Show the "Keep history" setting (Settings > General). */
+  openSetting(): void;
+  /** The history was read again: how many dictations it has may have changed. */
+  changed?(): void;
 }
 
 interface HistoryEntry {
@@ -35,9 +39,15 @@ const more = document.getElementById("history-more") as HTMLButtonElement;
 const less = document.getElementById("history-less") as HTMLButtonElement;
 const count = document.getElementById("history-count")!;
 const clear = document.getElementById("history-clear") as HTMLButtonElement;
+/** The way from the list to its setting. */
+const toSetting = document.getElementById("history-settings") as HTMLButtonElement;
 
 let host: HistoryHost;
 let entries: HistoryEntry[] = [];
+/** The backend has answered once (or failed to): the history is known. */
+let known = false;
+/** Numbers the questions to the backend: only the latest one's answer is drawn. */
+let asked = 0;
 /** "Show all" was clicked. */
 let expanded = false;
 /** Chunks of 50 shown once expanded (or while searching). */
@@ -294,13 +304,30 @@ function announce(searching: boolean, found: number) {
       ? ""
       : (empty.textContent ?? "")
     : searching
-      ? t(found === 1 ? "home_recent_found_one" : "home_recent_found").replace("{n}", String(found))
+      ? t(found === 1 ? "home_recent_found_one" : "home_recent_found").replace("{n}", () => String(found))
       : "";
   const say = () => {
     if (live.textContent !== text) live.textContent = text;
   };
   if (searching) sayTimer = window.setTimeout(say, 700);
   else say();
+}
+
+/** How many dictations the history has; null until it was read. Home keeps
+ *  the list on screen under the setup steps while there is one, and only a
+ *  PC without a history is welcomed as new. */
+export function historyCount(): number | null {
+  return known ? entries.length : null;
+}
+
+/** "History is off. …" with the way to the setting that turns it on. */
+function offText(): Node[] {
+  const link = document.createElement("button");
+  link.type = "button";
+  link.className = "link-btn";
+  link.textContent = t("history_off_open");
+  link.addEventListener("click", () => host.openSetting());
+  return [document.createTextNode(`${t("history_off")} `), link];
 }
 
 function render() {
@@ -312,25 +339,53 @@ function render() {
   showPlaying();
 
   const off = host.mode() === "off";
-  empty.textContent = entries.length === 0 || off ? t(off ? "history_off" : "history_empty") : t("home_recent_none");
+  // Drawn again only when its words change: the link in it may have the keyboard focus.
+  const words = off ? "history_off" : entries.length === 0 ? "history_empty" : "home_recent_none";
+  const said = `${words} ${t(words)}`;
+  if (empty.dataset.said !== said) {
+    empty.dataset.said = said;
+    if (off) empty.replaceChildren(...offText());
+    else empty.textContent = t(words);
+  }
   empty.classList.toggle("hidden", view.rows.length > 0 && !off);
+  // With the history off the sentence itself leads to the setting.
+  toSetting.classList.toggle("hidden", off);
   search.classList.toggle("hidden", entries.length === 0);
 
-  if (view.canExpand) more.textContent = t("home_recent_all").replace("{n}", String(view.found));
-  else if (view.more > 0) more.textContent = t("home_recent_more").replace("{n}", String(view.more));
+  if (view.canExpand) more.textContent = t("home_recent_all").replace("{n}", () => String(view.found));
+  else if (view.more > 0) more.textContent = t("home_recent_more").replace("{n}", () => String(view.more));
   more.classList.toggle("hidden", !view.canExpand && view.more === 0);
   less.classList.toggle("hidden", !expanded || searching);
   if (place) restoreFocus(place);
   announce(searching, view.found);
 
-  count.textContent = entries.length === 1 ? t("history_count_one") : t("history_count").replace("{n}", String(entries.length));
+  count.textContent = entries.length === 1 ? t("history_count_one") : t("history_count").replace("{n}", () => String(entries.length));
   clear.classList.toggle("hidden", entries.length === 0);
 }
 
-/** Read the history again and redraw (after a dictation, a delete, a language change). */
+/** Draw the list again from what is known (the language or "Keep history" changed). */
+export function renderHistory() {
+  if (host) render();
+}
+
+/** Read the history again and redraw (after a dictation, a delete, a change
+ *  of "Keep history"). Of two questions that are out, only the later one's
+ *  answer is drawn: the earlier one can arrive last, with a list that lacks
+ *  the newest dictation or still has a deleted one. */
 export async function refreshHistory() {
-  entries = await invoke<HistoryEntry[]>("history_list");
+  const mine = ++asked;
+  let answer: HistoryEntry[] | null = null;
+  try {
+    answer = await invoke<HistoryEntry[]>("history_list");
+  } catch (err) {
+    console.error("history_list failed:", err);
+  }
+  if (mine !== asked) return;
+  // Without an answer the list stays as it is; it is known as far as it can be.
+  if (answer) entries = answer;
+  known = true;
   render();
+  host.changed?.();
 }
 
 export function initHistory(h: HistoryHost) {
@@ -363,5 +418,6 @@ export function initHistory(h: HistoryHost) {
     // The button goes with the last dictation: the row above takes the focus.
     { label: "history_clear", armedLabel: "history_clear_confirm", after: () => document.getElementById("history-mode-select") },
   );
+  toSetting.addEventListener("click", () => host.openSetting());
   listen("history-updated", () => refreshHistory());
 }

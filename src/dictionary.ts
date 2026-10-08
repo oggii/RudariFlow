@@ -1,4 +1,4 @@
-// Dictionary tab: names, brands and jargon Whisper should know. Entries are
+// Settings > Dictionary: names, brands and jargon Whisper should know. Entries are
 // stored as the comma-separated `customPrompt` setting (Whisper's initial
 // prompt); the backend also uses them to fix spelling and to guide the AI.
 import { invoke } from "@tauri-apps/api/core";
@@ -10,7 +10,13 @@ import { matches } from "./search.ts";
 
 export interface DictionaryHost {
   settings(): { customPrompt: string; swissSpelling: boolean; screenContext: boolean; learnDictionary: boolean };
-  save(): Promise<void>;
+  /** The settings were read from the backend: `settings()` has them. */
+  loaded(): boolean;
+  /** Save the settings. A save the backend refuses is said in the page and
+   *  the controls go back to what is saved (src/main.ts); false then. */
+  save(): Promise<boolean>;
+  /** The same save for a caller that says the failure itself (a word's Delete): it throws. */
+  saveStrict(): Promise<void>;
 }
 
 const form = document.getElementById("dict-form") as HTMLFormElement;
@@ -62,15 +68,20 @@ export function parseTerms(text: string): string[] {
 }
 
 function stored(): string[] {
-  return parseTerms(host.settings().customPrompt ?? "");
+  return parseTerms(host.loaded() ? (host.settings().customPrompt ?? "") : "");
 }
 
-async function store(terms: string[]) {
+/** Save the words. False when the backend refused (the page has said so and
+ *  the list is back on what is saved); `strict`: the refusal is thrown. */
+async function store(terms: string[], strict = false): Promise<boolean> {
   // Insertion order is kept: Whisper favours the end of a long prompt, so
   // the newest entries count first.
   host.settings().customPrompt = terms.join(", ");
-  await host.save();
+  let saved = true;
+  if (strict) await host.saveStrict();
+  else saved = await host.save();
   renderDictionary();
+  return saved;
 }
 
 /** Delete one word. A save that fails leaves the word in the list and
@@ -78,7 +89,10 @@ async function store(terms: string[]) {
 async function removeWord(term: string) {
   const before = host.settings().customPrompt;
   try {
-    await store(stored().filter((x) => x !== term));
+    await store(
+      stored().filter((x) => x !== term),
+      true,
+    );
   } catch (err) {
     host.settings().customPrompt = before;
     renderDictionary();
@@ -86,12 +100,14 @@ async function removeWord(term: string) {
   }
 }
 
-/// Adds the new entries of `text`; returns how many were new. Also Home's "Add a word".
+/// Adds the new entries of `text`; returns how many were new. Also Home's
+/// "Add a word". -1: they could not be saved (the page has said so).
 export async function addWords(text: string): Promise<number> {
+  if (!host.loaded()) return 0;
   const current = stored();
   const fresh = parseTerms(text).filter((term) => !current.some((c) => c.toLowerCase() === term.toLowerCase()));
   if (!fresh.length) return 0;
-  await store([...current, ...fresh]);
+  if (!(await store([...current, ...fresh]))) return -1;
   // A search that is on would hide the word that was just added (search
   // "zur", add "Winterthur"): the search ends, so the list shows it.
   if (search.value !== "") {
@@ -127,7 +143,7 @@ function renderSuggestions(now: Suggestion[] = suggestions) {
     const heard = document.createElement("span");
     heard.className = "list-secondary";
     heard.textContent =
-      t("learn_heard").replace("{heard}", s.heard) + (s.count > 1 ? ` · ${t("learn_seen").replace("{n}", String(s.count))}` : "");
+      t("learn_heard").replace("{heard}", () => s.heard) + (s.count > 1 ? ` · ${t("learn_seen").replace("{n}", () => String(s.count))}` : "");
     text.append(word, heard);
     const actions = document.createElement("span");
     actions.className = "list-actions dict-suggest-actions";
@@ -158,7 +174,8 @@ function renderSuggestions(now: Suggestion[] = suggestions) {
 /// Add a suggestion to the dictionary (or dismiss it for good).
 async function resolve(word: string, dismiss: boolean) {
   const held = suggestList.contains(document.activeElement);
-  if (!dismiss) await addWords(word);
+  // Not saved: the suggestion stays, to be added again.
+  if (!dismiss && (await addWords(word)) < 0) return;
   renderSuggestions(await invoke<Suggestion[]>("learn_resolve", { word, dismiss }));
   // The row went with the button that was pressed: the same button of the
   // first suggestion left takes the focus, or the field that adds a word.
@@ -181,13 +198,19 @@ function showIoStatus(text: string, tone = "") {
   ioStatus.dataset.tone = tone;
 }
 
+/** What the last import or export said is over: it was written in the
+ *  Display Language of its moment, and that one has changed. */
+export function clearDictionaryStatus() {
+  showIoStatus("");
+}
+
 async function exportDictionary() {
   const path = await save({ defaultPath: "rudariflow-dictionary.txt", filters: FILE_FILTERS });
   if (!path) return;
   try {
     const n = await invoke<number>("dictionary_export", { path });
     const file = path.split(/[\\/]/).pop() ?? path;
-    showIoStatus(t("dictionary_exported").replace("{n}", String(n)).replace("{file}", file));
+    showIoStatus(t("dictionary_exported").replace("{n}", () => String(n)).replace("{file}", () => file));
   } catch (e) {
     showIoStatus(`${t("dictionary_io_failed")}: ${e}`, "error");
   }
@@ -199,10 +222,12 @@ async function importDictionary() {
   try {
     const entries = await invoke<string[]>("dictionary_read_file", { path });
     const added = await addWords(entries.join("\n"));
+    // Not saved: the page has said why.
+    if (added < 0) return showIoStatus("");
     showIoStatus(
       added > 0
-        ? t("dictionary_imported").replace("{n}", String(added)).replace("{total}", String(entries.length))
-        : t("dictionary_imported_none").replace("{total}", String(entries.length)),
+        ? t("dictionary_imported").replace("{n}", () => String(added)).replace("{total}", () => String(entries.length))
+        : t("dictionary_imported_none").replace("{total}", () => String(entries.length)),
     );
   } catch (e) {
     showIoStatus(`${t("dictionary_io_failed")}: ${e}`, "error");
@@ -210,6 +235,7 @@ async function importDictionary() {
 }
 
 export function renderDictionary() {
+  if (!host.loaded()) return;
   renderSuggestions();
   swissToggle.checked = !!host.settings().swissSpelling;
   screenToggle.checked = host.settings().screenContext ?? true;
@@ -237,7 +263,7 @@ export function renderDictionary() {
   noMatch.classList.toggle("hidden", terms.length === 0 || found.length > 0);
   search.classList.toggle("hidden", terms.length === 0);
   // "12" after the title; "3 of 12" while a search leaves words out.
-  count.textContent = (found.length < terms.length ? t("dictionary_count_found").replace("{found}", String(found.length)) : t("dictionary_count")).replace("{n}", String(terms.length));
+  count.textContent = (found.length < terms.length ? t("dictionary_count_found").replace("{found}", () => String(found.length)) : t("dictionary_count")).replace("{n}", () => String(terms.length));
   count.classList.toggle("hidden", terms.length === 0);
   longHint.classList.toggle("hidden", (host.settings().customPrompt ?? "").length < LONG_PROMPT_CHARS);
 }
@@ -247,14 +273,17 @@ export function initDictionary(h: DictionaryHost) {
   exportBtn.addEventListener("click", exportDictionary);
   importBtn.addEventListener("click", importDictionary);
   swissToggle.addEventListener("change", async () => {
+    if (!host.loaded()) return;
     host.settings().swissSpelling = swissToggle.checked;
     await host.save();
   });
   screenToggle.addEventListener("change", async () => {
+    if (!host.loaded()) return;
     host.settings().screenContext = screenToggle.checked;
     await host.save();
   });
   learnToggle.addEventListener("change", async () => {
+    if (!host.loaded()) return;
     host.settings().learnDictionary = learnToggle.checked;
     await host.save();
   });
@@ -262,12 +291,13 @@ export function initDictionary(h: DictionaryHost) {
   search.addEventListener("input", () => {
     renderDictionary();
     const found = list.children.length;
-    sayFound(live, search.value.trim() === "" ? "" : found === 0 ? t("dict_no_match") : t("dict_found").replace("{found}", String(found)).replace("{n}", String(stored().length)));
+    sayFound(live, search.value.trim() === "" ? "" : found === 0 ? t("dict_no_match") : t("dict_found").replace("{found}", () => String(found)).replace("{n}", () => String(stored().length)));
   });
   listen<Suggestion[]>("dictionary-suggestions", (e) => renderSuggestions(e.payload));
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    await addWords(input.value);
+    // Not saved: the word stays in the field, to be added again.
+    if ((await addWords(input.value)) < 0) return;
     input.value = "";
     input.focus();
   });
@@ -276,7 +306,8 @@ export function initDictionary(h: DictionaryHost) {
     const text = e.clipboardData?.getData("text") ?? "";
     if (!/[,\n]/.test(text)) return;
     e.preventDefault();
-    await addWords(text);
-    input.value = "";
+    // Not saved: the list goes into the field (with spaces for its line breaks), not into nothing.
+    if ((await addWords(text)) < 0) input.value = text.replace(/[\n\r]+/g, ", ");
+    else input.value = "";
   });
 }

@@ -626,9 +626,6 @@
    level whatever one of them says above or below its own. The space between
    two rows of tiles is each tile's own margin: a gap of the list would also
    stand between a tile's three lines. */
-.sb-col-library {
-  container: sblib / inline-size;
-}
 .sb-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr));
@@ -1204,7 +1201,7 @@ body.sb-page {
   gap: 8px;
   margin-bottom: 2px;
 }
-.mt-notes-head h4 {
+.mt-notes-head h3 {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);

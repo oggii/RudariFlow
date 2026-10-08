@@ -106,11 +106,8 @@
 
   /* Names from before the redesign, so the older page rules get the new
      look. New rules use the names above. */
-  --sidebar-bg: var(--bg);
   --surface-hover: var(--surface-2);
-  --surface-active: var(--surface-3);
   --text-secondary: var(--text-2);
-  --text-tertiary: var(--text-2);
   --accent-subtle: var(--accent-bg);
   --green: var(--text-ok);
   --red: var(--text-danger);

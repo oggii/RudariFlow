@@ -88,19 +88,6 @@ textarea {
   color: var(--text-2);
 }
 
-.subsection-title {
-  font-size: var(--fs-l);
-  font-weight: 600;
-  margin: var(--s5) 0 var(--s1);
-}
-
-.subsection-desc {
-  max-width: 72ch;
-  margin-bottom: var(--s3);
-  font-size: var(--fs-s);
-  color: var(--text-2);
-}
-
 /* ── Card ───────────────────────────────────────────── */
 
 .card {
@@ -114,13 +101,6 @@ textarea {
 .card + .fold,
 .fold + .card {
   margin-top: var(--s4);
-}
-
-/* A heading inside a card, above its rows. */
-.card-title {
-  padding: var(--s3) 0 var(--s1);
-  font-size: var(--fs);
-  font-weight: 600;
 }
 
 /* ── Setting row: label and one-line hint left, control right ── */
@@ -942,6 +922,25 @@ kbd {
 .notice-text {
   flex: 1 1 240px;
   min-width: 0;
+}
+
+/* The notice at the top of every page: a save the backend refused, settings
+   that did not load. It stays in view while the page scrolls, until the
+   next save that works or its own button. */
+.page-notice {
+  position: sticky;
+  top: var(--s2);
+  z-index: 3;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  margin: var(--s2) var(--s5) 0;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.page-notice .notice-text {
+  flex: 1 1 0;
+  overflow-wrap: anywhere;
 }
 
 /* Tones of a status line under a label. */

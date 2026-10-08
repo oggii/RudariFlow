@@ -3,12 +3,15 @@
 // may run, and what Home's heading says meanwhile. Pure
 // (tests/unit/setup.test.ts); src/home.ts shows the steps.
 import { homeTitle, statusText, type SpeechStatus, type Status } from "./status.ts";
+import { sizeText } from "./size.ts";
 
 export interface SetupInput {
   /** null until the backend answered. */
   speech: SpeechStatus | null;
   /** Microphones Windows lists; null until known. */
   microphones: number | null;
+  /** Dictations in the history; null until it was read. */
+  history: number | null;
   /** The selected AI model is downloaded. */
   aiDownloaded: boolean;
   /** The user closed the optional AI cleanup card. */
@@ -16,8 +19,18 @@ export interface SetupInput {
 }
 
 export interface Setup {
-  /** Home shows the setup steps instead of the daily view. */
+  /** The backend has answered: the speech model's state, the microphones and
+   *  the history are known. Until then Home shows neither the steps nor the
+   *  daily view (it would show one and then flip to the other). */
+  known: boolean;
+  /** Home shows the setup steps above the daily view's list. */
   needed: boolean;
+  /** A PC that has never dictated: no speech model for the local engine and
+   *  an empty history. Only this is welcomed, and only this opens on Home
+   *  whatever page the window was left on. Someone whose only microphone is
+   *  unplugged today, whose model file is gone or whose cloud key was
+   *  cleared is no newcomer. */
+  firstRun: boolean;
   /** Step 1: a microphone is there. */
   microphone: boolean;
   /** Step 2: a speech model is there (or the cloud engine has its key). */
@@ -30,10 +43,11 @@ export interface Setup {
 export function setup(input: SetupInput): Setup {
   const s = input.speech;
   // Nothing is shown as missing before the backend answered.
-  if (!s || input.microphones === null) return { needed: false, microphone: true, model: true, aiCard: false };
+  if (!s || input.microphones === null || input.history === null) return { known: false, needed: false, firstRun: false, microphone: true, model: true, aiCard: false };
   const microphone = input.microphones > 0;
-  const model = s.engine === "cloud" ? s.cloudKey : s.downloaded;
-  return { needed: !(microphone && model), microphone, model, aiCard: !input.aiDownloaded && !input.aiDismissed };
+  const cloud = s.engine === "cloud";
+  const model = cloud ? s.cloudKey : s.downloaded;
+  return { known: true, needed: !(microphone && model), firstRun: !model && !cloud && input.history === 0, microphone, model, aiCard: !input.aiDownloaded && !input.aiDismissed };
 }
 
 /** A graphics card as `detect_gpus` lists it. */
@@ -70,12 +84,6 @@ export function recommend(gpus: Gpu[]): Recommendation {
   };
 }
 
-/** A file size in words: "870 MB", "5.0 GB". What would round to "1000 MB" is "1.0 GB". */
-export function sizeText(bytes: number): string {
-  const mb = Math.max(1, Math.round(bytes / 1e6));
-  return mb >= 1000 ? `${(bytes / 1e9).toFixed(1)} GB` : `${mb} MB`;
-}
-
 /** What a download reports while it runs. */
 export interface DownloadProgress {
   downloaded: number;
@@ -93,7 +101,7 @@ export interface DownloadProgress {
 export function progressWords(p: DownloadProgress, shown: string, said: string): { percent: number; shown: string; said: string } {
   const percent = Math.max(0, Math.min(100, Math.round(p.percent) || 0));
   if (p.total > 0) {
-    const fill = (text: string) => text.replace("{percent}", String(percent)).replace("{done}", sizeText(p.downloaded)).replace("{total}", sizeText(p.total));
+    const fill = (text: string) => text.replace("{percent}", () => String(percent)).replace("{done}", () => sizeText(p.downloaded)).replace("{total}", () => sizeText(p.total));
     return { percent, shown: fill(shown), said: fill(said) };
   }
   const alone = p.downloaded > 0 ? sizeText(p.downloaded) : `${percent} %`;
@@ -101,14 +109,15 @@ export function progressWords(p: DownloadProgress, shown: string, said: string):
 }
 
 /** What is said of a download that did not finish: `sentence` names the
- *  model ("{model}"), and where the backend gave a reason it follows in
- *  `because` ("{reason}"), ended like a sentence. The sentence alone advises
- *  to check the connection, which is wrong for a full disk: the reason says
- *  which it was. It is the backend's own wording. */
-export function failureWords(sentence: string, because: string, model: string, reason: string): string {
+ *  model ("{model}"). Where the backend gave a reason it follows in
+ *  `because` ("{reason}"), ended like a sentence; it is the backend's own
+ *  wording. Only where no reason is known does `advice` follow instead
+ *  ("Check your internet connection and try again."): beside "There is not
+ *  enough space on the disk" that advice was the wrong one. */
+export function failureWords(sentence: string, advice: string, because: string, model: string, reason: string): string {
   const said = sentence.replace("{model}", () => model);
   const why = reason.trim();
-  if (!why) return said;
+  if (!why) return `${said} ${advice}`.trim();
   return `${said} ${because.replace("{reason}", () => (/[.!?)]$/.test(why) ? why : `${why}.`))}`;
 }
 
@@ -122,14 +131,18 @@ export interface Header {
 }
 
 /** The heading and the pill never say the same thing twice. Beside the
- *  welcome (a PC without a speech model) the pill is the short state, "Setup
- *  needed" or the download's percent: the steps below say what is missing.
- *  Under the plain heading "Setup needed" (a microphone that was unplugged
- *  later, a cloud key that is gone, a model that did not load) it is only
- *  the reason. In every other state it is the status as the sidebar has it. */
-export function header(now: Status, s: Setup, cloud: boolean): Header {
+ *  welcome (a PC that has never dictated, `firstRun`) the pill is the short
+ *  state, "Setup needed" or the download's percent: the steps below say what
+ *  is missing. Under the plain heading "Setup needed" (a microphone that was
+ *  unplugged later, a model file or a cloud key that is gone, a model that
+ *  did not load) it is only the reason. In every other state it is the
+ *  status as the sidebar has it. Before Home knows which of its two views it
+ *  shows (`known`), the heading is the neutral "Getting ready…". */
+export function header(now: Status, s: Setup): Header {
   const full = statusText(now);
-  if (s.needed && !s.model && !cloud) return { title: "setup_title", pill: now.kind === "setup" ? "home_title_setup" : full.key, n: full.n };
+  // Not known yet: neither "Ready" nor what is missing, only what really runs (a dictation, a download).
+  if (!s.known) return { title: "home_title_loading", pill: now.kind === "ready" || now.kind === "setup" ? "status_loading" : full.key, n: full.n };
+  if (s.firstRun) return { title: "setup_title", pill: now.kind === "setup" ? "home_title_setup" : full.key, n: full.n };
   const title = homeTitle(now);
   if (now.kind === "setup") return { title, pill: `home_reason_${now.missing[0]}`, n: "" };
   return { title, pill: full.key, n: full.n };

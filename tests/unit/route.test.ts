@@ -9,7 +9,7 @@ test("an unknown place falls back to Home and the first tab", () => {
   assert.deepEqual(route("files", 7), { section: "files", tab: "dictation" });
 });
 
-test("the window opens where it was left, on Home while the setup is not done", () => {
+test("the window opens where it was left, on Home for a first run", () => {
   const left = route("settings", "general");
   assert.deepEqual(startRoute(left, false), left);
   assert.deepEqual(startRoute(left, true), { section: "home", tab: "general" });

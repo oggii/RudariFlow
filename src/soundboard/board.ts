@@ -6,10 +6,10 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
-import { FailureSaid } from "../confirm-delete";
+import { deleteButton, FailureSaid } from "../confirm-delete";
 import { t } from "../i18n";
 import { hotkeyLabel, startCapture } from "../hotkey-capture";
-import { deleteButton } from "../confirm-delete";
+import { matches } from "../search.ts";
 import { prefs, roomBeside, updatePrefs, WIDE } from "../shell";
 import {
   api,
@@ -45,9 +45,13 @@ export interface BoardOptions {
 }
 
 export interface BoardView {
-  /** Load the state again and redraw (also after a language change). */
+  /** Load the state again and redraw. */
   refresh(): Promise<void>;
-  /** The tab is shown: files dropped on the window are added. */
+  /** Draw the board again from the state it has, in the language of now:
+   *  nothing is asked. With `forget`, the notice line is emptied (it was
+   *  written in the Display Language of its moment). */
+  redraw(forget?: boolean): void;
+  /** The page is shown: files dropped on the window are added. */
   setActive(active: boolean): void;
 }
 
@@ -87,14 +91,15 @@ function clock(ms: number): string {
 }
 
 function problemText(p: Problem): string {
+  // A device's name and the backend's detail are text, never a pattern ("$&").
   return t(`sb_err_${p.reason}`)
-    .replace("{device}", t(`sb_dev_${p.device}`))
-    .replace("{name}", p.name)
-    .replace("{detail}", p.detail);
+    .replace("{device}", () => t(`sb_dev_${p.device}`))
+    .replace("{name}", () => p.name)
+    .replace("{detail}", () => p.detail);
 }
 
 function statusText(s: Status): string {
-  if (s.state === "on") return t("sb_status_on").replace("{cable}", s.cable);
+  if (s.state === "on") return t("sb_status_on").replace("{cable}", () => s.cable);
   if (s.state === "error") return problemText(s.problem);
   return t("sb_status_off");
 }
@@ -104,7 +109,7 @@ function reasonText(error: string): string {
   const [code, ...rest] = error.split(": ");
   const key = `sb_reason_${code}`;
   const text = t(key);
-  return text === key ? error : text.replace("{detail}", rest.join(": "));
+  return text === key ? error : text.replace("{detail}", () => rest.join(": "));
 }
 
 function hintSeen(): boolean {
@@ -143,17 +148,27 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
   let appliedSeq = 0;
   let notice = { text: "", tone: "" };
   let listBox: HTMLElement | null = null;
+  /** The refresh that is out; null: none. */
+  let refreshing: Promise<void> | null = null;
   root.classList.add("sb");
 
   async function refresh() {
     const seq = ++refreshSeq;
-    const fresh = await api.state();
-    if (!devices) devices = await api.devices().catch(() => null);
-    // A newer refresh already drew; this answer is older.
-    if (seq < appliedSeq) return;
-    appliedSeq = seq;
-    state = fresh;
-    render();
+    const run = (async () => {
+      const fresh = await api.state();
+      if (!devices) devices = await api.devices().catch(() => null);
+      // A newer refresh already drew; this answer is older.
+      if (seq < appliedSeq) return;
+      appliedSeq = seq;
+      state = fresh;
+      render();
+    })();
+    refreshing = run;
+    try {
+      await run;
+    } finally {
+      if (refreshing === run) refreshing = null;
+    }
   }
 
   function render() {
@@ -340,6 +355,8 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     const wrap = el("label", "switch");
     const input = el("input");
     input.type = "checkbox";
+    // A switch is a switch to a screen reader, not a checkbox (src/rows.ts does the same for Settings).
+    input.setAttribute("role", "switch");
     input.checked = checked;
     input.dataset.key = key;
     input.setAttribute("aria-label", label);
@@ -464,7 +481,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       const saved = s.board.devices[kind];
       const names = (kind === "microphone" ? devices?.inputs : devices?.outputs) ?? [];
       const auto = devices?.automatic[kind];
-      select.append(option("", auto ? t("sb_auto").replace("{name}", auto) : t("sb_auto_none")));
+      select.append(option("", auto ? t("sb_auto").replace("{name}", () => auto) : t("sb_auto_none")));
       for (const name of names) select.append(option(name, name));
       if (saved && !names.includes(saved)) select.append(option(saved, `${saved} (${t("mic_not_connected")})`));
       select.value = saved;
@@ -607,8 +624,8 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       box.append(el("p", "empty-state", t("sb_empty")));
       return;
     }
-    const q = query.trim().toLowerCase();
-    const shown = s.board.sounds.filter((x) => (!category || x.category === category) && (!q || x.name.toLowerCase().includes(q)));
+    // The search of every list (src/search.ts): each word, in any order, with or without accents.
+    const shown = s.board.sounds.filter((x) => (!category || x.category === category) && matches([x.name], query));
     if (shown.length === 0) box.append(el("p", "empty-state", t("sb_empty_filter")));
     for (const sound of shown) box.append(soundRow(sound, s));
   }
@@ -727,7 +744,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
 
   async function addPaths(paths: string[]) {
     if (paths.length === 0) return;
-    setNotice(paths.length === 1 ? t("sb_adding_one") : t("sb_adding").replace("{n}", String(paths.length)));
+    setNotice(paths.length === 1 ? t("sb_adding_one") : t("sb_adding").replace("{n}", () => String(paths.length)));
     let results: AddResult[];
     try {
       results = await api.add(paths);
@@ -738,7 +755,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     const failed = results.filter((r) => r.error);
     const added = results.length - failed.length;
     const lines: string[] = [];
-    if (added > 0) lines.push(added === 1 ? t("sb_added_one") : t("sb_added").replace("{n}", String(added)));
+    if (added > 0) lines.push(added === 1 ? t("sb_added_one") : t("sb_added").replace("{n}", () => String(added)));
     for (const f of failed) lines.push(`${f.name}: ${reasonText(f.error ?? "")}`);
     setNotice(lines.join("\n"), failed.length > 0 ? "error" : "ok");
   }
@@ -783,9 +800,16 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
 
   return {
     refresh,
+    redraw(forget = false) {
+      if (forget) notice = { text: "", tone: "" };
+      render();
+    },
     setActive(on: boolean) {
       active = on;
-      if (on) void refresh().catch(console.error);
+      // The board is asked for when it is mounted: shown right after that
+      // (the window opens on it), the answer that is on its way is the one
+      // to wait for, not a second question.
+      if (on && !refreshing) void refresh().catch(console.error);
     },
   };
 }

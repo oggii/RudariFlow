@@ -9,7 +9,7 @@ function memory(initial: Record<string, string> = {}): Store & { data: Record<st
 
 test("what was saved comes back", () => {
   const store = memory();
-  const prefs = { ...defaultPrefs(), section: "settings", tab: "models", folds: { models: true, ai: false }, panels: { narrow: true }, aiCardDismissed: true };
+  const prefs = { ...defaultPrefs(), section: "settings", tab: "models", folds: { models: true, ai: false }, panels: { narrow: true }, aiCardDismissed: true, lang: "de" };
   assert.equal(savePrefs(store, prefs), true);
   assert.deepEqual(loadPrefs(store), prefs);
   assert.ok(PREFS_KEY in store.data, "one key holds everything");
@@ -20,8 +20,19 @@ test("nothing saved, damaged JSON or strange values give the defaults", () => {
   assert.deepEqual(loadPrefs(null), defaultPrefs());
   assert.deepEqual(loadPrefs(memory({ [PREFS_KEY]: "{ not json" })), defaultPrefs());
   assert.deepEqual(loadPrefs(memory({ [PREFS_KEY]: "[1,2]" })).section, "home");
-  const odd = loadPrefs(memory({ [PREFS_KEY]: JSON.stringify({ section: 5, tab: "general", folds: { models: "yes", ai: true }, aiCardDismissed: "true" }) }));
+  const odd = loadPrefs(memory({ [PREFS_KEY]: JSON.stringify({ section: 5, tab: "general", folds: { models: "yes", ai: true }, aiCardDismissed: "true", lang: 7 }) }));
   assert.deepEqual(odd, { ...defaultPrefs(), tab: "general", folds: { ai: true } });
+});
+
+test("the language the window was last shown in is remembered, for the next start's first moment", () => {
+  const store = memory();
+  assert.equal(loadPrefs(store).lang, "", "not known before the first settings were read");
+  const now = changePrefs(store, loadPrefs(store), (p) => (p.lang = "de"));
+  assert.equal(now.lang, "de");
+  assert.equal(loadPrefs(store).lang, "de");
+  // Whatever else is remembered stays.
+  changePrefs(store, loadPrefs(store), (p) => (p.section = "files"));
+  assert.deepEqual(loadPrefs(store), { ...defaultPrefs(), section: "files", lang: "de" });
 });
 
 test("a store that refuses does not break the window", () => {

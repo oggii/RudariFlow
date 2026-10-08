@@ -89,11 +89,11 @@ export function go(name: string) {
   show(resolve(name, current), true);
 }
 
-/** Once, when the first status is known: Home while the setup is not done,
- *  unless the user has gone somewhere already. */
-export function startOn(setupNeeded: boolean) {
+/** Once, when the first status is known: Home for a first run, unless the
+ *  user has gone somewhere already. */
+export function startOn(firstRun: boolean) {
   if (chosen) return;
-  const start = startRoute(current, setupNeeded);
+  const start = startRoute(current, firstRun);
   if (start.section !== current.section) show(start, false);
 }
 

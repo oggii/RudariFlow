@@ -16,12 +16,16 @@ function changed() {
   for (const fn of listeners) fn();
 }
 
-/** A download's progress in percent; null when it is over (done or failed). */
+/** A download's progress in percent; null when it is over (done or failed).
+ *  Kept as a whole percent: a download reports about ten times a second, and
+ *  every listener (the status, and with it all of Home) draws again only
+ *  when the number it shows has changed. */
 export function setDownload(kind: DownloadKind, percent: number | null) {
   const before = downloads.get(kind) ?? null;
-  if (percent === null) downloads.delete(kind);
-  else downloads.set(kind, percent);
-  if (before !== percent) changed();
+  const whole = percent === null ? null : Math.max(0, Math.min(100, Math.round(percent) || 0));
+  if (whole === null) downloads.delete(kind);
+  else downloads.set(kind, whole);
+  if (before !== whole) changed();
 }
 
 export function setFileRunning(on: boolean) {

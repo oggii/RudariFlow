@@ -84,6 +84,17 @@
   display: contents;
 }
 
+/* While the setup steps show (src/home.ts, layout): of the daily view only
+   the recent dictations, under the steps and as wide as they are. The
+   controls are what the steps stand in for. */
+.home-grid.list-only {
+  max-width: 832px;
+}
+
+.home-grid.list-only > .home-col {
+  display: none;
+}
+
 /* A key that is not set reads "Not set · Set", not a key box; "Set" is
    what a click does. The words end where the key boxes above them end.
    While it listens for the key, or says why a key was refused, it is the
@@ -334,12 +345,23 @@
   cursor: default;
 }
 
-/* "Show all" starts at the rows' left edge. */
+/* "Show all" starts at the rows' left edge; the way to the list's setting
+   ends at their right edge, where Delete does. */
 .home-recent-foot {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--s2);
-  margin-left: calc(-1 * var(--s2));
+  margin: 0 calc(-1 * var(--s2));
   padding: var(--s1) 0;
+}
+
+#history-settings {
+  margin-left: auto;
+}
+
+/* "History is off. …" ends in the way to its setting. */
+#history-empty .link-btn {
+  font: inherit;
 }
 
 .home-recent-foot:not(:has(button:not(.hidden))) {

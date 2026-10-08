@@ -1,7 +1,9 @@
 // Home, the dictation page. The daily view: the hotkeys (set in place), the
 // quick switches (the same settings as in Settings, mirrored), what is
-// loaded, "add a word", and the recent dictations (src/history.ts). Before
-// the setup is done: the first-run steps instead.
+// loaded, "add a word", and the recent dictations (src/history.ts). While
+// something a dictation needs is missing: the setup steps in the controls'
+// place, and under them the recent dictations of someone who has dictated
+// before (the list is nowhere else in the window).
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -12,10 +14,17 @@ import { prefs, reveal, roomBeside, updatePrefs, WIDE, WIDER } from "./shell";
 import { downloadFailure, showProgress, type DownloadProgress } from "./progress";
 import { currentSpeech, currentStatus, onStatus } from "./status-view";
 import { type Status } from "./status.ts";
-import { header, idleFor, meterMay, meterStep, modelStep, recommend, setup, sizeText, METER_SILENT_MS, type Gpu, type MeterNow, type Recommendation, type Setup } from "./setup.ts";
+import { header, idleFor, meterMay, meterStep, modelStep, recommend, setup, METER_SILENT_MS, type Gpu, type MeterNow, type Recommendation, type Setup } from "./setup.ts";
 import { modelLabel, speechModel } from "./models.ts";
+import { sizeText } from "./size.ts";
+import { askOnce } from "./start";
 
 export interface HomeHost {
+  /** The settings were read from the backend. Until then Home shows its
+   *  heading alone: every key, switch and choice on it is one of them. */
+  loaded(): boolean;
+  /** Dictations in the history; null until it was read. */
+  history(): number | null;
   /** "push-to-talk" or "toggle". */
   recordingMode(): string;
   /** The dictation hotkey as it is shown ("Ctrl+Shift+Space"). */
@@ -37,7 +46,7 @@ export interface HomeHost {
   ai(): { name: string; state: string; tone: string; kind: string; downloaded: boolean; failed: boolean; retry: (() => void) | null };
   /** An AI model's name and size (the setup suggests one for this PC). */
   aiModel(id: string): { name: string; bytes: number } | null;
-  /** Add words to the dictionary; how many were new. */
+  /** Add words to the dictionary; how many were new. -1: they could not be saved (the page has said so). */
   addWords(text: string): Promise<number>;
   /** Choose this speech model, download it if it is missing, and save the choice. True when it is there and saved. */
   setUpSpeech(id: string): Promise<boolean>;
@@ -52,6 +61,8 @@ const pill = $("home-status");
 const pillText = $("home-status-text");
 const how = $("home-how");
 const notice = $("home-notice");
+/** Read out, not shown: the notice's sentence, written when the notice shows. */
+const live = $("home-live");
 const daily = $("home-daily");
 const recent = $("home-recent");
 const setupBox = $("home-setup");
@@ -61,8 +72,10 @@ let host: HomeHost;
 let syncs: (() => void)[] = [];
 /** The models to suggest for this PC; null until its graphics cards are known. */
 let suggestion: Recommendation | null = null;
-/** The layout the cards are in: two columns or one; null before the first look. */
-let laidOutWide: boolean | null = null;
+/** The layout the cards are in: "wide" (two columns), "narrow" (one), or
+ *  "list" (the steps show: of the daily view only the recent dictations);
+ *  null before the first look. */
+let laidOut: "wide" | "narrow" | "list" | null = null;
 
 // ── Header ────────────────────────────────────────────
 
@@ -76,17 +89,23 @@ function renderHow() {
 
 function renderHeader(now: Status, s: Setup) {
   // What the heading and the pill say: src/setup.ts (the two never say the same thing).
-  const said = header(now, s, currentSpeech()?.engine === "cloud");
+  const said = header(now, s);
   title.removeAttribute("data-i18n");
   const heading = t(said.title);
   if (title.textContent !== heading) title.textContent = heading;
-  pill.dataset.tone = now.tone;
-  const words = t(said.pill).replace("{n}", said.n);
+  // "Loading models…" has its own colour, whatever the status behind it is.
+  pill.dataset.tone = said.pill === "status_loading" ? "busy" : now.tone;
+  const words = t(said.pill).replace("{n}", () => said.n);
   if (pillText.textContent !== words) pillText.textContent = words;
-  // The steps say how to dictate (step 3).
-  how.classList.toggle("hidden", s.needed);
-  // The speech model is there and did not load: say what helps.
-  notice.classList.toggle("hidden", !now.missing.includes("load"));
+  // The steps say how to dictate (step 3); before Home knows what it shows, nothing does.
+  how.classList.toggle("hidden", s.needed || !s.known);
+  // The speech model is there and did not load: say what helps. The
+  // sentence is also written into a line that is read out: a notice that
+  // is only un-hidden changes no text, and a screen reader may say nothing.
+  const failed = now.missing.includes("load");
+  notice.classList.toggle("hidden", !failed);
+  const sentence = failed ? t("home_load_failed") : "";
+  if (live.textContent !== sentence) live.textContent = sentence;
 }
 
 // ── What is loaded ────────────────────────────────────
@@ -178,8 +197,16 @@ let suggestionBlind = false;
 /** How long the steps wait for the graphics cards before they suggest what fits every PC. */
 const GPU_WAIT_MS = 5000;
 
+/** Which of its views Home shows. Not known before the settings are: the
+ *  steps and the daily view are both made of them. */
 function currentSetup(): Setup {
-  return setup({ speech: currentSpeech(), microphones: host.microphones(), aiDownloaded: host.ai().downloaded, aiDismissed: prefs.aiCardDismissed });
+  return setup({
+    speech: host.loaded() ? currentSpeech() : null,
+    microphones: host.microphones(),
+    history: host.history(),
+    aiDownloaded: host.ai().downloaded,
+    aiDismissed: prefs.aiCardDismissed,
+  });
 }
 
 /** A speech model as a step names it: "Large v3 Turbo q8 · 870 MB" with its
@@ -268,7 +295,12 @@ function renderSetup() {
   }
 
   setupBox.classList.toggle("hidden", !s.needed);
-  daily.classList.toggle("hidden", s.needed);
+  // Under the steps the daily view is its list alone, and only where there
+  // is one: the recent dictations with their search and actions are nowhere
+  // else in the window. A PC that has never dictated sees the steps alone.
+  const listOnly = s.needed && (host.history() ?? 0) > 0;
+  daily.classList.toggle("hidden", !s.known || (s.needed && !listOnly));
+  layout(listOnly);
   syncMeter(s);
 
   // Step 2's button is the page's one primary button while there is something to press; then step 1's.
@@ -366,7 +398,7 @@ function renderSetup() {
     // A download of this model that was started in Settings and did not
     // finish is the same failure here, for as long as Settings says so.
     const failed = aiFailed || (!busy && host.ai().failed && host.ai().name === ai.name);
-    const fill = (text: string) => text.replace("{model}", () => whole(ai.name)).replace("{size}", whole(sizeText(ai.bytes)));
+    const fill = (text: string) => text.replace("{model}", () => whole(ai.name)).replace("{size}", () => whole(sizeText(ai.bytes)));
     // The card has one height in every state (styles/home.css): its line
     // keeps the room of the text it rests on, and whatever it says meanwhile
     // is shorter than that text.
@@ -381,10 +413,10 @@ function renderSetup() {
     const download = $("setup-ai-download");
     act(download, busy ? t("setup_downloading") : failed ? t("retry") : t("download"), false, busy, name);
     widest(download, [t("download"), t("setup_downloading"), t("retry")]);
-    // "Not now" would not be true of a download that goes on: then the card can be hidden.
-    const dismiss = aiSetting ? t("setup_ai_hide") : t("setup_ai_dismiss");
+    // "Hide", in every state: the card does not come back ("Not now" promised
+    // a later). Where the model can be had later is said in the card's text.
+    const dismiss = t("setup_ai_hide");
     if ($("setup-ai-dismiss").textContent !== dismiss) $("setup-ai-dismiss").textContent = dismiss;
-    widest($("setup-ai-dismiss"), [t("setup_ai_dismiss"), t("setup_ai_hide")]);
     progress("setup-ai", busy ? (aiProgress ?? { downloaded: 0, total: 0, percent: 0 }) : null);
   }
 
@@ -654,22 +686,41 @@ async function watch() {
 
 /** Two columns from 900 px of content; in one column the recent dictations
  *  come right after the quick switches. The card is moved, so the Tab order
- *  is the order on the page in both. From 1600 px the controls are two
- *  columns themselves (styles/home.css), so a large window is filled.
+ *  is the order on the page in both (with CSS `order` the page would show
+ *  one order and Tab would go another: the list after the quick switches to
+ *  the eye, after "add a word" to the keyboard). From 1600 px the controls
+ *  are two columns themselves (styles/home.css), so a large window is filled.
+ *
+ *  While the setup steps show (`listOnly`), the list is the daily view's
+ *  only card: it stands under the steps at the page's width, and the
+ *  controls, which the steps replace, are not shown.
  *
  *  The width is the one with the scrollbar's room in it. `clientWidth`
  *  loses that room when the page gets a scrollbar: a layout that decides on
  *  it and is higher in the wider form brings its own scrollbar, loses the
  *  width, steps back, loses the scrollbar, and so on in every frame. */
-function layout() {
+function layout(listOnly = laidOut === "list") {
   const width = roomBeside();
-  const wide = width >= WIDE;
-  daily.classList.toggle("wider", width >= WIDER);
-  if (wide === laidOutWide) return;
-  laidOutWide = wide;
-  daily.classList.toggle("wide", wide);
-  if (wide) daily.append(recent);
-  else $("home-switches").after(recent);
+  const next = listOnly ? "list" : width >= WIDE ? "wide" : "narrow";
+  daily.classList.toggle("wider", !listOnly && width >= WIDER);
+  if (next === laidOut) return;
+  laidOut = next;
+  daily.classList.toggle("wide", next === "wide");
+  daily.classList.toggle("list-only", listOnly);
+  const into = next === "narrow" ? $("home-switches") : $("home-controls");
+  if (recent.previousElementSibling === into) return;
+  // A node that is moved loses the keyboard focus: whoever was in the list
+  // (its search field, a dictation's Copy) when the window crossed the step
+  // stood on nothing afterwards, and the next Tab started at the top of the
+  // page. The focus goes back where it was, with the field's selection.
+  const at = document.activeElement;
+  const held = at instanceof HTMLElement && recent.contains(at) ? at : null;
+  const field = held instanceof HTMLInputElement ? held : null;
+  const selection = field ? ([field.selectionStart, field.selectionEnd, field.selectionDirection] as const) : null;
+  into.after(recent);
+  if (!held) return;
+  held.focus({ preventScroll: true });
+  if (field && selection && selection[0] !== null && selection[1] !== null) field.setSelectionRange(selection[0], selection[1], selection[2] ?? undefined);
 }
 
 // ── Wiring ────────────────────────────────────────────
@@ -677,12 +728,22 @@ function layout() {
 /** Draw Home again from the settings and the status (after a load, a save, a language change). */
 export function renderHome() {
   if (!host) return;
-  for (const sync of syncs) sync();
   const now = currentStatus();
   renderHeader(now, currentSetup());
+  // The settings are not read yet: the heading alone. Every key, switch and
+  // choice on this page is one of them, and neither view shows before they
+  // are known (index.html has both hidden).
+  if (!host.loaded()) return;
+  for (const sync of syncs) sync();
   renderHow();
   renderLoaded();
   renderSetup();
+}
+
+/** The Display Language changed: what this page wrote once, in the old one,
+ *  and does not draw from data ("Added …" under the word field) is over. */
+export function forgetHomeSaid() {
+  $("home-word-status").textContent = "";
 }
 
 export function initHome(h: HomeHost) {
@@ -716,8 +777,10 @@ export function initHome(h: HomeHost) {
   wordForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const word = wordInput.value.trim();
-    if (!word) return;
+    if (!word || !host.loaded()) return;
     const added = await host.addWords(word);
+    // Not saved: the page has said why, and the word stays in the field.
+    if (added < 0) return void ($("home-word-status").textContent = "");
     $("home-word-status").textContent = added > 0 ? t("home_word_added").replace("{word}", () => word) : t("home_word_known");
     wordInput.value = "";
     wordInput.focus();
@@ -835,7 +898,8 @@ export function initHome(h: HomeHost) {
     renderSetup();
   };
   const waited = window.setTimeout(() => suggest(null), GPU_WAIT_MS);
-  invoke<Gpu[]>("detect_gpus")
+  // Settings > Models & GPU lists the cards too: they are looked at once (src/start.ts).
+  askOnce<Gpu[]>("detect_gpus")
     .then(suggest)
     .catch((e) => {
       console.error("detect_gpus failed:", e);
@@ -844,7 +908,7 @@ export function initHome(h: HomeHost) {
     })
     .finally(() => window.clearTimeout(waited));
 
-  new ResizeObserver(layout).observe($("content"));
+  new ResizeObserver(() => layout()).observe($("content"));
   layout();
   onStatus(renderHome);
   renderHome();

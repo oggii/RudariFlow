@@ -5,13 +5,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { t } from "./i18n";
 import { activity, onActivity } from "./activity";
+import { stateOnce } from "./start";
 import { status, statusSaid, statusText, type SpeechStatus, type Status, type StatusInput } from "./status.ts";
 
 export interface StatusHost {
   /** Microphones Windows lists; null until they were listed. */
   microphones(): number | null;
-  /** AI cleanup is on and its model is loading / was unloaded to free the GPU. */
-  ai(): { loading: boolean; freed: boolean };
+  /** AI cleanup is on and its model is loading / was unloaded to free the GPU;
+   *  `known`: the AI's state was asked for and answered. */
+  ai(): { loading: boolean; freed: boolean; known: boolean };
 }
 
 const pill = document.getElementById("status-indicator")!;
@@ -30,8 +32,8 @@ let gameFreed = false;
 const events = { speech: 0, dictation: 0, meeting: 0, game: 0 };
 const listeners: ((now: Status) => void)[] = [];
 
-export function statusInput(): StatusInput {
-  const ai = host?.ai() ?? { loading: false, freed: false };
+function statusInput(): StatusInput {
+  const ai = host?.ai() ?? { loading: false, freed: false, known: false };
   const running = activity();
   return {
     speech,
@@ -43,6 +45,7 @@ export function statusInput(): StatusInput {
     fileRunning: running.fileRunning,
     aiLoading: ai.loading,
     aiFreed: ai.freed,
+    aiKnown: ai.known,
     gameFreed,
   };
 }
@@ -86,7 +89,7 @@ export function renderStatus() {
   // Not a data-i18n text: "{n}" is filled in, and a language change calls this again.
   text.removeAttribute("data-i18n");
   // Only what differs is written: a download reports far more often than its percent changes.
-  const words = t(key).replace("{n}", n);
+  const words = t(key).replace("{n}", () => n);
   if (text.textContent !== words) write(words, now.kind === "setup");
   marker.classList.toggle("hidden", now.marker === null);
   if (now.marker) {
@@ -116,6 +119,9 @@ export async function refreshSpeech() {
   renderStatus();
 }
 
+/** Listen for what the backend reports, and ask for how things stand now:
+ *  the four questions go out together, and the status is drawn once, from
+ *  all four answers. The listeners are registered before this returns. */
 export async function initStatus(h: StatusHost) {
   host = h;
   onActivity(renderStatus);
@@ -142,13 +148,20 @@ export async function initStatus(h: StatusHost) {
   // Whatever happened while the window was away.
   window.addEventListener("focus", () => void refreshSpeech());
   const before = { ...events };
-  const [state, meeting, game] = await Promise.all([
+  type Meeting = { recording: unknown | null };
+  // The Meetings page and Settings ask two of these as well: asked once (src/start.ts).
+  const [state, meeting, game, said] = await Promise.all([
     invoke<string>("get_recording_state").catch(() => "Ready"),
-    invoke<{ status: { recording: unknown | null } }>("meeting_state").catch(() => null),
-    invoke<boolean>("game_free_state").catch(() => false),
+    stateOnce<{ status: Meeting }, Meeting>("meeting_state", "meeting-status").catch(() => null),
+    stateOnce<boolean, boolean>("game_free_state", "game-free").catch(() => null),
+    invoke<SpeechStatus>("speech_status").catch((e) => {
+      console.error("speech_status failed:", e);
+      return null;
+    }),
   ]);
   if (events.dictation === before.dictation) dictation = state;
-  if (events.meeting === before.meeting) meetingRecording = !!meeting && meeting.status.recording !== null;
-  if (events.game === before.game) gameFreed = game;
-  await refreshSpeech();
+  if (meeting && events.meeting === before.meeting) meetingRecording = (meeting.later()?.payload ?? meeting.answer.status).recording !== null;
+  if (game && events.game === before.game) gameFreed = game.later()?.payload ?? game.answer;
+  if (said && events.speech === before.speech) speech = said;
+  renderStatus();
 }

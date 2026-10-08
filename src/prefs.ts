@@ -1,5 +1,6 @@
 // What the window remembers between starts: the section and Settings tab it
-// was left on, which Advanced folds are open, and two dismissals. This is
+// was left on, which Advanced folds are open, two dismissals, and the
+// language it was last shown in. This is
 // view state, kept in the webview's localStorage under one key; settings
 // stay in config.json. Pure but for the store it is handed
 // (tests/unit/prefs.test.ts).
@@ -18,12 +19,16 @@ export interface Prefs {
   panels: Record<string, boolean>;
   /** The optional "AI cleanup" card on Home was closed. */
   aiCardDismissed: boolean;
+  /** The Display Language the window was last shown in ("" before the first
+   *  settings were read): the next start is in it from its first moment,
+   *  before the backend has answered. The setting itself is in config.json. */
+  lang: string;
 }
 
 export const PREFS_KEY = "rudariflow-ui";
 
 export function defaultPrefs(): Prefs {
-  return { section: "home", tab: "dictation", folds: {}, panels: {}, aiCardDismissed: false };
+  return { section: "home", tab: "dictation", folds: {}, panels: {}, aiCardDismissed: false, lang: "" };
 }
 
 const flags = (value: unknown): Record<string, boolean> => {
@@ -46,6 +51,7 @@ export function loadPrefs(store: Store | null): Prefs {
     prefs.folds = flags(s.folds);
     prefs.panels = flags(s.panels);
     prefs.aiCardDismissed = s.aiCardDismissed === true;
+    if (typeof s.lang === "string") prefs.lang = s.lang;
   } catch {
     // A private window or damaged JSON: the defaults.
   }

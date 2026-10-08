@@ -13,8 +13,14 @@ export interface Replacement {
 
 export interface ReplacementsHost {
   replacements(): Replacement[];
-  /** Save the settings (they read the rows through `readReplacements`). */
-  save(): Promise<void>;
+  /** Save the settings (they read the rows through `readReplacements`). A
+   *  save the backend refuses is said in the page and the rows go back to
+   *  what is saved (src/main.ts); false then. */
+  save(): Promise<boolean>;
+  /** The same save for a caller that says the failure itself (a row's Delete): it throws. */
+  saveStrict(): Promise<void>;
+  /** The settings were read from the backend: the rows on the page are the saved ones. */
+  loaded(): boolean;
 }
 
 const list = document.getElementById("replacement-list")!;
@@ -98,13 +104,13 @@ function addRow(r: Replacement): HTMLElement {
       row.remove();
       filter();
       try {
-        await host.save();
+        await host.saveStrict();
         forgetDelete(id);
       } catch (err) {
         list.insertBefore(row, next);
         filter();
         // The settings in memory hold the row again (a save reads the page).
-        void host.save().catch(() => {});
+        void host.saveStrict().catch(() => {});
         throw err;
       }
     },
@@ -135,9 +141,11 @@ export function initReplacements(h: ReplacementsHost) {
     filter();
     const all = rowElements();
     const found = all.filter((row) => !row.classList.contains("hidden")).length;
-    sayFound(live, search.value.trim() === "" ? "" : found === 0 ? t("replacement_no_match") : t("replacement_found").replace("{found}", String(found)).replace("{n}", String(all.length)));
+    sayFound(live, search.value.trim() === "" ? "" : found === 0 ? t("replacement_no_match") : t("replacement_found").replace("{found}", () => String(found)).replace("{n}", () => String(all.length)));
   });
   addButton.addEventListener("click", () => {
+    // The rows on the page are what is saved: none is added before the saved ones are drawn.
+    if (!host.loaded()) return;
     // A search that is on would hide the new row once it has its text (at
     // the next delete or add, which look at every row again): the search ends.
     if (search.value !== "") {

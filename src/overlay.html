@@ -436,6 +436,8 @@
       }
       function applyLanguage(lang) {
         uiLanguage = String(lang || "");
+        // The document says which language it is in, as the main window does: a screen reader pronounces by it.
+        document.documentElement.lang = pickLang();
         const cancel = document.getElementById("cancel");
         cancel.title = NOTICE_TEXT[pickLang()].cancel;
         cancel.setAttribute("aria-label", cancel.title);

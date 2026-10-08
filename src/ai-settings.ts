@@ -1,6 +1,6 @@
-// AI cleanup tab: model download, on/off, style, instructions, per-app rules
-// and a test box. Settings live on main.ts's settings object; this module
-// edits the AI fields and asks main.ts to save.
+// Settings > AI cleanup: model download, on/off, style, instructions, per-app
+// rules and a test box. Settings live on main.ts's settings object; this
+// module edits the AI fields and asks main.ts to save.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { t, getLang } from "./i18n";
@@ -8,14 +8,14 @@ import { populateLanguageSelect } from "./languages";
 import { downloadFailure, NOT_STARTED, showProgress, type DownloadProgress } from "./progress";
 import { onRoute } from "./shell";
 import { setDownload } from "./activity";
-import { sizeText } from "./setup.ts";
+import { sizeText } from "./size.ts";
 import { deleteButton, forgetDelete, nameDelete } from "./confirm-delete";
 
 export interface AppRule {
   app: string;
   instructions: string;
   off: boolean;
-  /** Whisper language in this app; "" uses the Engine setting. */
+  /** Whisper language in this app; "" uses the Language setting (Settings > Models & GPU). */
   language?: string;
 }
 
@@ -27,7 +27,7 @@ export interface AiFields {
   aiRules: AppRule[];
   aiOutputLanguage: string;
   editMode: boolean;
-  /** Whisper's language setting (Engine tab), for the auto-detect hint. */
+  /** Whisper's language setting (Settings > Models & GPU), for the auto-detect hint. */
   language: string;
 }
 
@@ -51,7 +51,7 @@ interface AiStatus {
   downloading: string | null;
   /** Unloaded by the Free GPU hotkey, for a game or when idle; the next dictation loads it. */
   gpuFreed: boolean;
-  /** Freed for a game (Engine tab): dictations run without AI cleanup until it ends. */
+  /** Freed for a game (Settings > Models & GPU): dictations run without AI cleanup until it ends. */
   gameFreed: boolean;
 }
 
@@ -64,7 +64,13 @@ interface Polished {
 
 export interface AiSettingsHost {
   settings(): AiFields;
-  save(): Promise<void>;
+  /** The settings were read from the backend: `settings()` has them. */
+  loaded(): boolean;
+  /** Save the settings. A save the backend refuses is said in the page and
+   *  the controls go back to what is saved (src/main.ts); false then. */
+  save(): Promise<boolean>;
+  /** The same save for a caller that says the failure itself (a rule's Delete): it throws. */
+  saveStrict(): Promise<void>;
   /** The AI's state was read again (for the status and Home). */
   changed?(): void;
 }
@@ -103,6 +109,11 @@ const testMeta = $("ai-test-meta");
 
 let host: AiSettingsHost;
 let status: AiStatus | null = null;
+/** The first question for the AI's state was answered, or it failed: the
+ *  status then no longer waits for it (src/status.ts, `aiKnown`). */
+let statusKnown = false;
+/** Numbers the questions for the AI's state: only the latest one's answer is drawn. */
+let statusAsked = 0;
 
 /** What the state line says, as a kind: Home shows the line only for some of them. */
 export type AiKind = "" | "not-installed" | "downloading" | "missing" | "off" | "loading" | "ready" | "failed" | "freed" | "starting";
@@ -152,9 +163,9 @@ const MODEL_NOTE: Record<string, string> = {
 };
 
 /** For the status: AI cleanup is on and its model is loading, or was unloaded to free the GPU. */
-export function aiActivity(): { loading: boolean; freed: boolean } {
-  if (!status || !host?.settings().aiCleanup || !selectedModel()?.downloaded) return { loading: false, freed: false };
-  return { loading: status.server.state === "loading", freed: status.gpuFreed && status.server.state === "stopped" };
+export function aiActivity(): { loading: boolean; freed: boolean; known: boolean } {
+  if (!status || !host?.loaded() || !host.settings().aiCleanup || !selectedModel()?.downloaded) return { loading: false, freed: false, known: statusKnown };
+  return { loading: status.server.state === "loading", freed: status.gpuFreed && status.server.state === "stopped", known: statusKnown };
 }
 
 /** For Home: the AI model in use, the state line as it reads in Settings (its text, tone and kind), whether
@@ -185,9 +196,11 @@ export function aiModelInfo(id: string): { name: string; bytes: number } | null 
 
 /** Home's setup card: choose this model, download it and turn AI cleanup on. True when it is on. */
 export async function setUpAi(id: string): Promise<boolean> {
+  if (!host.loaded()) return false;
   if (host.settings().aiModel !== id && status?.models.some((m) => m.id === id)) {
     host.settings().aiModel = id;
-    await host.save();
+    // Not saved: the choice is back on the saved model, and that one's download is not this card's to start.
+    if (!(await host.save())) return false;
     await refreshStatus();
   }
   if (!selectedModel()?.downloaded) await download();
@@ -195,16 +208,13 @@ export async function setUpAi(id: string): Promise<boolean> {
   host.settings().aiCleanup = true;
   toggle.checked = true;
   renderOutputSkip();
-  await host.save();
+  const saved = await host.save();
   await refreshStatus();
-  return true;
-}
-
-function gb(bytes: number): string {
-  return (bytes / 1e9).toFixed(1);
+  return saved;
 }
 
 function selectedModel(): AiModelInfo | undefined {
+  if (!host?.loaded()) return undefined;
   return status?.models.find((m) => m.id === host.settings().aiModel);
 }
 
@@ -215,7 +225,7 @@ function renderModels() {
   for (const m of status.models) {
     const option = document.createElement("option");
     option.value = m.id;
-    option.textContent = `${m.label} · ${gb(m.bytes)} GB${m.downloaded ? " ✓" : ""}`;
+    option.textContent = `${m.label} · ${sizeText(m.bytes)}${m.downloaded ? " ✓" : ""}`;
     modelSelect.appendChild(option);
   }
   modelSelect.value = current;
@@ -233,7 +243,7 @@ function renderModels() {
 function renderStatus() {
   if (!status) return;
   const model = selectedModel();
-  const downloading = status.downloading !== null;
+  const downloading = downloadRuns();
   const downloaded = !!model?.downloaded;
   const failed = !!model && !downloaded && !downloading && downloadFailed === model.id;
 
@@ -250,6 +260,12 @@ function renderStatus() {
   downloadMain.disabled = downloading;
   modelSelect.disabled = downloading;
   progress.classList.toggle("hidden", !downloading);
+  // A download this window did not start (it was loaded again meanwhile) has
+  // reported nothing here yet: its bar starts at 0 %, not at the last one's numbers.
+  if (downloading && downloadPercent === null) {
+    downloadPercent = 0;
+    showProgress(progressParts, NOT_STARTED);
+  }
   toggle.disabled = !downloaded || !status.installed;
   if (!downloaded && toggle.checked) toggle.checked = false;
 
@@ -278,7 +294,7 @@ function renderStatus() {
     kind = "loading";
   } else if (server.state === "ready") {
     const onCpu = server.device === "CPU";
-    text = onCpu ? t("ai_status_ready_cpu") : t("ai_status_ready").replace("{device}", server.device ?? "");
+    text = onCpu ? t("ai_status_ready_cpu") : t("ai_status_ready").replace("{device}", () => server.device ?? "");
     tone = onCpu ? "warn" : "ok";
     kind = "ready";
   } else if (server.state === "failed") {
@@ -308,23 +324,64 @@ function renderStatus() {
   }
 }
 
-async function refreshStatus() {
-  try {
-    status = await invoke<AiStatus>("ai_status");
-  } catch (e) {
-    console.error("ai_status failed:", e);
-    return;
-  }
+/** A model download runs: one this window started, or one the backend
+ *  reports (the window was loaded again while it ran). The one answer for
+ *  the model's row, the state line, Home's card and the sidebar's status.
+ *  Before, the first three followed the backend's word and the status only
+ *  this window's own start, so after a reload they disagreed. */
+function downloadRuns(): boolean {
+  return downloadInFlight || (status?.downloading ?? null) !== null;
+}
+
+/** The models' list and the state line, from what the backend last said. Not
+ *  before the settings are known: which model is chosen is one of them. */
+function draw() {
+  if (!status || !host.loaded()) return;
   renderModels();
   renderStatus();
-  if (status.downloading === null) setDownload("ai", null);
+}
+
+/** Ask the backend for the AI's state and draw it. Of two questions that are
+ *  out, only the later one's answer counts: the earlier one can arrive last
+ *  and would put an old state (still loading, not yet downloaded) on screen. */
+async function refreshStatus() {
+  const mine = ++statusAsked;
+  let answer: AiStatus;
+  try {
+    answer = await invoke<AiStatus>("ai_status");
+  } catch (e) {
+    console.error("ai_status failed:", e);
+    if (mine !== statusAsked) return;
+    // Nothing is learned, and the status must not wait for it for ever. The
+    // switch is usable as it was before the state was ever asked for.
+    if (!statusKnown) {
+      statusKnown = true;
+      toggle.disabled = false;
+      host.changed?.();
+    }
+    return;
+  }
+  if (mine !== statusAsked) return;
+  status = answer;
+  statusKnown = true;
+  draw();
+  // The sidebar's status follows the same word as the row (downloadRuns).
+  if (!downloadRuns()) {
+    downloadPercent = null;
+    setDownload("ai", null);
+  } else if (!downloadInFlight) setDownload("ai", downloadPercent ?? 0);
   host.changed?.();
+}
+
+/** The AI's state, asked again (the start, an unused AI model was deleted). */
+export function refreshAiStatus(): Promise<void> {
+  return refreshStatus();
 }
 
 async function refreshOpenApps() {
   try {
     const apps = await invoke<string[]>("list_open_apps");
-    const ruleApps = host.settings().aiRules.map((r) => r.app.trim()).filter(Boolean);
+    const ruleApps = host.loaded() ? host.settings().aiRules.map((r) => r.app.trim()).filter(Boolean) : [];
     openApps.innerHTML = "";
     for (const app of [...new Set([...ruleApps, ...apps])]) {
       const option = document.createElement("option");
@@ -382,6 +439,9 @@ async function fetchModel() {
   }
   downloadInFlight = false;
   downloadPercent = null;
+  // The backend's download is over with its answer: what it said before no
+  // longer holds (a progress event that arrives late must not bring it back).
+  if (status) status.downloading = null;
   setDownload("ai", null);
   // Said by the model's row and by the state line, which refreshStatus() draws (and draws again later),
   // with the backend's reason after it.
@@ -411,7 +471,7 @@ function renderOutputSkip() {
   const noAi = (s.aiRules ?? []).filter((r) => r.off && r.app.trim()).map((r) => r.app.trim());
   let text = "";
   if (s.aiOutputLanguage && !s.aiCleanup) text = t("ai_output_skip_off");
-  else if (s.aiOutputLanguage && noAi.length) text = t("ai_output_skip_apps").replace("{apps}", noAi.join(", "));
+  else if (s.aiOutputLanguage && noAi.length) text = t("ai_output_skip_apps").replace("{apps}", () => noAi.join(", "));
   outputSkip.textContent = text;
   outputSkip.classList.toggle("hidden", !text);
 }
@@ -437,10 +497,15 @@ function readRules(): AppRule[] {
   }));
 }
 
-async function saveRules() {
+/** The rules as the page has them, saved. A rule's Delete says a failure on
+ *  its own button (`strict`: the save throws); a field's change is said in
+ *  the page like every other setting. */
+async function saveRules(strict = false) {
+  if (!host.loaded()) return;
   host.settings().aiRules = readRules();
   renderOutputSkip();
-  await host.save();
+  if (strict) await host.saveStrict();
+  else await host.save();
 }
 
 /** Numbers the rule rows, so each has its own Delete. */
@@ -476,7 +541,7 @@ function addRuleRow(rule: AppRule): HTMLElement {
   language.setAttribute("aria-label", t("rule_language_label"));
   populateLanguageSelect(language, getLang(), t("ai_rule_language_default"), "");
   language.value = rule.language ?? "";
-  language.addEventListener("change", saveRules);
+  language.addEventListener("change", () => void saveRules());
 
   const off = document.createElement("label");
   off.className = "rule-off";
@@ -488,11 +553,11 @@ function addRuleRow(rule: AppRule): HTMLElement {
   off.append(offInput, offText);
   offInput.addEventListener("change", () => {
     text.disabled = offInput.checked;
-    saveRules();
+    void saveRules();
   });
 
-  app.addEventListener("change", saveRules);
-  text.addEventListener("change", saveRules);
+  app.addEventListener("change", () => void saveRules());
+  text.addEventListener("change", () => void saveRules());
 
   // The app, its language and "No AI" on one line, the instructions below.
   const line = document.createElement("div");
@@ -510,13 +575,13 @@ function addRuleRow(rule: AppRule): HTMLElement {
       row.remove();
       ruleEmpty.classList.toggle("hidden", ruleList.children.length > 0);
       try {
-        await saveRules();
+        await saveRules(true);
         forgetDelete(id);
       } catch (err) {
         ruleList.insertBefore(row, next);
         ruleEmpty.classList.add("hidden");
         // The settings in memory hold the rule again (a save reads the page).
-        void saveRules().catch(() => {});
+        void saveRules(true).catch(() => {});
         throw err;
       }
     },
@@ -542,27 +607,42 @@ function renderRules() {
 
 // ── Test box ──────────────────────────────────────────
 
+/** What "Try it" last answered: the sample as the AI returned it, or the
+ *  backend's refusal. Kept so that the line under it is written again in
+ *  another Display Language ("Took 412 ms" stood there in the old one). */
+let tested: { result: Polished } | { error: string } | null = null;
+/** "Try it" runs. */
+let testing = false;
+
+function renderTest() {
+  testRun.disabled = testing;
+  testRun.textContent = t(testing ? "ai_test_running" : "ai_test_run");
+  testResult.classList.toggle("hidden", tested === null);
+  if (!tested) return;
+  if ("error" in tested) {
+    testOutput.textContent = "";
+    testMeta.textContent = tested.error;
+    testMeta.dataset.tone = "error";
+    return;
+  }
+  const { result } = tested;
+  testOutput.textContent = result.text;
+  testMeta.textContent = result.fallback ? `${t("ai_test_fallback")}: ${result.fallback}` : t("ai_test_time").replace("{ms}", () => String(result.aiMs));
+  testMeta.dataset.tone = result.fallback ? "warn" : "";
+}
+
 async function runTest() {
   const text = testInput.value.trim();
-  if (!text) return;
-  testRun.disabled = true;
-  testRun.textContent = t("ai_test_running");
+  if (!text || testing) return;
+  testing = true;
+  renderTest();
   try {
-    const result = await invoke<Polished>("ai_test", { text, app: testApp.value });
-    testOutput.textContent = result.text;
-    testMeta.textContent = result.fallback
-      ? `${t("ai_test_fallback")}: ${result.fallback}`
-      : t("ai_test_time").replace("{ms}", String(result.aiMs));
-    testMeta.dataset.tone = result.fallback ? "warn" : "";
-    testResult.classList.remove("hidden");
+    tested = { result: await invoke<Polished>("ai_test", { text, app: testApp.value }) };
   } catch (e) {
-    testOutput.textContent = "";
-    testMeta.textContent = String(e);
-    testMeta.dataset.tone = "error";
-    testResult.classList.remove("hidden");
+    tested = { error: String(e) };
   } finally {
-    testRun.disabled = false;
-    testRun.textContent = t("ai_test_run");
+    testing = false;
+    renderTest();
   }
 }
 
@@ -572,6 +652,7 @@ export function initAiSettings(h: AiSettingsHost) {
   host = h;
 
   toggle.addEventListener("change", async () => {
+    if (!host.loaded()) return;
     host.settings().aiCleanup = toggle.checked;
     renderOutputSkip();
     await host.save();
@@ -579,23 +660,27 @@ export function initAiSettings(h: AiSettingsHost) {
   });
 
   modelSelect.addEventListener("change", async () => {
+    if (!host.loaded()) return;
     // Another choice: what was said of a download that did not finish is over.
     downloadFailed = null;
     downloadReason = "";
-    host.settings().aiModel = modelSelect.value;
-    await host.save();
+    const chosen = modelSelect.value;
+    host.settings().aiModel = chosen;
+    const saved = await host.save();
     await refreshStatus();
-    if (!selectedModel()?.downloaded) await download();
+    // Not saved: the list is back on the saved model, and nothing is downloaded for a choice that did not hold.
+    if (saved && host.settings().aiModel === chosen && !selectedModel()?.downloaded) await download();
   });
 
-  downloadBtn.addEventListener("click", download);
-  downloadMain.addEventListener("click", download);
+  downloadBtn.addEventListener("click", () => void (host.loaded() && download()));
+  downloadMain.addEventListener("click", () => void (host.loaded() && download()));
 
   for (const [button, style] of [
     [stylePolished, "polished"],
     [styleLight, "light"],
   ] as const) {
     button.addEventListener("click", async () => {
+      if (!host.loaded()) return;
       host.settings().aiStyle = style;
       setStyle(style);
       await host.save();
@@ -603,22 +688,27 @@ export function initAiSettings(h: AiSettingsHost) {
   }
 
   outputSelect.addEventListener("change", async () => {
+    if (!host.loaded()) return;
     host.settings().aiOutputLanguage = outputSelect.value;
     renderOutputLanguage();
     await host.save();
   });
 
   editToggle.addEventListener("change", async () => {
+    if (!host.loaded()) return;
     host.settings().editMode = editToggle.checked;
     await host.save();
   });
 
   instructions.addEventListener("change", async () => {
+    if (!host.loaded()) return;
     host.settings().aiInstructions = instructions.value;
     await host.save();
   });
 
   ruleAdd.addEventListener("click", () => {
+    // The rows on the page are what is saved: none is added before the saved ones are drawn.
+    if (!host.loaded()) return;
     const row = addRuleRow({ app: "", instructions: "", off: false, language: "" });
     ruleEmpty.classList.add("hidden");
     (row.querySelector(".rule-app") as HTMLInputElement).focus();
@@ -640,29 +730,33 @@ export function initAiSettings(h: AiSettingsHost) {
   listen("ai-status", () => refreshStatus());
   listen("game-free", () => refreshStatus());
   listen<DownloadProgress>("ai-download-progress", (event) => {
-    const { percent } = event.payload;
+    // A progress event that arrives after the download ended must not bring
+    // it back: not into the row, and not into the status.
+    if (!downloadRuns()) return;
     progress.classList.remove("hidden");
     // The bar on the model's row, and always the numbers: percent and size.
     // Nothing of it is read out by itself; the bar has the numbers for a
     // screen reader that asks. The percent also stands beside the switch.
-    const whole = showProgress(progressParts, event.payload);
-    if (downloadInFlight || status?.downloading) {
-      downloadPercent = whole;
-      renderPercent();
-    }
-    // A progress event that arrives after the download ended must not bring it back into the status.
-    if (downloadInFlight) setDownload("ai", percent);
+    downloadPercent = showProgress(progressParts, event.payload);
+    renderPercent();
+    setDownload("ai", event.payload.percent);
   });
 }
 
-/// Fill the tab from the settings (after loading them or a language change).
-export async function renderAiSettings() {
+/// Fill the tab from the settings (after loading them, after a save the
+/// backend refused, after a language change), with the AI's state as the
+/// backend last reported it. Nothing is asked: everything it shows is known.
+export function showAiSettings() {
   const s = host.settings();
   toggle.checked = s.aiCleanup;
+  // Whether AI cleanup can be turned on is the backend's to say (is the
+  // model there, is the AI installed): until it has, the switch rests.
+  if (!statusKnown) toggle.disabled = true;
   editToggle.checked = s.editMode ?? true;
   setStyle(s.aiStyle);
   instructions.value = s.aiInstructions ?? "";
   renderOutputLanguage();
   renderRules();
-  await refreshStatus();
+  renderTest();
+  draw();
 }

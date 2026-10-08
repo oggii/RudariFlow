@@ -38,6 +38,10 @@ export interface StatusInput {
   aiLoading: boolean;
   /** AI cleanup is on and its model was unloaded to free the GPU. */
   aiFreed: boolean;
+  /** The AI's state was asked for and answered (or the question failed):
+   *  until then nobody knows whether its model still loads, and the status
+   *  is not "Ready". */
+  aiKnown: boolean;
   /** Freed for a game (`game-free`). */
   gameFreed: boolean;
 }
@@ -119,7 +123,7 @@ function kindOf(input: StatusInput, miss: Missing[]): StatusKind {
   if (input.fileRunning) return "file";
   const s = input.speech;
   // Not known yet: the app has just started.
-  if (!s || input.microphones === null) return "loading";
+  if (!s || input.microphones === null || !input.aiKnown) return "loading";
   const local = s.engine !== "cloud";
   const speechFreed = local && s.load === "unloaded" && s.freed;
   // Loading, or about to: the app loads the model at its start and after a

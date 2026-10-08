@@ -1,6 +1,7 @@
 // The speech models: their names and download sizes in one place (the
 // dropdown in Settings, Home's "loaded" card and the first run use them).
 // Pure (tests/unit/models.test.ts).
+import { sizeText } from "./size.ts";
 
 export interface SpeechModel {
   /** The id in the settings and the file name: ggml-<id>.bin. */
@@ -8,15 +9,16 @@ export interface SpeechModel {
   name: string;
   /** Download size in MB. */
   mb: number;
-  /** i18n key of the one-line note under the dropdown; "" for none. */
+  /** i18n key of the model's one line: under the dropdown for the chosen
+   *  one, and for every model in the list behind the row's "More". */
   note: string;
 }
 
 export const SPEECH_MODELS: SpeechModel[] = [
   { id: "tiny", name: "Tiny", mb: 75, note: "model_note_tiny" },
-  { id: "base", name: "Base", mb: 142, note: "" },
+  { id: "base", name: "Base", mb: 142, note: "model_note_base" },
   { id: "small", name: "Small", mb: 466, note: "model_note_small" },
-  { id: "medium", name: "Medium", mb: 1500, note: "" },
+  { id: "medium", name: "Medium", mb: 1500, note: "model_note_medium" },
   { id: "large-v3", name: "Large v3", mb: 2900, note: "model_note_large_v3" },
   { id: "large-v3-turbo", name: "Large v3 Turbo", mb: 1500, note: "model_note_turbo" },
   { id: "large-v3-turbo-q8_0", name: "Large v3 Turbo q8", mb: 870, note: "model_note_q8" },
@@ -28,9 +30,9 @@ export function speechModel(id: string): SpeechModel {
   return SPEECH_MODELS.find((m) => m.id === id) ?? { id, name: id, mb: 0, note: "" };
 }
 
-/** "466 MB", "1.5 GB". */
+/** "466 MB", "1.5 GB": the one way a size is written (src/size.ts). */
 export function modelSize(mb: number): string {
-  return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`;
+  return sizeText(mb * 1e6);
 }
 
 /** The speech model a save stores: the dropdown's only once that model is

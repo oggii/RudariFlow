@@ -66,10 +66,21 @@
       </aside>
 
       <main id="content">
-        <section id="section-home" class="content-section active">
+        <!-- A save the backend refused, or settings that did not load: said here, on every page.
+             The line below is what a screen reader hears of it (it is there from the start). -->
+        <div id="save-notice" class="notice page-notice hidden" data-tone="error">
+          <span id="save-notice-text" class="notice-text"></span>
+          <button type="button" id="save-notice-close" class="icon-btn" data-i18n-title="notice_dismiss" data-i18n-aria-label="notice_dismiss" title="Dismiss" aria-label="Dismiss">
+            <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <p id="save-live" class="sr-only" role="status"></p>
+        <!-- Home, Files and Settings are made of the settings: they rest (inert) until those are read
+             (src/main.ts, loadSettings). -->
+        <section id="section-home" class="content-section active" inert>
           <div class="section-header home-header">
             <div class="home-heading">
-              <h2 class="section-title" id="home-title" tabindex="-1" data-i18n="home_title_loading">Getting ready…</h2>
+              <h1 class="section-title" id="home-title" tabindex="-1" data-i18n="home_title_loading">Getting ready…</h1>
               <span id="home-status" class="status-pill" data-tone="busy" aria-hidden="true">
                 <span class="status-dot"></span>
                 <span id="home-status-text"></span>
@@ -77,12 +88,14 @@
             </div>
             <p class="section-desc" id="home-how"></p>
           </div>
-          <div id="home-notice" class="notice hidden" data-tone="warn" role="status">
+          <div id="home-notice" class="notice hidden" data-tone="warn">
             <span class="notice-text" data-i18n="home_load_failed">The speech model did not load. Dictate once to try again, or choose another model.</span>
             <button type="button" id="home-notice-open" class="btn-secondary" data-i18n="home_open_models">Open Models &amp; GPU</button>
           </div>
+          <!-- Read out, not shown: the notice's sentence, written when the notice shows. -->
+          <p id="home-live" class="sr-only" role="status"></p>
 
-          <!-- The first run: shown while a microphone or a speech model is missing. -->
+          <!-- The setup steps: shown while a microphone or a speech model is missing. -->
           <div id="home-setup" class="card home-setup hidden">
             <ol class="setup-steps">
               <li class="setup-step" id="setup-mic">
@@ -160,8 +173,9 @@
 
           <!-- The daily view. src/home.ts puts "Recent dictations" after the
                quick switches in a narrow window and into the right column in
-               a wide one, so the Tab order follows the page. -->
-          <div id="home-daily" class="home-grid">
+               a wide one, so the Tab order follows the page. Hidden, like the
+               steps above, until Home knows which of the two it shows. -->
+          <div id="home-daily" class="home-grid hidden">
             <div id="home-controls" class="home-col">
               <div id="home-hotkeys" class="card">
                 <div class="setting-row">
@@ -246,7 +260,7 @@
 
             <div id="home-recent" class="card home-recent">
               <div class="list-head">
-                <h3 class="list-title" data-i18n="home_recent_title">Recent dictations</h3>
+                <h2 class="list-title" data-i18n="home_recent_title">Recent dictations</h2>
                 <input type="search" id="history-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="home_recent_search" data-i18n-aria-label="home_recent_search" placeholder="Search text or app" aria-label="Search text or app" />
               </div>
               <p id="history-empty" class="empty-state hidden" tabindex="-1"></p>
@@ -255,14 +269,16 @@
               <div class="home-recent-foot">
                 <button type="button" id="history-more" class="btn-text hidden"></button>
                 <button type="button" id="history-less" class="btn-text hidden" data-i18n="home_recent_less">Show fewer</button>
+                <!-- The way to "Keep history" (Settings > General). -->
+                <button type="button" id="history-settings" class="btn-text" data-i18n="home_recent_settings">History settings</button>
               </div>
             </div>
           </div>
         </section>
 
-        <section id="section-files" class="content-section">
+        <section id="section-files" class="content-section" inert>
           <div class="section-header">
-            <h2 class="section-title" data-i18n="files_title">Files</h2>
+            <h1 class="section-title" tabindex="-1" data-i18n="files_title">Files</h1>
             <p class="section-desc" data-i18n="files_desc">Audio or video to text: voice messages, meetings, interviews. Runs on your PC with your Whisper model; the file stays where it is.</p>
           </div>
           <div id="file-drop" class="file-drop">
@@ -312,8 +328,10 @@
                 <button type="button" id="file-clear" class="btn-ghost" data-i18n-title="files_clear_title" title="Removes the transcript to start over. The audio file stays where it is.">Clear</button>
               </div>
             </div>
-            <div class="progress-track"><div class="progress-fill" id="file-progress-fill"></div></div>
+            <div id="file-progress-bar" class="progress-track" role="progressbar" aria-labelledby="file-name" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="progress-fill" id="file-progress-fill"></div></div>
             <span id="file-status" class="label-hint file-status"></span>
+            <!-- Read out, not shown: how the run ended. The line above changes with every step. -->
+            <p id="file-live" class="sr-only" role="status"></p>
           </div>
           <div id="file-result" class="file-result hidden">
             <div class="file-toolbar">
@@ -354,7 +372,7 @@
         <section id="section-meetings" class="content-section">
           <div class="mt-layout">
             <div class="section-header">
-              <h2 class="section-title" data-i18n="mt_title">Meetings</h2>
+              <h1 class="section-title" tabindex="-1" data-i18n="mt_title">Meetings</h1>
               <p class="section-desc" data-i18n="mt_desc">Record an online call on this PC (Teams, Zoom, Discord, Google Meet …): your microphone and what the PC plays, transcribed live, with notes when it ends. Everything stays on your PC.</p>
             </div>
             <div id="mt-start" class="mt-start">
@@ -396,7 +414,7 @@
                 </div>
               </div>
               <div class="mt-view-heading">
-                <h3 class="mt-view-title-wrap"><button id="mt-view-title" class="mt-view-title" data-i18n-title="mt_rename" title="Click to rename"></button></h3>
+                <h2 class="mt-view-title-wrap"><button id="mt-view-title" class="mt-view-title" data-i18n-title="mt_rename" title="Click to rename"></button></h2>
                 <span id="mt-view-meta" class="label-hint mt-view-meta"></span>
               </div>
               <div id="mt-hint" class="mt-hint hidden" role="status"></div>
@@ -416,7 +434,7 @@
             </div>
             <div id="mt-library" class="mt-library">
               <div class="mt-library-head">
-                <h3 class="mt-library-title" data-i18n="mt_library">Your meetings</h3>
+                <h2 class="mt-library-title" data-i18n="mt_library">Your meetings</h2>
                 <input id="mt-search" type="search" class="mt-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="mt_search" placeholder="Search titles and transcripts" />
               </div>
               <div id="mt-list" class="mt-list"></div>
@@ -427,15 +445,15 @@
         <section id="section-soundboard" class="content-section">
           <div class="sb-layout">
             <div class="section-header">
-              <h2 class="section-title" data-i18n="sb_title">Soundboard</h2>
+              <h1 class="section-title" tabindex="-1" data-i18n="sb_title">Soundboard</h1>
               <p class="section-desc" data-i18n="sb_desc">Play sounds into Discord or a game with a hotkey. Your friends hear your voice and the sounds through a virtual microphone.</p>
             </div>
             <div id="sb-root"></div>
           </div>
         </section>
-        <section id="section-settings" class="content-section">
+        <section id="section-settings" class="content-section" inert>
           <div class="section-header">
-            <h2 class="section-title" data-i18n="settings_title">Settings</h2>
+            <h1 class="section-title" tabindex="-1" data-i18n="settings_title">Settings</h1>
           </div>
           <!-- What a screen reader hears of the speech model's download: its start and its end, not every
                percent (the bar has the numbers). The AI model's download has the AI's state line for that. -->
@@ -635,7 +653,7 @@
             </div>
             <div class="card">
               <div class="list-head">
-                <h3 class="list-title" data-i18n="ai_rules_title">Rules per app</h3>
+                <h2 class="list-title" data-i18n="ai_rules_title">Rules per app</h2>
               </div>
               <p class="label-hint"><span data-i18n="ai_rules_desc">Instructions and the spoken language for one app or website.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-rules-more" data-i18n="hint_more">More</button></p>
               <p class="label-hint hint-long" id="ai-rules-more" data-i18n="ai_rules_more" hidden>A rule matches the program name or a word in the window title, e.g. “whatsapp” also covers WhatsApp Web. The language is what Whisper hears in this app, also with AI cleanup off. No AI pastes the plain Whisper text.</p>
@@ -670,7 +688,7 @@
                 </div>
                 <div class="card">
                   <div class="list-head">
-                    <h3 class="list-title" id="ai-test-title" data-i18n="ai_test_title">Try it</h3>
+                    <h2 class="list-title" id="ai-test-title" data-i18n="ai_test_title">Try it</h2>
                   </div>
                   <div class="ai-test">
                     <textarea id="ai-test-input" class="field-textarea" rows="3" aria-labelledby="ai-test-title"
@@ -696,13 +714,13 @@
             <p class="section-desc panel-lead" data-i18n="dictionary_desc">Words Whisper should know: names, brands and jargon. Your text gets exactly this spelling, even when Whisper hears them slightly differently.</p>
             <div id="dict-suggest" class="card dict-suggest hidden">
               <div class="list-head">
-                <h3 class="list-title" data-i18n="learn_title">Suggested from your corrections</h3>
+                <h2 class="list-title" data-i18n="learn_title">Suggested from your corrections</h2>
               </div>
               <div id="dict-suggest-list" class="list dict-list" role="list"></div>
             </div>
             <div class="card">
               <div class="list-head">
-                <h3 class="list-title"><span data-i18n="dict_words_title">Words</span> <span id="dict-count" class="list-count"></span></h3>
+                <h2 class="list-title"><span data-i18n="dict_words_title">Words</span> <span id="dict-count" class="list-count"></span></h2>
                 <input type="search" id="dict-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="dict_search" data-i18n-aria-label="dict_search" placeholder="Search words" aria-label="Search words" />
               </div>
               <form id="dict-form" class="dict-add">
@@ -720,7 +738,7 @@
             </div>
             <div class="card">
               <div class="list-head">
-                <h3 class="list-title" data-i18n="replacements_title">Replacements</h3>
+                <h2 class="list-title" data-i18n="replacements_title">Replacements</h2>
                 <input type="search" id="replacement-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="replacement_search" data-i18n-aria-label="replacement_search" placeholder="Search replacements" aria-label="Search replacements" />
               </div>
               <p class="label-hint"><span data-i18n="replacements_desc">Say a short phrase, get longer text.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="replacements-more" data-i18n="hint_more">More</button></p>
@@ -806,7 +824,9 @@
               <div class="setting-row" id="local-settings">
                 <div class="setting-label">
                   <span class="label-text" id="model-label" data-i18n="model_label">Speech model</span>
-                  <span class="label-hint" data-i18n="model_hint">Larger models are more accurate and need more memory.</span>
+                  <span class="label-hint"><span data-i18n="model_hint">Larger models are more accurate and need more memory.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="model-more" data-i18n="hint_more">More</button></span>
+                  <!-- Every model with its one line (src/main.ts, renderModels): what a model is can be read without choosing it. -->
+                  <span class="label-hint hint-long model-list" id="model-more" role="list" hidden></span>
                   <span class="label-hint status-line" id="model-note"></span>
                 </div>
                 <div class="setting-control">
@@ -929,7 +949,7 @@
                 </div>
                 <div class="card">
                   <div class="list-head">
-                    <h3 class="list-title" data-i18n="unused_models_title">Unused models</h3>
+                    <h2 class="list-title" data-i18n="unused_models_title">Unused models</h2>
                   </div>
                   <p class="label-hint" data-i18n="unused_models_desc">Downloaded Whisper and AI models that no setting uses. They only take disk space; delete the ones you no longer need.</p>
                   <div id="unused-model-list" class="list unused-model-list" role="list"></div>

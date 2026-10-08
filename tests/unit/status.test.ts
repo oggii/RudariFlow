@@ -24,6 +24,7 @@ const input = (over: Partial<StatusInput> = {}): StatusInput => ({
   fileRunning: false,
   aiLoading: false,
   aiFreed: false,
+  aiKnown: true,
   gameFreed: false,
   ...over,
 });
@@ -89,6 +90,24 @@ test("nothing is known right after the start: loading, not setup", () => {
   assert.equal(status(input({ microphones: null })).kind, "loading");
   // A model that is there and not loaded yet is about to load.
   assert.equal(status(input({ speech: speech({ load: "unloaded" }) })).kind, "loading");
+});
+
+test("not ready before the AI's state is known", () => {
+  // The speech model is loaded and a microphone is there, but nobody has
+  // heard yet whether AI cleanup's model still loads: "Ready" then, and
+  // "Loading models…" a moment later, was Ready too early.
+  const early = status(input({ aiKnown: false }));
+  assert.deepEqual([early.kind, early.loading], ["loading", true]);
+  assert.equal(homeTitle(early), "home_title_loading");
+  assert.equal(status(input({ aiKnown: true })).kind, "ready");
+  assert.equal(status(input({ aiKnown: true, aiLoading: true })).kind, "loading");
+  // What is missing is said at once: it does not depend on the AI.
+  assert.equal(status(input({ aiKnown: false, microphones: 0 })).kind, "setup");
+  // And what runs is said too.
+  assert.equal(status(input({ aiKnown: false, dictation: "Recording" })).kind, "recording");
+  // The cloud engine waits for it as well.
+  const cloud = speech({ engine: "cloud", downloaded: false, load: "unloaded", cloudKey: true });
+  assert.equal(status(input({ speech: cloud, aiKnown: false })).kind, "loading");
 });
 
 test("a download shows its percent", () => {

@@ -12,6 +12,23 @@ test("names and sizes of the speech models", () => {
   assert.equal(modelLabel("something-new"), "something-new");
 });
 
+test("every speech model has its one line, in English and in German", () => {
+  // The list behind the row's "More" shows one for each: before, Base and Medium had none.
+  const source = readFileSync(new URL("../../src/i18n.ts", import.meta.url), "utf8");
+  for (const lang of ["en", "de"]) {
+    const start = source.indexOf(`const ${lang}: Translations = {`);
+    assert.ok(start >= 0, `the table "${lang}"`);
+    const table = source.slice(start, source.indexOf("};", start));
+    for (const model of SPEECH_MODELS) {
+      assert.match(model.note, /^model_note_\w+$/, model.id);
+      const text = new RegExp(`^  ${model.note}: "(.*)",$`, "m").exec(table)?.[1] ?? "";
+      assert.ok(text.length >= 15 && text.endsWith("."), `${model.note} in ${lang}: "${text}"`);
+    }
+    for (const key of ["model_recommended_here", "model_recommended_short"]) assert.ok(table.includes(`\n  ${key}: "`), `${key} in ${lang}`);
+  }
+  assert.equal(new Set(SPEECH_MODELS.map((m) => m.note)).size, SPEECH_MODELS.length, "each model has a line of its own");
+});
+
 test("the table lists the models the dropdown offers, in its order", () => {
   const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
   const select = html.slice(html.indexOf('<select id="model-select"'), html.indexOf("</select>", html.indexOf('<select id="model-select"')));
