@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-08 - A new window: Home, five tabs in Settings
+
+Tested on an NVIDIA GeForce RTX 5080 with a Ryzen 9 7900X and on an AMD Radeon RX 6800.
+
 ### Changed
 - **A new window that is easier to find your way in.** Five sidebar items
   instead of ten: Home, Files, Meetings, Soundboard and Settings. What the
