@@ -19,7 +19,6 @@
     "test:unit": "node --test \"tests/unit/*.test.ts\""
   },
   "dependencies": {
-    "@fontsource/ibm-plex-sans": "^5.3.0",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-autostart": "^2.5.1",
     "@tauri-apps/plugin-dialog": "~2.6.0",

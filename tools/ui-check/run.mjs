@@ -114,7 +114,7 @@ const contract = JSON.parse(fs.readFileSync(path.join(here, "contract.json"), "u
 report("source", "source", staticChecks(ROOT, contract));
 
 // ── Server for the build ──────────────────────────────
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".wav": "audio/wav", ".woff": "font/woff", ".woff2": "font/woff2" };
+const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".wav": "audio/wav" };
 const server = http.createServer((req, res) => {
   let p = decodeURIComponent(new URL(req.url, "http://x").pathname);
   if (p === "/") p = "/index.html";
@@ -167,7 +167,7 @@ async function openWindow({ scenario, lang, size, url, scrollbars = false }) {
     const u = r.url();
     if (!u.startsWith(BASE) && !/^(data|blob|about):/.test(u)) problems.push({ check: "external", page: "window", what: new URL(u).origin, detail: "the page asks another computer for something" });
   });
-  // A file of the page's own that does not load: a font, a script, an image.
+  // A file of the page's own that does not load: a script, a style sheet, an image.
   const own = (u) => u.startsWith(BASE + "/");
   const lost = (u, why) => problems.push({ check: "page-error", page: "window", what: `${decodeURIComponent(new URL(u).pathname)} does not load`, detail: `${why}; the page asks for a file of its own that is not there` });
   page.on("response", (r) => {
@@ -179,7 +179,6 @@ async function openWindow({ scenario, lang, size, url, scrollbars = false }) {
   });
   const load = async () => {
     await page.goto(BASE + url, { waitUntil: "networkidle" });
-    await page.evaluate(() => document.fonts.ready);
     await page.waitForTimeout(400);
   };
   await load();

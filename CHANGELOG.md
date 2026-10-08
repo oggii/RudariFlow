@@ -180,12 +180,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - The pill, when a meeting cannot start: "Download a Whisper model
     first" → "Download a speech model first" · „Zuerst ein Whisper-Modell
     herunterladen“ → „Zuerst ein Sprachmodell herunterladen“
-- **The pill is set in the window's font** (IBM Plex Sans; only its Latin
-  part is loaded there) and takes the window's colours. While it shows
-  text, the microphone, the bars and the x no longer show faintly behind
-  the words, and it keeps its outline: the ground of a text or a notice is
-  the pill's own shape and size (it was a larger box, 320 by 64 px around
-  a pill of 304 by 48).
+- **The pill takes the window's colours** and shares its typeface (Segoe
+  UI, as before). What was said and a notice are set in the regular
+  weight now, a label ("Polishing", "3 words") in semibold. While it
+  shows text, the microphone, the bars and the x no longer show faintly
+  behind the words, and it keeps its outline: the ground of a text or a
+  notice is the pill's own shape and size (it was a larger box, 320 by
+  64 px around a pill of 304 by 48).
 - **Smaller ones:** one thin scrollbar for every list and text box (a
   file's transcript had Windows' own); the tab labels no longer move when
   another tab is opened; one mark for "opens below" (Export and the
@@ -203,12 +204,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   other, the Sound hotkeys switch and its key, the Stop all key and the
   devices: beside the sounds in a wide window, closed at first in a
   narrow one and in the pop-out, and remembered as you left it.
-- **Calmer look:** bigger type, more room, softer surfaces. Hint text is
-  readable (4.5:1), every control shows the keyboard focus, has a name for
-  screen readers and is at least 24 px, and the sidebar is reached by Tab.
-  A page's title is its first heading, the Soundboard's switches are
-  switches to a screen reader, and the end of a file's transcription is
-  read out.
+- **Calmer look:** bigger type, more room, softer surfaces. The typeface
+  is Windows' own Segoe UI (it was IBM Plex Sans, fetched from Google
+  Fonts at the start): regular for text, labels and controls at rest,
+  semibold for what is chosen and for a card's heading, bold for a page's
+  heading. Hint text is readable (4.5:1), every control shows the keyboard
+  focus, has a name for screen readers and is at least 24 px, and the
+  sidebar is reached by Tab. A page's title is its first heading, the
+  Soundboard's switches are switches to a screen reader, and the end of a
+  file's transcription is read out.
 - **Windows contrast themes:** with a contrast theme on, every control has
   an edge and every "on" or "selected" shows in the theme's highlight
   colours: a switch, the open tab, the current page, a chosen chip, a
@@ -283,8 +287,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   unloaded and while a meeting recorded.
 - The tenth sidebar item and the version were below the window at its
   smallest size (900×600).
-- The font is shipped with the app; nothing is requested from Google Fonts
-  at the start any more.
+- The window uses Windows' own Segoe UI; nothing is fetched from Google
+  Fonts any more.
 - Switching Transcription from Groq Cloud to On this PC loads the speech
   model at once instead of at the next dictation.
 - The pill in Edit mode: the cancel button was pushed out of the pill and

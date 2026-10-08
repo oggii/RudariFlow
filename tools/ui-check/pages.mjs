@@ -564,14 +564,10 @@ const windowComes = (page) =>
  * The page has started: the settings are shown, every first answer is drawn (the status, the microphones,
  * the history, the AI's state, the models on disk) and every page is wired. The page says so itself
  * (`data-started` on the body, src/main.ts). It does not wait for the graphics cards: a driver that hangs
- * never answers. Its fonts are in.
+ * never answers. There is no font to wait for: the window writes in Windows' own.
  */
 async function started(page) {
   await until(page, () => document.body?.dataset.started === "true" && !!document.getElementById("status-indicator").dataset.kind, 10_000);
-  await page.evaluate(async () => {
-    document.body.getBoundingClientRect(); // laid out, so every font the page uses is asked for
-    await document.fonts.ready;
-  });
 }
 
 /** A new start of the page, waited for by what it shows instead of by the clock. */
@@ -4532,11 +4528,14 @@ async function pillOneLine(page) {
   return expect(see.characters > 0 && see.lines === 1 && see.inside, "the pill's text is one line, inside the pill", JSON.stringify(see));
 }
 
+/** The font of the window and the pill, as the browser reads the token (src/styles/tokens.css, --font). */
+const SYSTEM_FONT = '"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif';
+
 /**
  * The pill keeps its outline from state to state: the ground of a text state (the transcript, a notice) is the
- * pill's own box, 304 by 48 px with the same round ends, not the whole window of 320 by 64 px. And both weights
- * of its font are in from the start: the heavier one, which the resting pill never writes in, came only with
- * the first chip or label, which then changed its width.
+ * pill's own box, 304 by 48 px with the same round ends, not the whole window of 320 by 64 px. And it writes in
+ * the window's font, which is Windows' own: no font file is loaded, so no chip or label stands in another face
+ * first and changes its width when a file comes (as the heavier weight of the bundled font once did).
  */
 async function pillOutline(page, ground) {
   const see = await page.evaluate((ground) => {
@@ -4546,11 +4545,11 @@ async function pillOutline(page, ground) {
     };
     const pill = document.getElementById("pill");
     const text = document.getElementById(ground);
-    return { pill: box(pill), ground: box(text), ends: [getComputedStyle(pill).borderRadius, getComputedStyle(text).borderRadius], shown: getComputedStyle(text).opacity, fonts: [500, 600].map((weight) => document.fonts.check(`${weight} 12px "IBM Plex Sans"`)) };
+    return { pill: box(pill), ground: box(text), ends: [getComputedStyle(pill).borderRadius, getComputedStyle(text).borderRadius], shown: getComputedStyle(text).opacity, font: getComputedStyle(text).fontFamily, files: document.fonts.size };
   }, ground);
   return [
     ...expect(see.pill === "8,8,304,48" && see.ground === see.pill && see.ends[0] === see.ends[1] && see.shown === "1", "the ground of the pill's text states is the pill's own shape and size: its outline does not change between states", JSON.stringify(see)),
-    ...expect(see.fonts.join() === "true,true", "both weights of the pill's font are loaded from the start", JSON.stringify(see.fonts)),
+    ...expect(see.font === SYSTEM_FONT && see.files === 0, "the pill writes in Windows' own Segoe UI and loads no font file", JSON.stringify([see.font, see.files])),
   ];
 }
 
@@ -6806,9 +6805,9 @@ export const PAGES = [
     after: (page) => page.keyboard.press("Escape"),
   },
   pill("recording", `window.__overlayUpdate("recording"); for (let i = 0; i < 32; i++) window.__MOCK__.emit("audio-level", 0.15 + 0.7 * Math.abs(Math.sin(i * 0.7)));`, pillShows("records", "recording", null), async (page) => {
-    // Nothing was written in the heavier weight yet (no chip, no label): it is loaded all the same.
-    const fonts = await page.evaluate(() => [...document.fonts].filter((face) => face.status === "loaded").map((face) => face.weight).sort().join());
-    return expect(fonts === "500,600", "the pill has both weights of its font before its first chip or label", fonts);
+    // The resting pill has no font file to fetch for a first chip or label: its face is Windows' own.
+    const see = await page.evaluate(() => [getComputedStyle(document.body).fontFamily, document.fonts.size]);
+    return expect(see[0] === SYSTEM_FONT && see[1] === 0, "the pill writes in Windows' own Segoe UI and loads no font file", JSON.stringify(see));
   }),
   pill("transcribing", `window.__overlayUpdate("recording"); window.__overlayUpdate("transcribing"); window.__MOCK__.emit("partial-transcript", { text: "Could you send me the quote for the move by tomorrow", is_final: false });`, pillShows("transcribes and shows what was said", "transcribing", "transcript-text"), async (page) => [...(await pillOneLine(page)), ...(await pillOutline(page, "transcript"))]),
   // A dictation of three sentences, segment by segment: the pill shows the end of what was said.

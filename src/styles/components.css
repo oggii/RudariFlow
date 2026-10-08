@@ -105,7 +105,7 @@ textarea {
 
 .section-title {
   font-size: var(--fs-xl);
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1.25;
   letter-spacing: -0.01em;
 }
@@ -159,7 +159,7 @@ textarea {
 
 .label-text {
   display: block;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .label-hint {
@@ -389,7 +389,7 @@ input[type="checkbox"] {
   border: 1px solid transparent;
   border-radius: var(--radius);
   font-size: var(--fs);
-  font-weight: 500;
+  font-weight: 400;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -590,7 +590,7 @@ input[type="checkbox"] {
   background: transparent;
   color: var(--text-2);
   font-size: var(--fs);
-  font-weight: 500;
+  font-weight: 400;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -705,7 +705,7 @@ kbd {
   border-radius: var(--radius-s);
   background: none;
   color: var(--text-2);
-  font-weight: 500;
+  font-weight: 400;
   white-space: nowrap;
   cursor: pointer;
 }

@@ -1,9 +1,9 @@
 // Checks that read the source instead of a rendered page: every string in
 // English and German (the German in Swiss spelling, ss), every key that is
 // used exists, the frontend still calls every backend command it called
-// before the redesign, and every style
-// sheet keeps the shared standard (one focus ring, colours and type sizes
-// from the tokens, motion only where the standard has it).
+// before the redesign, and every style sheet keeps the shared standard (one
+// focus ring, colours, type sizes and the typeface from the tokens, no font
+// file, motion only where the standard has it).
 import fs from "node:fs";
 import path from "node:path";
 
@@ -122,6 +122,15 @@ export function styleSheets(root) {
 /** The type scale (src/styles/tokens.css: --fs-s, --fs, --fs-l, --fs-xl). */
 const TYPE_SCALE = [12, 14, 16, 22];
 
+/**
+ * The typeface is Windows' own Segoe UI (src/styles/tokens.css, --font and --mono): no font file is shipped or
+ * fetched. Segoe UI has Regular, Semibold and Bold on Windows 10 and 11, and the webview draws one of those
+ * three whatever is asked for (500 comes out Semibold, 650 Bold). The styles write the weight that is drawn.
+ */
+const FONT = '"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif';
+const MONO = "ui-monospace, Consolas, monospace";
+const WEIGHTS = ["400", "600", "700"];
+
 /** Files a rule does not apply to: { file: { rule: why } }. */
 const EXEMPT = {
   "src/styles/tokens.css": { colour: "the tokens are written here" },
@@ -209,12 +218,25 @@ export function styleChecks(root) {
     return !!hit;
   };
   const eases = [];
+  const faces = [];
   for (const sheet of styleSheets(root)) {
     const exempt = EXEMPT[sheet.file] ?? {};
+    // No font file: no @font-face, and nothing imported but a style sheet of the app's own (a font package would be).
+    const code = sheet.css.replace(/\/\*[\s\S]*?\*\//g, "");
+    if (/@font-face\b/.test(code)) add("standard", sheet.file, "an @font-face: the typeface is Windows' own Segoe UI, no font file is shipped");
+    for (const m of code.matchAll(/@import\s+(?:url\(\s*)?["']?([^"');\s]+)/g)) {
+      if (!/^\.{1,2}\/[^:]*\.css$/.test(m[1])) add("standard", sheet.file, `@import "${m[1]}": only a style sheet of the app's own is imported; the typeface is Windows' own, nothing is bundled or fetched`);
+    }
     for (const d of declarations(sheet.css)) {
       const at = `${sheet.file}:${d.line + sheet.firstLine - 1}`;
       const value = d.value.replace(/url\([^)]*\)/g, "url()");
       if (d.prop === "--ease") eases.push([sheet.file, d.value]);
+      if (d.prop === "--font" || d.prop === "--mono") faces.push([sheet.file, d.prop, d.value]);
+
+      // The typeface: the two tokens, and a weight Segoe UI has.
+      if (d.prop === "font-family" && !/^(var\(--(font|mono)\)|inherit)$/.test(value)) add("standard", at, `font-family ${value}: the typeface comes from the tokens (--font, --mono)`);
+      if (d.prop === "font-weight" && !WEIGHTS.includes(value)) add("standard", at, `font-weight ${value}: Segoe UI is drawn in ${WEIGHTS.join(", ")} only (500 comes out Semibold, 650 Bold); write the weight that is drawn`);
+      if (d.prop === "font" && value !== "inherit") add("standard", at, `font: ${value}: the shorthand sets a family and a weight past the tokens; write font-size, font-weight and font-family`);
 
       // The type scale, in every file.
       if (d.prop === "font-size" || d.prop === "font") {
@@ -252,6 +274,11 @@ export function styleChecks(root) {
   // The lists hold nothing that is gone.
   for (const [name, list] of [["PASSES.focus", PASSES.focus], ["PASSES.colour", PASSES.colour], ["MOVES", MOVES], ["SHOWS_STATE", SHOWS_STATE]]) {
     for (const entry of list) if (!used.has(entry)) add("standard", `${entry[0]}: ${entry[1]}`, `static.mjs lists it in ${name}, and no such declaration is there any more; remove the entry`);
+  }
+  // The typeface is written once, in the tokens.
+  for (const [prop, want] of [["--font", FONT], ["--mono", MONO]]) {
+    const set = faces.filter((f) => f[1] === prop);
+    if (set.length !== 1 || set[0][0] !== "src/styles/tokens.css" || set[0][2] !== want) add("standard", prop, `${set.map((f) => `${f[0]}: ${f[2]}`).join("; ") || "not set"}; it is ${want}, once, in src/styles/tokens.css`);
   }
   // The standard's motion is one time, in the window and in the pill.
   if (!eases.some(([file]) => file === "src/styles/tokens.css")) add("motion", "--ease", "src/styles/tokens.css does not set it");

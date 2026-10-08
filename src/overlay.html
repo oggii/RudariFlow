@@ -3,15 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <style>
-      /* The pill is a part of the app: it is set in the window's font and
-         takes the window's tokens (src/styles/tokens.css: the colours of
-         text, of what records, of what waits and of Edit mode, the type
-         scale, the one fade). Of the font only the Latin part is loaded, in
-         the two weights the pill writes in; the pill's own are what floats
-         over any desktop: its see-through ground, its edge and its resting
-         bars. */
-      @import "@fontsource/ibm-plex-sans/latin-500.css";
-      @import "@fontsource/ibm-plex-sans/latin-600.css";
+      /* The pill is a part of the app: it is set in the window's font
+         (Windows' own Segoe UI: no font file is loaded) and takes the
+         window's tokens (src/styles/tokens.css: the colours of text, of what
+         records, of what waits and of Edit mode, the type scale, the one
+         fade). The pill's own are what floats over any desktop: its
+         see-through ground, its edge and its resting bars. */
       @import "./styles/tokens.css";
       /* Not the tokens' dark colour scheme: it gives a page whose own ground
          is see-through a dark ground from the browser, and the pill's window
@@ -144,7 +141,7 @@
         align-items: center;
         padding: 0 4px;
         font-size: 12px;
-        font-weight: 500;
+        font-weight: 400;
         line-height: 1.3;
         color: var(--text);
         background: var(--surface);
@@ -217,7 +214,7 @@
         align-items: center;
         justify-content: center;
         font-size: 12px;
-        font-weight: 500;
+        font-weight: 400;
         color: var(--text);
         background: var(--surface);
         border-radius: 999px;
@@ -309,13 +306,6 @@
       window.addEventListener("error", (e) => diag(`window error: ${e.message} at ${e.filename}:${e.lineno}`));
       window.addEventListener("unhandledrejection", (e) => diag(`unhandled rejection: ${e.reason}`));
       document.addEventListener("visibilitychange", () => diag(`visibility: ${document.visibilityState}`));
-
-      // Both weights of the font, from the start. The page's resting state
-      // writes nothing in the heavier one, so the browser fetched it only
-      // with the first chip or label ("3 words", "Polishing"), which then
-      // stood in the fallback font for a frame or two and changed its width
-      // when the file came.
-      for (const weight of [500, 600]) document.fonts.load(`${weight} 12px "IBM Plex Sans"`).catch((e) => diag(`font ${weight}: ${e}`));
 
       const BAR_COUNT = 32;
       const HISTORY = new Array(BAR_COUNT).fill(0);
