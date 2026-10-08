@@ -1,6 +1,7 @@
 // Checks that read the source instead of a rendered page: every string in
-// English and German, every key that is used exists, the frontend still
-// calls every backend command it called before the redesign, and every style
+// English and German (the German in Swiss spelling, ss), every key that is
+// used exists, the frontend still calls every backend command it called
+// before the redesign, and every style
 // sheet keeps the shared standard (one focus ring, colours and type sizes
 // from the tokens, motion only where the standard has it).
 import fs from "node:fs";
@@ -18,6 +19,14 @@ function filesUnder(dir, ext) {
 
 /** An em dash, or an en dash between words (a range like 5–10 is none). */
 export const DASH = /—|\s–\s/;
+
+/**
+ * The German interface is written in Swiss spelling: ss, never ß. Only a
+ * text that names the character itself keeps it: these keys of the German
+ * table in src/i18n.ts (the pill's table has none).
+ */
+export const SHARP_S = /[ßẞ]/;
+const SHARP_S_KEYS = ["swiss_spelling_hint", "ai_instructions_placeholder"];
 
 /** The object literal that starts at `marker` (up to the first line that is just "};"). */
 export function literal(source, marker) {
@@ -277,6 +286,14 @@ export function staticChecks(root, contract) {
     if (!oldDash.has(key) && (DASH.test(en[key]) || DASH.test(de[key] ?? ""))) add("dash", key, "write the sentence without the dash");
   }
 
+  // Swiss spelling in German: no ß, but in a text that is about the character.
+  for (const key of Object.keys(de)) {
+    if (SHARP_S.test(de[key]) && !SHARP_S_KEYS.includes(key)) add("spelling", key, `the German text has an ß ("${de[key]}"); the German interface is written with ss`);
+  }
+  for (const key of SHARP_S_KEYS) {
+    if (!SHARP_S.test(de[key] ?? "")) add("spelling", key, "static.mjs lists it in SHARP_S_KEYS, and its German text has no ß any more; remove the entry");
+  }
+
   // Keys the pages and the code use.
   const used = new Map();
   const use = (key, where) => used.has(key) || used.set(key, where);
@@ -299,6 +316,9 @@ export function staticChecks(root, contract) {
     for (const key of Object.keys(pill.de)) if (!(key in pill.en)) add("i18n", `pill: ${key}`, "no English text");
     for (const key of Object.keys(pill.en)) {
       if (DASH.test(pill.en[key]) || DASH.test(pill.de[key] ?? "")) add("dash", `pill: ${key}`, "write the sentence without the dash");
+    }
+    for (const key of Object.keys(pill.de)) {
+      if (SHARP_S.test(pill.de[key])) add("spelling", `pill: ${key}`, `the German text has an ß ("${pill.de[key]}"); the German interface is written with ss`);
     }
   }
 

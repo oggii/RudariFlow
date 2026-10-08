@@ -229,6 +229,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **The pill and the tray menu follow the Display Language**, without a
   restart. The pill used to follow Windows' language, and the tray's "Show
   RudariFlow" and "Quit" were English only.
+- **The German interface is written in Swiss spelling:** ss instead of ß
+  in every German text of the window ("Schliessen", "Abschliessen",
+  "Grössere Modelle sind genauer."). Only the two texts that name the
+  character keep it: the Swiss spelling switch's hint and the example in
+  the AI instructions field.
 
 ### Added
 - **Setup steps** on Home, while a microphone or a speech model is
