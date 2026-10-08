@@ -17,17 +17,20 @@
 /* ── Files ──────────────────────────────────────────── */
 
 /* The page has the window's width and its height (the layout system:
-   styles/shell.css). Without a file the drop zone takes the height that is
-   free: a target as large as the window allows, its prompt in the middle.
-   With a file the zone is one line and the transcript has the height.
+   styles/shell.css). What to set comes before where to drop: the options
+   first, then the drop zone. Without a file the zone takes the height that
+   is free: a target as large as the window allows, its prompt in the
+   middle. (The options stood under it, at the window's bottom: 880 px from
+   "Choose file…" at 1920×1080.) With a file the zone is one line and the
+   transcript has the height.
 
-   One column, under 1250 px beside the sidebar: the zone, the options, the
+   One column, under 1250 px beside the sidebar: the options, the zone, the
    file's line, "Summarise with AI" and the summary it writes, then the
    transcript under its toolbar and its speakers.
 
    Two columns from there (class "roomy", set by shell.ts), once a file is
    loaded: the side column at the left holds the file and what is done with
-   it (the zone's line, the options, the file's line with its progress,
+   it (the options, the zone's line, the file's line with its progress,
    "Summarise with AI" and the summary); the transcript stands at the right
    under its toolbar, in a frame that runs to the window's right edge and
    down to its bottom, with its text at the measure. It is the shape of an
@@ -70,8 +73,12 @@
 .file-drop .btn-secondary {
   margin-top: 6px;
 }
+/* Without a file the zone ends the page. */
+#section-files:not(.has-file) .file-drop {
+  margin-bottom: 0;
+}
 
-/* The options under the zone. With room for two columns and no file yet,
+/* The options over the zone. With room for two columns and no file yet,
    the two settings stand side by side, each in its half of the card: their
    texts start where the texts of two cards side by side would. */
 #section-files.roomy:not(.has-file) .files-options {
@@ -81,10 +88,6 @@
 }
 #section-files.roomy:not(.has-file) .files-options > .setting-row {
   border-bottom: none;
-}
-/* Without a file the options end the page. */
-#section-files:not(.has-file) .files-options {
-  margin-bottom: 0;
 }
 /* "More" belongs to the options' short form (below). */
 #section-files:not(.has-file) .files-options > .hint-more {
@@ -183,8 +186,9 @@
 
 /* Two columns (see the head of this part): the parts of the side column
    one under the other at the left, the result beside all of them. Its
-   toolbar is as high as the zone's line, so both columns start with a line
-   of one height. */
+   toolbar is as high as the options' line and its buttons stand on the
+   selects' level: both columns start with a line of one height, and the
+   transcript's frame starts where the zone's line does. */
 #section-files.roomy.has-file.active {
   display: grid;
   grid-template-columns: var(--side-col) minmax(0, 1fr);
@@ -195,14 +199,14 @@
   grid-area: 1 / 1 / 2 / -1;
 }
 #section-files.roomy.has-file > .file-drop {
-  grid-area: 2 / 1;
+  grid-area: 3 / 1;
 }
 /* The zone's line in the side column: its words and its button, without the mark. */
 #section-files.roomy.has-file .file-drop-icon {
   display: none;
 }
 #section-files.roomy.has-file > .files-options {
-  grid-area: 3 / 1;
+  grid-area: 2 / 1;
 }
 #section-files.roomy.has-file > .file-job {
   grid-area: 4 / 1;
@@ -219,8 +223,11 @@
 #section-files.roomy.has-file > .file-result {
   grid-area: 2 / 2 / -1 / 3;
 }
+/* The options' line beside it: a name's line, the selects' level (where the
+   toolbar's own controls stand), the card's padding. */
 #section-files.roomy.has-file .file-toolbar {
-  min-height: 52px;
+  min-height: calc(var(--s2) + var(--fs-s) * 1.45 + 2px + 34px + var(--s3));
+  padding: calc(var(--s2) + var(--fs-s) * 1.45 + 2px) 0 var(--s3);
   margin-bottom: var(--s3);
 }
 
@@ -388,6 +395,31 @@
   -webkit-user-select: text;
 }
 .file-summary-text[data-tone="error"] { color: var(--red); }
+/* In one column the summary stands over the transcript: it shows its first
+   five lines (two in a window lower than 700 px), so the transcript's first
+   lines are still on the first screen (at 900×600 the transcript began
+   below the window with a summary open). "More" under it opens the rest in
+   place and "Less" closes it again; it is there only while the summary is
+   longer than that (src/rows.ts). "Copy" copies the whole summary either
+   way. Beside the transcript (two columns) the summary is shown whole. */
+#section-files:not(.roomy) .file-summary:not(.collapsed, :has(> .hint-more[aria-expanded="true"])) .file-summary-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  overflow: hidden;
+}
+@media (max-height: 699px) {
+  #section-files:not(.roomy) .file-summary:not(.collapsed, :has(> .hint-more[aria-expanded="true"])) .file-summary-text {
+    -webkit-line-clamp: 2;
+  }
+}
+.file-summary > .hint-more {
+  margin: 0 0 -4px -2px;
+}
+#section-files.roomy .file-summary > .hint-more,
+.file-summary.collapsed > .hint-more {
+  display: none;
+}
 
 /* ── AI cleanup ─────────────────────────────────────── */
 
@@ -555,10 +587,11 @@
   flex-direction: column;
   gap: var(--s4);
 }
+/* One gutter between two columns, as on every page (--gutter, tokens.css). */
 .sb.wide.panel-open .sb-body {
   display: grid;
   grid-template-columns: minmax(340px, 420px) minmax(0, 1fr);
-  column-gap: var(--s5);
+  column-gap: var(--gutter);
   align-items: start;
 }
 .sb-col-settings {
@@ -906,12 +939,18 @@
   align-items: flex-start;
   gap: 8px;
 }
-/* Narrow windows (the pop-out): label above its control. */
+/* Narrow windows (the pop-out): label above its control. The label has the
+   row's width: left as wide as its own words, a hint that ends in "More"
+   broke before its last word although the row had the line free (the room
+   kept for "Less" was not part of that width). */
 @media (max-width: 700px) {
   .sb .setting-row {
     flex-direction: column;
     align-items: flex-start;
     gap: 8px;
+  }
+  .sb .setting-row > .setting-label {
+    align-self: stretch;
   }
   .sb-control {
     justify-content: flex-start;
@@ -1234,9 +1273,11 @@ body.sb-page {
 .mt-side {
   display: contents;
 }
-/* What stands in the notes' place while there are neither notes nor a hint
-   row; only in two columns, where the place would be empty. A quiet line,
-   like every empty state. */
+/* What is said of the notes while there are neither notes nor a hint row.
+   From 1250 px beside the sidebar only (see "Meetings: two columns"): in
+   the notes' place where the page has two columns, over the transcript
+   where a meeting that records has one. A quiet line, like every empty
+   state. */
 .mt-notes-none {
   display: none;
   padding: 8px 0;
@@ -1575,10 +1616,10 @@ body.sb-page {
    transcript at the right in a frame that runs to the window's right edge
    and has the window's height. The side column holds what is said about the
    meeting (its hint rows with their buttons, "Write notes" among them) and
-   its notes; while it has neither (a meeting that records, one that never
-   got notes) a line says so in the notes' place. So the page has one shape
-   whether the notes are there yet or not, and the head's buttons end at the
-   window's right edge in both. */
+   its notes; a finished meeting that has neither says so in the notes'
+   place with one line. So a saved meeting has one shape whether it has
+   notes or not, and the head's buttons end at the window's right edge in
+   both. */
 #section-meetings.roomy .mt-body {
   display: grid;
   grid-template-columns: var(--side-col) minmax(0, 1fr);
@@ -1597,6 +1638,23 @@ body.sb-page {
 }
 #section-meetings.roomy .mt-side:not(:has(> :is(.mt-hint, .mt-notes):not(.hidden))) > .mt-notes-none {
   display: block;
+}
+/* A meeting that records has nothing beside its transcript for as long as
+   it runs: no notes yet, and a hint row only when something is the matter.
+   Until one of the two is there the page is one column: the line that says
+   when the notes come, and under it the transcript, the page's only
+   content, at the window's width (as a side column the line alone took 489
+   of 1288 px at 1536×864, and 622 of 1672 px at 1920×1080, for the whole
+   meeting). With a hint row or notes it is the two columns of every open
+   meeting. */
+#section-meetings.roomy .mt-view[data-state="recording"] .mt-body:not(:has(> .mt-side > :is(.mt-hint, .mt-notes):not(.hidden))) {
+  display: flex;
+}
+#section-meetings.roomy .mt-view[data-state="recording"] .mt-side:not(:has(> :is(.mt-hint, .mt-notes):not(.hidden))) {
+  display: contents;
+}
+#section-meetings.roomy .mt-view[data-state="recording"] .mt-side:not(:has(> :is(.mt-hint, .mt-notes):not(.hidden))) > .mt-notes-none {
+  padding: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   .mt-bar-dot,

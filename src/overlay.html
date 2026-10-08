@@ -132,10 +132,14 @@
 
          The ground of a text state is solid (the window's card surface): on
          the pill's own see-through ground the microphone, the bars and the
-         x showed faintly behind the words. */
+         x showed faintly behind the words. It has the pill's own shape and
+         size (the window less the body's padding: 304 by 48 px, the same
+         round ends), so the pill keeps its outline from state to state.
+         As large as the window it was 320 by 64 px, and solid, the jump in
+         size showed. */
       .transcript {
         position: absolute;
-        inset: 0;
+        inset: 8px;
         display: flex;
         align-items: center;
         padding: 0 4px;
@@ -205,9 +209,10 @@
           transition: none !important;
         }
       }
+      /* A notice has the pill's shape and size too (see .transcript). */
       .notice {
         position: absolute;
-        inset: 0;
+        inset: 8px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -304,6 +309,13 @@
       window.addEventListener("error", (e) => diag(`window error: ${e.message} at ${e.filename}:${e.lineno}`));
       window.addEventListener("unhandledrejection", (e) => diag(`unhandled rejection: ${e.reason}`));
       document.addEventListener("visibilitychange", () => diag(`visibility: ${document.visibilityState}`));
+
+      // Both weights of the font, from the start. The page's resting state
+      // writes nothing in the heavier one, so the browser fetched it only
+      // with the first chip or label ("3 words", "Polishing"), which then
+      // stood in the fallback font for a frame or two and changed its width
+      // when the file came.
+      for (const weight of [500, 600]) document.fonts.load(`${weight} 12px "IBM Plex Sans"`).catch((e) => diag(`font ${weight}: ${e}`));
 
       const BAR_COUNT = 32;
       const HISTORY = new Array(BAR_COUNT).fill(0);

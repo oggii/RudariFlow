@@ -158,35 +158,61 @@ async function layoutHolds(run) {
 }
 
 /**
- * A dictation's actions (Home, "Row actions" in styles/home.css). "Copy" always shows, at one place in every row.
- * The others show with the pointer on the row or the keyboard focus in it, and where they stand does not change
- * when they come: nothing moves. An armed Delete stays in view when the pointer leaves. All of them stay in the
- * page, named and in the Tab order.
+ * A dictation's actions (Home, "Row actions" in styles/home.css). "Copy" always shows and is the row's last
+ * action: its words end at the card's right edge, where the search field ends, in every row. The others stand to
+ * its left (Delete first, apart from the rest) and show with the pointer on the row or the focus in it; where they
+ * stand does not change when they come, and no row changes its height: nothing moves. In a narrow list (a card
+ * under 600 px) they take the line of the app, the time and the length, whose words are not drawn meanwhile and
+ * stay in the page. An armed Delete stays in view when the pointer leaves. All of them stay in the page, named
+ * and in the Tab order. And the focus counts, not only the keyboard's: after a Re-run by mouse with the pointer
+ * gone, the focus is on a Re-run that shows.
  */
-async function rowActions(page) {
+async function rowActions(page, run) {
   const out = [];
   await page.mouse.move(2, 2);
   const look = () =>
-    page.evaluate(() =>
-      [...document.querySelectorAll("#history-list .history-item")].map((row) => ({
-        copy: Math.round(row.querySelector('[data-action="copy"]').getBoundingClientRect().left),
-        right: Math.round(row.getBoundingClientRect().right - row.querySelector(".history-actions > :last-child").getBoundingClientRect().right),
-        seen: [...row.querySelectorAll(".history-actions > button")].map((b) => (getComputedStyle(b).opacity === "0" ? "" : b.textContent)),
-        at: [...row.querySelectorAll(".history-actions > button")].map((b) => Math.round(b.getBoundingClientRect().left)).join(),
-        last: row.querySelector(".history-actions > :last-child").hasAttribute("data-delete-id"),
-        named: [...row.querySelectorAll(".history-actions > button")].every((b) => b.textContent.trim() && b.tabIndex === 0 && b.checkVisibility()),
-      })),
-    );
+    page.evaluate(() => {
+      const edge = (node) => {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        return Math.round(range.getBoundingClientRect().right);
+      };
+      const middle = (el) => el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2;
+      const rows = [...document.querySelectorAll("#history-list .history-item")].map((row) => {
+        const buttons = [...row.querySelectorAll(".history-actions button")];
+        const copy = row.querySelector('[data-action="copy"]');
+        const parts = row.querySelector(".history-parts");
+        return {
+          // Where the word "Copy" ends, and the row itself.
+          copy: edge(copy.firstChild),
+          right: Math.round(row.getBoundingClientRect().right),
+          height: Math.round(row.getBoundingClientRect().height),
+          seen: buttons.map((b) => (getComputedStyle(b).opacity === "0" ? "" : b.textContent)),
+          at: buttons.map((b) => Math.round(b.getBoundingClientRect().left)).join(),
+          order: buttons[0].hasAttribute("data-delete-id") && buttons.at(-1) === copy,
+          named: buttons.every((b) => b.textContent.trim() && b.tabIndex === 0 && b.checkVisibility()),
+          // Copy on the line of the app, the time and the length, not on one of its own.
+          onLine: Math.abs(middle(copy) - middle(parts)) <= 2,
+          parts: [getComputedStyle(parts).opacity, parts.checkVisibility({ visibilityProperty: true }), parts.textContent.length > 5],
+        };
+      });
+      const card = document.getElementById("home-recent");
+      return { rows, search: Math.round(document.getElementById("history-search").getBoundingClientRect().right), narrow: card.clientWidth - parseFloat(getComputedStyle(card).paddingLeft) - parseFloat(getComputedStyle(card).paddingRight) < 600 };
+    });
   const rest = await look();
-  out.push(...expect(rest.length > 0 && rest.every((r) => r.seen.filter(Boolean).length === 1 && r.seen.at(-2) !== "" && r.last && r.named), "at rest a dictation shows Copy alone; the other actions are in the page, named and in the Tab order", JSON.stringify(rest.map((r) => r.seen))));
-  out.push(...expect(new Set(rest.map((r) => r.copy)).size === 1 && new Set(rest.map((r) => r.right)).size === 1, "the Copy of all dictations stand under each other, and every row ends in Delete at the same place", JSON.stringify(rest.map((r) => [r.copy, r.right]))));
-  // The pointer on the first row: its actions show, where they stood unseen; the other rows stay quiet.
+  out.push(...expect(rest.rows.length > 0 && rest.rows.every((r) => r.seen.filter(Boolean).length === 1 && r.seen.at(-1) !== "" && r.order && r.named), "at rest a dictation shows Copy alone, its last action; the others are in the page before it (Delete first), named and in the Tab order", JSON.stringify(rest.rows.map((r) => r.seen))));
+  out.push(...expect(rest.rows.every((r) => Math.abs(r.copy - r.right) <= 1 && Math.abs(r.copy - rest.search) <= 1), "the Copy of every dictation ends at the card's right edge, where the search field ends", JSON.stringify([rest.search, rest.rows.map((r) => [r.copy, r.right])])));
+  // A narrow list: Copy stands at the right end of the row's second line, which shows its words.
+  if (rest.narrow) out.push(...expect(rest.rows.every((r) => r.onLine && r.parts[0] === "1"), "in a narrow list Copy stands on the line of the app, the time and the length, not on a line of its own", JSON.stringify(rest.rows.map((r) => [r.onLine, r.parts]))));
+  // The pointer on the first row: its actions show, where they stood unseen; the other rows stay quiet, and no row is higher or lower.
   const first = page.locator("#history-list .history-item").first();
   await first.scrollIntoViewIfNeeded();
   const before = await look();
   await first.locator(".history-text").hover();
   const hovered = await look();
-  out.push(...expect(hovered[0].seen.every(Boolean) && hovered[0].at === before[0].at && hovered.slice(1).every((r) => r.seen.filter(Boolean).length === 1), "with the pointer on a dictation its actions show, each where it stood unseen, and only that row's", JSON.stringify([before[0].at, hovered[0].at, hovered.map((r) => r.seen)])));
+  out.push(...expect(hovered.rows[0].seen.every(Boolean) && hovered.rows[0].at === before.rows[0].at && hovered.rows.slice(1).every((r) => r.seen.filter(Boolean).length === 1), "with the pointer on a dictation its actions show, each where it stood unseen, and only that row's", JSON.stringify([before.rows[0].at, hovered.rows[0].at, hovered.rows.map((r) => r.seen)])));
+  out.push(...expect(hovered.rows.map((r) => r.height).join() === before.rows.map((r) => r.height).join(), "no dictation changes its height when its actions show", JSON.stringify([before.rows.map((r) => r.height), hovered.rows.map((r) => r.height)])));
+  if (rest.narrow) out.push(...expect(hovered.rows[0].parts.join() === "0,true,true" && hovered.rows.slice(1).every((r) => r.parts[0] === "1"), "in a narrow list the actions take the row's second line: its words are not drawn meanwhile and stay in the page", JSON.stringify(hovered.rows.map((r) => r.parts))));
   await page.mouse.move(2, 2);
   // The keyboard in the row: Tab from the search field reaches the row's first action, which shows with its ring.
   await page.focus("#history-search");
@@ -194,20 +220,61 @@ async function rowActions(page) {
   const focused = await page.evaluate(() => {
     const at = document.activeElement;
     const row = at.closest(".history-item");
-    return { inRow: !!row, first: !!row && at === row.querySelector(".history-actions > button"), shown: !!row && [...row.querySelectorAll(".history-actions > button")].every((b) => getComputedStyle(b).opacity !== "0"), ring: getComputedStyle(at).outlineStyle !== "none" };
+    return { inRow: !!row, first: !!row && at === row.querySelector(".history-actions button"), shown: !!row && [...row.querySelectorAll(".history-actions button")].every((b) => getComputedStyle(b).opacity !== "0"), ring: getComputedStyle(at).outlineStyle !== "none" };
   });
   out.push(...expect(focused.inRow && focused.first && focused.shown && focused.ring, "with the keyboard focus in a dictation all its actions show, and the focused one has its ring", JSON.stringify(focused)));
   await page.evaluate(() => document.activeElement.blur());
-  // An armed Delete stays in view when the pointer has left the row.
+  // An armed Delete stays in view when the pointer has left the row (it has the focus, and so the row shows).
   await first.locator(".history-text").hover();
   await first.locator("[data-delete-id]").click();
   await page.mouse.move(2, 2);
   await wait(page, 60);
-  const armed = (await look())[0];
-  out.push(...expect(armed.seen.at(-1).endsWith("?") && armed.seen.filter(Boolean).length === 2, "an armed Delete stays in view with Copy when the pointer leaves the row", JSON.stringify(armed.seen)));
+  const armed = (await look()).rows[0];
+  out.push(...expect(armed.seen[0].endsWith("?") && armed.seen.at(-1) !== "", "an armed Delete stays in view with Copy when the pointer leaves the row", JSON.stringify(armed.seen)));
   await page.keyboard.press("Escape");
   await page.evaluate(() => document.activeElement?.blur?.());
   await wait(page, 60);
+  // What a click leaves behind is the same in every view: once.
+  if (!(run.lang === "en" && run.size === BEHAVIOUR)) return out;
+  // Re-run by mouse, and the pointer goes: the answer draws the row anew, and the focus is on its Re-run, which
+  // shows. Shown only to the keyboard's focus, it had the focus and was not seen: Enter started a Re-run nobody saw.
+  const focusNow = () =>
+    page.evaluate(() => {
+      const at = document.activeElement;
+      const row = at?.closest?.(".history-item");
+      return { action: at?.dataset?.action ?? at?.tagName, text: at?.textContent, row: row?.dataset.id, opacity: at ? getComputedStyle(at).opacity : "", inPage: !!at?.isConnected, resting: at?.getAttribute?.("aria-disabled") };
+    });
+  const id = await first.getAttribute("data-id");
+  await first.locator(".history-text").hover();
+  await page.evaluate(() => window.__MOCK__.holdNext("history_rerun"));
+  await first.locator('[data-action="rerun"]').click();
+  await page.mouse.move(2, 2);
+  await wait(page, 80);
+  const running = await focusNow();
+  await page.evaluate(() => window.__MOCK__.release("history_rerun"));
+  await wait(page, 150);
+  const rerun = { ...(await focusNow()), asked: await page.evaluate(() => window.__MOCK__.calls.filter((c) => c.cmd === "history_rerun").map((c) => c.args.id)), unknown: await page.evaluate(() => window.__MOCK__.unknown.join()) };
+  out.push(...expect(running.action === "rerun" && running.resting === "true" && running.opacity === "1" && running.text === "Transcribing…", "a Re-run that runs says so on its button, which keeps the focus and shows with the pointer gone", JSON.stringify(running)));
+  out.push(
+    ...expect(
+      rerun.asked.join() === id && rerun.unknown === "" && rerun.action === "rerun" && rerun.row === id && rerun.inPage && rerun.opacity === "1" && rerun.text === "Re-run" && rerun.resting === null,
+      "after a Re-run by mouse with the pointer gone, the focus is on the row's Re-run, which shows",
+      JSON.stringify(rerun),
+    ),
+  );
+  // "Original" and back: the button is "Original" again, has the focus, and shows.
+  await first.locator(".history-text").hover();
+  const original = first.locator(".history-more button").nth(1);
+  await original.click();
+  await original.click();
+  await page.mouse.move(2, 2);
+  await wait(page, 60);
+  const back = await focusNow();
+  out.push(...expect(back.text === "Original" && back.row === id && back.opacity === "1", "Original toggled back by mouse with the pointer gone: the button has the focus and shows", JSON.stringify(back)));
+  await page.evaluate(() => document.activeElement?.blur?.());
+  await wait(page, 60);
+  const quiet = (await look()).rows[0];
+  out.push(...expect(quiet.seen.filter(Boolean).length === 1, "once the focus has left the row it shows Copy alone again", JSON.stringify(quiet.seen)));
   return out;
 }
 
@@ -2638,6 +2705,25 @@ async function panelMore(page) {
     );
   let now = await mores();
   out.push(...expect(now.length === 3 && now.every((m) => m.name.length > m.text.length && m.name.includes(m.label)), 'every "More" of the Soundboard\'s panel is named after its row', JSON.stringify(now.map((m) => m.name))));
+  // A hint that ends in "More" is one line where its row has the line free: in the pop-out, where a row's label
+  // stands over its control, the label was as wide as its own words and the hint broke before its last word
+  // ("Stoppt jeden / Sound. Mehr" in a row of 388 px).
+  const hints = await page.evaluate(() =>
+    [...document.querySelectorAll("#sb-panel .label-hint:has(> .hint-more)")].map((hint) => {
+      const words = hint.querySelector("span");
+      const range = document.createRange();
+      range.selectNodeContents(words);
+      const lines = new Set([...range.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top))).size;
+      const probe = document.createElement("span");
+      probe.style.cssText = "position:absolute;white-space:nowrap;visibility:hidden";
+      probe.textContent = words.textContent;
+      hint.append(probe);
+      const need = probe.getBoundingClientRect().width + parseFloat(getComputedStyle(words).paddingRight);
+      probe.remove();
+      return { text: words.textContent, lines, need: Math.round(need), room: Math.round(hint.closest(".setting-row").getBoundingClientRect().width) };
+    }),
+  );
+  out.push(...expect(hints.length === 3 && hints.every((h) => h.lines === 1 || h.need > h.room), 'in the Soundboard\'s panel a hint that ends in "More" is one line where its row has the room', JSON.stringify(hints)));
   await page.focus("#sb-panel .hint-more");
   await page.keyboard.press("Enter");
   await wait(page, 150);
@@ -2848,11 +2934,11 @@ const filesNow = (page) =>
   });
 
 /**
- * Files without a result. No file: the zone and, under it, the options, both from the page's left edge to its
- * right one, the zone as high as the window leaves (its bottom 16 px over the options, which end the page); from
- * 1250 px the two choices stand side by side in their card. With a file the zone is one line and the options are
- * their short form (both choices on one level, no hint, "More" at their end); from 1250 px both stand in the side
- * column.
+ * Files without a result. What to set comes before where to drop: the options, and under them the zone, both
+ * from the page's left edge to its right one. No file: the zone is as high as the window leaves (its top 16 px
+ * under the options, its bottom the page's); from 1250 px the two choices stand side by side in their card. With
+ * a file the zone is one line and the options are their short form (both choices on one level, no hint, "More"
+ * at their end); from 1250 px both stand in the side column.
  */
 function filesLayout(see, lang) {
   const detail = JSON.stringify(see);
@@ -2860,12 +2946,12 @@ function filesLayout(see, lang) {
     ...expect(see.title === (lang === "de" ? "Dateien" : "Files"), "the page is called Files", see.title),
     ...expect(see.inCard && see.transcript.length > 0, "the options stand in a card and the transcript has a name", detail),
     ...expect(see.roomy === see.room >= ROOMY, `Files has room for two columns from ${ROOMY} px beside the sidebar`, detail),
-    ...expect(see.zone.left === see.page.left && see.options.left === see.page.left && see.options.top >= see.zone.bottom, "the drop zone and the options start on the page's left edge, the options under the zone", detail),
+    ...expect(see.zone.left === see.page.left && see.options.left === see.page.left && see.zone.top >= see.options.bottom, "the options and the drop zone start on the page's left edge, the options first and the zone under them", detail),
     ...expect(see.loaded ? see.oneLine && see.zone.height <= 56 : !see.oneLine, "with a file loaded the drop zone is one line, and only then", detail),
   ];
   if (!see.loaded) {
     out.push(...expect(Math.abs(see.zone.right - see.page.right) <= 1 && Math.abs(see.options.right - see.page.right) <= 1, "without a file the drop zone and the options end at the page's right edge", detail));
-    out.push(...expect(see.scrolls || (see.options.top - see.zone.bottom === 16 && Math.abs(see.options.bottom - see.page.bottom) <= 1 && see.zone.height >= 110), "without a file the drop zone takes the height the window leaves", detail));
+    out.push(...expect(see.scrolls || (see.zone.top - see.options.bottom === 16 && Math.abs(see.zone.bottom - see.page.bottom) <= 1 && see.zone.height >= 110), "without a file the drop zone takes the height the window leaves, under the options", detail));
     out.push(...expect(see.more === null && see.hints === 2 && (see.roomy ? see.selects[0] === see.selects[1] : see.selects[1] > see.selects[0]), "without a file the options show their hints; in a window with room for two columns the two choices stand side by side", detail));
     return out;
   }
@@ -2901,7 +2987,7 @@ async function optionsMore(page) {
 /**
  * Files with a result: the one rule it shares with an open meeting. One column: every part has the page's width
  * (the file's line, "Summarise with AI", the summary, the toolbar, the transcript). Two columns, from 1250 px
- * beside the sidebar: the side column at the left (the zone's line, the options, the file's line, Summarise and
+ * beside the sidebar: the side column at the left (the options, the zone's line, the file's line, Summarise and
  * the summary, all on one left and one right edge, 340 to 622 px wide) and the transcript at the right under its
  * toolbar, both ending at the page's right edge, one gutter of 16 px from the side column; the frame runs down
  * to the page's bottom. In both the frame is as wide as its column and the text keeps its measure in it (what
@@ -2957,7 +3043,7 @@ async function resultLayout(page) {
       "in two columns the side column holds the zone, the options, the file's line, Summarise and the summary on one left and one right edge",
       detail,
     ),
-    ...expect(see.text.left - see.zone.right === 16 && see.toolbar.left === see.text.left && see.toolbar.top === see.zone.top && see.text.top >= see.toolbar.bottom, "the transcript stands one gutter (16 px) right of the side column, under its toolbar, which starts on the zone's line", detail),
+    ...expect(see.text.left - see.zone.right === 16 && see.toolbar.left === see.text.left && see.toolbar.top === see.options.top && Math.abs(see.toolbar.bottom - see.options.bottom) <= 1 && see.text.top >= see.toolbar.bottom, "the transcript stands one gutter (16 px) right of the side column, under its toolbar, which has the options' line and its height", detail),
     ...expect(see.scrolls || Math.abs(see.text.bottom - see.page.bottom) <= 1, "the transcript's frame runs down to the page's bottom", detail),
     ...expect(Math.abs(see.clear.right - see.zone.right) <= 12, "the file's line ends with the side column", detail),
   );
@@ -3526,7 +3612,7 @@ async function historyStays(page, run, reason) {
   out.push(...expect(found === 2 && copied[0] === text && copied[1] === "Copied", "under the steps the list is searched and a dictation is copied", JSON.stringify([found, copied])));
   // Original and Delete too: every action of a row is there.
   const actions = await page.evaluate(() => [...document.querySelectorAll("#history-list .history-item:first-child .history-actions button")].map((b) => b.textContent));
-  out.push(...expect(actions.length === 5 && actions.includes("Original") && actions.includes("Play") && actions.includes("Re-run") && actions.at(-2) === "Copied" && actions.at(-1) === "Delete", "a dictation under the steps has every action: Original, Play, Re-run, then Copy and Delete", JSON.stringify(actions)));
+  out.push(...expect(actions.length === 5 && actions[0] === "Delete" && actions.includes("Original") && actions.includes("Play") && actions.includes("Re-run") && actions.at(-1) === "Copied", "a dictation under the steps has every action: Delete, Original, Play, Re-run, and Copy at its end", JSON.stringify(actions)));
   // The window opens where it was left: only a first run is brought to Home.
   await settings(page, "general");
   await restart(page);
@@ -3760,7 +3846,56 @@ async function startSequence(page, run) {
 
 // ── A save the backend refuses ──
 
-/** The notice at the top of the page, the line that is read out, and what the mocked backend holds. */
+/**
+ * Where the page's notice lies: at the bottom of the content area, on the pages' left edge. It covers no way
+ * through the window: no tab of Settings and no page's head (under the title's row it lay over all five tabs,
+ * which could not be clicked until it was closed, and over Home's "Hold … and speak"). And with the page
+ * scrolled to its end nothing of the page is under it: the page leaves the notice's height free there.
+ */
+async function noticePlace(page) {
+  const out = [];
+  const look = (what) =>
+    page.evaluate((what) => {
+      const content = document.getElementById("content");
+      const section = document.querySelector(".content-section.active");
+      const notice = document.getElementById("save-notice").getBoundingClientRect();
+      const under = (el) => {
+        const r = el.getBoundingClientRect();
+        return el.checkVisibility() && r.width > 0 && r.height > 0 && r.bottom > notice.top && r.top < notice.bottom && r.right > notice.left && r.left < notice.right;
+      };
+      content.scrollTop = 0;
+      const ways = [...document.querySelectorAll("#settings-tabs .tab, .content-section.active .section-header, .content-section.active .section-header *, #sidebar .nav-item")].filter(under).length;
+      // A tab can be clicked: what is at its middle is the tab.
+      const tabs = [...document.querySelectorAll("#settings-tabs .tab")].filter((tab) => tab.checkVisibility());
+      const reached = tabs.filter((tab) => {
+        const r = tab.getBoundingClientRect();
+        return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === tab;
+      }).length;
+      // The page scrolled to its end: the lowest thing that is drawn on it.
+      content.scrollTop = content.scrollHeight;
+      let low = 0;
+      for (const el of section.querySelectorAll("*")) {
+        if (!el.checkVisibility() || el.closest(".sr-only, .mt-sr-only, option")) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width > 1 && r.height > 1) low = Math.max(low, r.bottom);
+      }
+      const now = { what, shown: document.getElementById("save-notice").checkVisibility(), left: Math.round(notice.left), pageLeft: Math.round(section.getBoundingClientRect().left + parseFloat(getComputedStyle(section).paddingLeft)), below: Math.round(window.innerHeight - notice.bottom), top: Math.round(notice.top), ways, tabs: tabs.length, reached, low: Math.round(low), close: document.elementFromPoint(notice.right - 20, notice.top + 20)?.closest("button")?.id ?? "" };
+      content.scrollTop = 0;
+      return now;
+    }, what);
+  const places = [["Settings", null], ["Home", "home"]];
+  for (const [what, name] of places) {
+    if (name) await section(page, name);
+    const see = await look(what);
+    out.push(...expect(see.shown && see.left === see.pageLeft && see.below === 24 && see.close === "save-notice-close", `${what}: the notice lies at the bottom of the content area, on the page's left edge, with its button to close it`, JSON.stringify(see)));
+    out.push(...expect(see.ways === 0 && see.reached === see.tabs && (name || see.tabs === 5), `${what}: the notice covers no tab and nothing of the page's head`, JSON.stringify(see)));
+    out.push(...expect(see.low <= see.top, `${what}: with the page scrolled to its end, its last row stands over the notice, not under it`, JSON.stringify(see)));
+  }
+  await settings(page, "dictation");
+  return out;
+}
+
+/** The page's notice, the line that is read out, and what the mocked backend holds. */
 const noticeNow = (page) =>
   page.evaluate(() => ({
     shown: document.getElementById("save-notice").checkVisibility(),
@@ -3785,7 +3920,7 @@ async function saveFails(page) {
   // The page's state: "Toggle" was pressed and refused (see the page's `open`).
   let see = await noticeNow(page);
   const mode = await page.evaluate(() => [document.getElementById("mode-ptt").getAttribute("aria-pressed"), document.getElementById("mode-toggle").getAttribute("aria-pressed")]);
-  out.push(...expect(see.shown && see.text === `Could not save: ${DENIED}` && see.said === see.text && see.tone === "error" && see.live === "status", "a refused save is said in a notice at the top of the page, with the backend's reason, and read out", JSON.stringify(see)));
+  out.push(...expect(see.shown && see.text === `Could not save: ${DENIED}` && see.said === see.text && see.tone === "error" && see.live === "status", "a refused save is said in the page's notice, with the backend's reason, and read out", JSON.stringify(see)));
   out.push(...expect(mode.join() === "true,false" && (await savedNow(page)) === before, "the segmented choice is back on the saved value", JSON.stringify(mode)));
   // Its button closes it; the focus goes to the page's heading.
   await page.focus("#save-notice-close");
@@ -4083,9 +4218,74 @@ async function focusOverStep(page) {
   await cross("the search field, with its selection,");
   await page.fill("#history-search", "");
   await wait(page, 150);
-  await page.focus("#history-list .history-item:nth-child(2) .history-actions button:first-child");
+  await page.focus('#history-list .history-item:nth-child(2) [data-action="copy"]');
   await cross("a dictation's Copy");
   await page.evaluate(() => document.activeElement?.blur?.());
+  return out;
+}
+
+/**
+ * A question of the start that never answers. The start's questions return plain values in the backend, so this
+ * is a hang and nothing a healthy app does; still, one answer that never came left Home on "Getting ready…" for
+ * ever (the settings), or on its heading alone (the microphones, the speech model's state, or the meetings'
+ * state, which kept the other three answers of the status from being read). After five seconds the window goes
+ * on with what it has: Home shows its daily view from what is known, a list of microphones that never came is
+ * unknown and not "no microphone", the page's notice says what is the matter, and the sidebar never says "Ready"
+ * while Home says "Getting ready…". An answer that comes later still lands, and with the last one the notice goes.
+ */
+async function startHangs(page) {
+  const out = [];
+  const SILENT = "Could not reach the app's backend. Restart RudariFlow.";
+  const see = () =>
+    page.evaluate(() => {
+      const shown = (id) => document.getElementById(id).checkVisibility();
+      const notice = document.getElementById("save-notice");
+      return {
+        title: document.getElementById("home-title").textContent,
+        sidebar: document.getElementById("status-text").textContent,
+        kind: document.getElementById("status-indicator").dataset.kind ?? "",
+        daily: shown("home-daily"),
+        steps: shown("home-setup"),
+        notice: notice.checkVisibility() ? document.getElementById("save-notice-text").textContent : "",
+        said: document.getElementById("save-live").textContent,
+        mic: document.getElementById("home-loaded-mic").textContent,
+        speech: document.getElementById("home-loaded-speech").textContent,
+        inert: document.getElementById("section-home").inert,
+        started: document.body.dataset.started === "true",
+        home: document.getElementById("section-home").classList.contains("active"),
+      };
+    });
+  // What Home and the sidebar must show five seconds after a start in which this question never answered.
+  const cases = [
+    // The microphones are unknown, not "none": a dictation works as far as anyone knows.
+    ["list_microphones", (s) => s.daily && !s.steps && s.title === "Ready to dictate" && s.kind === "ready" && !/No microphone/.test(s.mic) && !s.inert],
+    // Without the speech model's state nobody knows whether a dictation works: the daily view, and neither says Ready.
+    ["speech_status", (s) => s.daily && !s.steps && s.title === "Getting ready…" && s.kind === "loading" && s.speech === "" && !s.inert],
+    // The meetings' state is one of the status's four questions: the other three answers are read all the same.
+    ["meeting_state", (s) => s.daily && !s.steps && s.title === "Ready to dictate" && s.kind === "ready" && s.speech !== "" && !s.inert],
+    // Without the settings Home has nothing to show: its heading, and the sidebar does not say Ready beside it.
+    ["get_settings", (s) => !s.daily && !s.steps && s.title === "Getting ready…" && s.kind !== "ready" && s.sidebar !== "Ready" && s.inert],
+  ];
+  await section(page, "home");
+  for (const [cmd, goesOn] of cases) {
+    await page.evaluate((cmd) => window.__MOCK__.keep({ hold: [cmd] }), cmd);
+    await page.reload({ waitUntil: "load" });
+    await wait(page, 1500);
+    const early = await see();
+    await wait(page, 4200);
+    const late = await see();
+    const held = await page.evaluate((cmd) => window.__MOCK__.calls.filter((c) => c.cmd === cmd).length, cmd);
+    await page.evaluate((cmd) => window.__MOCK__.release(cmd), cmd);
+    await until(page, () => document.body.dataset.started === "true", 3000);
+    await wait(page, 250);
+    const landed = await see();
+    const detail = JSON.stringify({ early, late, landed });
+    out.push(...expect(held === 1 && early.home && !early.started && early.title === "Getting ready…" && early.kind !== "ready" && early.notice === "" && !early.daily, `${cmd} never answers: within the first five seconds Home waits on its heading, the sidebar does not say Ready, and nothing is said yet`, detail));
+    out.push(...expect(!late.started && goesOn(late) && late.notice === SILENT && late.said === SILENT, `${cmd} never answers: after five seconds the window goes on with what it has and says in the page's notice that the backend cannot be reached`, detail));
+    out.push(...expect(!(late.title === "Getting ready…" && (late.kind === "ready" || late.sidebar === "Ready")), `${cmd} never answers: the sidebar never says Ready while Home says Getting ready`, detail));
+    out.push(...expect(landed.started && landed.daily && !landed.steps && landed.title === "Ready to dictate" && landed.kind === "ready" && landed.notice === "" && landed.said === "" && /Fast Track/.test(landed.mic) && landed.speech !== "" && !landed.inert, `${cmd} answers late: the answer still lands, Home and the sidebar say Ready, and the notice goes`, detail));
+  }
+  await page.evaluate(() => window.__MOCK__.keep({ hold: null }));
   return out;
 }
 
@@ -4330,6 +4530,28 @@ async function pillOneLine(page) {
     return { characters: text.textContent.length, lines: new Set(rects.map((r) => Math.round(r.top))).size, inside: rects.every((r) => r.top >= box.top && r.bottom <= box.bottom) };
   });
   return expect(see.characters > 0 && see.lines === 1 && see.inside, "the pill's text is one line, inside the pill", JSON.stringify(see));
+}
+
+/**
+ * The pill keeps its outline from state to state: the ground of a text state (the transcript, a notice) is the
+ * pill's own box, 304 by 48 px with the same round ends, not the whole window of 320 by 64 px. And both weights
+ * of its font are in from the start: the heavier one, which the resting pill never writes in, came only with
+ * the first chip or label, which then changed its width.
+ */
+async function pillOutline(page, ground) {
+  const see = await page.evaluate((ground) => {
+    const box = (el) => {
+      const r = el.getBoundingClientRect();
+      return [r.left, r.top, r.width, r.height].map((n) => Math.round(n * 10) / 10).join();
+    };
+    const pill = document.getElementById("pill");
+    const text = document.getElementById(ground);
+    return { pill: box(pill), ground: box(text), ends: [getComputedStyle(pill).borderRadius, getComputedStyle(text).borderRadius], shown: getComputedStyle(text).opacity, fonts: [500, 600].map((weight) => document.fonts.check(`${weight} 12px "IBM Plex Sans"`)) };
+  }, ground);
+  return [
+    ...expect(see.pill === "8,8,304,48" && see.ground === see.pill && see.ends[0] === see.ends[1] && see.shown === "1", "the ground of the pill's text states is the pill's own shape and size: its outline does not change between states", JSON.stringify(see)),
+    ...expect(see.fonts.join() === "true,true", "both weights of the pill's font are loaded from the start", JSON.stringify(see.fonts)),
+  ];
 }
 
 /** What Whisper sends for a dictation of three sentences: a segment each, one after the other (whisper_engine.rs, the segment callback). */
@@ -4636,8 +4858,10 @@ export const PAGES = [
   },
   {
     id: "home",
-    // The two columns at their narrowest are measured too (German: "Schreiben in" beside its select).
-    alsoSizes: ["1200x800"],
+    // The two columns at their narrowest are measured too (German: "Schreiben in" beside its select), and the
+    // most common large window, where the quick switches' card is at its narrowest again (377 px between its
+    // paddings: "Gesprochene Sprache" stood over its select there while "Schreiben in" stood beside its own).
+    alsoSizes: ["1200x800", "1920x1080"],
     open: (page) => section(page, "home"),
     probe: async (page, run) => {
       const out = [];
@@ -4691,12 +4915,13 @@ export const PAGES = [
       // Every row is an item of the list, named after its text, and all rows have one shape.
       const rowsAre = await page.evaluate(() => {
         const rows = [...document.querySelectorAll("#history-list .history-item")];
-        const beside = rows.map((row) => row.querySelector(".history-actions").getBoundingClientRect().top < row.querySelector(".history-meta").getBoundingClientRect().bottom - 1);
+        const beside = rows.map((row) => row.querySelector('[data-action="copy"]').getBoundingClientRect().top < row.querySelector(".history-parts").getBoundingClientRect().bottom - 1);
         return {
           list: document.getElementById("history-list").getAttribute("role"),
           named: rows.every((row) => row.getAttribute("role") === "listitem" && document.getElementById(row.getAttribute("aria-labelledby"))?.textContent === row.querySelector(".history-text").textContent),
           ids: new Set(rows.map((row) => row.getAttribute("aria-labelledby"))).size === rows.length,
           shapes: new Set(beside).size,
+          beside: beside.every(Boolean),
           // App, time and length are one line that never breaks: no dot at a line's end, none at its start.
           parts: rows.every((row) => {
             const line = row.querySelector(".history-parts");
@@ -4709,10 +4934,32 @@ export const PAGES = [
         };
       });
       out.push(...expect(rowsAre.list === "list" && rowsAre.named && rowsAre.ids, "every dictation is a list item named after its text", JSON.stringify(rowsAre)));
-      out.push(...expect(rowsAre.shapes === 1, "the actions stand beside the text in every row or below it in every row", JSON.stringify(rowsAre)));
+      out.push(...expect(rowsAre.shapes === 1 && rowsAre.beside, "every row has one shape, and Copy never has a line of its own: it stands beside the text or on the row's second line", JSON.stringify(rowsAre)));
       out.push(...expect(rowsAre.parts, "a row's second line is one line, with no dot at its end", JSON.stringify(rowsAre)));
       out.push(...expect(rowsAre.metas.every((m) => /\d\d:\d\d · (\d+ min( \d+ s)?|\d+ s)$/.test(m) && !/large|turbo|q8|ggml/i.test(m)), "a row's second line ends in the time and the length (\"01:55 · 6 s\") and names no model", JSON.stringify(rowsAre.metas)));
-      out.push(...(await rowActions(page)));
+      // The quick switches' two choices have one form at every size: each select beside its name, which keeps
+      // its one line, or both under their names; never one of them alone.
+      const choices = await page.evaluate(() =>
+        [...document.querySelectorAll("#home-switches .setting-row")]
+          .filter((row) => row.querySelector("select"))
+          .map((row) => {
+            const range = document.createRange();
+            range.selectNodeContents(row.querySelector(".label-text"));
+            const lines = new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+            const label = range.getBoundingClientRect();
+            const select = row.querySelector("select").getBoundingClientRect();
+            const ends = row.getBoundingClientRect().right;
+            return { name: row.querySelector(".label-text").textContent, beside: select.top < label.bottom && select.left >= label.right, under: select.top >= label.bottom, lines, select: Math.round(select.width), inRow: select.right <= ends + 0.5 && Math.abs(select.right - ends) <= 1 };
+          }),
+      );
+      out.push(
+        ...expect(
+          choices.length === 2 && choices.every((c) => c.lines === 1 && c.inRow && c.select >= 180 && c.beside !== c.under) && new Set(choices.map((c) => c.beside)).size === 1,
+          "the quick switches' two choices have one form: both selects beside their names or both under them, each name on one line and each select 180 px or more, ending at the card's edge",
+          JSON.stringify(choices),
+        ),
+      );
+      out.push(...(await rowActions(page, run)));
       // The smallest window: the list that is used every day starts on the first screen, with its first dictation.
       if (run.size === "900x600") {
         const first = await page.evaluate(() => {
@@ -4800,7 +5047,7 @@ export const PAGES = [
       // Delete from the keyboard: the focus goes to the first action of the row that moves up.
       const row = (n) => page.evaluate((n) => document.querySelectorAll("#history-list .history-item")[n]?.dataset.id, n);
       const second = await row(1);
-      await page.focus("#history-list .history-item:first-child .history-actions button:last-child");
+      await page.focus("#history-list .history-item:first-child [data-delete-id]");
       await page.keyboard.press("Enter");
       // The first press only arms Delete; the second one answers it (not at once: src/arm.ts).
       await wait(page, ANSWER);
@@ -4931,6 +5178,13 @@ export const PAGES = [
       out.push(...expect(see.switchShown, "the virtual microphone's switch is always visible", JSON.stringify(see)));
       out.push(...expect(see.firstSound >= 0 && see.firstSound < see.height, "the first sound is on the first screen", JSON.stringify(see)));
       out.push(...(await tiles(page)));
+      // The panel beside the sounds: one gutter between the two columns, as on every page (16 px; it was 24 here).
+      const gutter = await page.evaluate(() => {
+        const panel = document.getElementById("sb-panel")?.getBoundingClientRect();
+        const library = document.querySelector("#sb-root .sb-col-library").getBoundingClientRect();
+        return panel ? Math.round(library.left - panel.right) : null;
+      });
+      out.push(...expect(!(see.panel && see.wide) || gutter === 16, "the Soundboard's panel and its sounds stand one gutter (16 px) apart, like the two columns of every page", String(gutter)));
       // The bar: the three buttons stand beside the switch only where its text keeps a line's width, else under
       // it (English at 900x600 left the text a column of 220 px, with every line of it broken in two).
       const bar = await page.evaluate(() => {
@@ -5223,7 +5477,8 @@ export const PAGES = [
     id: "files-result",
     scenarios: ["populated"],
     // Also at the step and at the common large size: the summary in the side column, beside the transcript.
-    alsoSizes: ["1450x820", "1920x1080"],
+    // And at a common laptop size that is one column and high enough for the summary's five lines.
+    alsoSizes: ["1280x720", "1450x820", "1920x1080"],
     fresh: true,
     open: async (page) => {
       await section(page, "files");
@@ -5232,10 +5487,63 @@ export const PAGES = [
       await page.click("#file-summarize");
       await wait(page, 400);
     },
-    // The summary stands before the transcript: it starts on the first screen.
+    // The summary stands before the transcript: it starts on the first screen. In one column it shows its first
+    // lines only (five; two in a window lower than 700 px), with a More that opens the rest in place, so the
+    // transcript's first line is on the first screen too: at 900×600 it began below the window.
     probe: async (page) => {
-      const at = await page.evaluate(() => [Math.round(document.getElementById("file-summary-box").getBoundingClientRect().top), window.innerHeight]);
-      return [...expect(at[0] < at[1], "the summary starts on the first screen", `y ${at[0]} of ${at[1]}`), ...(await resultLayout(page))];
+      const out = [];
+      const look = () =>
+        page.evaluate(() => {
+          const text = document.getElementById("file-text");
+          const cs = getComputedStyle(text);
+          const summary = document.getElementById("file-summary");
+          const more = document.getElementById("file-summary-more");
+          const lineHeight = parseFloat(getComputedStyle(summary).lineHeight);
+          return {
+            summaryTop: Math.round(document.getElementById("file-summary-box").getBoundingClientRect().top),
+            // Where the transcript's first line ends.
+            firstLine: Math.round(text.getBoundingClientRect().top + parseFloat(cs.paddingTop) + parseFloat(cs.lineHeight)),
+            window: window.innerHeight,
+            roomy: document.getElementById("section-files").classList.contains("roomy"),
+            lines: Math.round(summary.clientHeight / lineHeight),
+            cut: summary.scrollHeight > summary.clientHeight + 1,
+            more: more.checkVisibility() ? [more.getAttribute("aria-expanded"), more.textContent, more.getAttribute("aria-label") ?? "", more.getAttribute("aria-controls")] : null,
+            whole: summary.textContent.length,
+          };
+        });
+      const at = await look();
+      const detail = JSON.stringify(at);
+      out.push(...expect(at.summaryTop < at.window, "the summary starts on the first screen", detail));
+      if (at.roomy) {
+        out.push(...expect(!at.cut && at.more === null, "beside the transcript (two columns) the summary is shown whole, without a More", detail));
+      } else {
+        out.push(...expect(at.firstLine <= at.window, "in one column the transcript's first line is on the first screen with a summary open", detail));
+        out.push(...expect(at.cut && at.lines === (at.window < 700 ? 2 : 5) && at.more?.[0] === "false" && /^(More|Mehr)$/.test(at.more[1]) && at.more[2].length > at.more[1].length && at.more[3] === "file-summary", "in one column the summary shows its first five lines (two in a low window) and a More that is named after it", detail));
+        if (!at.more) return [...out, ...(await resultLayout(page))];
+        // More opens the rest in place, Less closes it again; Copy copies the whole summary either way.
+        await page.click("#file-summary-more");
+        await wait(page, 100);
+        const open = await look();
+        await page.click("#file-summary-copy");
+        await wait(page, 80);
+        const copied = await page.evaluate(() => window.__MOCK__.calls.filter((c) => c.cmd === "copy_text").at(-1)?.args.text.length);
+        await page.click("#file-summary-more");
+        await wait(page, 100);
+        const shut = await look();
+        await page.click("#file-summary-copy");
+        await wait(page, 80);
+        const copiedCut = await page.evaluate(() => window.__MOCK__.calls.filter((c) => c.cmd === "copy_text").at(-1)?.args.text.length);
+        out.push(
+          ...expect(
+            !open.cut && open.lines > at.lines && open.more?.[0] === "true" && /^(Less|Weniger)$/.test(open.more[1]) && shut.cut && shut.lines === at.lines && shut.more?.[0] === "false" && shut.firstLine === at.firstLine,
+            "More opens the whole summary in place and Less closes it again; the transcript is back where it was",
+            JSON.stringify({ open, shut }),
+          ),
+        );
+        out.push(...expect(copied === at.whole && copiedCut === at.whole && at.whole > 100, "Copy copies the whole summary, opened or not", JSON.stringify([copied, copiedCut, at.whole])));
+        await wait(page, 1300); // "Copied" is "Copy" again for the picture
+      }
+      return [...out, ...(await resultLayout(page))];
     },
   },
   {
@@ -5251,11 +5559,62 @@ export const PAGES = [
   {
     id: "meetings-recording",
     scenarios: ["populated"],
+    // Also at the two most common large sizes: the transcript has the window's width there, not a column of it.
+    alsoSizes: ["1536x864", "1920x1080"],
     fresh: true,
     open: async (page) => {
       await section(page, "meetings");
       await page.evaluate(() => window.__MOCK__.emit("meeting-status", window.__MOCK__.meetingRecording()));
       await wait(page, 700);
+    },
+    // A meeting that records has no notes yet and, while nothing is the matter, no hint row: its transcript is
+    // the page's only content and has the page's width at every size. From 1250 px beside the sidebar one quiet
+    // line over it says when the notes come (as a side column that line alone took 489 of 1288 px at 1536×864).
+    // Once a hint row is there the page is the two columns of every open meeting.
+    probe: async (page) => {
+      const look = () =>
+        page.evaluate(() => {
+          const box = (el) => el.getBoundingClientRect();
+          const section = document.getElementById("section-meetings");
+          const cs = getComputedStyle(section);
+          const text = box(document.getElementById("mt-transcript"));
+          const line = document.querySelector(".mt-notes-none");
+          return {
+            state: document.getElementById("mt-view").dataset.state,
+            room: document.getElementById("content").offsetWidth,
+            page: [Math.round(box(section).left + parseFloat(cs.paddingLeft)), Math.round(box(section).right - parseFloat(cs.paddingRight))],
+            transcript: [Math.round(text.left), Math.round(text.right), Math.round(text.top)],
+            line: line.checkVisibility() ? [Math.round(box(line).left), Math.round(box(line).bottom), line.textContent.trim().length] : null,
+            grid: getComputedStyle(document.querySelector("#section-meetings .mt-body")).display === "grid",
+            hint: document.getElementById("mt-hint").checkVisibility(),
+          };
+        });
+      const see = await look();
+      const roomy = see.room >= ROOMY;
+      const out = [
+        ...expect(see.state === "recording" && !see.hint && !see.grid && see.transcript[0] === see.page[0] && see.transcript[1] === see.page[1], "a meeting that records is one column at every size: its transcript runs from the page's left edge to its right one", JSON.stringify(see)),
+        ...expect(roomy ? !!see.line && see.line[0] === see.page[0] && see.line[1] <= see.transcript[2] && see.line[2] > 20 : see.line === null, `from ${ROOMY} px beside the sidebar one line over the transcript says when the notes come`, JSON.stringify(see)),
+      ];
+      // A hint row comes (something is the matter): the two columns of every open meeting, and back.
+      await page.evaluate(() => {
+        const hint = document.getElementById("mt-hint");
+        const row = document.createElement("div");
+        row.className = "mt-hint-row";
+        row.dataset.probe = "1";
+        row.innerHTML = '<span class="mt-hint-text">Probe</span>';
+        hint.append(row);
+        hint.classList.remove("hidden");
+      });
+      await wait(page, 60);
+      const two = await look();
+      await page.evaluate(() => {
+        document.querySelector('#mt-hint [data-probe="1"]').remove();
+        document.getElementById("mt-hint").classList.add("hidden");
+      });
+      await wait(page, 60);
+      const back = await look();
+      out.push(...expect(two.grid === roomy && two.line === null && (roomy ? two.transcript[0] > two.page[0] + 360 && two.transcript[1] === two.page[1] : two.transcript[0] === two.page[0]) && !back.grid && back.transcript[0] === back.page[0], `with a hint row a meeting that records has the two columns of every open meeting from ${ROOMY} px, and one again without`, JSON.stringify({ two, back })));
+      return out;
     },
   },
   {
@@ -6244,7 +6603,7 @@ export const PAGES = [
     open: (page) => section(page, "home"),
     probe: startSequence,
   },
-  // A save the backend refuses: the notice at the top of the page, and the control back on the saved value.
+  // A save the backend refuses: the page's notice (at the bottom of the content area: `noticePlace`), and the control back on the saved value.
   state(
     "save-failed",
     async (page) => {
@@ -6260,7 +6619,7 @@ export const PAGES = [
         const now = { shown: notice.checkVisibility(), text: notice.textContent.trim(), inView: notice.getBoundingClientRect().top >= 0 };
         return (now.shown && now.inView && /Access is denied/.test(now.text)) || now;
       }),
-      probe: (page, run) => (run.lang === "en" && run.size === BEHAVIOUR ? saveFails(page) : []),
+      probe: async (page, run) => [...(await noticePlace(page)), ...(run.lang === "en" && run.size === BEHAVIOUR ? await saveFails(page) : [])],
       after: logged,
     },
   ),
@@ -6306,6 +6665,20 @@ export const PAGES = [
     open: (page) => section(page, "home"),
     probe: (page, run) => (run.lang === "en" ? wave1(page) : []),
     after: restart,
+  },
+  // A question of the start that never answers (see `startHangs`): five seconds, then the window goes on.
+  {
+    id: "start-hangs",
+    scenarios: ["populated"],
+    sizes: [BEHAVIOUR],
+    fresh: true,
+    checks: false,
+    open: (page) => section(page, "home"),
+    probe: (page, run) => (run.lang === "en" ? startHangs(page) : []),
+    after: async (page) => {
+      await page.evaluate(() => window.__MOCK__.keep({ hold: null }));
+      await restart(page);
+    },
   },
   // A Windows contrast theme: every control has an edge, every selected state shows (see `forcedColors`).
   {
@@ -6432,13 +6805,17 @@ export const PAGES = [
     },
     after: (page) => page.keyboard.press("Escape"),
   },
-  pill("recording", `window.__overlayUpdate("recording"); for (let i = 0; i < 32; i++) window.__MOCK__.emit("audio-level", 0.15 + 0.7 * Math.abs(Math.sin(i * 0.7)));`, pillShows("records", "recording", null)),
-  pill("transcribing", `window.__overlayUpdate("recording"); window.__overlayUpdate("transcribing"); window.__MOCK__.emit("partial-transcript", { text: "Could you send me the quote for the move by tomorrow", is_final: false });`, pillShows("transcribes and shows what was said", "transcribing", "transcript-text"), pillOneLine),
+  pill("recording", `window.__overlayUpdate("recording"); for (let i = 0; i < 32; i++) window.__MOCK__.emit("audio-level", 0.15 + 0.7 * Math.abs(Math.sin(i * 0.7)));`, pillShows("records", "recording", null), async (page) => {
+    // Nothing was written in the heavier weight yet (no chip, no label): it is loaded all the same.
+    const fonts = await page.evaluate(() => [...document.fonts].filter((face) => face.status === "loaded").map((face) => face.weight).sort().join());
+    return expect(fonts === "500,600", "the pill has both weights of its font before its first chip or label", fonts);
+  }),
+  pill("transcribing", `window.__overlayUpdate("recording"); window.__overlayUpdate("transcribing"); window.__MOCK__.emit("partial-transcript", { text: "Could you send me the quote for the move by tomorrow", is_final: false });`, pillShows("transcribes and shows what was said", "transcribing", "transcript-text"), async (page) => [...(await pillOneLine(page)), ...(await pillOutline(page, "transcript"))]),
   // A dictation of three sentences, segment by segment: the pill shows the end of what was said.
   pill("segments", `window.__overlayUpdate("recording"); window.__overlayUpdate("transcribing");`, pillShows("transcribes", "transcribing", null), async (page) => [...(await pillSegments(page)), ...(await pillOneLine(page))]),
   pill("notice", `window.__MOCK__.emit("gpu-notice", "freed");`, pillShows("shows a notice", "notice", "notice"), async (page) => {
     // The pill speaks the Display Language, not Windows' language.
-    const out = [];
+    const out = await pillOutline(page, "notice");
     const lang = await page.evaluate(() => window.__MOCK_CFG__.lang);
     const text = () => page.evaluate(() => document.getElementById("notice").textContent);
     out.push(...expect((await text()) === (lang === "de" ? "GPU freigegeben" : "GPU freed"), "the pill's notice is in the Display Language", await text()));

@@ -92,6 +92,24 @@ test("nothing is known right after the start: loading, not setup", () => {
   assert.equal(status(input({ speech: speech({ load: "unloaded" }) })).kind, "loading");
 });
 
+test("after the start's wait only the speech model's state still holds the status back", () => {
+  // The list of microphones or the AI's state never came: unknown, neither missing nor a reason to wait.
+  assert.equal(status(input({ microphones: null, waited: true })).kind, "ready");
+  assert.equal(status(input({ aiKnown: false, waited: true })).kind, "ready");
+  assert.deepEqual(status(input({ microphones: null, waited: true })).missing, []);
+  // Without the speech model's state nobody knows whether a dictation works: never "Ready".
+  const blind = status(input({ speech: null, waited: true }));
+  assert.deepEqual([blind.kind, blind.loading], ["loading", true]);
+  assert.equal(homeTitle(blind), "home_title_loading");
+  // What is known is said as ever: a model that loads, a list that came and is empty, what runs.
+  assert.equal(status(input({ speech: speech({ load: "loading" }), microphones: null, waited: true })).kind, "loading");
+  assert.equal(status(input({ microphones: 0, waited: true })).kind, "setup");
+  assert.equal(status(input({ microphones: null, aiLoading: true, waited: true })).kind, "loading");
+  assert.equal(status(input({ speech: null, dictation: "Recording", waited: true })).kind, "recording");
+  // Before the wait is over nothing changes.
+  assert.equal(status(input({ microphones: null, waited: false })).kind, "loading");
+});
+
 test("not ready before the AI's state is known", () => {
   // The speech model is loaded and a microphone is there, but nobody has
   // heard yet whether AI cleanup's model still loads: "Ready" then, and

@@ -468,7 +468,10 @@
       const inline = cs.display === "inline"; // in a line of text: no box of its own that could cut
       if (!inline && el.clientWidth <= 2) continue; // read out, not shown
       const cutX = !inline && el.scrollWidth > el.clientWidth + 1 && /(hidden|clip)/.test(cs.overflowX);
-      const cutY = !inline && el.scrollHeight > el.clientHeight + 1 && /(hidden|clip)/.test(cs.overflowY);
+      let cutY = !inline && el.scrollHeight > el.clientHeight + 1 && /(hidden|clip)/.test(cs.overflowY);
+      // Cut on purpose, and said so: a text that shows its first lines, with a "More" on screen that names it
+      // (aria-controls) and opens the rest (Files' summary over the transcript).
+      if (cutY && el.id && [...document.querySelectorAll(`.hint-more[aria-expanded="false"][aria-controls~="${el.id}"]`)].some(visible)) cutY = false;
       if (cutX) add("clipped", desc(el), `"${short(text)}" needs ${el.scrollWidth} px, has ${el.clientWidth} px`);
       else if (cutY) add("clipped", desc(el), `"${short(text)}" needs ${el.scrollHeight} px of height, has ${el.clientHeight} px`);
       if (cutX || cutY || (userText && el.closest(userText))) continue; // said once; or inside the user's own text

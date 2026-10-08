@@ -1017,15 +1017,20 @@ kbd {
 }
 
 /* The notice of every page: a save the backend refused, settings that did
-   not load. It lies over the page, under the title's row, on the pages'
-   left edge: it pushes nothing down (the control that was just used stays
-   where it is), and it stays in view while the page scrolls, until the next
-   save that works or its own button. Placed against the window: 32 px of
-   title bar and a title's row above it, the sidebar's 200 px and the pages'
-   padding at its left. */
+   not load, a backend that does not answer. It lies over the page at the
+   bottom of the content area, on the pages' left edge: it pushes nothing
+   down (the control that was just used stays where it is), it covers no way
+   through the window (under the title's row it lay over all five tabs of
+   Settings, which could not be clicked until it was closed, and over Home's
+   "Hold … and speak"), and it stays in view while the page scrolls, until
+   the next save that works or its own button. A page leaves its height free
+   at its end meanwhile (--notice-room, written by src/main.ts; styles/
+   shell.css): scrolled down, the page's last row stands over the notice,
+   not under it. Placed against the window: the sidebar's 200 px and the
+   pages' padding at its left and below it. */
 .page-notice {
   position: fixed;
-  top: 76px;
+  bottom: var(--s5);
   left: calc(200px + var(--s5));
   z-index: 3;
   flex-wrap: nowrap;

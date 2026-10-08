@@ -66,7 +66,8 @@
       </aside>
 
       <main id="content">
-        <!-- A save the backend refused, or settings that did not load: said here, on every page.
+        <!-- A save the backend refused, settings that did not load, a backend that does not answer: said here,
+             on every page, at the bottom of the content area (styles/components.css).
              The line below is what a screen reader hears of it (it is there from the start). -->
         <div id="save-notice" class="notice page-notice hidden" data-tone="error">
           <span id="save-notice-text" class="notice-text"></span>
@@ -219,7 +220,7 @@
                   </div>
                 </div>
                 <div class="setting-row">
-                  <div class="setting-label"><span class="label-text" id="home-language-label" data-i18n="language_label">Language</span></div>
+                  <div class="setting-label"><span class="label-text" id="home-language-label" data-i18n="language_label">Spoken language</span></div>
                   <div class="setting-control">
                     <select id="home-language-select" aria-labelledby="home-language-label"></select>
                   </div>
@@ -279,17 +280,10 @@
         <section id="section-files" class="content-section" inert>
           <div class="section-header">
             <h1 class="section-title" tabindex="-1" data-i18n="files_title">Files</h1>
-            <p class="section-desc" data-i18n="files_desc">Audio or video to text: voice messages, meetings, interviews. Runs on your PC with your Whisper model; the file stays where it is.</p>
+            <p class="section-desc" data-i18n="files_desc">Audio or video to text: voice messages, meetings, interviews. Runs on your PC with your speech model; the file stays where it is.</p>
           </div>
-          <div id="file-drop" class="file-drop">
-            <svg class="file-drop-icon" width="22" height="22" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M8 10.5V3M5 5.5L8 2.5l3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M2.5 10v2.5c0 .6.4 1 1 1h9c.6 0 1-.4 1-1V10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-            </svg>
-            <span class="file-drop-title" data-i18n="files_drop">Drop an audio or video file here</span>
-            <span class="label-hint" data-i18n="files_formats">MP3, M4A, WAV, FLAC, WhatsApp voice messages (OGG), MP4, MOV, MKV, WebM</span>
-            <button id="file-choose" class="btn-secondary" data-i18n="files_choose">Choose file…</button>
-          </div>
+          <!-- What to set comes before where to drop: the options stand over the zone, which takes the
+               height the window leaves while there is no file (src/style.css, "Files"). -->
           <div class="card settings-list files-options">
             <div class="setting-row">
               <div class="setting-label">
@@ -322,12 +316,21 @@
             <!-- With a file loaded the options are one line without their hints (src/style.css): this opens them. -->
             <button type="button" id="file-options-more" class="hint-more" data-shows data-about="files_options_about" aria-expanded="false" aria-controls="file-language-hint file-speakers-hint" data-i18n="hint_more">More</button>
           </div>
+          <div id="file-drop" class="file-drop">
+            <svg class="file-drop-icon" width="22" height="22" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 10.5V3M5 5.5L8 2.5l3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M2.5 10v2.5c0 .6.4 1 1 1h9c.6 0 1-.4 1-1V10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            <span class="file-drop-title" data-i18n="files_drop">Drop an audio or video file here</span>
+            <span class="label-hint" data-i18n="files_formats">MP3, M4A, WAV, FLAC, WhatsApp voice messages (OGG), MP4, MOV, MKV, WebM</span>
+            <button id="file-choose" class="btn-secondary" data-i18n="files_choose">Choose file…</button>
+          </div>
           <div id="file-job" class="file-job hidden">
             <div class="file-job-head">
               <span id="file-name" class="file-name"></span>
               <div class="file-job-actions">
                 <button id="file-cancel" class="btn-ghost hidden" data-i18n="files_cancel">Cancel</button>
-                <button type="button" id="file-clear" class="btn-ghost" data-i18n-title="files_clear_title" title="Removes the transcript to start over. The audio file stays where it is.">Clear</button>
+                <button type="button" id="file-clear" class="btn-ghost" data-i18n-title="files_clear_title" title="Removes the transcript to start over. The audio file stays where it is.">Remove transcript</button>
               </div>
             </div>
             <div id="file-progress-bar" class="progress-track" role="progressbar" aria-labelledby="file-name" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="progress-fill" id="file-progress-fill"></div></div>
@@ -345,6 +348,9 @@
               <button id="file-summary-copy" class="btn-ghost" data-i18n="files_copy">Copy</button>
             </div>
             <div id="file-summary" class="file-summary-text"></div>
+            <!-- In one column the summary shows its first lines, so the transcript starts on the first screen
+                 (src/style.css); this opens the rest. There only while the summary is cut (src/rows.ts). -->
+            <button type="button" id="file-summary-more" class="hint-more" data-shows data-clamps data-about="files_summary" aria-expanded="false" aria-controls="file-summary" data-i18n="hint_more" hidden>More</button>
           </div>
           <div id="file-result" class="file-result hidden">
             <div class="file-toolbar">
@@ -599,7 +605,7 @@
 
           <!-- ── AI cleanup ────────────────────────────────── -->
           <div id="panel-ai" class="tab-panel" role="tabpanel" aria-labelledby="tab-ai" hidden>
-            <p class="section-desc panel-lead" data-i18n="ai_desc">A language model on this computer turns your dictation into polished text. Nothing leaves your PC.</p>
+            <p class="section-desc panel-lead" data-i18n="ai_desc">An AI model on this computer turns your dictation into polished text. Nothing leaves your PC.</p>
             <div class="card">
               <div class="setting-row">
                 <div class="setting-label">
@@ -633,7 +639,7 @@
                   <span class="label-hint"><span data-i18n="ai_output_hint">Translates every dictation into this language.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-output-more" data-i18n="hint_more">More</button></span>
                   <span class="label-hint hint-long" id="ai-output-more" data-i18n="ai_output_more" hidden>Only while AI cleanup runs; apps set to No AI keep the spoken language.</span>
                   <span class="label-hint ai-output-warn hidden" id="ai-output-skip"></span>
-                  <span class="label-hint ai-output-warn hidden" id="ai-output-warn" data-i18n="ai_output_warn">Set the Language to Auto-detect (Settings › Models &amp; GPU), so Whisper hears other languages correctly before they are translated.</span>
+                  <span class="label-hint ai-output-warn hidden" id="ai-output-warn" data-i18n="ai_output_warn">Set “Spoken language” to Auto-detect (Settings › Models &amp; GPU), so the speech model hears other languages correctly before they are translated.</span>
                 </div>
                 <div class="setting-control">
                   <select id="ai-output-select"></select>
@@ -642,7 +648,7 @@
               <div class="setting-row">
                 <div class="setting-label">
                   <span class="label-text" data-i18n="ai_edit_label">Edit mode</span>
-                  <span class="label-hint"><span data-i18n="ai_edit_hint">Select text, hold your hotkey and say what to change.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-edit-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint"><span data-i18n="ai_edit_hint">Select text, hold your dictation key and say what to change.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-edit-more" data-i18n="hint_more">More</button></span>
                   <span class="label-hint hint-long" id="ai-edit-more" data-i18n="ai_edit_more" hidden>Say “shorter”, “more formal”, “in Turkish”, or the new text. Works where the app shares its text, not in terminals or address bars. Ctrl+Z undoes it.</span>
                 </div>
                 <div class="setting-control">
@@ -669,7 +675,7 @@
                 <h2 class="list-title" data-i18n="ai_rules_title">Rules per app</h2>
               </div>
               <p class="label-hint"><span data-i18n="ai_rules_desc">Instructions and the spoken language for one app or website.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-rules-more" data-i18n="hint_more">More</button></p>
-              <p class="label-hint hint-long" id="ai-rules-more" data-i18n="ai_rules_more" hidden>A rule matches the program name or a word in the window title, e.g. “whatsapp” also covers WhatsApp Web. The language is what Whisper hears in this app, also with AI cleanup off. No AI pastes the plain Whisper text.</p>
+              <p class="label-hint hint-long" id="ai-rules-more" data-i18n="ai_rules_more" hidden>A rule matches the program name or a word in the window title, e.g. “whatsapp” also covers WhatsApp Web. The language is what the speech model hears in this app, also with AI cleanup off. No AI pastes the text as the speech model wrote it.</p>
               <div id="ai-rule-list" class="list rule-list" role="list"></div>
               <p id="ai-rule-empty" class="empty-state hidden" data-i18n="ai_rules_empty">No rules yet.</p>
               <div class="card-foot">
@@ -724,7 +730,7 @@
 
           <!-- ── Dictionary ────────────────────────────────── -->
           <div id="panel-dictionary" class="tab-panel" role="tabpanel" aria-labelledby="tab-dictionary" hidden>
-            <p class="section-desc panel-lead" data-i18n="dictionary_desc">Words Whisper should know: names, brands and jargon. Your text gets exactly this spelling, even when Whisper hears them slightly differently.</p>
+            <p class="section-desc panel-lead" data-i18n="dictionary_desc">Words the app should know: names, brands and jargon. Your text gets exactly this spelling, even when the app hears them slightly differently.</p>
             <div id="dict-suggest" class="card dict-suggest hidden">
               <div class="list-head">
                 <h2 class="list-title" data-i18n="learn_title">Suggested from your corrections</h2>
@@ -742,12 +748,12 @@
                 <button type="submit" class="btn-secondary dict-add-btn" data-i18n="dictionary_add">Add</button>
               </form>
               <p class="label-hint dict-tip" data-i18n="dictionary_tip">Tip: paste a list, separated by commas or one per line, to add many at once.</p>
-              <p id="dict-long" class="notice dict-long hidden" data-tone="warn" data-i18n="dictionary_long">Long list: Whisper reads about the last 100 entries, so the newest count first.</p>
+              <p id="dict-long" class="notice dict-long hidden" data-tone="warn" data-i18n="dictionary_long">Long list: the speech model reads about the last 100 entries, so the newest count first.</p>
               <div id="dict-list" class="list dict-list" role="list"></div>
               <p id="dict-no-match" class="empty-state hidden" data-i18n="dict_no_match">No word matches.</p>
               <!-- Read out, not shown: what the search found. -->
               <p id="dict-live" class="sr-only" role="status"></p>
-              <p id="dict-empty" class="empty-state dict-empty hidden" data-i18n="dictionary_empty">No words yet. Add names, brands or terms Whisper gets wrong.</p>
+              <p id="dict-empty" class="empty-state dict-empty hidden" data-i18n="dictionary_empty">No words yet. Add names, brands or terms the app gets wrong.</p>
             </div>
             <div class="card">
               <div class="list-head">
@@ -793,7 +799,7 @@
                     <div class="setting-label">
                       <span class="label-text" data-i18n="screen_context_label">Words on screen</span>
                       <span class="label-hint"><span data-i18n="screen_context_hint">Spells names right by reading the window you dictate into, on your PC; nothing is saved.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="screen-context-more" data-i18n="hint_more">More</button></span>
-                      <span class="label-hint hint-long" id="screen-context-more" data-i18n="screen_context_more" hidden>Whisper and the AI both use the names. They are read when you press the hotkey.</span>
+                      <span class="label-hint hint-long" id="screen-context-more" data-i18n="screen_context_more" hidden>The speech model and the AI both use the names. They are read when you press the dictation key.</span>
                     </div>
                     <div class="setting-control">
                       <label class="switch">
@@ -837,7 +843,7 @@
               <div class="setting-row" id="local-settings">
                 <div class="setting-label">
                   <span class="label-text" id="model-label" data-i18n="model_label">Speech model</span>
-                  <span class="label-hint"><span data-i18n="model_hint">Larger models are more accurate and need more memory.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="model-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint"><span data-i18n="model_hint">Larger models are more accurate.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="model-more" data-i18n="hint_more">More</button></span>
                   <!-- Every model with its one line (src/main.ts, renderModels): what a model is can be read without choosing it. -->
                   <span class="label-hint hint-long model-list" id="model-more" role="list" hidden></span>
                   <span class="label-hint status-line" id="model-note"></span>
@@ -863,12 +869,12 @@
                 <span class="progress-text" id="download-numbers"></span>
               </div>
               <div id="engine-cloud-note" class="notice hidden">
-                <span class="notice-text" id="engine-cloud-text" data-i18n="cloud_note">The cloud engine (Groq) transcribes. Change it under Advanced.</span>
+                <span class="notice-text" id="engine-cloud-text" data-i18n="cloud_note">Groq Cloud transcribes. Change it under “Advanced”.</span>
                 <button type="button" id="engine-cloud-key" class="btn-secondary hidden" data-i18n="cloud_note_open">Enter the key</button>
               </div>
               <div class="setting-row" id="language-row">
                 <div class="setting-label">
-                  <span class="label-text" data-i18n="language_label">Language</span>
+                  <span class="label-text" data-i18n="language_label">Spoken language</span>
                   <span class="label-hint" data-i18n="language_hint">Auto-detect, or the language you dictate in.</span>
                 </div>
                 <div class="setting-control">
@@ -882,12 +888,12 @@
                 <div class="card">
                   <div class="setting-row">
                     <div class="setting-label">
-                      <span class="label-text" data-i18n="engine_label">Engine</span>
-                      <span class="label-hint" data-i18n="engine_hint">Local runs on this PC, Cloud needs an API key.</span>
+                      <span class="label-text" data-i18n="engine_label">Transcription</span>
+                      <span class="label-hint" data-i18n="engine_hint">On this PC, or in Groq's cloud with an API key.</span>
                     </div>
                     <div class="setting-control">
-                      <div class="toggle-group" role="group" data-i18n-aria-label="engine_label" aria-label="Engine">
-                        <button type="button" id="engine-local" class="toggle-btn active" data-i18n="engine_local">Local Whisper</button>
+                      <div class="toggle-group" role="group" data-i18n-aria-label="engine_label" aria-label="Transcription">
+                        <button type="button" id="engine-local" class="toggle-btn active" data-i18n="engine_local">On this PC</button>
                         <button type="button" id="engine-cloud" class="toggle-btn" data-i18n="engine_cloud">Groq Cloud</button>
                       </div>
                     </div>
@@ -920,7 +926,7 @@
                     <div class="setting-label">
                       <span class="label-text" data-i18n="pc_check_label">PC check</span>
                       <span class="label-hint"><span data-i18n="pc_check_hint">Measures this PC (about 20 seconds) and uses the fastest setup.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="pc-check-more" data-i18n="hint_more">More</button></span>
-                      <span class="label-hint hint-long" id="pc-check-more" data-i18n="pc_check_more" hidden>Whisper on your graphics card with and without flash attention, and the speed of the AI.</span>
+                      <span class="label-hint hint-long" id="pc-check-more" data-i18n="pc_check_more" hidden>The speech model on your graphics card with and without flash attention, and the speed of the AI.</span>
                     </div>
                     <div class="setting-control">
                       <button type="button" id="pc-check-btn" class="btn-secondary" data-i18n="pc_check_run">Run check</button>
@@ -934,7 +940,7 @@
                     <div class="setting-label">
                       <span class="label-text" data-i18n="game_free_label">Free GPU for games</span>
                       <span class="label-hint"><span data-i18n="game_free_hint">Unloads the models while a game or video runs in fullscreen.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="game-free-more" data-i18n="hint_more">More</button></span>
-                      <span class="label-hint hint-long" id="game-free-more" data-i18n="game_free_more" hidden>When a fullscreen app (a game or a video player) is in front for 5 seconds, Whisper and the AI model are unloaded, as with the Free GPU hotkey. Meanwhile a dictation loads only Whisper and is pasted without AI cleanup, and Edit mode is off. The models load again 30 seconds after the game is closed, minimised or no longer fullscreen, not when you just use another window or monitor. Browsers, calls (Teams, Zoom, Discord) and remote desktops in fullscreen do not count.</span>
+                      <span class="label-hint hint-long" id="game-free-more" data-i18n="game_free_more" hidden>When a fullscreen app (a game or a video player) is in front for 5 seconds, the speech model and the AI model are unloaded, as with the Free GPU hotkey. Meanwhile a dictation loads only the speech model and is pasted without AI cleanup, and Edit mode is off. The models load again 30 seconds after the game is closed, minimised or no longer fullscreen, not when you just use another window or monitor. Browsers, calls (Teams, Zoom, Discord) and remote desktops in fullscreen do not count.</span>
                       <span class="label-hint ai-status status-line hidden" id="game-free-status" data-tone="warn" data-i18n="game_free_now">Freed for a game: dictations run without AI cleanup until it ends.</span>
                     </div>
                     <div class="setting-control">
@@ -964,7 +970,7 @@
                   <div class="list-head">
                     <h2 class="list-title" data-i18n="unused_models_title">Unused models</h2>
                   </div>
-                  <p class="label-hint" data-i18n="unused_models_desc">Downloaded Whisper and AI models that no setting uses. They only take disk space; delete the ones you no longer need.</p>
+                  <p class="label-hint" data-i18n="unused_models_desc">Downloaded speech and AI models that no setting uses. They only take disk space; delete the ones you no longer need.</p>
                   <div id="unused-model-list" class="list unused-model-list" role="list"></div>
                   <p id="unused-model-empty" class="empty-state hidden" tabindex="-1" data-i18n="unused_models_empty">No unused models.</p>
                 </div>

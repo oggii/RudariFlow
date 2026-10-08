@@ -21,8 +21,8 @@ import { setDownload } from "./activity";
 import { currentSpeech, initStatus, onStatus, refreshSpeech, renderStatus } from "./status-view";
 import { recommend, setup, type Recommendation } from "./setup.ts";
 import { sizeText } from "./size.ts";
-import { askOnce, stateOnce } from "./start";
-import { initHints, nameRows } from "./rows";
+import { askOnce, startWaitOver, stateOnce } from "./start";
+import { initClamps, initHints, nameRows } from "./rows";
 import { deleteButton, FailureSaid, repaintDeletes } from "./confirm-delete";
 import { initReplacements, readReplacements, renderReplacements, type Replacement } from "./replacements";
 
@@ -114,7 +114,7 @@ const unusedModelEmpty = document.getElementById("unused-model-empty")!;
 const historyModeSelect = document.getElementById("history-mode-select") as HTMLSelectElement;
 /** Every speech model with its one line, behind the row's "More". */
 const modelMore = document.getElementById("model-more")!;
-/** A save the backend refused (or settings that did not load): the notice at the top of every page, and the line that reads it out. */
+/** A save the backend refused (or settings that did not load, or a backend that does not answer): the notice at the bottom of every page, and the line that reads it out. */
 const saveNotice = document.getElementById("save-notice")!;
 const saveNoticeText = document.getElementById("save-notice-text")!;
 const saveLive = document.getElementById("save-live")!;
@@ -126,6 +126,7 @@ const soundboard = mountBoard(document.getElementById("sb-root")!, { popOut: fal
 // Sections and Settings tabs (src/shell.ts); what a page needs when it is shown.
 initShell();
 initHints();
+initClamps();
 onRoute((now) => {
   // Home's setup listens to the microphone only while it is on screen.
   renderHome();
@@ -335,7 +336,16 @@ async function store(): Promise<void> {
   hideNotice();
 }
 
-/** Show the notice at the top of the page, and have it read out. */
+// The notice lies over the bottom of the page: every page leaves that much
+// free at its end for as long as it shows (styles/shell.css), so its last
+// row can be scrolled clear of the notice. As high as the notice is now: its
+// words wrap with the window's width.
+new ResizeObserver(() => {
+  const high = saveNotice.offsetHeight;
+  document.getElementById("content")!.style.setProperty("--notice-room", high ? `${high + 12}px` : "0px");
+}).observe(saveNotice);
+
+/** Show the notice at the bottom of the page, and have it read out. */
 function sayNotice(text: string) {
   saveNoticeText.textContent = text;
   saveNotice.classList.remove("hidden");
@@ -1209,8 +1219,13 @@ initFiles({
   acceptsDrops: () => settingsLoaded && currentRoute().section !== "soundboard",
 });
 
+/** The start's questions were given their time (startWaitOver, src/start.ts)
+ *  and an answer was still out: the window goes on with what it has, and what
+ *  is still not known counts neither as missing nor as a reason to wait. */
+let startWaited = false;
+
 /** Home's two views, as far as this module's own answers go (the AI's card is Home's own). */
-const firstSetup = () => setup({ speech: currentSpeech(), microphones: micsListed ? mics.length : null, history: historyCount(), aiDownloaded: true, aiDismissed: true });
+const firstSetup = () => setup({ speech: currentSpeech(), microphones: micsListed ? mics.length : null, history: historyCount(), aiDownloaded: true, aiDismissed: true, waited: settingsLoaded && startWaited });
 
 // Home is where the window opens for a first run (no speech model and an
 // empty history: the steps are there). Everyone else finds the window where
@@ -1234,6 +1249,7 @@ function historyChanged() {
 function startHome() {
   initHome({
     loaded,
+    waited: () => startWaited,
     history: historyCount,
     recordingMode: () => currentSettings.recordingMode,
     dictationKey: () => hotkeyLabel(currentSettings.hotkey),
@@ -1273,7 +1289,7 @@ initMeetingQuit();
 // both are there (showSettings draws from what is known).
 const quietly = (what: string, asked: Promise<unknown>) => asked.catch((err) => console.error(`${what} failed:`, err));
 startHome();
-const statusKnown = quietly("the status's first questions", initStatus({ microphones: () => (micsListed ? mics.length : null), ai: aiActivity }));
+const statusKnown = quietly("the status's first questions", initStatus({ microphones: () => (micsListed ? mics.length : null), ai: aiActivity, loaded, waited: () => startWaited }));
 const settingsRead = loadSettings().then(
   () => true,
   (err) => {
@@ -1290,8 +1306,9 @@ stateOnce<boolean, boolean>("game_free_state", "game-free")
 // The Meetings page reads the settings, so it starts once they are loaded.
 // It starts without them too (a meeting can record from the tray or the
 // hotkey, and the page must show it): then with the reminders' defaults, and
-// nothing is saved over the settings that did not load.
-const meetingsWired = settingsRead.then(() =>
+// nothing is saved over the settings that did not load. Settings that never
+// answer are waited for as long as the start waits for anything.
+const meetingsWired = Promise.race([settingsRead, startWaitOver]).then(() =>
   quietly(
     "the Meetings page's start",
     initMeetings({
@@ -1301,6 +1318,32 @@ const meetingsWired = settingsRead.then(() =>
     }),
   ),
 );
+// A backend that does not answer. The start's questions return plain values
+// in the backend, so this is a hang and nothing a healthy app does; still,
+// one answer that never came left Home on "Getting ready…" for ever. After
+// the start's wait the window goes on with what it has: Home shows its daily
+// view from what is known (once the settings are), no status waits any more
+// for a list of microphones or the AI's state, every page is told where the
+// window starts, and the page's notice says what is the matter. An answer
+// that comes later still lands, each by its own way; with the last one the
+// notice goes.
+/** Every question of the start has answered. */
+let startAnswered = false;
+/** The notice of a backend that does not answer shows (and nothing was said over it since). */
+let silentSaid = false;
+void startWaitOver.then(() => {
+  if (startAnswered) return;
+  startWaited = true;
+  // Not over the notice of settings that could not be loaded: that one says more.
+  if (saveNotice.classList.contains("hidden")) {
+    sayNotice(t("backend_silent"));
+    silentSaid = true;
+  }
+  // The status again, and with it Home and the place the window starts on.
+  renderStatus();
+  announceRoute();
+});
+
 void Promise.all([
   statusKnown,
   quietly("listing the microphones", listMicrophones()),
@@ -1311,6 +1354,10 @@ void Promise.all([
   settingsRead.then(() => renderUnusedModels()),
   meetingsWired,
 ]).then(() => {
+  startAnswered = true;
+  // Every answer is in after all: what was said of a backend that does not answer is over.
+  if (silentSaid && saveNoticeText.textContent === t("backend_silent")) hideNotice();
+  silentSaid = false;
   // Every page is wired: tell them the place the window starts on (a remembered one makes no change).
   announceRoute();
   // The start is over (tools/ui-check waits for this).

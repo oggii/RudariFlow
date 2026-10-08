@@ -48,6 +48,43 @@ function nameMore(more: HTMLElement) {
   more.setAttribute("aria-label", t(open ? "hint_less_about" : "hint_more_about").replace("{label}", () => text));
 }
 
+/** A "More" under a text that shows only its first lines (`data-clamps`; the
+ *  style sheet cuts the text and opens it, as with `data-shows`). The button
+ *  is there only while there is more of the text than its cut form shows:
+ *  measured as the text is cut, so it follows the window's width. A text
+ *  that is written anew starts closed: a new summary shows its first lines. */
+export function initClamps() {
+  for (const more of document.querySelectorAll<HTMLElement>(".hint-more[data-clamps]")) {
+    const text = document.getElementById(more.getAttribute("aria-controls") ?? "");
+    if (!text) continue;
+    const close = () => {
+      more.setAttribute("aria-expanded", "false");
+      more.setAttribute("data-i18n", "hint_more");
+      more.textContent = t("hint_more");
+      nameMore(more);
+    };
+    const look = () => {
+      // Not on screen: nothing to measure, and nothing to change.
+      if (text.clientHeight === 0) return;
+      // Measured in the cut form: opened, the text is whole and says nothing about it. "Less" stays for as
+      // long as that form would cut the text again, and goes once it would show all of it (a wider window).
+      const open = more.getAttribute("aria-expanded") === "true";
+      if (open) more.setAttribute("aria-expanded", "false");
+      const cut = text.scrollHeight > text.clientHeight + 1;
+      if (open && cut) return void more.setAttribute("aria-expanded", "true");
+      if (open) close();
+      // The button goes with the last line it was for: the focus moves to the text's own "Copy" or "Hide".
+      if (!cut && document.activeElement === more) more.parentElement?.querySelector<HTMLElement>("button:not(.hint-more)")?.focus();
+      more.hidden = !cut;
+    };
+    new ResizeObserver(look).observe(text);
+    new MutationObserver(() => {
+      close();
+      look();
+    }).observe(text, { childList: true, characterData: true, subtree: true });
+  }
+}
+
 /** "More" / "Less" after a hint, anywhere in the window (also in rows built later). */
 export function initHints() {
   document.addEventListener("click", (e) => {

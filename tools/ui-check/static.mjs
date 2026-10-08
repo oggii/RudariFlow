@@ -126,9 +126,15 @@ const PASSES = {
     ["src/style.css", ".export-list button:focus-visible", "", "a menu item shows the focus as its ground, like the hover; no ring is drawn or taken away"],
     [
       "src/styles/home.css",
-      '.history-item:not(:hover, :has(:focus-visible)) .history-actions > :not([data-action="copy"], .armed, [data-on], [aria-disabled="true"])',
+      '.history-item:not(:hover, :focus-within) .history-more > :not(.armed, [data-on], [aria-disabled="true"])',
       "opacity",
-      "a dictation's actions show while the keyboard focus is in their row; the rule asks where the focus is and draws no ring of its own",
+      "a dictation's actions show while the focus is in their row; the rule asks where the focus is and draws no ring of its own",
+    ],
+    [
+      "src/styles/home.css",
+      '.history-item:is(:hover, :focus-within, :has(.history-more > :is(.armed, [data-on], [aria-disabled="true"]))) .history-parts',
+      "opacity",
+      "in a narrow list a dictation's second line gives its place to the row's actions while they show; the rule asks where the focus is and draws no ring of its own",
     ],
   ],
   colour: [["src/styles/components.css", ".switch-slider::before", "background", "a switch's knob is white on both of its tracks"]],

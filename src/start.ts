@@ -3,6 +3,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+/** How long the start waits for the backend's answers before the window
+ *  goes on with what it has. Every question of the start answers at once in
+ *  the backend (they return plain values); one that still does not answer
+ *  must not leave Home on "Getting ready…" for ever. The same five seconds
+ *  the setup gives the graphics cards (src/home.ts). An answer that comes
+ *  later still lands. */
+export const START_WAIT_MS = 5000;
+
+/** Over once the start has waited that long: one clock for every part that
+ *  waits for the start's answers (the status, Home, the Meetings page). */
+export const startWaitOver = new Promise<void>((over) => window.setTimeout(over, START_WAIT_MS));
+
 const asked = new Map<string, Promise<unknown>>();
 
 /** The answer to `cmd`, asked once however many ask for it. For what does

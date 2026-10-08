@@ -86,6 +86,22 @@ test("nothing is asked for before the backend answered", () => {
   assert.equal(setup(input({ speech: speech({ downloaded: true }), history: null })).known, false);
 });
 
+test("after the start's wait Home goes on with what it has: what never answered is unknown, not missing", () => {
+  const done = speech({ downloaded: true });
+  // The list of microphones never came: not "no microphone", and no reason to keep Home on its heading.
+  assert.deepEqual(setup(input({ speech: done, microphones: null, history: 3, waited: true })), { known: true, needed: false, firstRun: false, microphone: true, model: true, aiCard: true });
+  // A list that came and is empty is still no microphone.
+  assert.equal(setup(input({ speech: done, microphones: 0, waited: true })).needed, true);
+  // The speech model's state never came: no step asks for a model nobody knows to be missing, and nobody is welcomed.
+  assert.deepEqual(setup(input({ speech: null, waited: true })), { known: true, needed: false, firstRun: false, microphone: true, model: true, aiCard: true });
+  // The history never came: a PC without a model gets the steps, but is not taken for a newcomer.
+  const noHistory = setup(input({ history: null, waited: true }));
+  assert.deepEqual([noHistory.known, noHistory.needed, noHistory.firstRun], [true, true, false]);
+  // With every answer in, the wait changes nothing.
+  assert.deepEqual(setup(input({ waited: true })), setup(input()));
+  assert.deepEqual(setup(input({ speech: done, waited: true })), setup(input({ speech: done })));
+});
+
 test("the models suggested for a PC", () => {
   const card = (name: string, gb: number, integrated = false) => ({ name, integrated, memory_mib: gb * 1024 });
   assert.deepEqual(recommend([]), { model: "small", ai: "gemma-4-e2b", gpu: "" });

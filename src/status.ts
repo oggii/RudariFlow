@@ -44,6 +44,13 @@ export interface StatusInput {
   aiKnown: boolean;
   /** Freed for a game (`game-free`). */
   gameFreed: boolean;
+  /** The start's questions were given their time (src/start.ts) and an
+   *  answer is still out: what is not known by now no longer holds the
+   *  status back. A list of microphones that never came is unknown, not
+   *  "none", and neither missing nor a reason to wait; the speech model's
+   *  own state still is, because without it nobody knows whether a
+   *  dictation works. */
+  waited?: boolean;
 }
 
 /** What keeps a dictation from working, first things first. */
@@ -122,8 +129,9 @@ function kindOf(input: StatusInput, miss: Missing[]): StatusKind {
   if (input.meetingRecording) return "meeting";
   if (input.fileRunning) return "file";
   const s = input.speech;
-  // Not known yet: the app has just started.
-  if (!s || input.microphones === null || !input.aiKnown) return "loading";
+  // Not known yet: the app has just started. After the start's wait only
+  // the speech model's state still counts as that.
+  if (!s || (!input.waited && (input.microphones === null || !input.aiKnown))) return "loading";
   const local = s.engine !== "cloud";
   const speechFreed = local && s.load === "unloaded" && s.freed;
   // Loading, or about to: the app loads the model at its start and after a

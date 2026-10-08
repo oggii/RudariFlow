@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { t } from "./i18n";
 import { activity, onActivity } from "./activity";
-import { stateOnce } from "./start";
+import { startWaitOver, stateOnce } from "./start";
 import { status, statusSaid, statusText, type SpeechStatus, type Status, type StatusInput } from "./status.ts";
 
 export interface StatusHost {
@@ -14,6 +14,13 @@ export interface StatusHost {
   /** AI cleanup is on and its model is loading / was unloaded to free the GPU;
    *  `known`: the AI's state was asked for and answered. */
   ai(): { loading: boolean; freed: boolean; known: boolean };
+  /** The settings were read. Until then Home shows its heading alone
+   *  ("Getting ready…": every control on it is a setting), and the status
+   *  does not say "Ready" beside it: the speech model's state counts as not
+   *  known. */
+  loaded(): boolean;
+  /** The start's questions were given their time and an answer is still out (src/start.ts). */
+  waited(): boolean;
 }
 
 const pill = document.getElementById("status-indicator")!;
@@ -36,7 +43,7 @@ function statusInput(): StatusInput {
   const ai = host?.ai() ?? { loading: false, freed: false, known: false };
   const running = activity();
   return {
-    speech,
+    speech: host?.loaded() ? speech : null,
     microphones: host?.microphones() ?? null,
     download: running.download,
     speechDownload: running.speech,
@@ -47,6 +54,7 @@ function statusInput(): StatusInput {
     aiFreed: ai.freed,
     aiKnown: ai.known,
     gameFreed,
+    waited: host?.waited() ?? false,
   };
 }
 
@@ -121,7 +129,13 @@ export async function refreshSpeech() {
 
 /** Listen for what the backend reports, and ask for how things stand now:
  *  the four questions go out together, and the status is drawn once, from
- *  all four answers. The listeners are registered before this returns. */
+ *  all four answers. The listeners are registered before this returns.
+ *
+ *  Should one of the four never come, the status is drawn after the start's
+ *  wait from the ones that did (waiting for all four, one question that hung
+ *  kept the speech model's state from ever being read, and Home on its
+ *  heading alone); an answer that comes later still lands, and is drawn
+ *  then. This is over when all four have answered. */
 export async function initStatus(h: StatusHost) {
   host = h;
   onActivity(renderStatus);
@@ -149,19 +163,49 @@ export async function initStatus(h: StatusHost) {
   window.addEventListener("focus", () => void refreshSpeech());
   const before = { ...events };
   type Meeting = { recording: unknown | null };
+  /** The first drawing is done: an answer that lands after it is drawn by itself. */
+  let drawn = false;
+  /** The answers that came before it: all of them are taken together, with the first drawing. */
+  const early: (() => void)[] = [];
+  const land = <A>(asked: Promise<A>, take: (answer: A) => void) =>
+    asked.then((answer) => {
+      if (!drawn) return void early.push(() => take(answer));
+      take(answer);
+      renderStatus();
+    });
   // The Meetings page and Settings ask two of these as well: asked once (src/start.ts).
-  const [state, meeting, game, said] = await Promise.all([
-    invoke<string>("get_recording_state").catch(() => "Ready"),
-    stateOnce<{ status: Meeting }, Meeting>("meeting_state", "meeting-status").catch(() => null),
-    stateOnce<boolean, boolean>("game_free_state", "game-free").catch(() => null),
-    invoke<SpeechStatus>("speech_status").catch((e) => {
-      console.error("speech_status failed:", e);
-      return null;
-    }),
+  const all = Promise.all([
+    land(
+      invoke<string>("get_recording_state").catch(() => "Ready"),
+      (state) => {
+        if (events.dictation === before.dictation) dictation = state;
+      },
+    ),
+    land(
+      stateOnce<{ status: Meeting }, Meeting>("meeting_state", "meeting-status").catch(() => null),
+      (meeting) => {
+        if (meeting && events.meeting === before.meeting) meetingRecording = (meeting.later()?.payload ?? meeting.answer.status).recording !== null;
+      },
+    ),
+    land(
+      stateOnce<boolean, boolean>("game_free_state", "game-free").catch(() => null),
+      (game) => {
+        if (game && events.game === before.game) gameFreed = game.later()?.payload ?? game.answer;
+      },
+    ),
+    land(
+      invoke<SpeechStatus>("speech_status").catch((e) => {
+        console.error("speech_status failed:", e);
+        return null;
+      }),
+      (said) => {
+        if (said && events.speech === before.speech) speech = said;
+      },
+    ),
   ]);
-  if (events.dictation === before.dictation) dictation = state;
-  if (meeting && events.meeting === before.meeting) meetingRecording = (meeting.later()?.payload ?? meeting.answer.status).recording !== null;
-  if (game && events.game === before.game) gameFreed = game.later()?.payload ?? game.answer;
-  if (said && events.speech === before.speech) speech = said;
+  await Promise.race([all, startWaitOver]);
+  drawn = true;
+  for (const take of early) take();
   renderStatus();
+  await all;
 }

@@ -23,6 +23,9 @@ export interface HomeHost {
   /** The settings were read from the backend. Until then Home shows its
    *  heading alone: every key, switch and choice on it is one of them. */
   loaded(): boolean;
+  /** The start's questions were given their time and an answer is still
+   *  out (src/start.ts): Home goes on with what it has. */
+  waited(): boolean;
   /** Dictations in the history; null until it was read. */
   history(): number | null;
   /** "push-to-talk" or "toggle". */
@@ -198,7 +201,8 @@ let suggestionBlind = false;
 const GPU_WAIT_MS = 5000;
 
 /** Which of its views Home shows. Not known before the settings are: the
- *  steps and the daily view are both made of them. */
+ *  steps and the daily view are both made of them, also after the start's
+ *  wait (without the settings Home has nothing to go on with). */
 function currentSetup(): Setup {
   return setup({
     speech: host.loaded() ? currentSpeech() : null,
@@ -206,6 +210,7 @@ function currentSetup(): Setup {
     history: host.history(),
     aiDownloaded: host.ai().downloaded,
     aiDismissed: prefs.aiCardDismissed,
+    waited: host.loaded() && host.waited(),
   });
 }
 

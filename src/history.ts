@@ -61,8 +61,8 @@ let playAsked = 0;
 
 /** A row's action that says something of the moment ("Stop" while its
  *  recording plays, "AI version" while the original shows, a failure) stays
- *  in view; the others show with the pointer on the row or the keyboard in
- *  it (styles/home.css, "Row actions"). */
+ *  in view; the others show with the pointer on the row or the focus in it
+ *  (styles/home.css, "Row actions"). */
 function keep(btn: HTMLElement, on: boolean) {
   btn.toggleAttribute("data-on", on);
 }
@@ -167,11 +167,15 @@ function renderEntry(e: HistoryEntry): HTMLElement {
   }
   main.append(text, meta);
 
-  // The actions end in "Copy" and, apart from it at the card's edge, Delete:
-  // what a row can do besides stands before them, so the "Copy" of all rows
-  // stand under each other whatever else a row has (styles/home.css).
+  // "Copy" is the row's last action, at the card's right edge: the "Copy" of
+  // all rows stand under each other there, where the search field ends.
+  // What else a row can do stands before it, in a group of its own that
+  // shows with the pointer on the row or the focus in it; Delete is the
+  // group's first, apart from the rest (styles/home.css, "Row actions").
   const actions = document.createElement("div");
   actions.className = "list-actions history-actions";
+  const others = document.createElement("div");
+  others.className = "history-more";
   const copy = action(
     t("history_copy"),
     async (b) => {
@@ -181,9 +185,26 @@ function renderEntry(e: HistoryEntry): HTMLElement {
     },
     "copy",
   );
+  // The button is as wide as the wider of its two words (they lie in it
+  // unseen), so "Copied" moves nothing beside it.
+  copy.dataset.rest = t("history_copy");
+  copy.dataset.done = t("history_copied");
+  others.appendChild(
+    deleteButton(
+      `history-${e.id}`,
+      // A delete that fails throws: the button says so and the dictation
+      // stays (src/confirm-delete.ts).
+      async () => {
+        await invoke("history_delete", { id: e.id });
+        if (playing?.id === e.id) stopPlayback();
+        await refreshHistory();
+      },
+      { name: e.text.slice(0, 40) },
+    ),
+  );
   if (e.raw) {
     let showingRaw = false;
-    actions.appendChild(
+    others.appendChild(
       action(t("history_original"), (b) => {
         showingRaw = !showingRaw;
         text.textContent = showingRaw ? e.raw! : e.text;
@@ -193,7 +214,7 @@ function renderEntry(e: HistoryEntry): HTMLElement {
     );
   }
   if (e.hasAudio) {
-    actions.appendChild(
+    others.appendChild(
       action(
         t("history_play"),
         async (b) => {
@@ -268,22 +289,9 @@ function renderEntry(e: HistoryEntry): HTMLElement {
     rerun.title = t("history_rerun_title");
     // An edit's recording is the instruction; re-running it as a dictation
     // would replace the edited text with it.
-    if (!e.edit) actions.appendChild(rerun);
+    if (!e.edit) others.appendChild(rerun);
   }
-  actions.appendChild(copy);
-  actions.appendChild(
-    deleteButton(
-      `history-${e.id}`,
-      // A delete that fails throws: the button says so and the dictation
-      // stays (src/confirm-delete.ts).
-      async () => {
-        await invoke("history_delete", { id: e.id });
-        if (playing?.id === e.id) stopPlayback();
-        await refreshHistory();
-      },
-      { name: e.text.slice(0, 40) },
-    ),
-  );
+  actions.append(others, copy);
 
   item.append(main, actions);
   return item;
@@ -301,7 +309,7 @@ function focusPlace(): Place | null {
   const el = document.activeElement;
   const row = el instanceof HTMLElement ? el.closest<HTMLElement>(".history-item") : null;
   if (!(el instanceof HTMLElement) || !row || row.parentElement !== list) return null;
-  return { id: row.dataset.id ?? "", name: el.dataset.action ?? "", at: [...(el.parentElement?.children ?? [])].indexOf(el), row: [...list.children].indexOf(row) };
+  return { id: row.dataset.id ?? "", name: el.dataset.action ?? "", at: [...row.querySelectorAll(".history-actions button")].indexOf(el), row: [...list.children].indexOf(row) };
 }
 
 /** The list was drawn again and the focused button went with the old rows:

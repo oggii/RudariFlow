@@ -196,11 +196,12 @@
 }
 
 /* A page: from the common left edge to the window's right edge (the layout
-   system above). */
+   system above). While the page's notice shows (components.css), a page
+   ends that much higher: its last row is never under the notice. */
 .content-section {
   display: none;
   margin: 0;
-  padding: var(--s2) var(--s5) var(--s5);
+  padding: var(--s2) var(--s5) calc(var(--s5) + var(--notice-room, 0px));
 }
 
 .content-section.active {

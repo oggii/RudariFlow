@@ -25,7 +25,10 @@
 // of the next start of the page (set on window.__MOCK__ it begins only once
 // a check can run, which is after the start's questions went out), and
 // keep({ settings }) lays values over the settings the next start reads
-// (the cloud engine without its key: { engine: "cloud" }).
+// (the cloud engine without its key: { engine: "cloud" }), and
+// keep({ hold: [cmd] }) holds the first call of a command at the next start
+// of the page, as holdNext does once a check can run: a question of the
+// start that never answers, until release(cmd).
 // The states the page cannot bring about itself (ui-check's state pages):
 // refuseNext(cmd, why) makes the next call of a command fail with the
 // backend's own words; holdNext(cmd) lets the next call wait (a file being
@@ -307,7 +310,7 @@
 
   // ── Commands a check refuses or holds ──
   const refusals = {};
-  const holds = new Set();
+  const holds = new Set(kept.hold ?? []);
   const waiting = {};
   const lates = {};
 
@@ -417,6 +420,18 @@
 
   const clockFmt = (ms) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 
+  /** A WAV file of silence, 16 kHz mono, 16 bit: what a dictation's recording is kept as. */
+  const wav = (secs) => {
+    const n = Math.round(16000 * secs);
+    const file = new ArrayBuffer(44 + n * 2);
+    const view = new DataView(file);
+    const word = (at, text) => [...text].forEach((c, i) => view.setUint8(at + i, c.charCodeAt(0)));
+    word(0, "RIFF"); view.setUint32(4, 36 + n * 2, true); word(8, "WAVE"); word(12, "fmt "); view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, 16000, true); view.setUint32(28, 32000, true);
+    view.setUint16(32, 2, true); view.setUint16(34, 16, true); word(36, "data"); view.setUint32(40, n * 2, true);
+    return file;
+  };
+
   const handlers = {
     get_settings: () => JSON.parse(JSON.stringify(settings)),
     save_settings: async (a) => {
@@ -472,6 +487,28 @@
       const at = history.findIndex((h) => h.id === a.id);
       if (at >= 0) history.splice(at, 1);
       return null;
+    },
+    // A dictation's recording as WAV bytes (main.rs, history_audio: the file as it is read; without one,
+    // the file system's own words).
+    history_audio: (a) => {
+      if (!history.find((h) => h.id === a.id)?.hasAudio) throw "The system cannot find the file specified. (os error 2)";
+      return wav(0.2);
+    },
+    // The recording transcribed again with the engine and the model of the moment (main.rs, history_rerun):
+    // the entry as the history has it afterwards. Its text is what was said, cleaned up while AI cleanup is
+    // on (`raw` is then the text before the AI, where the AI changed it); its model is the one that wrote it
+    // now ("groq" for the cloud engine). Refused in the backend's words.
+    history_rerun: (a) => {
+      const entry = history.find((h) => h.id === a.id);
+      if (!entry) throw "History entry not found";
+      if (entry.edit) throw "Edits cannot be re-run";
+      if (!entry.hasAudio) throw "This entry has no recording";
+      if (!settings.aiCleanup && entry.raw) {
+        entry.text = entry.raw;
+        entry.raw = null;
+      }
+      entry.model = settings.engine === "cloud" ? "groq" : settings.whisperModel;
+      return JSON.parse(JSON.stringify(entry));
     },
     ai_status: () => ({
       // On a new PC the AI runs once its model is there and AI cleanup is on.

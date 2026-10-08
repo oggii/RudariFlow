@@ -134,9 +134,19 @@
 
 /* ── Quick switches ─────────────────────────────────── */
 
-/* A select may take the whole row: a setting row's 60 % would cut "Gleiche
-   Sprache wie gesprochen". Where label and select do not fit side by side,
-   the select stands below its label. */
+/* The two choices of the card have one form at every width: each select
+   beside its name, on the name's line. The name keeps its one line and the
+   select takes the room that is left (a setting row's 60 % would cut "Gleiche
+   Sprache wie gesprochen"), up to a field's width, and gives way before
+   anything goes to a second line. Left alone, each row decided for itself:
+   in German "Gesprochene Sprache" stood over its select while "Schreiben in"
+   stood beside its own, in every window from 1800 px and from 1100 to
+   1239 px. (A row may still wrap: the line that says why "Write in" does
+   nothing stands under its row.) */
+#home-switches {
+  container: switches / inline-size;
+}
+
 #home-switches .setting-row {
   flex-wrap: wrap;
 }
@@ -146,7 +156,33 @@
 }
 
 #home-switches .setting-row:has(select) > .setting-label {
-  flex: 1 0 auto;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+#home-switches .setting-row:has(select) > .setting-control {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+#home-switches .setting-control > select {
+  width: 100%;
+  min-width: 0;
+  max-width: 320px;
+}
+
+/* A card too narrow for the longer name beside a select of 180 px (less
+   than 340 px between its paddings; no window of 900 px or more has one,
+   the card has 348 px at its narrowest): both selects stand under their
+   names, never one of them alone. */
+@container switches (max-width: 339px) {
+  #home-switches .setting-row:has(select) > .setting-control {
+    flex-basis: 100%;
+  }
+
+  #home-switches .setting-control > select {
+    max-width: none;
+  }
 }
 
 /* Why a row's setting does nothing at the moment, on a line of its own under the row. */
@@ -273,53 +309,133 @@
 
 /* Every row has one shape, whatever it can do; which one, the list's width
    decides for all rows together (the @container rules below), not a row's
-   number of actions. In a narrow list: the text, its second line, the
-   actions below. They end at the card's right edge, where the search field
-   and the lines between the rows end: "Copy", and apart from it Delete, the
-   row's last action as in every list; what else a row can do stands before
-   them. */
-.history-item {
-  flex-direction: column;
-  flex-wrap: nowrap;
-  align-items: stretch;
-}
+   number of actions.
 
-.history-item > .list-main {
-  flex: none;
-}
-
-.history-actions {
-  justify-content: flex-end;
-  /* As wide as the row and its two margins: "100 %" would stop 8 px short of the right edge. */
-  max-width: none;
-  margin: 0 calc(-1 * var(--s2));
-}
-
-.history-actions > :last-child {
-  margin-left: var(--s3);
-}
-
-/* Row actions. "Copy" is what a dictation is opened for and always shows,
-   in one place in every row: the "Copy" of all rows stand under each other.
-   The others (Original, Play, Re-run before it, Delete after it) show while
-   the pointer is on the row or the keyboard focus is in it: eight rows no
-   longer carry thirty grey words. They keep their places while they are not
-   seen, so nothing moves when they come; they stay in the page, in the Tab
-   order and named.
+   Row actions. "Copy" is what a dictation is opened for: it always shows,
+   and it is the row's last action, at the card's right edge, where the
+   search field and the lines between the rows end. So the "Copy" of all
+   rows stand under each other. The others (.history-more: Delete, apart
+   from the rest at their left end, then Original, Play, Re-run) stand to
+   its left and show while the pointer is on the row or the focus is in it:
+   eight rows no longer carry thirty grey words. The focus, not only the
+   keyboard's: after a click on Re-run with the pointer gone the focus is
+   still on that button, and Enter would start a Re-run nobody sees. They
+   keep their places while they are not seen, so nothing moves when they
+   come; they stay in the page, in the Tab order and named.
    An action that says something of the moment stays in view: an armed
    "Delete?", "Stop" while the recording plays, "AI version" while the
    original shows, "Transcribing…", a failure (data-on, src/history.ts).
-   Where no pointer hovers (touch) and in a contrast theme all of them
-   always show. */
+
+   In a narrow list (this is its form: a card under 600 px, which is every
+   window from 1100 to 1439 px): the text, and under it one line with the
+   app, the time and the length at the left and "Copy" at the right. The
+   other actions take that same line, to the left of "Copy", and the line's
+   words are not shown meanwhile (they stay in the page: a screen reader
+   still reads them). A row has one height whatever shows. */
+.history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 var(--s2);
+  align-items: start;
+}
+
+.history-item > .list-main,
+.history-actions {
+  display: contents;
+}
+
+.history-text {
+  grid-column: 1 / -1;
+}
+
+.history-meta {
+  grid-area: 2 / 1;
+  min-width: 0;
+  margin-top: 0;
+}
+
+/* The line is as high as the actions beside it: its words and theirs stand
+   on one middle line. */
+.history-parts {
+  line-height: 28px;
+}
+
+/* The other actions lie over the line, from its right end: over it also
+   while its words are not drawn (what has an opacity is painted late, and
+   took the clicks meant for the buttons). */
+.history-more {
+  position: relative;
+  z-index: 1;
+  grid-area: 2 / 1;
+  justify-self: end;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+  max-width: calc(100% + var(--s2));
+  margin-left: calc(-1 * var(--s2));
+}
+
+.history-more > [data-delete-id] {
+  margin-right: var(--s3);
+}
+
+/* "Copy" ends at the row's right edge with its words, not with its box. It
+   is as wide as the wider of its two words, "Copy" and "Copied" (both lie
+   in it unseen, each on a row without height, as in a delete button): the
+   others do not move when it is pressed. */
+.history-actions > [data-action="copy"] {
+  grid-area: 2 / 2;
+  display: inline-grid;
+  justify-items: end;
+  align-content: center;
+  gap: 0;
+  margin-right: calc(-1 * var(--s2));
+}
+
+.history-actions > [data-action="copy"]::before,
+.history-actions > [data-action="copy"]::after {
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+.history-actions > [data-action="copy"]::before {
+  content: attr(data-rest) / "";
+}
+
+.history-actions > [data-action="copy"]::after {
+  content: attr(data-done) / "";
+}
+
 @media (hover: hover) and (forced-colors: none) {
-  .history-item:not(:hover, :has(:focus-visible)) .history-actions > :not([data-action="copy"], .armed, [data-on], [aria-disabled="true"]) {
+  .history-item:not(:hover, :focus-within) .history-more > :not(.armed, [data-on], [aria-disabled="true"]) {
     opacity: 0;
+  }
+
+  /* The narrow list: while a row's other actions show, its line's words do not. */
+  @container not (min-width: 600px) {
+    .history-item:is(:hover, :focus-within, :has(.history-more > :is(.armed, [data-on], [aria-disabled="true"]))) .history-parts {
+      opacity: 0;
+    }
   }
 }
 
-/* With more room the actions stand at the right, on the level of the
-   second line: the text keeps the row's whole width. From 600 px, so that
-   the smallest window (a list of 620 px, 614 with the page's scrollbar) has
+/* Where no pointer hovers (touch) and in a contrast theme all actions
+   always show: in the narrow list the others then have a line of their own
+   under the row's, and its words stay. */
+@media (hover: none), (forced-colors: active) {
+  .history-more {
+    grid-area: 3 / 1 / auto / -1;
+    max-width: none;
+    margin-right: calc(-1 * var(--s2));
+  }
+}
+
+/* With more room the row's line has two parts that never share their
+   place: the app, the time and the length at the left, all actions at the
+   right; the text keeps the row's whole width. From 600 px, so that the
+   smallest window (a list of 620 px, 614 with the page's scrollbar) has
    this shape with and without the scrollbar. The rows share the list's two
    columns: the second is as wide as the row with the most actions needs. */
 @container (min-width: 600px) {
@@ -330,31 +446,32 @@
   }
 
   .history-item {
-    display: grid;
     grid-template-columns: subgrid;
     grid-column: 1 / -1;
+    column-gap: var(--s3);
     align-items: center;
-    row-gap: 0;
   }
 
-  .history-item > .list-main {
-    display: contents;
-  }
-
-  .history-text {
-    grid-column: 1 / -1;
-  }
-
-  .history-meta {
-    grid-column: 1;
-    min-width: 0;
-    margin-top: 0;
+  .history-parts {
+    line-height: inherit;
   }
 
   .history-actions {
-    grid-column: 2;
+    grid-area: 2 / 2;
+    display: flex;
     flex-wrap: nowrap;
-    margin-left: 0;
+    max-width: none;
+    /* "Copy" ends at the row's right edge with its words: the row's margin takes its box's padding. */
+    margin: 0 calc(-1 * var(--s2)) 0 0;
+  }
+
+  /* Its buttons are the actions' own here. */
+  .history-more {
+    display: contents;
+  }
+
+  .history-actions > [data-action="copy"] {
+    margin-right: 0;
   }
 }
 
@@ -385,7 +502,7 @@
 }
 
 /* "Show all" starts at the rows' left edge; the way to the list's setting
-   ends at their right edge, where Delete does: a small, quiet link, not a
+   ends at their right edge, where "Copy" does: a small, quiet link, not a
    third button. */
 .home-recent-foot {
   display: flex;

@@ -16,12 +16,16 @@ export interface SetupInput {
   aiDownloaded: boolean;
   /** The user closed the optional AI cleanup card. */
   aiDismissed: boolean;
+  /** The start's questions were given their time (src/start.ts) and an
+   *  answer is still out: Home goes on with what it has. */
+  waited?: boolean;
 }
 
 export interface Setup {
   /** The backend has answered: the speech model's state, the microphones and
    *  the history are known. Until then Home shows neither the steps nor the
-   *  daily view (it would show one and then flip to the other). */
+   *  daily view (it would show one and then flip to the other). Also true
+   *  once the start's wait is over (`waited`): Home then shows what it has. */
   known: boolean;
   /** Home shows the setup steps above the daily view's list. */
   needed: boolean;
@@ -43,10 +47,13 @@ export interface Setup {
 export function setup(input: SetupInput): Setup {
   const s = input.speech;
   // Nothing is shown as missing before the backend answered.
-  if (!s || input.microphones === null || input.history === null) return { known: false, needed: false, firstRun: false, microphone: true, model: true, aiCard: false };
-  const microphone = input.microphones > 0;
-  const cloud = s.engine === "cloud";
-  const model = cloud ? s.cloudKey : s.downloaded;
+  if ((!s || input.microphones === null || input.history === null) && !input.waited) return { known: false, needed: false, firstRun: false, microphone: true, model: true, aiCard: false };
+  // What never answered is unknown, not missing: a list of microphones that
+  // did not come is not "no microphone", a speech model nobody heard of is
+  // not "no speech model", and without the history nobody is welcomed as new.
+  const microphone = input.microphones === null || input.microphones > 0;
+  const cloud = s?.engine === "cloud";
+  const model = !s || (cloud ? s.cloudKey : s.downloaded);
   return { known: true, needed: !(microphone && model), firstRun: !model && !cloud && input.history === 0, microphone, model, aiCard: !input.aiDownloaded && !input.aiDismissed };
 }
 
