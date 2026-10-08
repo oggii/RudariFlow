@@ -55,6 +55,15 @@ async function settings(page, tab) {
 
 const TABS = ["dictation", "ai", "dictionary", "models", "general"];
 
+/**
+ * The layout system's three steps (src/shell.ts, the head of src/styles/shell.css): the room beside the sidebar
+ * from which a page has more columns. Home and the Soundboard are two columns from WIDE; Settings, the Meetings
+ * library, an open meeting and Files with a file from ROOMY; Home's controls and the first run's grid from WIDER.
+ */
+const WIDE = 900;
+const ROOMY = 1250;
+const WIDER = 1600;
+
 /** What a probe reports when `ok` is false. */
 const expect = (ok, what, detail = "") => (ok ? [] : [{ check: "behaviour", what, detail }]);
 
@@ -146,6 +155,249 @@ async function layoutHolds(run) {
   } finally {
     await win.context.close();
   }
+}
+
+/**
+ * A dictation's actions (Home, "Row actions" in styles/home.css). "Copy" always shows, at one place in every row.
+ * The others show with the pointer on the row or the keyboard focus in it, and where they stand does not change
+ * when they come: nothing moves. An armed Delete stays in view when the pointer leaves. All of them stay in the
+ * page, named and in the Tab order.
+ */
+async function rowActions(page) {
+  const out = [];
+  await page.mouse.move(2, 2);
+  const look = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll("#history-list .history-item")].map((row) => ({
+        copy: Math.round(row.querySelector('[data-action="copy"]').getBoundingClientRect().left),
+        right: Math.round(row.getBoundingClientRect().right - row.querySelector(".history-actions > :last-child").getBoundingClientRect().right),
+        seen: [...row.querySelectorAll(".history-actions > button")].map((b) => (getComputedStyle(b).opacity === "0" ? "" : b.textContent)),
+        at: [...row.querySelectorAll(".history-actions > button")].map((b) => Math.round(b.getBoundingClientRect().left)).join(),
+        last: row.querySelector(".history-actions > :last-child").hasAttribute("data-delete-id"),
+        named: [...row.querySelectorAll(".history-actions > button")].every((b) => b.textContent.trim() && b.tabIndex === 0 && b.checkVisibility()),
+      })),
+    );
+  const rest = await look();
+  out.push(...expect(rest.length > 0 && rest.every((r) => r.seen.filter(Boolean).length === 1 && r.seen.at(-2) !== "" && r.last && r.named), "at rest a dictation shows Copy alone; the other actions are in the page, named and in the Tab order", JSON.stringify(rest.map((r) => r.seen))));
+  out.push(...expect(new Set(rest.map((r) => r.copy)).size === 1 && new Set(rest.map((r) => r.right)).size === 1, "the Copy of all dictations stand under each other, and every row ends in Delete at the same place", JSON.stringify(rest.map((r) => [r.copy, r.right]))));
+  // The pointer on the first row: its actions show, where they stood unseen; the other rows stay quiet.
+  const first = page.locator("#history-list .history-item").first();
+  await first.scrollIntoViewIfNeeded();
+  const before = await look();
+  await first.locator(".history-text").hover();
+  const hovered = await look();
+  out.push(...expect(hovered[0].seen.every(Boolean) && hovered[0].at === before[0].at && hovered.slice(1).every((r) => r.seen.filter(Boolean).length === 1), "with the pointer on a dictation its actions show, each where it stood unseen, and only that row's", JSON.stringify([before[0].at, hovered[0].at, hovered.map((r) => r.seen)])));
+  await page.mouse.move(2, 2);
+  // The keyboard in the row: Tab from the search field reaches the row's first action, which shows with its ring.
+  await page.focus("#history-search");
+  await page.keyboard.press("Tab");
+  const focused = await page.evaluate(() => {
+    const at = document.activeElement;
+    const row = at.closest(".history-item");
+    return { inRow: !!row, first: !!row && at === row.querySelector(".history-actions > button"), shown: !!row && [...row.querySelectorAll(".history-actions > button")].every((b) => getComputedStyle(b).opacity !== "0"), ring: getComputedStyle(at).outlineStyle !== "none" };
+  });
+  out.push(...expect(focused.inRow && focused.first && focused.shown && focused.ring, "with the keyboard focus in a dictation all its actions show, and the focused one has its ring", JSON.stringify(focused)));
+  await page.evaluate(() => document.activeElement.blur());
+  // An armed Delete stays in view when the pointer has left the row.
+  await first.locator(".history-text").hover();
+  await first.locator("[data-delete-id]").click();
+  await page.mouse.move(2, 2);
+  await wait(page, 60);
+  const armed = (await look())[0];
+  out.push(...expect(armed.seen.at(-1).endsWith("?") && armed.seen.filter(Boolean).length === 2, "an armed Delete stays in view with Copy when the pointer leaves the row", JSON.stringify(armed.seen)));
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => document.activeElement?.blur?.());
+  await wait(page, 60);
+  return out;
+}
+
+/** The places whose right edge must be the same (the layout system, src/styles/shell.css): how to get there, and the page they are on. */
+const EDGE_PLACES = [
+  ["Home", "home", (page) => section(page, "home")],
+  ["Files", "files", (page) => section(page, "files")],
+  ["Files with a result", "files", (page) => fileLoaded(page)],
+  [
+    "Files with a result and a summary",
+    "files",
+    async (page) => {
+      await page.click("#file-summarize");
+      await wait(page, 400);
+    },
+  ],
+  ["the Meetings library", "meetings", (page) => section(page, "meetings")],
+  ["an open meeting with notes", "meetings", (page) => meeting(page, M1)],
+  [
+    "an open meeting without notes",
+    "meetings",
+    async (page) => {
+      await page.click("#mt-back");
+      await wait(page, 300);
+      await meeting(page, M3);
+    },
+  ],
+  [
+    "the Soundboard with its panel",
+    "soundboard",
+    async (page) => {
+      await page.click("#mt-back");
+      await boardWith(page, true);
+    },
+  ],
+  ["the Soundboard without its panel", "soundboard", (page) => boardWith(page, false)],
+  ...["dictation", "ai", "dictionary", "models", "general"].flatMap((tab) => [
+    [`Settings, ${tab}`, "settings", (page) => settings(page, tab)],
+    ...(tab === "general"
+      ? []
+      : [
+          [
+            `Settings, ${tab}, Advanced open`,
+            "settings",
+            async (page) => {
+              await page.evaluate((t) => (document.querySelector(`details.fold[data-fold="${t}"]`).open = true), tab);
+              await wait(page, 80);
+            },
+          ],
+        ]),
+  ]),
+];
+
+/**
+ * One left edge and one right edge for every page (the layout system's first rule). The left edge is where a
+ * page's first part starts, the right edge is how far the page's content reaches: the largest right edge of
+ * anything that is drawn on it. On every page, in every one of its forms, both are the same x, within 1 px.
+ */
+async function sameEdges(page) {
+  const seen = [];
+  for (const [what, id, open] of EDGE_PLACES) {
+    await open(page);
+    seen.push(
+      await page.evaluate(
+        ([what, id]) => {
+          const section = document.getElementById(`section-${id}`);
+          const content = document.getElementById("content");
+          content.scrollTop = 0;
+          let left = Infinity;
+          let right = -Infinity;
+          for (const el of section.querySelectorAll("*")) {
+            if (!el.checkVisibility({ visibilityProperty: true }) || el.closest(".sr-only, .mt-sr-only, option")) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width <= 1 || r.height <= 1) continue;
+            // A box that is drawn: what has a ground or an edge of its own (a card, a field, a button with a
+            // ground, a line under a row). A quiet text button has neither; its words start inside its box.
+            const cs = getComputedStyle(el);
+            const clear = (colour) => colour === "transparent" || /, 0\)$/.test(colour);
+            const drawn = !clear(cs.backgroundColor) || (parseFloat(cs.borderTopWidth) > 0 && !clear(cs.borderTopColor)) || (parseFloat(cs.borderBottomWidth) > 0 && !clear(cs.borderBottomColor));
+            if (!drawn) continue;
+            left = Math.min(left, r.left);
+            right = Math.max(right, r.right);
+          }
+          return { what, left: Math.round(left * 2) / 2, right: Math.round(right * 2) / 2, active: section.classList.contains("active"), sideways: content.scrollWidth > content.clientWidth + 1 };
+        },
+        [what, id],
+      ),
+    );
+  }
+  // The folds as the window found them.
+  await page.evaluate(() => {
+    for (const fold of document.querySelectorAll("details.fold[data-fold]")) fold.open = false;
+  });
+  const lefts = seen.map((p) => p.left);
+  const rights = seen.map((p) => p.right);
+  const list = (key) => seen.map((p) => `${p.what}: ${p[key]}`).join("; ");
+  return [
+    ...expect(seen.every((p) => p.active && !p.sideways), "the check of the pages' edges saw every place, and none scrolls sideways", JSON.stringify(seen.filter((p) => !p.active || p.sideways))),
+    ...expect(Math.max(...lefts) - Math.min(...lefts) <= 1, "every page starts at the same left edge, in every one of its forms", list("left")),
+    ...expect(Math.max(...rights) - Math.min(...rights) <= 1, "every page ends at the same right edge, in every one of its forms", list("right")),
+  ];
+}
+
+/**
+ * The steps that `layoutHolds` (Home) and `settingsHold` (Settings) do not sweep, each in a window that draws its
+ * scrollbar, one pixel below the step and at it: the first run's grid (1600 px), Files without a file and with a
+ * result, the Meetings library, an open meeting with notes and one without (1250 px). The form must follow the
+ * room beside the sidebar alone (`offsetWidth`, the scrollbar's own room in it) and hold still. An open meeting
+ * with notes always scrolls in one column and never in two, so a step decided on the width the scrollbar
+ * leaves (`clientWidth`) is still one column at 1250 px: this fails then, and so does every other place where
+ * a scrollbar stands at the step.
+ */
+async function pagesHold(run) {
+  const out = [];
+  const places = [
+    ["firstrun", "the first run's grid", WIDER, "home", (page) => section(page, "home"), () => getComputedStyle(document.getElementById("section-home")).display === "grid"],
+    ["populated", "Files without a file", ROOMY, "files", (page) => section(page, "files"), () => getComputedStyle(document.querySelector("#section-files .files-options")).display === "grid"],
+    ["populated", "Files with a result", ROOMY, "files", (page) => fileLoaded(page), () => getComputedStyle(document.getElementById("section-files")).display === "grid"],
+    ["populated", "the Meetings library", ROOMY, "meetings", (page) => section(page, "meetings"), () => getComputedStyle(document.getElementById("mt-list")).columnCount === "2"],
+    ["populated", "an open meeting with notes", ROOMY, "meetings", (page) => meeting(page, M1), () => getComputedStyle(document.querySelector("#section-meetings .mt-body")).display === "grid"],
+    [
+      "populated",
+      "an open meeting without notes",
+      ROOMY,
+      "meetings",
+      async (page) => {
+        await page.click("#mt-back");
+        await wait(page, 300);
+        await meeting(page, M3);
+      },
+      () => getComputedStyle(document.querySelector("#section-meetings .mt-body")).display === "grid",
+    ],
+  ];
+  const kinds = new Set();
+  for (const scenario of ["firstrun", "populated"]) {
+    const win = await run.openWindow({ scenario, lang: run.lang, size: "1800x1000", url: "/", scrollbars: true });
+    const { page } = win;
+    try {
+      const side = await page.evaluate(() => window.innerWidth - document.getElementById("content").offsetWidth);
+      for (const [, what, step, id, open, form] of places.filter((p) => p[0] === scenario)) {
+        await page.setViewportSize({ width: 1800, height: 1000 });
+        await open(page);
+        const tried = [];
+        // The window heights at which the page just fits and just does not, in each form; and two plain ones
+        // for the pages that take the window's height themselves.
+        const fits = [];
+        for (const width of [step - 1, step]) {
+          await page.setViewportSize({ width: width + side, height: 3000 });
+          await wait(page, 80);
+          fits.push(await page.evaluate((id) => Math.round(window.innerHeight - document.getElementById("content").clientHeight + document.getElementById(`section-${id}`).scrollHeight), id));
+        }
+        const heights = [...new Set([...fits.filter((h) => h < 2900).flatMap((h) => [h - 1, h + 1]), 640, 900])];
+        for (const width of [step - 1, step, step + 3, step + 6]) {
+          for (const height of heights) {
+            await page.setViewportSize({ width: width + side, height });
+            await wait(page, 50);
+            const two = await page.evaluate(form);
+            const seen = await page.evaluate(
+              () =>
+                new Promise((done) => {
+                  const content = document.getElementById("content");
+                  const classes = () => `${[...document.querySelectorAll(".content-section.active, #home-daily")].map((el) => el.className).join("|")} ${content.offsetWidth - content.clientWidth}`;
+                  let was = classes();
+                  let n = 0;
+                  const end = performance.now() + 100;
+                  const frame = () => {
+                    const now = classes();
+                    if (now !== was) n++;
+                    was = now;
+                    if (performance.now() < end) requestAnimationFrame(frame);
+                    else done({ changes: n, room: content.offsetWidth, bar: content.offsetWidth - content.clientWidth });
+                  };
+                  requestAnimationFrame(frame);
+                }),
+            );
+            kinds.add(`${two ? "two" : "one"} ${seen.bar > 0 ? "with" : "without"}`);
+            tried.push({ size: `${width + side}x${height}`, changes: seen.changes, two, right: two === seen.room >= step, bar: seen.bar });
+          }
+        }
+        const moved = tried.filter((t) => t.changes > 0);
+        const wrong = tried.filter((t) => !t.right);
+        out.push(...expect(moved.length === 0, `${what}: the layout holds still at its step (${step} px) with a scrollbar`, `${moved.length} of ${tried.length} sizes change by themselves, e.g. ${JSON.stringify(moved.slice(0, 3))}`));
+        out.push(...expect(wrong.length === 0, `${what}: the columns follow the room beside the sidebar alone, with or without a scrollbar`, `${wrong.length} of ${tried.length} sizes, e.g. ${JSON.stringify(wrong.slice(0, 3))}`));
+      }
+    } finally {
+      await win.context.close();
+    }
+  }
+  out.push(...expect(kinds.size === 4, "the sweep of the pages' steps sees one and two columns, each with and without the scrollbar", JSON.stringify([...kinds])));
+  return out;
 }
 
 /** Is the element with this id shown (not `.hidden`)? */
@@ -906,15 +1158,14 @@ async function firstRun(page, run) {
       return [px(card.height), px(rect("setup-ai-line").left), px(rect("setup-ai-line").right), px(rect("setup-ai-download").top - card.top), px(rect("setup-ai-download").width), px(rect("home-daily").top)].join(" ");
     });
   const stands = { rests: await cardNow() };
-  // Since the card also says where the model can be had later (wave 1 of the whole-branch review; "Hide"
-  // hides it for good), its text is longer: under its title in up to two lines at 1200 px (77 px of card,
-  // 57 before), in one at 1600 px, where English is one line with its title and German stands under it.
-  if (flat.width >= 1200) out.push(...expect(flat.height <= 80 && flat.right, "from 1200 px of window the optional card is flat: its text at the left in at most two lines, its buttons at the right", JSON.stringify(flat)));
-  if (flat.width >= 1600) out.push(...expect((flat.oneLine ? flat.height <= 52 : flat.height <= 60) && flat.over === 0, "in a large window the optional card's text is one line, beside its title or under it, and the daily view does not scroll because of it", JSON.stringify(flat)));
-  if (flat.width >= 1900) out.push(...expect(flat.oneLine && flat.height <= 52, "from 1900 px of window the optional card is one line in both languages", JSON.stringify(flat)));
+  // The card also says where the model can be had later ("Hide" hides it for good). Wave 2 of the
+  // whole-branch review shortened that sentence: at the head of the daily view the card is one line again
+  // from 1200 px of window, in both languages (50 px; German stood under its title until 1322 px before).
+  if (flat.width >= 1200) out.push(...expect(flat.oneLine && flat.height <= 52 && flat.right, "from 1200 px of window the optional card is one line in both languages, its buttons at the right", JSON.stringify(flat)));
+  if (flat.width >= 1600) out.push(...expect(flat.over === 0, "in a large window the daily view does not scroll because of the optional card", JSON.stringify(flat)));
   // The card says where the model can be downloaded later: its button hides it for good.
   const later = await page.evaluate(() => document.getElementById("setup-ai-text").textContent);
-  out.push(...expect(de ? /Einstellungen › KI-Korrektur/.test(later) : /Settings › AI cleanup/.test(later), "the optional card says where the AI model can be downloaded later", later));
+  out.push(...expect(de ? /in den Einstellungen/.test(later) : /Settings › AI cleanup/.test(later), "the optional card says where the AI model can be downloaded later", later));
   // Pressed twice in one go: one download.
   rested = await pressTwice(page, "setup-ai-download");
   await until(page, () => window.__MOCK__.calls.some((c) => c.cmd === "ai_download_model"));
@@ -926,7 +1177,7 @@ async function firstRun(page, run) {
   let ai = await page.evaluate(() => [document.getElementById("setup-ai-numbers").textContent, document.getElementById("setup-ai-download").getAttribute("aria-disabled"), document.activeElement?.id]);
   out.push(...expect(/^24 % · 1\.2 GB (of|von) 5\.0 GB$/.test(ai[0]) && ai[1] === "true" && ai[2] === "setup-ai-download", "the AI model's download shows percent and size, and its button rests", JSON.stringify(ai)));
   const says = await page.evaluate(() => [document.getElementById("setup-ai-text").textContent, document.getElementById("setup-ai-dismiss").textContent, document.getElementById("status-indicator").dataset.kind, document.getElementById("status-text").textContent]);
-  out.push(...expect(/turns on|schaltet sich nach dem Download ein/.test(says[0]) && says[1] === (de ? "Ausblenden" : "Hide") && says[2] === "downloading" && / 24 %$/.test(says[3]), "while its download runs the card says that AI cleanup turns on at the end and offers to hide it, and the status shows the download", JSON.stringify(says)));
+  out.push(...expect(/turns on|Danach ist die KI-Korrektur an/.test(says[0]) && says[1] === (de ? "Ausblenden" : "Hide") && says[2] === "downloading" && / 24 %$/.test(says[3]), "while its download runs the card says that AI cleanup turns on at the end and offers to hide it, and the status shows the download", JSON.stringify(says)));
   if (flat.width >= 1600) {
     const busy = await page.evaluate(() => [Math.round(document.getElementById("home-ai-card").getBoundingClientRect().height), document.getElementById("content").scrollHeight - document.getElementById("content").clientHeight]);
     out.push(...expect(busy[0] <= 60 && busy[1] === 0, "the card stays flat while it downloads", JSON.stringify(busy)));
@@ -1439,10 +1690,12 @@ async function keyEdges(page) {
       .map((row) => [row.querySelector(".hotkey-btn").id, Math.round(row.querySelector(".hotkey-btn").getBoundingClientRect().top - row.querySelector(".label-text").getBoundingClientRect().top)]),
   );
   out.push(...expect(rows.every(([, down]) => Math.abs(down) < 16), "a key box stands beside its label, not under it", JSON.stringify(rows)));
-  // Home's hotkeys card.
+  // Home's hotkeys card: one right edge; in one column (a window under 900 px beside the sidebar) the four keys
+  // stand two by two, and the boxes of each of the two columns end on one edge.
   await section(page, "home");
   const home = await edges("#home-hotkeys");
-  out.push(...expect(home.length === 4 && new Set(home.map((k) => k.right)).size === 1, "Home's key boxes end on one right edge", JSON.stringify(home)));
+  const two = await page.evaluate((step) => document.getElementById("content").offsetWidth < step, WIDE);
+  out.push(...expect(home.length === 4 && new Set(home.map((k) => k.right)).size === (two ? 2 : 1) && (!two || (home[0].right === home[2].right && home[1].right === home[3].right && home[0].top === home[1].top)), "Home's key boxes end on one right edge, or on one per column where they stand two by two", JSON.stringify(home)));
   await settings(page, "dictation");
   return out;
 }
@@ -1493,9 +1746,12 @@ const COLUMNS = {
 
 /**
  * A Settings tab as it is laid out, with its Advanced fold closed and open:
- * two columns from 1600 px beside the sidebar (one left edge, one top edge,
- * each at most 900 px, the parts of a column 16 px apart, every part in its
- * column), one column below that. The order in the page is the same in both,
+ * two columns from 1250 px beside the sidebar (the left one on the page's
+ * left edge, the right one ending at its right edge, one top edge, one
+ * gutter of 16 px, the parts of a column 16 px apart, every part in its
+ * column), one column of the page's width below that. A hint is one line
+ * where its row has 760 px or more, two lines at most in a narrower column.
+ * The order in the page is the same in both,
  * and in two columns it goes down the left one and then down the right one:
  * Tab changes column once. AI cleanup is measured with the rules it has
  * (three, or none on a new PC) and with ten: the fold stands under the rules
@@ -1521,10 +1777,21 @@ async function columns(page, run) {
           const fold = panel.querySelector(":scope > .fold > summary");
           const hints = [...panel.querySelectorAll(".setting-label .label-hint")]
             .filter((el) => el.checkVisibility() && !el.matches(".hint-long, .status-line, .ai-status, .ai-output-warn, #gpu-detected, #ai-model-note") && el.innerText.trim())
-            .filter((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)) > 1)
+            .filter((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)) > (el.closest(".setting-row").getBoundingClientRect().width >= 760 ? 1 : 2))
             .map((el) => el.innerText.trim().slice(0, 40));
+          // "More" stands with the last word of its hint, never alone on a line.
+          const alone = [...panel.querySelectorAll(".setting-label .label-hint > span + .hint-more")]
+            .filter((b) => b.checkVisibility())
+            .filter((b) => {
+              const range = document.createRange();
+              range.selectNodeContents(b.previousElementSibling);
+              const last = [...range.getClientRects()].at(-1);
+              return !last || Math.abs(last.top - b.getBoundingClientRect().top) > 8;
+            })
+            .map((b) => b.getAttribute("aria-controls"));
           return {
-            wider: document.getElementById("section-settings").classList.contains("wider"),
+            alone,
+            wider: document.getElementById("section-settings").classList.contains("roomy"),
             room: content.offsetWidth,
             order: kids.length === found.length && kids.every((el, i) => el === found[i]),
             boxes: boxes.filter((b) => b.shown),
@@ -1543,13 +1810,15 @@ async function columns(page, run) {
     const out = [];
     const detail = JSON.stringify(seen);
     out.push(...expect(seen.order, `${what}: the parts are in the order of the page`, detail));
-    out.push(...expect(seen.wider === seen.room >= 1600, `${what}: two columns from 1600 px beside the sidebar, one below`, detail));
+    out.push(...expect(seen.wider === seen.room >= ROOMY, `${what}: two columns from ${ROOMY} px beside the sidebar, one below`, detail));
     out.push(...expect(!seen.sideways, `${what}: nothing scrolls sideways`, detail));
+    out.push(...expect(seen.hints.length === 0, `${what}: a hint is one line where its row has 760 px or more, and two at most in a narrower one`, seen.hints.join(" | ")));
+    out.push(...expect(seen.alone.length === 0, `${what}: no "More" stands alone on a line`, seen.alone.join(" | ")));
     const col = (n) => seen.boxes.filter((b) => b.column === n);
     if (!seen.wider) {
-      // One column: every part on the page's left edge, as wide as the next one, one under the other.
-      const one = seen.boxes.every((b, i) => b.left === seen.page && b.right === seen.boxes[0].right && (i === 0 || b.top >= seen.boxes[i - 1].bottom));
-      out.push(...expect(one && seen.boxes[0].right - seen.boxes[0].left <= 1080.5, `${what}: one column of at most 1080 px on the page's left edge`, detail));
+      // One column: every part from the page's left edge to its right edge, one under the other.
+      const one = seen.boxes.every((b, i) => b.left === seen.page && Math.abs(b.right - seen.pageRight) <= 1 && (i === 0 || b.top >= seen.boxes[i - 1].bottom));
+      out.push(...expect(one, `${what}: one column from the page's left edge to its right edge`, detail));
       return out;
     }
     const [left, right] = [col(0), col(1)];
@@ -1560,12 +1829,12 @@ async function columns(page, run) {
     // (not where the list above expects it), the left column comes first and is never gone back to.
     const tabbed = seen.boxes.map((b) => (b.left === seen.page ? 0 : 1));
     out.push(...expect(tabbed.every((c, i) => i === 0 || c >= tabbed[i - 1]), `${what}: Tab goes down the left column and then down the right one, it changes column once`, `${tabbed.join("")} ${detail}`));
-    out.push(...expect(seen.boxes.every((b) => width(b) === width(seen.boxes[0]) && width(b) <= 900.5 && width(b) >= 700), `${what}: every part is as wide as its column, at most 900 px`, detail));
+    out.push(...expect(seen.boxes.every((b) => Math.abs(width(b) - width(seen.boxes[0])) <= 0.5 && width(b) >= 580), `${what}: every part is as wide as its column, and no column is narrower than 580 px`, detail));
+    out.push(...expect(right.every((b) => Math.abs(b.right - seen.pageRight) <= 1) && Math.abs(right[0].left - left[0].right - 16) <= 0.5, `${what}: the right column ends at the page's right edge, one gutter of 16 px from the left one`, detail));
     const apart = (list) => list.every((b, i) => i === 0 || Math.abs(b.top - list[i - 1].bottom - 16) <= 1);
     out.push(...expect(apart(left) && apart(right), `${what}: the parts of a column stand 16 px apart, none is pushed away`, detail));
     out.push(...expect(seen.tabs[0] === seen.page && Math.abs(seen.tabs[1] - seen.pageRight) <= 1, `${what}: the tab bar spans the whole width`, detail));
-    if (seen.fold) out.push(...expect(seen.fold.shown && seen.fold.width === width(seen.boxes[0]) && seen.fold.height >= 40 && !/rgba\(0, 0, 0, 0\)|transparent/.test(seen.fold.ground), `${what}: the fold's heading is a bar as wide as its column`, detail));
-    out.push(...expect(seen.hints.length === 0, `${what}: every hint is one line`, seen.hints.join(" | ")));
+    if (seen.fold) out.push(...expect(seen.fold.shown && Math.abs(seen.fold.width - width(seen.boxes[0])) <= 0.5 && seen.fold.height >= 40 && !/rgba\(0, 0, 0, 0\)|transparent/.test(seen.fold.ground), `${what}: the fold's heading is a bar as wide as its column`, detail));
     return out;
   };
   /** Rules per app with ten rows, or as it was again. The rows are the page's own ("Add rule"); nothing is saved, and they go without a save. */
@@ -1613,7 +1882,7 @@ async function columns(page, run) {
 }
 
 /**
- * The step to two columns (1600 px beside the sidebar) in a window that
+ * The step to two columns (1250 px beside the sidebar) in a window that
  * draws its scrollbar, as Home's steps are tried (`layoutHolds`): one pixel
  * below it and at it (the last width of one form and the first of the
  * other; a pixel above the step is the second form again), at the window
@@ -1630,7 +1899,7 @@ async function settingsHold(run) {
   try {
     await section(page, "settings");
     const side = await page.evaluate(() => window.innerWidth - document.getElementById("content").offsetWidth);
-    const widths = [1599, 1600].map((w) => w + side);
+    const widths = [ROOMY - 1, ROOMY].map((w) => w + side);
     for (const tab of TABS) {
       await page.evaluate((t) => document.getElementById(`tab-${t}`).click(), tab);
       for (const open of tab === "general" ? [false] : [false, true]) {
@@ -1649,11 +1918,11 @@ async function settingsHold(run) {
             await page.setViewportSize({ width, height });
             await wait(page, 40);
             const seen = await page.evaluate(
-              () =>
+              (step) =>
                 new Promise((done) => {
                   const settings = document.getElementById("section-settings");
                   const content = document.getElementById("content");
-                  const look = () => `${settings.classList.contains("wider") ? "two" : "one"} ${content.offsetWidth - content.clientWidth}`;
+                  const look = () => `${getComputedStyle(settings.querySelector(".tab-panel:not([hidden])")).display !== "block" || getComputedStyle(settings.querySelector(".tab-panel:not([hidden])")).columnCount === "2" ? "two" : "one"} ${content.offsetWidth - content.clientWidth}`;
                   let was = look();
                   let n = 0;
                   const end = performance.now() + 100;
@@ -1662,10 +1931,11 @@ async function settingsHold(run) {
                     if (now !== was) n++;
                     was = now;
                     if (performance.now() < end) requestAnimationFrame(frame);
-                    else done({ changes: n, form: now, right: settings.classList.contains("wider") === content.offsetWidth >= 1600 });
+                    else done({ changes: n, form: now, right: now.startsWith("two") === content.offsetWidth >= step });
                   };
                   requestAnimationFrame(frame);
                 }),
+              ROOMY,
             );
             forms.add(seen.form);
             tried.push({ tab, open, size: `${width}x${height}`, changes: seen.changes, right: seen.right });
@@ -1972,7 +2242,7 @@ async function everyDelete(page, lang, out) {
 
   // At the start, with nothing armed yet: every delete button of the window reads in the Display Language, shown or
   // not. "Delete history" and Files' "Clear" get their words when their pages are wired, before the language is known.
-  const words = lang === "de" ? { rest: "Löschen", "history-clear": "Verlauf löschen", "file-clear": "Leeren" } : { rest: "Delete", "history-clear": "Delete history", "file-clear": "Clear" };
+  const words = lang === "de" ? { rest: "Löschen", "history-clear": "Verlauf löschen", "file-clear": "Transkript entfernen" } : { rest: "Delete", "history-clear": "Delete history", "file-clear": "Remove transcript" };
   const first = await page.evaluate(() => [...document.querySelectorAll("[data-delete-id]")].map((b) => [b.id || b.dataset.deleteId, b.textContent, b.classList.contains("armed")]));
   const wrong = first.filter(([id, text, armed]) => armed || text !== (words[id] ?? words.rest));
   out.push(...expect(["history-clear", "file-clear", "mt-delete"].every((id) => first.some((b) => b[0] === id)) && first.length > 20 && wrong.length === 0, "at the start every delete button reads in the Display Language", JSON.stringify(wrong.length ? wrong : first.length)));
@@ -2045,8 +2315,8 @@ async function everyDelete(page, lang, out) {
     named: true,
     left: count("#history-list .history-item"),
     redraw: () => page.evaluate(() => window.__MOCK__.emit("history-updated", null)),
-    // Home hands the focus on itself: to the first action of the row that moved up.
-    landed: () => page.evaluate(() => document.activeElement === document.querySelector("#history-list .history-item .history-actions button")),
+    // Home hands the focus on itself: to Copy of the row that moved up (the action that always shows).
+    landed: () => page.evaluate(() => document.activeElement === document.querySelector('#history-list .history-item [data-action="copy"]')),
   });
 
   // Settings > General: the whole history. The mocked backend keeps it, until the last step.
@@ -2128,8 +2398,8 @@ async function everyDelete(page, lang, out) {
     what: "a file's transcript",
     buttons: "#file-clear",
     elsewhere: "#file-name",
-    labels: { en: ["Clear", "Clear?"], de: ["Leeren", "Leeren?"] },
-    said: { en: "Press again to clear. Esc cancels.", de: "Nochmals drücken leert. Esc bricht ab." },
+    labels: { en: ["Remove transcript", "Remove transcript?"], de: ["Transkript entfernen", "Transkript entfernen?"] },
+    said: { en: "Press again to remove the transcript. Esc cancels.", de: "Nochmals drücken entfernt das Transkript. Esc bricht ab." },
     left: () => page.evaluate(() => (document.getElementById("file-text").value ? 1 : 0)),
     gone: true,
   });
@@ -2547,80 +2817,151 @@ async function twoWindows(page) {
 const filesNow = (page) =>
   page.evaluate(() => {
     const section = document.getElementById("section-files");
+    const content = document.getElementById("content");
+    const cs = getComputedStyle(section);
     const box = (el) => {
       const r = el.getBoundingClientRect();
-      return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), height: Math.round(r.height) };
+      return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), height: Math.round(r.height) };
     };
+    const page = section.getBoundingClientRect();
+    const options = section.querySelector(".files-options");
+    const more = document.getElementById("file-options-more");
     return {
-      wider: section.classList.contains("wider"),
-      room: document.getElementById("content").offsetWidth,
+      roomy: section.classList.contains("roomy"),
+      room: content.offsetWidth,
       loaded: section.classList.contains("has-file"),
+      page: { left: Math.round(page.left + parseFloat(cs.paddingLeft)), right: Math.round(page.right - parseFloat(cs.paddingRight)), bottom: Math.round(page.bottom - parseFloat(cs.paddingBottom)) },
+      scrolls: content.scrollHeight > content.clientHeight + 1,
       zone: box(document.getElementById("file-drop")),
       // The zone's one-line form: its title and its button side by side, the formats gone.
       oneLine: getComputedStyle(document.getElementById("file-drop")).flexDirection === "row" && !document.querySelector("#file-drop .label-hint").checkVisibility(),
-      options: box(section.querySelector(".files-options")),
+      options: box(options),
+      // The options' short form: both choices on one level, no hint, "More" at their end.
+      selects: [...options.querySelectorAll("select")].map((el) => Math.round(el.getBoundingClientRect().top)),
+      hints: [...options.querySelectorAll(".setting-label .label-hint")].filter((el) => el.checkVisibility()).length,
+      more: more.checkVisibility() ? more.getAttribute("aria-expanded") : null,
+      moreNamed: more.getAttribute("aria-label") ?? "",
       title: section.querySelector(".section-title").textContent,
       transcript: document.getElementById("file-text").getAttribute("aria-label") ?? "",
-      inCard: section.querySelector(".files-options").classList.contains("card"),
+      inCard: options.classList.contains("card"),
     };
   });
 
-/** In a large window the zone and the options stand side by side; else the options under the zone. Once a file is loaded the zone is one line, in both. */
+/**
+ * Files without a result. No file: the zone and, under it, the options, both from the page's left edge to its
+ * right one, the zone as high as the window leaves (its bottom 16 px over the options, which end the page); from
+ * 1250 px the two choices stand side by side in their card. With a file the zone is one line and the options are
+ * their short form (both choices on one level, no hint, "More" at their end); from 1250 px both stand in the side
+ * column.
+ */
 function filesLayout(see, lang) {
-  const side = see.zone.right <= see.options.left && see.zone.top === see.options.top && see.zone.height === see.options.height;
-  return [
+  const detail = JSON.stringify(see);
+  const out = [
     ...expect(see.title === (lang === "de" ? "Dateien" : "Files"), "the page is called Files", see.title),
-    ...expect(see.inCard && see.transcript.length > 0, "the options stand in a card and the transcript has a name", JSON.stringify(see)),
-    ...expect(see.wider === see.room >= 1600, "Files is two columns from 1600 px beside the sidebar", JSON.stringify(see)),
-    ...expect(see.wider ? side : see.options.top >= see.zone.top + see.zone.height, "in a large window the drop zone and the options stand side by side, else the options under the zone", JSON.stringify(see)),
-    ...expect(see.loaded ? see.oneLine && (see.wider || see.zone.height <= 56) : !see.oneLine, "with a file loaded the drop zone is one line, and only then", JSON.stringify(see)),
+    ...expect(see.inCard && see.transcript.length > 0, "the options stand in a card and the transcript has a name", detail),
+    ...expect(see.roomy === see.room >= ROOMY, `Files has room for two columns from ${ROOMY} px beside the sidebar`, detail),
+    ...expect(see.zone.left === see.page.left && see.options.left === see.page.left && see.options.top >= see.zone.bottom, "the drop zone and the options start on the page's left edge, the options under the zone", detail),
+    ...expect(see.loaded ? see.oneLine && see.zone.height <= 56 : !see.oneLine, "with a file loaded the drop zone is one line, and only then", detail),
   ];
+  if (!see.loaded) {
+    out.push(...expect(Math.abs(see.zone.right - see.page.right) <= 1 && Math.abs(see.options.right - see.page.right) <= 1, "without a file the drop zone and the options end at the page's right edge", detail));
+    out.push(...expect(see.scrolls || (see.options.top - see.zone.bottom === 16 && Math.abs(see.options.bottom - see.page.bottom) <= 1 && see.zone.height >= 110), "without a file the drop zone takes the height the window leaves", detail));
+    out.push(...expect(see.more === null && see.hints === 2 && (see.roomy ? see.selects[0] === see.selects[1] : see.selects[1] > see.selects[0]), "without a file the options show their hints; in a window with room for two columns the two choices stand side by side", detail));
+    return out;
+  }
+  const side = see.zone.right - see.zone.left;
+  out.push(...expect(see.more === "false" && see.hints === 0 && see.selects[0] === see.selects[1] && see.options.height <= 84 && /Sprache und Sprechern|language and speakers/.test(see.moreNamed), "with a file loaded the options are one line: both choices on one level, no hint, and a More that says what it is about", detail));
+  out.push(
+    ...expect(
+      see.roomy ? side >= 360 && side <= 622 && see.options.right === see.zone.right : Math.abs(see.zone.right - see.page.right) <= 1 && Math.abs(see.options.right - see.page.right) <= 1,
+      "with a file loaded the zone and the options have the page's width, or the side column's in a window with room for two",
+      detail,
+    ),
+  );
+  return out;
+}
+
+/** "More" opens the options as they are without a file (the hints under the names), and closes them again; the transcript's place follows. */
+async function optionsMore(page) {
+  const top = () => page.evaluate(() => Math.round(document.getElementById("file-text").getBoundingClientRect().top));
+  const was = [await filesNow(page), await top()];
+  await page.click("#file-options-more");
+  await wait(page, 80);
+  const open = [await filesNow(page), await top()];
+  await page.click("#file-options-more");
+  await wait(page, 80);
+  const shut = [await filesNow(page), await top()];
+  return expect(
+    open[0].more === "true" && open[0].hints === 2 && open[0].options.height > was[0].options.height && /Weniger|Less/.test(open[0].moreNamed) && shut[0].hints === 0 && shut[0].options.height === was[0].options.height && shut[1] === was[1],
+    "More opens the options' hints and Less closes them again, and the transcript is back where it was",
+    JSON.stringify({ was: [was[0].hints, was[0].options.height, was[1]], open: [open[0].more, open[0].hints, open[0].options.height, open[0].moreNamed, open[1]], shut: [shut[0].hints, shut[0].options.height, shut[1]] }),
+  );
 }
 
 /**
- * Files with a result. In a large window the transcript's field is as wide as its text (the measure, its own
- * padding and the room of its scrollbar: no part of it stays empty beside a line that wrapped), the buttons over
- * it and the file's line end where it ends, and a summary stands beside it at the left, at the width of a
- * meeting's notes, with Hide and Copy over its own text. In one column the result keeps the page's width.
+ * Files with a result: the one rule it shares with an open meeting. One column: every part has the page's width
+ * (the file's line, "Summarise with AI", the summary, the toolbar, the transcript). Two columns, from 1250 px
+ * beside the sidebar: the side column at the left (the zone's line, the options, the file's line, Summarise and
+ * the summary, all on one left and one right edge, 340 to 622 px wide) and the transcript at the right under its
+ * toolbar, both ending at the page's right edge, one gutter of 16 px from the side column; the frame runs down
+ * to the page's bottom. In both the frame is as wide as its column and the text keeps its measure in it (what
+ * is left of the frame at the right is its own padding).
  */
 async function resultLayout(page) {
   const see = await page.evaluate(() => {
     const box = (el) => {
       const r = el.getBoundingClientRect();
-      return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), width: Math.round(r.width) };
+      return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), width: Math.round(r.width) };
     };
     const section = document.getElementById("section-files");
+    const scs = getComputedStyle(section);
+    const page = section.getBoundingClientRect();
     const text = document.getElementById("file-text");
     const cs = getComputedStyle(text);
     const summary = document.getElementById("file-summary-box");
     return {
-      wider: section.classList.contains("wider"),
-      page: Math.round(section.getBoundingClientRect().width - parseFloat(getComputedStyle(section).paddingLeft) - parseFloat(getComputedStyle(section).paddingRight)),
+      roomy: section.classList.contains("roomy"),
+      page: { left: Math.round(page.left + parseFloat(scs.paddingLeft)), right: Math.round(page.right - parseFloat(scs.paddingRight)), bottom: Math.round(page.bottom - parseFloat(scs.paddingBottom)) },
+      scrolls: document.getElementById("content").scrollHeight > document.getElementById("content").clientHeight + 1,
       text: box(text),
-      // What the field keeps free at its right, past its own padding.
-      empty: Math.round(parseFloat(cs.paddingRight) - parseFloat(cs.paddingLeft)),
+      // The room the text has in its frame, and the measure it must not pass.
+      line: Math.round(text.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)),
       measure: Math.round(parseFloat(cs.fontSize) * 42),
       toolbar: box(section.querySelector(".file-toolbar")),
       actions: box(section.querySelector(".file-actions")),
+      zone: box(document.getElementById("file-drop")),
+      options: box(section.querySelector(".files-options")),
+      job: box(document.getElementById("file-job")),
       clear: box(document.getElementById("file-clear")),
-      summary: summary.checkVisibility() ? { ...box(summary), copy: box(document.getElementById("file-summary-copy")) } : null,
+      summarize: box(document.getElementById("file-summarize")),
+      summary: summary.checkVisibility() ? { ...box(summary), copy: box(document.getElementById("file-summary-copy")), outline: getComputedStyle(summary).borderTopWidth } : null,
+      order: [...section.children].filter((el) => el.checkVisibility()).map((el) => el.id || el.className.split(" ")[0]),
     };
   });
   const detail = JSON.stringify(see);
-  if (!see.wider) return expect(Math.abs(see.text.width - see.page) <= 1 && (!see.summary || Math.abs(see.summary.width - see.page) <= 1), "in one column a file's result keeps the page's width", detail);
   const out = [
-    ...expect(see.empty === 0 && see.text.width >= see.measure && see.text.width <= see.measure + 48, "in a large window the transcript's field is as wide as its text, with no part of it left empty", detail),
-    ...expect(Math.abs(see.actions.right - see.text.right) <= 1 && Math.abs(see.clear.right - see.text.right) <= 12 && see.toolbar.left === see.text.left, "the buttons over a transcript, and Clear, end where the transcript ends", detail),
+    ...expect(see.line <= see.measure + 1 && see.line >= Math.min(see.measure, see.text.width - 40) - 4, "a transcript's text keeps its measure in a frame of any width", detail),
+    ...expect(Math.abs(see.text.right - see.page.right) <= 1 && Math.abs(see.toolbar.right - see.page.right) <= 1 && Math.abs(see.actions.right - see.page.right) <= 1, "the transcript and its toolbar end at the page's right edge", detail),
+    ...expect(see.order.indexOf("file-summarize") === see.order.indexOf("file-job") + 1 && see.order.at(-1) === "file-result", "the page's order: the file's line, Summarise with AI and its summary, then the transcript", JSON.stringify(see.order)),
+    ...expect(!see.summary || see.summary.outline === "0px", "the summary is a card like every card: no outline", detail),
   ];
-  if (see.summary) {
-    out.push(
-      ...expect(
-        see.summary.right < see.text.left && see.text.left - see.summary.right <= 24 && see.summary.top === see.toolbar.top && see.summary.width >= 340 && see.summary.width <= 460 && see.summary.copy.right <= see.summary.right && see.summary.copy.left >= see.summary.left,
-        "in a large window a file's summary stands beside the transcript, at the left, with Hide and Copy over its own text",
-        detail,
-      ),
-    );
+  const left = [see.zone, see.options, see.job, see.summarize, ...(see.summary ? [see.summary] : [])];
+  if (!see.roomy) {
+    out.push(...expect(left.every((b) => b.left === see.page.left) && see.text.left === see.page.left && [see.zone, see.options, see.job, ...(see.summary ? [see.summary] : [])].every((b) => Math.abs(b.right - see.page.right) <= 1), "in one column every part of Files has the page's width", detail));
+    return out;
   }
+  const side = see.zone.right - see.zone.left;
+  out.push(
+    ...expect(
+      left.every((b) => b.left === see.page.left) && [see.zone, see.options, see.job, ...(see.summary ? [see.summary] : [])].every((b) => b.right === see.zone.right) && see.summarize.right <= see.zone.right && side >= 360 && side <= 622,
+      "in two columns the side column holds the zone, the options, the file's line, Summarise and the summary on one left and one right edge",
+      detail,
+    ),
+    ...expect(see.text.left - see.zone.right === 16 && see.toolbar.left === see.text.left && see.toolbar.top === see.zone.top && see.text.top >= see.toolbar.bottom, "the transcript stands one gutter (16 px) right of the side column, under its toolbar, which starts on the zone's line", detail),
+    ...expect(see.scrolls || Math.abs(see.text.bottom - see.page.bottom) <= 1, "the transcript's frame runs down to the page's bottom", detail),
+    ...expect(Math.abs(see.clear.right - see.zone.right) <= 12, "the file's line ends with the side column", detail),
+  );
+  if (see.summary) out.push(...expect(see.summary.top >= see.summarize.bottom && see.summary.copy.right <= see.summary.right && see.summary.copy.left >= see.summary.left, "the summary stands under Summarise with AI in the side column, with Hide and Copy over its own text", detail));
   return out;
 }
 
@@ -3031,7 +3372,7 @@ async function measureProbe(page) {
   await page.click("#file-summarize");
   await wait(page, 400);
   await place("a file's summary", "#file-summary-box");
-  await place("a file's transcript", "#file-result", 2);
+  await place("a file's transcript", "#file-result");
   await meeting(page, M1);
   await place("a meeting's notes", "#section-meetings .mt-notes", 3);
   await place("a meeting's transcript beside its notes", "#mt-transcript", 7);
@@ -3138,6 +3479,8 @@ const underSteps = (page) =>
       rows: document.querySelectorAll("#history-list .history-item").length,
       search: shown("history-search"),
       under: list.top >= steps.bottom,
+      beside: list.left >= steps.right && Math.abs(list.top - steps.top) <= 1,
+      room: document.getElementById("content").offsetWidth,
       edges: [Math.round(steps.left), Math.round(list.left), Math.round(steps.right), Math.round(list.right)],
       title: document.getElementById("home-title").textContent,
       pill: document.getElementById("home-status-text").textContent,
@@ -3163,8 +3506,10 @@ async function historyStays(page, run, reason) {
   const out = [];
   const t = I18N[run.lang];
   const see = await underSteps(page);
-  out.push(...expect(see.steps && !see.controls && see.list && see.rows === 8 && see.search && see.under, "while the setup steps show, the recent dictations stay on screen under them", JSON.stringify(see)));
-  out.push(...expect(see.edges[0] === see.edges[1] && see.edges[2] === see.edges[3], "the steps and the list under them share their left and right edge", JSON.stringify(see.edges)));
+  // Under the steps; in a large window (1600 px beside the sidebar) beside them, in Home's grid.
+  const grid = see.room >= WIDER;
+  out.push(...expect(see.steps && !see.controls && see.list && see.rows === 8 && see.search && (grid ? see.beside : see.under), "while the setup steps show, the recent dictations stay on screen: under them, beside them in a large window", JSON.stringify(see)));
+  out.push(...expect(grid ? see.edges[1] - see.edges[2] === 16 : see.edges[0] === see.edges[1] && see.edges[2] === see.edges[3], "the steps and the list share their left and right edge, or stand one gutter apart", JSON.stringify(see.edges)));
   // No newcomer: the plain heading with the reason, not the welcome.
   out.push(...expect(see.title === t.home_title_setup && see.pill === t[reason], "someone with a history is not welcomed as new: the heading is Setup needed, with the reason", JSON.stringify([see.title, see.pill])));
   if (!(run.lang === "en" && run.size === BEHAVIOUR)) return out;
@@ -3175,13 +3520,13 @@ async function historyStays(page, run, reason) {
   await page.fill("#history-search", "");
   await wait(page, 150);
   const text = await page.evaluate(() => document.querySelector("#history-list .history-text").textContent);
-  await page.click("#history-list .history-item:first-child .history-actions button:first-child");
+  await page.click('#history-list .history-item:first-child [data-action="copy"]');
   await wait(page, 150);
-  const copied = await page.evaluate(() => [window.__MOCK__.calls.filter((c) => c.cmd === "copy_text").at(-1)?.args.text, document.querySelector("#history-list .history-item:first-child .history-actions button").textContent]);
+  const copied = await page.evaluate(() => [window.__MOCK__.calls.filter((c) => c.cmd === "copy_text").at(-1)?.args.text, document.querySelector('#history-list .history-item:first-child [data-action="copy"]').textContent]);
   out.push(...expect(found === 2 && copied[0] === text && copied[1] === "Copied", "under the steps the list is searched and a dictation is copied", JSON.stringify([found, copied])));
   // Original and Delete too: every action of a row is there.
   const actions = await page.evaluate(() => [...document.querySelectorAll("#history-list .history-item:first-child .history-actions button")].map((b) => b.textContent));
-  out.push(...expect(actions.length === 5 && actions.includes("Original") && actions.includes("Play") && actions.includes("Re-run") && actions.at(-1) === "Delete", "a dictation under the steps has every action: Copy, Original, Play, Re-run, Delete", JSON.stringify(actions)));
+  out.push(...expect(actions.length === 5 && actions.includes("Original") && actions.includes("Play") && actions.includes("Re-run") && actions.at(-2) === "Copied" && actions.at(-1) === "Delete", "a dictation under the steps has every action: Original, Play, Re-run, then Copy and Delete", JSON.stringify(actions)));
   // The window opens where it was left: only a first run is brought to Home.
   await settings(page, "general");
   await restart(page);
@@ -4332,12 +4677,15 @@ export const PAGES = [
         const sides = await page.evaluate(() => ["home-controls", "home-recent"].map((id) => document.getElementById(id).getBoundingClientRect()).map((r) => [Math.round(r.top), Math.round(r.width)]));
         out.push(...expect(sides[0][0] === sides[1][0] && sides[1][1] > sides[0][1], "the two sides start on one top edge and the list is the wider one", JSON.stringify(sides)));
       }
-      // A dictation keeps the measure of running text only in the wide list, where it stands beside its actions;
-      // in the narrower forms it has its row's width (capped there, it wrapped early and made the page higher).
+      // A dictation keeps the measure of running text only in the wide list (a card of 840 px or more), where it
+      // stands beside its actions; in the narrower forms it has its row's width (capped there, it wrapped early
+      // and made the page higher).
       const texts = await page.evaluate(() => {
         const list = document.getElementById("history-list");
+        const card = document.getElementById("home-recent");
+        const room = card.clientWidth - parseFloat(getComputedStyle(card).paddingLeft) - parseFloat(getComputedStyle(card).paddingRight);
         const widths = [...list.querySelectorAll(".history-text")].map((el) => [getComputedStyle(el).maxWidth, Math.round(el.getBoundingClientRect().width), Math.round(el.closest(".history-item").getBoundingClientRect().width)]);
-        return { wideList: getComputedStyle(list).display === "grid", capped: widths.filter((w) => w[0] !== "none").length, short: widths.filter((w) => w[1] < w[2] - 1).length, rows: widths.length };
+        return { wideList: room >= 840, capped: widths.filter((w) => w[0] !== "none").length, short: widths.filter((w) => w[1] < w[2] - 1).length, rows: widths.length };
       });
       out.push(...expect(texts.rows > 0 && (texts.wideList ? texts.capped === texts.rows : texts.capped === 0 && texts.short === 0), "a dictation has its row's width, and the measure only in the wide list", JSON.stringify(texts)));
       // Every row is an item of the list, named after its text, and all rows have one shape.
@@ -4349,23 +4697,48 @@ export const PAGES = [
           named: rows.every((row) => row.getAttribute("role") === "listitem" && document.getElementById(row.getAttribute("aria-labelledby"))?.textContent === row.querySelector(".history-text").textContent),
           ids: new Set(rows.map((row) => row.getAttribute("aria-labelledby"))).size === rows.length,
           shapes: new Set(beside).size,
-          // A part of the second line is never broken, and no line starts with the dot.
-          parts: rows.every((row) => [...row.querySelectorAll(".history-part")].every((part) => part.getClientRects().length === 1)),
+          // App, time and length are one line that never breaks: no dot at a line's end, none at its start.
+          parts: rows.every((row) => {
+            const line = row.querySelector(".history-parts");
+            const range = document.createRange();
+            range.selectNodeContents(line);
+            return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size === 1 && !/^\s*·|·\s*$/.test(line.textContent);
+          }),
+          // "01:55 · 6 s": a time of day and a length that cannot be read as each other; no model's id.
+          metas: rows.map((row) => row.querySelector(".history-parts").textContent),
         };
       });
       out.push(...expect(rowsAre.list === "list" && rowsAre.named && rowsAre.ids, "every dictation is a list item named after its text", JSON.stringify(rowsAre)));
       out.push(...expect(rowsAre.shapes === 1, "the actions stand beside the text in every row or below it in every row", JSON.stringify(rowsAre)));
-      out.push(...expect(rowsAre.parts, "no part of a row's second line is broken", JSON.stringify(rowsAre)));
+      out.push(...expect(rowsAre.parts, "a row's second line is one line, with no dot at its end", JSON.stringify(rowsAre)));
+      out.push(...expect(rowsAre.metas.every((m) => /\d\d:\d\d · (\d+ min( \d+ s)?|\d+ s)$/.test(m) && !/large|turbo|q8|ggml/i.test(m)), "a row's second line ends in the time and the length (\"01:55 · 6 s\") and names no model", JSON.stringify(rowsAre.metas)));
+      out.push(...(await rowActions(page)));
+      // The smallest window: the list that is used every day starts on the first screen, with its first dictation.
+      if (run.size === "900x600") {
+        const first = await page.evaluate(() => {
+          const rect = (el) => el.getBoundingClientRect();
+          const row = document.querySelector("#history-list .history-item");
+          const keys = [...document.querySelectorAll("#home-hotkeys .setting-row")].map((r) => [Math.round(rect(r).left), Math.round(rect(r).top)]);
+          return { head: Math.round(rect(document.querySelector("#home-recent .list-title")).bottom), text: Math.round(rect(row.querySelector(".history-text")).bottom), meta: Math.round(rect(row.querySelector(".history-meta")).bottom), window: window.innerHeight, keys };
+        });
+        out.push(...expect(first.head < first.window && first.meta <= first.window, "at 900×600 the head of Recent dictations and the first dictation with its second line are on the first screen", JSON.stringify(first)));
+        out.push(...expect(new Set(first.keys.map((k) => k[0])).size === 2 && new Set(first.keys.map((k) => k[1])).size === 2, "in one column the four keys stand two by two", JSON.stringify(first.keys)));
+      }
       // So far how the page is laid out, in every view. From here on what it does, which depends neither on
       // the window's size nor on the language: in one view.
       if (!(run.lang === "en" && run.size === BEHAVIOUR)) return out;
       out.push(...(await loadFailed(page)));
-      // A key that is not set: only "Set" is underlined, and while it listens it is the accent box of any key.
+      // A key that is not set is a key box that says so, in the words and the form Settings has for it (one
+      // form for one thing); while it listens it is the accent box of any key.
       const unset = await page.evaluate(() => {
-        const key = document.getElementById("home-free-gpu-text");
-        return [key.querySelector(".key-set")?.textContent ?? "", getComputedStyle(key).textDecorationLine, getComputedStyle(key.querySelector(".key-set")).textDecorationLine];
+        const look = (id) => {
+          const key = document.getElementById(id);
+          const cs = getComputedStyle(key);
+          return [key.textContent, cs.borderTopStyle, cs.backgroundColor, cs.color, cs.fontFamily].join(" | ");
+        };
+        return [look("home-free-gpu-text"), look("free-gpu-text"), document.getElementById("home-free-gpu-text").textContent, document.getElementById("home-free-gpu-btn").classList.contains("key-unset")];
       });
-      out.push(...expect(unset[0].length > 1 && unset[1] === "none" && unset[2] === "underline", "a key that is not set underlines only Set", JSON.stringify(unset)));
+      out.push(...expect(unset[0] === unset[1] && unset[2] === "Not set" && unset[3] && !/transparent|, 0\)/.test(unset[0].split(" | ")[2]), "a key that is not set is a key box that says Not set, on Home as in Settings", JSON.stringify(unset)));
       await page.click("#home-free-gpu-btn");
       await wait(page, 80);
       const listening = await page.evaluate(() => {
@@ -4435,9 +4808,9 @@ export const PAGES = [
       await wait(page, 200);
       const after = await page.evaluate(() => {
         const at = document.activeElement;
-        return [document.querySelectorAll("#history-list .history-item").length, at.closest(".history-item")?.dataset.id ?? at.tagName, at === at.closest(".history-actions")?.firstElementChild];
+        return [document.querySelectorAll("#history-list .history-item").length, at.closest(".history-item")?.dataset.id ?? at.tagName, at === at.closest(".history-actions")?.querySelector('[data-action="copy"]') && getComputedStyle(at).opacity === "1"];
       });
-      out.push(...expect(after[0] === 7 && after[1] === second && after[2] === true, "after Delete from the keyboard the focus is on the next row's first action", JSON.stringify([...after, second])));
+      out.push(...expect(after[0] === 7 && after[1] === second && after[2] === true, "after Delete from the keyboard the focus is on the next row's Copy, which shows", JSON.stringify([...after, second])));
       // The cloud engine without its key is a setup again: the Speech model line says what is missing, and
       // Home shows the steps, whose second one leads to the key. Of the daily view the recent dictations
       // stay, under the steps (the controls are what the steps stand in for).
@@ -4514,29 +4887,34 @@ export const PAGES = [
   },
   {
     id: "files",
-    // Also at the first width that is two columns (1600 px beside the sidebar) and at the common large one.
-    alsoSizes: ["1920x1080"],
+    // Also at the step itself (1250 px beside the sidebar: the first width with room for two columns) and at the common large size.
+    alsoSizes: ["1450x820", "1920x1080"],
     open: (page) => section(page, "files"),
     probe: async (page, run) => filesLayout(await filesNow(page), run.lang),
   },
   {
     id: "meetings",
-    alsoSizes: ["1920x1080"],
+    alsoSizes: ["1450x820", "1920x1080"],
     open: (page) => section(page, "meetings"),
-    // The library is as wide as a Settings tab (1080 px in one column, or the window), and two columns of rows in a large window.
+    // The library has the page's width: the start row (the title's field and Start meeting) and the head span it,
+    // and the meetings are rows of that width, or two columns of rows from 1250 px beside the sidebar.
     probe: async (page) => {
       const see = await page.evaluate(() => {
         const content = document.getElementById("content");
-        const layout = document.querySelector("#section-meetings .mt-layout").getBoundingClientRect();
-        const items = [...document.querySelectorAll("#mt-list .mt-item")].map((el) => Math.round(el.getBoundingClientRect().left));
-        const start = document.getElementById("mt-start").getBoundingClientRect();
-        return { room: content.offsetWidth, inner: content.clientWidth - 48, width: Math.round(layout.width), columns: new Set(items).size, items: items.length, start: Math.round(start.width) };
+        const section = document.getElementById("section-meetings");
+        const left = Math.round(section.getBoundingClientRect().left + parseFloat(getComputedStyle(section).paddingLeft));
+        const right = Math.round(section.getBoundingClientRect().right - parseFloat(getComputedStyle(section).paddingRight));
+        const edges = (el) => [Math.round(el.getBoundingClientRect().left), Math.round(el.getBoundingClientRect().right)];
+        const items = [...document.querySelectorAll("#mt-list .mt-item")].map(edges);
+        return { room: content.offsetWidth, page: [left, right], start: edges(document.getElementById("mt-start")), button: edges(document.getElementById("mt-start-btn")), head: edges(document.querySelector(".mt-library-head")), items };
       });
-      const wider = see.room >= 1600;
+      const roomy = see.room >= ROOMY;
+      const columns = new Set(see.items.map((i) => i[0])).size;
+      const detail = JSON.stringify(see);
       return [
-        ...expect(see.width === Math.min(see.inner, wider ? 1816 : 1080), "the Meetings library is as wide as a Settings tab: 1080 px or the window, two columns of 900 px in a large one", JSON.stringify(see)),
-        ...expect(see.items < 2 || see.columns === (wider ? 2 : 1), "the meetings are two columns in a large window, else one", JSON.stringify(see)),
-        ...expect(!wider || Math.abs(see.start - (see.width - 16) / 2) <= 1, "in a large window the start row keeps the first column", JSON.stringify(see)),
+        ...expect(see.start.join() === see.page.join() && see.head.join() === see.page.join() && see.button[1] === see.page[1], "the Meetings library has the page's width: the start row and the head span it, Start meeting ends at the right edge", detail),
+        ...expect(see.items.length < 2 || columns === (roomy ? 2 : 1), `the meetings are two columns from ${ROOMY} px beside the sidebar, else one`, detail),
+        ...expect(see.items.length === 0 || (see.items.every((i) => i[0] >= see.page[0]) && Math.min(...see.items.map((i) => i[0])) === see.page[0] && Math.max(...see.items.map((i) => i[1])) === see.page[1] && (columns < 2 || [...new Set(see.items.map((i) => i[0]))].sort((a, b) => a - b)[1] - see.items[0][1] === 16)), "the meetings' rows run from the page's left edge to its right one, two columns one gutter apart", detail),
       ];
     },
   },
@@ -4666,11 +5044,12 @@ export const PAGES = [
             return out;
           },
   })),
-  // Every tab in one column and in two (from 1600 px beside the sidebar: the 1920 px window too), fold closed and open.
+  // Every tab in one column and in two (from 1250 px beside the sidebar), fold closed and open.
   // This page and the next two follow the plain tabs and leave the window usable: no new start.
   {
     id: "settings-columns",
-    alsoSizes: ["1920x1080"],
+    // Also at the step itself (1250 px beside the sidebar: the narrowest two columns) and at the common large size.
+    alsoSizes: ["1450x820", "1920x1080"],
     open: (page) => settings(page, "dictation"),
     probe: columns,
   },
@@ -4814,7 +5193,7 @@ export const PAGES = [
   {
     id: "files-loaded",
     scenarios: ["populated"],
-    alsoSizes: ["1920x1080"],
+    alsoSizes: ["1450x820", "1920x1080"],
     fresh: true,
     open: async (page) => {
       await section(page, "files");
@@ -4836,14 +5215,15 @@ export const PAGES = [
         ...expect(said.bar[0] === "progressbar" && said.bar[1] === "100" && said.bar[2] === said.status && said.bar[3].length > 3, "the file's bar is a progress bar named after the file, with its percent and what the status line says", JSON.stringify(said.bar)),
         ...filesLayout(await filesNow(page), run.lang),
         ...(await resultLayout(page)),
+        ...(await optionsMore(page)),
       ];
     },
   },
   {
     id: "files-result",
     scenarios: ["populated"],
-    // Also at the common large size: the summary beside the transcript.
-    alsoSizes: ["1920x1080"],
+    // Also at the step and at the common large size: the summary in the side column, beside the transcript.
+    alsoSizes: ["1450x820", "1920x1080"],
     fresh: true,
     open: async (page) => {
       await section(page, "files");
@@ -4852,7 +5232,7 @@ export const PAGES = [
       await page.click("#file-summarize");
       await wait(page, 400);
     },
-    // The summary is on top of the transcript: it starts on the first screen.
+    // The summary stands before the transcript: it starts on the first screen.
     probe: async (page) => {
       const at = await page.evaluate(() => [Math.round(document.getElementById("file-summary-box").getBoundingClientRect().top), window.innerHeight]);
       return [...expect(at[0] < at[1], "the summary starts on the first screen", `y ${at[0]} of ${at[1]}`), ...(await resultLayout(page))];
@@ -5214,29 +5594,36 @@ export const PAGES = [
       await meeting(page, M3);
     },
     {
-      // Also at the common large size, where its frame was the page's width.
+      // Also at the common large size: the hint rows in the side column, the transcript beside them.
       sizes: [...STATE_SIZES, "1920x1080"],
-      shows: onScreen("an open meeting without notes: three hint rows over the transcript", () => {
+      shows: onScreen("an open meeting without notes: three hint rows and the transcript", () => {
         const now = { open: document.getElementById("section-meetings").classList.contains("mt-open"), notes: document.getElementById("section-meetings").classList.contains("mt-has-notes"), rows: document.querySelectorAll("#mt-hint .mt-hint-row").length, said: document.querySelectorAll("#mt-transcript .mt-para").length };
         return (now.open && !now.notes && now.rows === 3 && now.said === 7) || now;
       }),
       probe: async (page) => {
         const rows = await page.evaluate(() => [...document.querySelectorAll("#mt-hint .mt-hint-row")].map((row) => row.querySelector("button")?.dataset.action ?? ""));
-        // The transcript is the page here: its frame ends near its text (840 px or the window), the head's buttons
-        // end where the frame ends, and a hint's sentence wraps only where its row has no room left for it.
+        // The page has the shape of a meeting with notes. One column: the hint rows, then the transcript, both
+        // of the page's width. Two columns (1250 px beside the sidebar): the hint rows are the side column, where
+        // the notes would stand, and the transcript runs from one gutter beside it to the page's right edge.
+        // The head's buttons end at the page's right edge in both.
         const frame = await page.evaluate(() => {
           const box = (el) => el.getBoundingClientRect();
-          const layout = box(document.querySelector("#section-meetings .mt-layout"));
+          const section = document.getElementById("section-meetings");
+          const cs = getComputedStyle(section);
           const lines = (el) => {
             const range = document.createRange();
             range.selectNodeContents(el);
             return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
           };
+          const hint = box(document.getElementById("mt-hint"));
+          const text = box(document.getElementById("mt-transcript"));
           return {
-            width: Math.round(layout.width),
-            room: document.getElementById("content").clientWidth - 48,
-            transcript: Math.round(box(document.getElementById("mt-transcript")).width),
-            actions: Math.round(layout.right - box(document.querySelector(".mt-view-actions")).right),
+            room: document.getElementById("content").offsetWidth,
+            page: [Math.round(box(section).left + parseFloat(cs.paddingLeft)), Math.round(box(section).right - parseFloat(cs.paddingRight))],
+            hint: [Math.round(hint.left), Math.round(hint.right), Math.round(hint.top)],
+            transcript: [Math.round(text.left), Math.round(text.right), Math.round(text.top)],
+            actions: Math.round(box(document.querySelector(".mt-view-actions")).right),
+            none: document.querySelector(".mt-notes-none").checkVisibility(),
             // A hint that wraps although its row has 40 px or more left beside it.
             early: [...document.querySelectorAll("#mt-hint .mt-hint-row")].filter((row) => {
               const text = row.querySelector(".mt-hint-text");
@@ -5245,9 +5632,16 @@ export const PAGES = [
             }).length,
           };
         });
+        const roomy = frame.room >= ROOMY;
+        const side = frame.hint[1] - frame.hint[0];
         return [
           ...expect(rows.length === 3 && rows[0] === "speaker-model" && rows[1].startsWith("notes:") && rows[2] === "", "a meeting without speakers and notes says why, with Download and Write notes, and that its audio is deleted", JSON.stringify(rows)),
-          ...expect(frame.width === Math.min(frame.room, 840) && frame.transcript === frame.width && Math.abs(frame.actions) <= 1, "without notes a meeting's frame ends near its text (840 px or the window), and the head's buttons end with it", JSON.stringify(frame)),
+          ...expect(frame.transcript[1] === frame.page[1] && frame.actions === frame.page[1] && frame.hint[0] === frame.page[0] && !frame.none, "without notes the transcript and the head's buttons end at the page's right edge, and the hint rows start at its left one", JSON.stringify(frame)),
+          ...expect(
+            roomy ? side >= 360 && side <= 622 && frame.transcript[0] - frame.hint[1] === 16 && Math.abs(frame.transcript[2] - frame.hint[2]) <= 40 : frame.hint[1] === frame.page[1] && frame.transcript[0] === frame.page[0] && frame.transcript[2] > frame.hint[2],
+            `without notes the hint rows are the side column from ${ROOMY} px beside the sidebar (the transcript one gutter beside them), else they stand over it`,
+            JSON.stringify(frame),
+          ),
           ...expect(frame.early === 0, "a hint row's sentence has the row's line: none wraps while its row has room", JSON.stringify(frame)),
         ];
       },
@@ -5357,7 +5751,7 @@ export const PAGES = [
       }),
     },
   ),
-  // Twelve meetings: two columns of rows in a large window, which the 1920 px one shows best.
+  // Twelve meetings: two columns of rows from 1250 px beside the sidebar, the newer half at the left.
   state(
     "meetings-many",
     async (page) => {
@@ -5374,9 +5768,18 @@ export const PAGES = [
       probe: async (page) => {
         const see = await page.evaluate(() => {
           const items = [...document.querySelectorAll("#mt-list .mt-item")].map((el) => el.getBoundingClientRect());
-          return { items: items.length, columns: new Set(items.map((r) => Math.round(r.left))).size, heights: new Set(items.map((r) => Math.round(r.height))).size, wider: document.getElementById("content").offsetWidth >= 1600 };
+          // Newest first, column by column: the right column goes on where the left one ends.
+          const lefts = [...new Set(items.map((r) => Math.round(r.left)))].sort((a, b) => a - b);
+          const order = items.map((r) => `${lefts.indexOf(Math.round(r.left))}:${Math.round(r.top)}`);
+          const sorted = [...order].sort((a, b) => Number(a.split(":")[0]) - Number(b.split(":")[0]) || Number(a.split(":")[1]) - Number(b.split(":")[1]));
+          const perColumn = lefts.map((x) => items.filter((r) => Math.round(r.left) === x).length);
+          return { items: items.length, columns: lefts.length, perColumn, down: order.join() === sorted.join(), heights: new Set(items.map((r) => Math.round(r.height))).size, roomy: document.getElementById("content").offsetWidth >= 1250 };
         });
-        return expect(see.items === 12 && see.columns === (see.wider ? 2 : 1) && see.heights === 1, "twelve meetings: rows of one height, in two columns in a large window", JSON.stringify(see));
+        return expect(
+          see.items === 12 && see.columns === (see.roomy ? 2 : 1) && see.heights === 1 && see.down && (!see.roomy || see.perColumn.join() === "6,6"),
+          "twelve meetings: rows of one height; from 1250 px beside the sidebar two columns of six, filled one after the other (the list's order reads downwards)",
+          JSON.stringify(see),
+        );
       },
     },
   ),
@@ -5786,7 +6189,8 @@ export const PAGES = [
     state: true,
     shows: stepsAndList("a PC in daily use without a microphone: the setup steps, with the recent dictations under them"),
     scenarios: ["populated"],
-    sizes: STATE_SIZES,
+    // Also in a large window, where the list stands beside the steps (Home's grid).
+    sizes: [...STATE_SIZES, "1920x1080"],
     open: async (page) => {
       await page.evaluate(() => window.__MOCK__.keep({ mics: [] }));
       await restart(page);
@@ -5916,6 +6320,22 @@ export const PAGES = [
     },
     probe: forcedColors,
     after: (page) => page.emulateMedia({ forcedColors: null }),
+  },
+  // One left edge and one right edge on every page and in each of its forms, at the two most common large
+  // sizes (`sameEdges`); and, once per run, the sweep of the steps that Home's and Settings' own sweeps do not
+  // cover (`pagesHold`).
+  {
+    id: "edges",
+    scenarios: ["populated"],
+    sizes: ["1536x864", "1920x1080"],
+    fresh: true,
+    checks: false,
+    open: (page) => section(page, "home"),
+    probe: async (page, run) => [...(await sameEdges(page)), ...(run.lang === "en" && run.size === "1536x864" ? await pagesHold(run) : [])],
+    after: async (page) => {
+      await section(page, "soundboard");
+      await panelAtRest(page);
+    },
   },
   // Running text keeps its measure where the window is wide (see `measureProbe`). The last page of the main
   // window: it leaves the Soundboard without a cable and puts that back.
@@ -6107,4 +6527,4 @@ export const PAGES = [
 ];
 
 /** Text that is the user's own and may be cut with an ellipsis. */
-export const USER_TEXT = [".file-name", ".mt-item-title", ".mt-item-meta", ".mt-bar-title", ".mt-view-title", ".sb-name", ".history-text", ".unused-model-name", "body > .transcript"];
+export const USER_TEXT = [".file-name", ".mt-item-title", ".mt-item-meta", ".mt-bar-title", ".mt-view-title", ".sb-name", ".history-text", ".history-parts", ".unused-model-name", "body > .transcript"];

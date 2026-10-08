@@ -117,12 +117,20 @@ const TYPE_SCALE = [12, 14, 16, 22];
 const EXEMPT = {
   "src/styles/tokens.css": { colour: "the tokens are written here" },
   "src/styles/components.css": { focus: "it draws the one focus ring", outline: "a switch and a key box show the ring on the part that is seen, not on the input or the button around it" },
-  "src/overlay.html": { colour: "the pill floats over any desktop and has a small palette of its own; it loads no token" },
+  "src/overlay.html": { colour: "the pill floats over any desktop: its see-through ground, its edge and its resting bars are whites and blacks of its own; what has a token uses it" },
 };
 
 /** Single declarations a rule lets pass: [file, selector, prop, why]. An entry that matches nothing is a finding. */
 const PASSES = {
-  focus: [["src/style.css", ".export-list button:focus-visible", "", "a menu item shows the focus as its ground, like the hover; no ring is drawn or taken away"]],
+  focus: [
+    ["src/style.css", ".export-list button:focus-visible", "", "a menu item shows the focus as its ground, like the hover; no ring is drawn or taken away"],
+    [
+      "src/styles/home.css",
+      '.history-item:not(:hover, :has(:focus-visible)) .history-actions > :not([data-action="copy"], .armed, [data-on], [aria-disabled="true"])',
+      "opacity",
+      "a dictation's actions show while the keyboard focus is in their row; the rule asks where the focus is and draws no ring of its own",
+    ],
+  ],
   colour: [["src/styles/components.css", ".switch-slider::before", "background", "a switch's knob is white on both of its tracks"]],
 };
 

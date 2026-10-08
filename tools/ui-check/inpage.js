@@ -528,6 +528,9 @@
     };
     for (const el of all) {
       if (el.closest(":disabled, [aria-disabled='true'], [aria-hidden='true']") || el.matches("option")) continue;
+      // Not drawn at the moment: a dictation's actions that show with the pointer on their row or the
+      // focus in it (Home). They are buttons of the same kind as the one that always shows, which is judged.
+      if (opacityOf(el) === 0) continue;
       if (el.matches("input, textarea, select")) {
         if (el.matches("input[type=checkbox], input[type=radio], input[type=range]")) continue;
         if (el.matches("select") || el.value) judge(el, getComputedStyle(el).color);
@@ -589,11 +592,14 @@
       add("tab", desc(el), "clickable, but not a button or link the keyboard reaches");
     }
 
-    // 9. Hints: one line; two in a window under 1600 px and in the Soundboard's
-    // settings panel, a column of at most 420 px in any window.
+    // 9. Hints: one line where the room is there, which is a row of 760 px or
+    // more in a window of 1600 px or more; two in a narrower row (a column of
+    // a page in two columns, the Soundboard's settings panel, Files' side
+    // column) and in a smaller window.
     for (const el of all) {
       if (!el.matches(".setting-label .label-hint") || el.matches(NOT_A_HINT) || !(el.innerText || "").trim()) continue;
-      const allowed = window.innerWidth >= 1600 && !el.closest(".sb-col-settings") ? 1 : 2;
+      const row = el.closest(".setting-row");
+      const allowed = window.innerWidth >= 1600 && !el.closest(".sb-col-settings") && (!row || row.getBoundingClientRect().width >= 760) ? 1 : 2;
       const cs = getComputedStyle(el);
       const lineHeight = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4;
       const lines = Math.round(el.getBoundingClientRect().height / lineHeight);
