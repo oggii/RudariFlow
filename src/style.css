@@ -31,7 +31,7 @@
    it (the options, the zone's line, the file's line with its progress,
    "Summarise with AI" and the summary); the transcript stands at the right
    under its toolbar, in a frame that runs to the window's right edge and
-   down to its bottom, with its text at the measure. It is the shape of an
+   down to its bottom, and its text fills the frame. It is the shape of an
    open meeting (notes at the left, transcript at the right), with the same
    side column (--side-col) and the same gutter. Nothing is moved in the
    page for it: the page's order is the side column from top to bottom and
@@ -343,14 +343,14 @@
 .export-list button:focus-visible {
   background: var(--bg);
 }
-/* The frame has its column's width and the text its measure: what is left
-   at the right is the frame's own padding. */
+/* The frame has its column's width and the text fills it: the same padding
+   left and right, and a line ends at the frame's inner edge. */
 .file-text {
   flex: 1 1 auto;
   width: 100%;
   min-height: 260px;
   resize: none;
-  padding: 12px max(14px, calc(100% - var(--measure) - 14px)) 12px 14px;
+  padding: 12px 14px;
   font: inherit;
   font-size: var(--fs);
   line-height: 1.55;
@@ -383,7 +383,6 @@
   color: var(--text-secondary);
 }
 .file-summary-text {
-  max-width: var(--measure);
   font-size: var(--fs);
   line-height: 1.55;
   color: var(--text);
@@ -465,7 +464,6 @@
   gap: 6px;
 }
 .ai-test-result p {
-  max-width: var(--measure);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
@@ -677,9 +675,6 @@
   color: var(--text);
   font-size: 12px;
   line-height: 1.5;
-}
-.sb-hint p {
-  max-width: var(--measure);
 }
 .sb-toolbar {
   display: flex;
@@ -1232,8 +1227,8 @@ body.sb-page {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
 }
-/* A hint row's sentence has the row's line (a hint, not running text: see
-   --measure in tokens.css). */
+/* A hint row's sentence has the row's line (see "How wide a text is" in
+   tokens.css). */
 .mt-hint-text {
   flex: 1 1 260px;
   min-width: 0;
@@ -1331,7 +1326,6 @@ body.sb-page {
   -webkit-user-select: none;
 }
 .mt-notes-text {
-  max-width: var(--measure);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.55;
@@ -1344,7 +1338,6 @@ body.sb-page {
   line-height: 1.55;
 }
 .mt-notes li {
-  max-width: var(--measure);
   overflow-wrap: anywhere;
 }
 .mt-notes ul.mt-checklist {
@@ -1419,10 +1412,9 @@ body.sb-page {
 .mt-para[data-track="you"] .mt-para-who {
   color: var(--text-accent);
 }
-/* Under the time, past the play button. The frame is as wide as the page;
-   the text keeps a measure a line can be read in (about 100 characters). */
+/* Under the time, past the play button. The frame is as wide as its column
+   and the text fills it: a line ends at the frame's inner right edge. */
 .mt-para-text {
-  max-width: calc(var(--measure) + 32px);
   padding-left: 32px;
   line-height: 1.55;
   overflow-wrap: anywhere;

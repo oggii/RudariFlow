@@ -210,7 +210,6 @@ textarea {
 
 .hint-long {
   margin-top: var(--s1);
-  max-width: 72ch;
 }
 
 .setting-control {
@@ -977,8 +976,8 @@ kbd {
 
 /* ── Empty state ────────────────────────────────────── */
 
-/* A sentence or two: a hint, which has the line it stands on (see --measure
-   in tokens.css). */
+/* A sentence or two: a hint, which has the line it stands on (see "How wide
+   a text is" in tokens.css). */
 .empty-state {
   padding: var(--s4) 0;
   color: var(--text-2);

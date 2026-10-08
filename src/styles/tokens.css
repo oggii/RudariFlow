@@ -67,48 +67,44 @@
      heading. tools/ui-check holds the styles to these (static.mjs). */
   --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
-  /* The measure: the widest a paragraph of running text gets, 42 times its
-     type size, which is 90 to 100 characters a line.
+  /* How wide a text is. A text fills its box: it has the width of the frame,
+     card or row it stands in, and a line ends at that box's inner right
+     edge, at every window size. No text is capped inside its box. (Until
+     the user tried the window a token --measure of 42em kept running text
+     to about 100 characters a line: a transcript then ended at 588 px of a
+     frame of 1034 and left 40 % of it empty.)
 
-     One rule says what keeps it. Running text is what is read line after
-     line: a text that takes three lines or more at the measure, or can (a
-     transcript, notes, a summary, a dictation, instructions of several
-     sentences). It keeps the measure, and its frame ends near it where the
-     frame holds nothing else. A hint is a sentence or two of the app's own,
-     at most two lines at the measure (under a heading, in a row, a warning,
-     an empty list): it has the width of its row or card, and is one line
-     where the room is there. A field is never narrowed from the inside: its
-     own width is capped.
-
-     Running text, at the measure:
-       .mt-para-text                 a meeting's transcript (style.css)
-       .mt-notes-text, .mt-notes li  a meeting's notes
+     A text in a frame of its own, which has the same padding left and right:
+       .file-text                    a file's transcript (style.css)
        .file-summary-text            a file's summary
-       .file-text                    a file's transcript: the frame's right
-                                     padding takes the rest of its width
-       .history-text                 a dictation on Home, in the wide list
-                                     only (home.css)
+       .mt-para-text                 a meeting's transcript, also while it
+                                     records
+       .mt-notes-text, .mt-notes li  a meeting's notes
        .ai-test-result p             what "Try it" answers
        .sb-hint p                    the Soundboard's instructions
-     and at 72ch, which is the same width: .panel-lead and .hint-long, the
-     text behind "More" (components.css).
+     and .history-text, a dictation on Home: its row, up to the actions'
+     column where they stand beside it (home.css).
 
-     A frame takes its column's width (the layout system, styles/shell.css):
-     a transcript's frame runs to the window's right edge and its text keeps
-     the measure inside it. Fields with a width of their own: a rule's
-     instructions and "Try it" (720 px, settings.css).
+     A hint has the width of its row or card: .card > .label-hint
+     (settings.css), .hint-long, the text behind "More" (components.css),
+     .empty-state, .mt-hint-text, .mt-warning and .mt-reminder (style.css); a
+     setting's one-line hint is one line by its own rule.
 
-     Hints, at the width of their place: .card > .label-hint (settings.css),
-     .empty-state (components.css), .mt-hint-text, .mt-warning and
-     .mt-reminder (style.css); a setting's one-line hint is one line by its
-     own rule.
+     What stands on the page itself, in no box, keeps a width a line can be
+     read in, 72ch: a page's description under its title and the paragraph
+     that opens a Settings tab (.section-desc, .panel-lead; components.css).
+     A field with a width of its own is capped as a whole, never narrowed
+     from the inside: a rule's instructions and "Try it" (720 px,
+     settings.css).
 
-     tools/ui-check holds the first list to it: at 1920 px no line of
-     running text is longer than 110 characters (inpage.js, RUNNING). */
-  --measure: 42em;
+     tools/ui-check holds the first list to it on every page at every size:
+     the longest line of a text that wraps ends within one word of its
+     frame's inner right edge (inpage.js, FRAMED; the page "fills"). */
+
   /* The side column beside a transcript (a meeting's notes, a file and its
      summary): a share of the page, never narrower than a card of setting
-     rows reads, never wider than its own running text needs. */
+     rows reads, never wider than 622 px, so the transcript gets the room a
+     wide window adds. */
   --side-col: clamp(360px, 38%, calc(42 * var(--fs) + 34px));
 
   /* Motion: a page change and a fold opening, nothing else. */

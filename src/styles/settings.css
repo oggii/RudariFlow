@@ -195,8 +195,8 @@
 
 /* A hint that stands in a card by itself, under its heading: a sentence or
    two, which has the card's width (one line where the card has the room;
-   see --measure in tokens.css). The long text behind "More" is running text
-   and keeps its 72ch (.hint-long, components.css). */
+   see "How wide a text is" in tokens.css). The long text behind "More" has
+   that width too (.hint-long, components.css). */
 .card > .label-hint {
   padding-bottom: var(--s2);
 }
@@ -435,11 +435,11 @@
 }
 
 /* A text box for a sentence or two is at most 720 px wide, and what is
-   typed uses all of it: a field that wrapped its text halfway (a measure
-   kept by padding inside the box) read as a defect. So in a wide card the
-   field ends early: "Try it" with its field, its buttons and its result,
-   and a rule's fields. A rule's Delete stands at the card's right edge, as
-   every Delete of a list does. */
+   typed uses all of it: a field that wrapped its text halfway (a padding
+   inside the box kept its lines short) read as a defect. So in a wide card
+   the field ends early: "Try it" with its field, its buttons and its
+   result, and a rule's fields. A rule's Delete stands at the card's right
+   edge, as every Delete of a list does. */
 .ai-test,
 .rule-fields {
   max-width: 720px;

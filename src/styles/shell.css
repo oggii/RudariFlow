@@ -39,9 +39,10 @@
       The side column beside a transcript is --side-col on both pages that
       have one.
 
-   4. A frame or card takes its column's width. Running text inside it keeps
-      --measure (tokens.css): a transcript's frame runs to the window's edge
-      and its lines end at the measure.
+   4. A frame or card takes its column's width, and a text in a frame of its
+      own fills it: a transcript's frame runs to the window's edge, it has
+      the same padding left and right, and its lines end at its inner right
+      edge, at every window size ("How wide a text is" in tokens.css).
 
    5. A wider form is never the higher one, and every step is decided on
       offsetWidth. tools/ui-check sweeps each step in a window that draws its

@@ -46,10 +46,13 @@
 // "meeting-lines" payload with n more paragraphs for the meeting that
 // records; speakerModel says whether the speaker model is downloaded;
 // savePath is what the save dialog answers (null: cancelled); aiFallback is
-// why the AI did not clean up a sample (null: it did). keep({ sb }) lays
-// sb over the next starts of the page too (the board asks for its devices
-// once). The hotkey commands refuse what the backend refuses: a Windows
-// shortcut and a key another hotkey has.
+// why the AI did not clean up a sample (null: it did); longTexts (set with
+// keep({ longTexts }) for the next start) makes every text of a recording
+// several lines long in a frame of any width: a dictation, a paragraph of a
+// file's or a meeting's transcript, a summary, a meeting's notes.
+// keep({ sb }) lays sb over the next starts of the page too (the board asks
+// for its devices once). The hotkey commands refuse what the backend
+// refuses: a Windows shortcut and a key another hotkey has.
 (() => {
   const CFG = window.__MOCK_CFG__ || { lang: "en", scenario: "populated" };
   const rich = CFG.scenario !== "firstrun";
@@ -217,8 +220,10 @@
       }
     : { inputs: ["Microphone (Realtek(R) Audio)"], outputs: ["Speakers (Realtek(R) Audio)"], automatic: { microphone: "Microphone (Realtek(R) Audio)", cable: null, headphones: "Speakers (Realtek(R) Audio)" } };
 
+  /** With `longTexts`: a text as a long recording has it, about 700 characters in one paragraph (the text and every sentence of the sample meeting after it). */
+  const long = (text) => (window.__MOCK__.longTexts ? [text, ...paragraphs1.map((x) => x.text)].join(" ") : text);
   const fileTranscript = () => {
-    const segs = paragraphs1.map((x) => ({ startMs: x.startMs, endMs: x.startMs + 9000, text: x.text, speaker: x.track === "you" ? 0 : (x.speaker ?? 0) + 1 }));
+    const segs = paragraphs1.map((x) => ({ startMs: x.startMs, endMs: x.startMs + 9000, text: long(x.text), speaker: x.track === "you" ? 0 : (x.speaker ?? 0) + 1 }));
     return { segments: segs, speakers: 3, language: de ? "de" : "en", durationMs: 172_000, elapsedMs: 8400 };
   };
 
@@ -274,6 +279,8 @@
     savePath: null,
     /** Why the AI did not clean up the sample of "Try it" (polish.rs's words); null: it did. */
     aiFallback: null,
+    /** Every text of a recording is several lines long (see `long`); from the start of the page with keep({ longTexts: true }). */
+    longTexts: kept.longTexts ?? false,
     refuseNext: (cmd, why) => (refusals[cmd] = why),
     holdNext: (cmd) => holds.add(cmd),
     lateNext: (cmd, ms) => (lates[cmd] = ms),
@@ -482,7 +489,7 @@
           { kind: "whisper", file: "ggml-large-v3.bin.part", bytes: 412000000, partial: true, otherLinks: false },
         ]
       : [],
-    history_list: () => history,
+    history_list: () => (window.__MOCK__.longTexts ? history.map((h) => ({ ...h, text: long(h.text) })) : history),
     history_delete: (a) => {
       const at = history.findIndex((h) => h.id === a.id);
       if (at >= 0) history.splice(at, 1);
@@ -531,7 +538,12 @@
     },
     format_file_text: (a) => a.segments.map((s) => `${a.times ? `[${clockFmt(s.startMs)}] ` : ""}${a.names[s.speaker] ?? ""}: ${s.text}`).join("\n\n"),
     transcribe_file: () => fileTranscript(),
-    summarize_text: () => meeting1.notes.summary + (de ? "\n\n- Launch neu am 14. Oktober\n- Mehrwertsteuer-Anzeige bis Mittwoch\n- Produktfotos am Donnerstag" : "\n\n- Launch moved to 14 October\n- VAT display by Wednesday\n- Product photos on Thursday"),
+    // Seven lines and more in a frame of any width (a sentence or two, an empty line, five points): in one column Files shows the first five and a More.
+    summarize_text: () =>
+      long(meeting1.notes.summary) +
+      (de
+        ? "\n\n- Launch neu am 14. Oktober\n- Mehrwertsteuer-Anzeige bis Mittwoch\n- Produktfotos am Donnerstag\n- Firewall-Regel für die Filter-URLs\n- Nächster Termin in einer Woche"
+        : "\n\n- Launch moved to 14 October\n- VAT display by Wednesday\n- Product photos on Thursday\n- Firewall rule for the filter URLs\n- Next meeting in a week"),
     soundboard_state: () => ({ board, status: sb.status ?? sbStatus(), playing: sb.playing ?? (rich && CFG.playing ? [{ id: "s4", posMs: 31000, durationMs: 94000 }] : []), missing: sb.missing, hotkeysTaken: sb.taken }),
     soundboard_devices: () => sb.devices ?? sbDevices,
     soundboard_set_enabled: (a) => (sb.status = a.enabled ? { state: "on", cable: (sb.devices ?? sbDevices).automatic.cable ?? "" } : { state: "off" }),
@@ -616,7 +628,15 @@
     },
     meeting_state: () => ({ status: meetingStatus, meeting: null }),
     meeting_list: (a) => Object.values(meetings).filter((v) => v.meeting.id !== MREC || meetingStatus.recording).map((v) => summaryOf(v.meeting)).filter((s) => !a?.query || s.title.toLowerCase().includes(a.query.toLowerCase())).sort((x, y) => y.startedAt - x.startedAt),
-    meeting_get: (a) => { const v = meetings[a.id]; if (!v) throw "no_meeting"; return JSON.parse(JSON.stringify(v)); },
+    meeting_get: (a) => {
+      const v = meetings[a.id];
+      if (!v) throw "no_meeting";
+      const view = JSON.parse(JSON.stringify(v));
+      for (const x of view.paragraphs) x.text = long(x.text);
+      const notes = view.meeting.notes;
+      if (notes) Object.assign(notes, { summary: long(notes.summary), decisions: notes.decisions.map(long), actionItems: notes.actionItems.map((item) => ({ ...item, text: long(item.text) })) });
+      return view;
+    },
     meeting_default_title: () => (de ? "Meeting 6. Oktober 2026, 15:30" : "Meeting 6 October 2026, 15:30"),
     "plugin:app|version": () => "0.17.0",
     "plugin:event|listen": (a) => { const l = listeners.get(a.event) || []; l.push(a.handler); listeners.set(a.event, l); return a.handler; },

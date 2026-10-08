@@ -2986,8 +2986,9 @@ async function optionsMore(page) {
  * beside the sidebar: the side column at the left (the options, the zone's line, the file's line, Summarise and
  * the summary, all on one left and one right edge, 340 to 622 px wide) and the transcript at the right under its
  * toolbar, both ending at the page's right edge, one gutter of 16 px from the side column; the frame runs down
- * to the page's bottom. In both the frame is as wide as its column and the text keeps its measure in it (what
- * is left of the frame at the right is its own padding).
+ * to the page's bottom. In both the frame is as wide as its column and the text fills it: the frame has the same
+ * padding left and right, 14 px (a padding that took the rest of the frame's width at the right kept the text at
+ * 588 px of a frame of 1034; `fillsProbe` asks where the lines end).
  */
 async function resultLayout(page) {
   const see = await page.evaluate(() => {
@@ -3006,9 +3007,9 @@ async function resultLayout(page) {
       page: { left: Math.round(page.left + parseFloat(scs.paddingLeft)), right: Math.round(page.right - parseFloat(scs.paddingRight)), bottom: Math.round(page.bottom - parseFloat(scs.paddingBottom)) },
       scrolls: document.getElementById("content").scrollHeight > document.getElementById("content").clientHeight + 1,
       text: box(text),
-      // The room the text has in its frame, and the measure it must not pass.
-      line: Math.round(text.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)),
-      measure: Math.round(parseFloat(cs.fontSize) * 42),
+      // The frame's padding left and right, and the cap on its width (none).
+      pad: [parseFloat(cs.paddingLeft), parseFloat(cs.paddingRight)],
+      cap: cs.maxWidth,
       toolbar: box(section.querySelector(".file-toolbar")),
       actions: box(section.querySelector(".file-actions")),
       zone: box(document.getElementById("file-drop")),
@@ -3022,7 +3023,7 @@ async function resultLayout(page) {
   });
   const detail = JSON.stringify(see);
   const out = [
-    ...expect(see.line <= see.measure + 1 && see.line >= Math.min(see.measure, see.text.width - 40) - 4, "a transcript's text keeps its measure in a frame of any width", detail),
+    ...expect(see.pad[0] === see.pad[1] && see.pad[0] === 14 && see.cap === "none", "a transcript's frame has the same padding left and right, so its text fills a frame of any width", detail),
     ...expect(Math.abs(see.text.right - see.page.right) <= 1 && Math.abs(see.toolbar.right - see.page.right) <= 1 && Math.abs(see.actions.right - see.page.right) <= 1, "the transcript and its toolbar end at the page's right edge", detail),
     ...expect(see.order.indexOf("file-summarize") === see.order.indexOf("file-job") + 1 && see.order.at(-1) === "file-result", "the page's order: the file's line, Summarise with AI and its summary, then the transcript", JSON.stringify(see.order)),
     ...expect(!see.summary || see.summary.outline === "0px", "the summary is a card like every card: no outline", detail),
@@ -3417,7 +3418,7 @@ const triedIt = (what, tone, says, cleaned) =>
 
 /**
  * The text boxes of AI cleanup for a sentence or two ("Try it", a rule's instructions) are at most 720 px wide and
- * use all of it: none keeps a part of itself empty by padding (the measure inside the box made typed text wrap at
+ * use all of it: none keeps a part of itself empty by padding (a padding that kept the lines to 42em made typed text wrap at
  * 588 px of a field of 1048), and the result has its field's width.
  */
 async function tryItFields(page) {
@@ -3432,22 +3433,39 @@ async function tryItFields(page) {
   return expect(see.rules.length === 3 && fields.every((f) => f.empty === 0 && f.width <= 720) && see.result === see.input.width, "a text box of AI cleanup is at most 720 px wide and uses its whole width; Try it's result is as wide as its field", JSON.stringify(see));
 }
 
-// ── Running text ──
+// ── A text fills its box ──
 
 /**
- * Running text keeps its measure in a window of 1920 px, where every frame is wide enough to let a line run on
- * (a meeting's transcript had lines of 265 characters there before the measure). Place by place, and each place
- * must have such text to show: Home's dictations, a file's summary and transcript, a meeting's notes and transcript
- * with and without notes, what "Try it" answers, the Soundboard's instructions. With `--measure: 999em` in
- * tokens.css this page fails. The same is asked of every page that is opened at 1920 px or wider (inpage.js,
- * check `measure`).
+ * A text in a frame of its own fills the frame, at every window size (the user's decision after trying the window:
+ * a transcript kept to 42em ended at 588 px of a frame of 1034 and left 40 % of it empty). Place by place, with
+ * texts as a long recording has them (the mock's `longTexts`: every dictation, paragraph, summary and note is about
+ * 700 characters, several lines in a frame of any width), and each place must have such text to show: Home's
+ * dictations (their row, up to the actions where those stand beside the text), a file's summary and transcript, a
+ * meeting's notes and its transcript with notes, without and while it records, what "Try it" answers, the
+ * Soundboard's instructions (the app's own two sentences: they wrap in a small window only).
+ *
+ * What is asked of each: its frame has the same padding left and right, the text wraps, and its longest line ends
+ * within one word of the frame's inner right edge (80 px, or the width of the word that went to the next line where
+ * that is longer; inpage.js, `framed`). With a `max-width` on one of these texts, or with the padding that took
+ * the rest of the frame, this page fails. The same is asked of every page at every size (inpage.js, check `fills`).
  */
-async function measureProbe(page) {
+async function fillsProbe(page, run) {
   const out = [];
-  const place = async (name, scope, atLeast = 1) => {
-    const m = await page.evaluate((scope) => window.__uic.runningText(scope), scope);
-    out.push(...expect(m.pieces >= atLeast && m.longest > 20 && m.longest <= m.most, `running text keeps its measure: ${name}`, `${m.pieces} pieces of text, the longest line has ${m.longest} characters (at most ${m.most})`));
+  const place = async (name, scope, atLeast = 1, mustWrap = true) => {
+    const texts = await page.evaluate((scope) => window.__uic.framedText(scope), scope);
+    const wrapped = texts.filter((t) => t.wraps > 0);
+    const wrong = texts.filter((t) => t.pad[0] !== t.pad[1] || t.early || (t.wraps > 0 && t.gap < -1));
+    const gaps = wrapped.map((t) => t.gap);
+    out.push(
+      ...expect(
+        texts.length >= atLeast && (!mustWrap || wrapped.length >= atLeast) && !wrong.length,
+        `a text fills its box: ${name}`,
+        `${texts.length} texts (at least ${atLeast}), ${wrapped.length} wrap, their longest lines end ${gaps.length ? `${Math.min(...gaps)} to ${Math.max(...gaps)}` : "?"} px before the frame's inner right edge${wrong.length ? `; wrong: ${JSON.stringify(wrong.slice(0, 3))}` : ""}`,
+      ),
+    );
   };
+  await page.evaluate(() => window.__MOCK__.keep({ longTexts: true }));
+  await restart(page);
   await section(page, "home");
   await place("Home's dictations", "#history-list", 3);
   await fileLoaded(page);
@@ -3456,12 +3474,16 @@ async function measureProbe(page) {
   await place("a file's summary", "#file-summary-box");
   await place("a file's transcript", "#file-result");
   await meeting(page, M1);
-  await place("a meeting's notes", "#section-meetings .mt-notes", 3);
+  await place("a meeting's notes", "#section-meetings .mt-notes", 7);
   await place("a meeting's transcript beside its notes", "#mt-transcript", 7);
   await page.click("#mt-back");
   await wait(page, 300);
   await meeting(page, M3);
   await place("the transcript of a meeting without notes", "#mt-transcript", 7);
+  await page.click("#mt-back");
+  await wait(page, 300);
+  await recording(page);
+  await place("the transcript of a meeting that records", "#mt-transcript", 4);
   // "Try it" with a long sample that comes back as it was typed.
   await page.evaluate(() => (window.__MOCK__.aiFallback = "The AI model is not downloaded"));
   await advanced(page, "ai");
@@ -3469,11 +3491,12 @@ async function measureProbe(page) {
   await page.click("#ai-test-run");
   await wait(page, 250);
   await place("what Try it answers", "#ai-test-result");
-  // The Soundboard without a virtual cable: how to get one, in a box as wide as the board.
+  // The Soundboard without a virtual cable: how to get one, in a box as wide as the board. Two sentences of the
+  // app's own, which are one line in a wide window: they must wrap in the smallest one only.
   await page.evaluate((devices) => window.__MOCK__.keep({ sb: { devices, status: { state: "error", problem: { reason: "no_cable", device: "cable", name: "", detail: "" } } } }), NO_CABLE);
   await restart(page);
   await boardWith(page, false);
-  await place("the Soundboard's instructions", "#sb-root");
+  await place("the Soundboard's instructions", "#sb-root", 2, run.size === "900x600");
   return out;
 }
 
@@ -3481,7 +3504,7 @@ async function measureProbe(page) {
 // What the review of the whole branch found in behaviour, robustness and accessibility: the history that
 // was unreachable under the setup steps, saves during the load window, the start's order, saves the backend
 // refuses, the Display Language's change, the speech models' list, and the smaller ones. Each has a page or
-// a probe here; the pages stand before `measure`, the last page of the main window.
+// a probe here; the pages stand before `fills`, the last page of the main window.
 
 /** The two language tables of src/i18n.ts, and the texts of each that read differently in the other one. */
 const I18N = (() => {
@@ -4900,17 +4923,21 @@ export const PAGES = [
         const sides = await page.evaluate(() => ["home-controls", "home-recent"].map((id) => document.getElementById(id).getBoundingClientRect()).map((r) => [Math.round(r.top), Math.round(r.width)]));
         out.push(...expect(sides[0][0] === sides[1][0] && sides[1][1] > sides[0][1], "the two sides start on one top edge and the list is the wider one", JSON.stringify(sides)));
       }
-      // A dictation keeps the measure of running text only in the wide list (a card of 840 px or more), where it
-      // stands beside its actions; in the narrower forms it has its row's width (capped there, it wrapped early
-      // and made the page higher).
+      // A dictation has its row's width. In the wide list (a card of 840 px or more), where it stands beside its
+      // actions, it runs up to their column, one gap before it. No form caps it: a cap left the row half empty.
       const texts = await page.evaluate(() => {
         const list = document.getElementById("history-list");
         const card = document.getElementById("home-recent");
         const room = card.clientWidth - parseFloat(getComputedStyle(card).paddingLeft) - parseFloat(getComputedStyle(card).paddingRight);
-        const widths = [...list.querySelectorAll(".history-text")].map((el) => [getComputedStyle(el).maxWidth, Math.round(el.getBoundingClientRect().width), Math.round(el.closest(".history-item").getBoundingClientRect().width)]);
-        return { wideList: room >= 840, capped: widths.filter((w) => w[0] !== "none").length, short: widths.filter((w) => w[1] < w[2] - 1).length, rows: widths.length };
+        const wideList = room >= 840;
+        const rows = [...list.querySelectorAll(".history-item")].map((row) => {
+          const text = row.querySelector(".history-text");
+          const ends = wideList ? row.querySelector(".history-actions").getBoundingClientRect().left - parseFloat(getComputedStyle(row).columnGap) : row.getBoundingClientRect().right;
+          return [getComputedStyle(text).maxWidth, Math.round(text.getBoundingClientRect().right), Math.round(ends)];
+        });
+        return { wideList, capped: rows.filter((r) => r[0] !== "none").length, short: rows.filter((r) => Math.abs(r[1] - r[2]) > 1).length, rows: rows.length, first: rows[0] };
       });
-      out.push(...expect(texts.rows > 0 && (texts.wideList ? texts.capped === texts.rows : texts.capped === 0 && texts.short === 0), "a dictation has its row's width, and the measure only in the wide list", JSON.stringify(texts)));
+      out.push(...expect(texts.rows > 0 && texts.capped === 0 && texts.short === 0, "a dictation has its row's width, up to the actions' column in the wide list, and no cap", JSON.stringify(texts)));
       // Every row is an item of the list, named after its text, and all rows have one shape.
       const rowsAre = await page.evaluate(() => {
         const rows = [...document.querySelectorAll("#history-list .history-item")];
@@ -6709,17 +6736,17 @@ export const PAGES = [
       await panelAtRest(page);
     },
   },
-  // Running text keeps its measure where the window is wide (see `measureProbe`). The last page of the main
-  // window: it leaves the Soundboard without a cable and puts that back.
+  // A text fills its box, in a small, a common and a wide window (see `fillsProbe`). The last page of the main
+  // window: it leaves the long texts on and the Soundboard without a cable, and puts both back.
   {
-    id: "measure",
+    id: "fills",
     scenarios: ["populated"],
-    sizes: ["1920x1080"],
+    sizes: ["900x600", "1600x900", "1920x1080"],
     fresh: true,
     checks: false,
     open: (page) => section(page, "home"),
-    probe: measureProbe,
-    after: (page) => page.evaluate(() => window.__MOCK__.keep({ sb: null })),
+    probe: fillsProbe,
+    after: (page) => page.evaluate(() => window.__MOCK__.keep({ sb: null, longTexts: false })),
   },
   {
     id: "popout",

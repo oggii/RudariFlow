@@ -15,15 +15,25 @@
   /** Hints that are status lines: they may be longer than one line. */
   const NOT_A_HINT = ".hint-long, .status-line, .ai-status, .sb-status, .ai-output-warn, #gpu-detected, #ai-model-note";
   /**
-   * Running text: what is read line after line and keeps the measure (the list
-   * at --measure in src/styles/tokens.css; .panel-lead and .hint-long keep the
-   * same width as 72ch). A hint has the width of its row and is not in here.
+   * A text in a frame of its own fills the frame: [the text, its frame]. The
+   * frame has the same padding left and right, and a line of the text ends at
+   * the frame's inner right edge, however wide the frame is ("How wide a text
+   * is" in src/styles/tokens.css). A text box is its own frame. A dictation
+   * on Home has its row, up to the actions where they stand beside it. (A
+   * page's description and a Settings tab's opening paragraph stand on the
+   * page, in no frame, and keep 72ch: they are not in here.)
    */
-  const RUNNING = ".mt-para-text, .mt-notes-text, .mt-notes li, .file-summary-text, .file-text, .history-text, .ai-test-result p, .sb-hint p, .panel-lead, .hint-long";
-  /** The most characters a line of running text may have. The measure gives 90 to 100; a line of narrow letters has a few more. */
-  const LINE_MAX = 110;
-  /** From this window width on a frame is wide enough to let a line run on: the measure is asked for there. */
-  const MEASURED_FROM = 1920;
+  const FRAMED = [
+    [".file-text", null],
+    [".file-summary-text", ".file-summary"],
+    [".mt-para-text", ".mt-transcript"],
+    [".mt-notes-text, .mt-notes li", ".mt-notes"],
+    [".ai-test-result p", ".ai-test-result"],
+    [".sb-hint p", ".sb-hint"],
+    [".history-text", ".history-item"],
+  ];
+  /** How far before the frame's inner edge the longest line of a text that wraps may end: an average word, in px. Where the word that went to the next line is longer, its own width. */
+  const WORD = 80;
 
   const visible = (el) => {
     const r = el.getBoundingClientRect();
@@ -247,40 +257,85 @@
   };
 
   /**
-   * The lines the text of `el` is drawn in: the number of characters of
-   * each. A text box draws its text itself, so its lines are measured in a
-   * copy of the text that is laid out as the box lays it out (its font, the
-   * width its text has).
+   * Where the text of `el` wraps: for every line that ends because its next
+   * word had no room (not at a line break of the text's own), where the line
+   * ends (`right`, in the window) and how wide the word is that went to the
+   * next line (`next`). A text box draws its text itself, so its lines are
+   * measured in a copy of the text that is laid out as the box lays it out
+   * (its font, the width its text has), at the place of the box's text.
    */
-  const lineLengths = (el) => {
+  const wraps = (el) => {
+    const cs = getComputedStyle(el);
+    const box = el.matches("textarea");
     let root = el;
     let copy = null;
-    if (el.matches("textarea")) {
-      const cs = getComputedStyle(el);
+    if (box) {
       copy = document.createElement("div");
-      copy.style.cssText = `position:absolute;left:-99999px;top:0;visibility:hidden;box-sizing:content-box;white-space:pre-wrap;overflow-wrap:break-word;width:${el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)}px;font:${cs.font};letter-spacing:${cs.letterSpacing};line-height:${cs.lineHeight}`;
+      copy.style.cssText = `position:fixed;left:${el.getBoundingClientRect().left + el.clientLeft + parseFloat(cs.paddingLeft)}px;top:0;visibility:hidden;box-sizing:content-box;white-space:pre-wrap;overflow-wrap:break-word;width:${el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)}px;font:${cs.font};letter-spacing:${cs.letterSpacing};line-height:${cs.lineHeight}`;
       copy.textContent = el.value;
       document.body.appendChild(copy);
       root = copy;
     }
-    // top of the line → [characters in its words, words]
-    const lines = new Map();
+    // A line break in the text is kept, and ends a line whatever room is left.
+    const keepsBreaks = box || /pre|break-spaces/.test(cs.whiteSpace);
+    const out = [];
     const range = document.createRange();
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    /** The word before: where it ends, and the text between it and the next word. */
+    let last = null;
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      for (const word of node.textContent.matchAll(/\S+/g)) {
+      const text = node.textContent;
+      let from = 0;
+      for (const word of text.matchAll(/\S+/g)) {
         range.setStart(node, word.index);
         range.setEnd(node, word.index + word[0].length);
-        const rect = range.getClientRects()[0];
-        if (!rect) continue;
-        const top = Math.round(rect.top);
-        const line = lines.get(top) ?? [0, 0];
-        lines.set(top, [line[0] + word[0].length, line[1] + 1]);
+        const rects = [...range.getClientRects()].filter((r) => r.width > 0);
+        if (!rects.length) continue;
+        const between = (last?.rest ?? "") + text.slice(from, word.index);
+        if (last && rects[0].top > last.top + 2 && !(keepsBreaks && between.includes("\n"))) out.push({ right: last.right, next: rects[0].width });
+        from = word.index + word[0].length;
+        last = { top: rects.at(-1).top, right: rects.at(-1).right, rest: "" };
       }
+      if (last) last.rest += text.slice(from);
     }
     copy?.remove();
-    // The words and the blanks between them.
-    return [...lines.values()].map(([characters, words]) => characters + words - 1);
+    return out;
+  };
+
+  /**
+   * Every framed text that shows among `els` (see FRAMED): its frame's padding
+   * left and right, how many of its lines wrap, and for a text that wraps how
+   * far its longest line ends before the frame's inner right edge (`gap`),
+   * how far it may (`word`), and whether it ends earlier than that (`early`).
+   * The inner edge is the frame's right edge less the padding the frame has
+   * at the left: a frame that is padded more at the right has lines that end
+   * early.
+   */
+  const framed = (els) => {
+    const out = [];
+    for (const el of els) {
+      const pair = FRAMED.find(([text]) => el.matches(text));
+      if (!pair || !visible(el)) continue;
+      const frame = pair[1] ? el.closest(pair[1]) : el;
+      if (!frame) continue;
+      const fs = getComputedStyle(frame);
+      const f = frame.getBoundingClientRect();
+      let edge = f.left + frame.clientLeft + frame.clientWidth - parseFloat(fs.paddingLeft);
+      // Home's wide list: the actions stand beside the dictation, and its room ends one gap before them.
+      const beside = el.matches(".history-text") ? frame.querySelector(".history-actions") : null;
+      if (beside && visible(beside)) {
+        const a = beside.getBoundingClientRect();
+        const t = el.getBoundingClientRect();
+        if (a.left >= t.left + 1 && a.top < t.bottom - 1 && a.bottom > t.top + 1) edge = Math.min(edge, a.left - (parseFloat(fs.columnGap) || 0));
+      }
+      const soft = wraps(el);
+      // The longest of the lines that wrap, and the word that did not fit after it (with the blank before it).
+      const longest = soft.reduce((a, b) => (a && a.right >= b.right ? a : b), null);
+      const gap = longest ? Math.round(edge - longest.right) : null;
+      const word = longest ? Math.max(WORD, Math.ceil(longest.next) + 8) : null;
+      out.push({ what: desc(el), frame: desc(frame), pad: [parseFloat(fs.paddingLeft), parseFloat(fs.paddingRight)], wraps: soft.length, gap, word, early: !!longest && gap > word });
+    }
+    return out;
   };
 
   /** Name a screen reader announces: label, aria-label, aria-labelledby, a button's text, or a title. A placeholder is no name. */
@@ -629,21 +684,16 @@
     for (const m of motion()) moved.has(m.what) || moved.set(m.what, m.detail);
     for (const [what, detail] of moved) add("motion", what, detail);
 
-    // 13. Running text keeps its measure, in a window wide enough to let a line run on.
-    if (window.innerWidth >= MEASURED_FROM) {
-      for (const el of all) {
-        if (!el.matches(RUNNING)) continue;
-        const longest = Math.max(0, ...lineLengths(el));
-        if (longest > LINE_MAX) add("measure", desc(el), `a line of ${longest} characters; running text keeps to about 100 a line (--measure), at most ${LINE_MAX}`);
-      }
+    // 13. A text fills its box: a framed text that wraps ends its longest line at the frame's inner right edge, at every window size.
+    for (const t of framed(all)) {
+      if (t.early) add("fills", t.what, `the longest line ends ${t.gap} px before the inner right edge of ${t.frame}; a text fills its box, to one word (${t.word} px) at most`);
     }
     return out;
   }
 
-  /** The running text that shows under `scope`: how many pieces of it, and the characters of its longest line. */
-  function runningText(scope) {
-    const found = [...document.querySelectorAll(scope)].flatMap((root) => [...root.querySelectorAll(RUNNING)]).filter(visible);
-    return { pieces: found.length, longest: Math.max(0, ...found.flatMap(lineLengths)), most: LINE_MAX };
+  /** The framed texts that show under `scope` (see `framed`). */
+  function framedText(scope) {
+    return framed([...document.querySelectorAll(scope)].flatMap((root) => [root, ...root.querySelectorAll("*")]));
   }
 
   let stops = 0;
@@ -676,5 +726,5 @@
     return [...new Set(out)];
   }
 
-  window.__uic = { collect, markControls, focusStop, stillMoving, runningText };
+  window.__uic = { collect, markControls, focusStop, stillMoving, framedText };
 })();

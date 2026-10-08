@@ -86,8 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the file and its summary at the left and the transcript at the right. From about 1800 px Home's controls stand in
   two columns as well, and the setup steps stand beside the optional card
   and the recent dictations. One gutter between two columns everywhere.
-  Running text (a transcript, notes, a summary) keeps a readable line
-  length however wide its frame is.
+  A text fills its box: a transcript, notes and a summary run to the
+  right edge of their frame, however wide the frame is.
 - **The smallest window (900×600):** Home's four keys stand two by two,
   so the recent dictations start on the first screen.
 - **Files:** the options (Language, Speakers) come first and the drop

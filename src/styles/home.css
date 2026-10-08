@@ -281,11 +281,10 @@
   padding-bottom: var(--s2);
 }
 
-/* A dictation has its row's width. Only in the wide list, where the text
-   stands beside the actions and could run on for 1000 px, does it keep the
-   measure of running text (the @container rule for 840 px below): in the
-   narrower forms a cap made the text wrap earlier than its row and the page
-   higher for nothing. */
+/* A dictation has its row's width, in every form of the list. In the wide
+   one, where the actions stand beside the text, that is the room up to
+   their column (the @container rule for 840 px below). No form caps it: a
+   cap made the text wrap earlier than its row and left the row half empty. */
 .history-text {
   white-space: pre-wrap;
   user-select: text;
@@ -475,8 +474,8 @@
   }
 }
 
-/* A wide list: the actions stand beside the text, which keeps the measure
-   of running text. */
+/* A wide list: the actions stand beside the text, which runs up to their
+   column, one gap before it. */
 @container (min-width: 840px) {
   .history-item {
     align-items: start;
@@ -485,7 +484,6 @@
 
   .history-text {
     grid-column: 1;
-    max-width: var(--measure);
   }
 
   .history-actions {
