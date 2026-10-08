@@ -12,15 +12,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   instead of ten: Home, Files, Meetings, Soundboard and Settings. What the
   tabs General, Engine, Recording, Dictionary, Replacements, AI cleanup and
   History held is now on Home and in Settings. The window opens where you
-  left it, and on Home while something is still to set up. No setting was
-  removed or renamed, and every setting keeps its value.
+  left it; only a first run (no speech model yet and no dictation so far)
+  opens on Home. No setting was removed or renamed, and every setting keeps
+  its value.
 - **Home is the dictation page:** your hotkeys (Dictate, Paste last,
   Rewrite last, Free GPU; click a key to change it in place), AI cleanup,
   Language and Write in, what is loaded (speech model, AI model,
   microphone; a click opens its setting), a field that adds a word to the
   dictionary, and your recent dictations with a search for text or app.
   History moved here: Home shows the latest eight, "Show all" opens the
-  rest on the page, 50 at a time.
+  rest on the page, 50 at a time. The list stays on Home while the setup
+  steps show (a headset that is unplugged, a cloud key that was cleared):
+  it is under the steps then, with its search and every action. "History
+  settings" under it leads to Keep history, and with the history off the
+  list says where to turn it on.
 - **Settings in five tabs:** Dictation, AI cleanup, Dictionary, Models &
   GPU and General. A tab starts with what most people change, and the rest
   is behind Advanced, which stays open or closed per tab as you left it.
@@ -45,8 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **A model's download shows on its own row** in Settings (the speech
   model on Models & GPU, the AI model under AI cleanup › Advanced): a bar
   with percent and size. One that does not finish says so on that row,
-  with the reason (a full disk, for example) and Retry. A speech model
-  becomes your saved choice only once it is on disk.
+  with the reason (a full disk, for example) and Retry; the advice to
+  check the internet connection shows only where no reason is known. A
+  speech model becomes your saved choice only once it is on disk.
+- **The speech models can be read about without choosing one.** "More" on
+  the Speech model row lists all eight with size and a line about each
+  (Base and Medium had none), and marks the one recommended for this PC's
+  graphics card, as the dropdown does. Before, a model's line showed only
+  once it was chosen, and choosing a model that is missing starts its
+  download. On a new PC the row also says which model is recommended and
+  for which graphics card; the dropdown stays on what the settings say.
 - **One way to delete everywhere:** "Delete", then "Delete?". Esc, a click
   elsewhere or scrolling the button out of view takes the question back,
   and a double click or a held Enter deletes nothing. Nothing is deleted on
@@ -70,6 +83,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Calmer look:** bigger type, more room, softer surfaces. Hint text is
   readable (4.5:1), every control shows the keyboard focus, has a name for
   screen readers and is at least 24 px, and the sidebar is reached by Tab.
+  A page's title is its first heading, the Soundboard's switches are
+  switches to a screen reader, and the end of a file's transcription is
+  read out.
+- **Windows contrast themes:** with a contrast theme on, every control has
+  an edge and every "on" or "selected" shows in the theme's highlight
+  colours: a switch, the open tab, the current page, a chosen chip, a
+  sound that loops or plays, an armed Delete, a progress bar. Before, a
+  switch could only be seen while it had the focus.
+- **A faster, calmer start:** the window asks the app for everything at
+  once instead of one thing after the other, is in your Display Language
+  from its first moment, and Home shows its heading alone until it knows
+  what to show (a new PC no longer sees the daily view for a moment before
+  the steps). The status says "Ready" only once the AI's state is known
+  too.
 - **Less motion:** only a page change and an opening fold move (150 ms);
   hover and focus change at once, and nothing is animated when Windows is
   set to reduce motion.
@@ -78,11 +105,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   RudariFlow" and "Quit" were English only.
 
 ### Added
-- **First-run setup** on Home, while a microphone or a speech model is
+- **Setup steps** on Home, while a microphone or a speech model is
   missing: the microphone with a live level, the speech model recommended
   for your graphics card with a download that shows percent and size (the
   status says "Downloading n %" meanwhile), and your dictation key; AI
-  cleanup is offered on an optional card. The level runs only while you
+  cleanup is offered on an optional card ("Hide" puts it away, and the
+  card says where the model can be downloaded later). A PC that has never
+  dictated is welcomed; someone who has dictated before sees the plain
+  "Setup needed" with the reason. The level runs only while you
   use the window (within a minute of your last touch) and never in a
   window that was not shown, such as a start in the tray at login.
 - **A dictation without a speech model says so in the pill** ("No speech
@@ -91,12 +121,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Search for dictionary words and for replacements.
 - With the cloud engine and no API key, Models & GPU says that nothing is
   transcribed, and "Enter the key" leads to the field.
-- For development: `tools/ui-check`, which opens 102 pages of the
+- **A save that fails says so.** A notice at the top of the page gives the
+  reason ("Could not save: …"), and the control goes back to the saved
+  value. Before, the control kept showing the new value and nothing was
+  said.
+- For development: `tools/ui-check`, which opens 111 pages of the
   frontend in headless Chromium with a mocked backend and fails on layout,
-  accessibility and wording defects, and `npm run test:unit` (62 tests of
+  accessibility and wording defects, and `npm run test:unit` (74 tests of
   the pure modules, run by Node's own test runner). See the README.
 
 ### Fixed
+- **A click on a setting in the first moments after the start could wipe
+  settings** (in 0.16.0 too): the save read controls that were not filled
+  yet and stored the microphone as empty, the speech model as Small, no
+  replacement and no rule. Nothing is saved before the settings are read
+  now, the pages rest until then, and every control is filled in one go.
+- The Display Language is saved first when it is changed, so a hiccup
+  while the window is drawn again cannot lose it, and no line keeps the
+  old language (an export's result, "Added …" on Home, the time under
+  "Try it", the Soundboard's notice, a running PC check).
+- A name or a reason with "$&" in it was shown as the placeholder it stood
+  in for (an app in a rule, a device's name, the backend's reason).
+- After the window was loaded again while the AI model downloaded, Settings
+  said "Downloading" and the sidebar did not.
+- Keyboard focus was lost in the recent dictations when the window crossed
+  the width where the list changes its place.
 - The sidebar said "Ready" without a speech model, with the models
   unloaded and while a meeting recorded.
 - The tenth sidebar item and the version were below the window at its
