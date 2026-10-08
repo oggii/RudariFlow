@@ -1,0 +1,1197 @@
+/* The shared components, one of each: setting row with hint and More, card,
+   tab bar, fold, list row, buttons, switch, fields, key box, status pill,
+   progress, empty state, inline notice. Pages add layout, not new looks.
+   Tokens: tokens.css. */
+
+/* ── Base ───────────────────────────────────────────── */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font);
+  font-size: var(--fs);
+  line-height: 1.45;
+  background: var(--bg);
+  color: var(--text);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+.hidden,
+[hidden] {
+  display: none !important;
+}
+
+::selection {
+  background: var(--accent-bg);
+  color: var(--text);
+}
+
+/* Read out, not shown. `.mt-sr-only` is the name Meetings gave it first. */
+.sr-only,
+.mt-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ── Scrollbars: one for every scroller ─────────────── */
+
+/* The page, the sidebar, a transcript's frame, a text box, the PC check's
+   report, a list, the pop-out: thin, without arrows, the thumb in the
+   colour of a field's edge. The track ends before a frame's round corners. */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  margin: var(--s1);
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--line-strong) 55%, transparent);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--line-strong);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ── Focus: one ring on everything the keyboard reaches ── */
+
+:is(a, button, select, input, textarea, summary, [tabindex], [role="tab"]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+/* A switch shows it on its track, a key box on its key. */
+.switch input:focus-visible + .switch-slider,
+.hotkey-btn:focus-visible kbd {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.switch input:focus-visible,
+.hotkey-btn:focus-visible {
+  outline: none;
+}
+
+/* ── Page header ────────────────────────────────────── */
+
+.section-header {
+  margin-bottom: var(--s5);
+}
+
+.section-title {
+  font-size: var(--fs-xl);
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.section-desc {
+  margin-top: var(--s1);
+  max-width: 72ch;
+  color: var(--text-2);
+}
+
+/* ── Card ───────────────────────────────────────────── */
+
+.card {
+  background: var(--surface);
+  border-radius: var(--radius-card);
+  padding: var(--s2) var(--s4);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+}
+
+.card + .card,
+.card + .fold,
+.fold + .card {
+  margin-top: var(--s4);
+}
+
+/* ── Setting row: label and one-line hint left, control right ── */
+
+.settings-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2) var(--s4);
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.setting-row:last-child {
+  border-bottom: none;
+}
+
+/* The label takes the room that is left and wraps; it never runs under the control. */
+.setting-label {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.label-text {
+  display: block;
+  font-weight: 400;
+}
+
+.label-hint {
+  display: block;
+  font-size: var(--fs-s);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+/* "More" after a hint, and the long text it opens in place. */
+.hint-more {
+  /* 24 px to hit; the negative margin keeps the hint one line high. */
+  padding: 4px 2px;
+  margin: -4px 0;
+  border: none;
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--text-accent);
+  font-size: var(--fs-s);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* "More" never stands alone on a line: where the hint breaks, its last word
+   goes with it. The hint's text keeps room for the button after its last
+   word (a padding cannot be broken off the word before it), and the button
+   stands in that room. The room is as wide as the longer of the button's
+   two words: "More" and "Less", or "Mehr" and "Weniger". No space stands
+   between the two in the page: a line could break at it and put the button
+   at the start of the next line, a room's width left of the card. */
+.label-hint > span:has(+ .hint-more) {
+  padding-right: 3.2em;
+}
+
+.label-hint > span + .hint-more {
+  margin-left: calc(0.35em - 3.2em);
+}
+
+:lang(de) .label-hint > span:has(+ .hint-more) {
+  padding-right: 4.9em;
+}
+
+:lang(de) .label-hint > span + .hint-more {
+  margin-left: calc(0.35em - 4.9em);
+}
+
+.hint-long {
+  margin-top: var(--s1);
+}
+
+.setting-control {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  min-width: 0;
+  max-width: 60%;
+}
+
+.setting-control > select {
+  width: auto;
+  min-width: 180px;
+  max-width: 100%;
+}
+
+/* A row whose control is a text box: half the row each. */
+.setting-control:has(> textarea) {
+  flex: 1 1 50%;
+}
+
+/* A row whose control needs the width: label above, control below. */
+.setting-row.stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+.setting-row.stack > .setting-control {
+  max-width: none;
+  justify-content: flex-start;
+}
+
+/* ── Fields ─────────────────────────────────────────── */
+
+select,
+input[type="text"],
+input[type="password"],
+input[type="search"],
+textarea {
+  width: 100%;
+  max-width: 320px;
+  min-height: 34px;
+  padding: 6px 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  font-size: var(--fs);
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+textarea {
+  max-width: none;
+  line-height: 1.45;
+}
+
+select {
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23a3a3af' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+
+:is(select, input, textarea):hover:not(:disabled) {
+  border-color: var(--text-2);
+}
+
+/* Switched off: dimmed, and the pointer says so. (A switch's own input is
+   styled further down and stays invisible.) */
+:is(select, input, textarea):disabled {
+  cursor: default;
+}
+
+/* A check box or radio is dimmed by the browser already; twice would hide it. */
+:is(select, input:not([type="checkbox"], [type="radio"]), textarea):disabled {
+  opacity: 0.5;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-2);
+  opacity: 1;
+}
+
+.field-textarea {
+  width: 100%;
+  min-height: 56px;
+  resize: vertical;
+}
+
+input[type="range"] {
+  width: 160px;
+  min-height: 24px;
+  /* The shape of its focus ring. */
+  border-radius: 999px;
+  accent-color: var(--accent);
+}
+
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+/* ── Switch ─────────────────────────────────────────── */
+
+.switch {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  width: 44px;
+  height: 24px;
+}
+
+/* The input covers the switch, so a click and the focus land on it. */
+.switch input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.switch-slider {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--line-strong);
+  pointer-events: none;
+}
+
+.switch-slider::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.switch input:checked + .switch-slider {
+  background: var(--accent);
+}
+
+.switch input:checked + .switch-slider::before {
+  transform: translateX(20px);
+}
+
+.switch input:disabled {
+  cursor: default;
+}
+
+.switch input:disabled + .switch-slider {
+  opacity: 0.45;
+}
+
+/* ── Buttons: primary, secondary, text ──────────────── */
+
+.btn-primary,
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  min-height: 34px;
+  padding: 6px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  font-size: var(--fs);
+  font-weight: 400;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-primary:active:not(:disabled) {
+  background: var(--accent-active);
+}
+
+.btn-secondary {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+
+/* Pressed: the ground sinks below the card's. */
+.btn-secondary:active:not(:disabled) {
+  background: var(--bg);
+}
+
+/* On a notice the button stands on its own colour: the edge carries it. */
+.notice .btn-secondary {
+  border-color: var(--line-strong);
+}
+
+/* A quiet button in a row of actions (Copy, Play, Delete). `.btn-ghost` is its older name. */
+.btn-text,
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-s);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+:is(.btn-text, .btn-ghost):hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+:is(.btn-text, .btn-ghost):active:not(:disabled) {
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* A button that opens a menu below it (Export) ends in the arrow of every
+   select: one mark for "opens below". Drawn in the button's own colour. */
+.has-menu::after {
+  content: "";
+  flex: none;
+  width: 10px;
+  height: 6px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23000' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 10px 6px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23000' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 10px 6px no-repeat;
+  opacity: 0.7;
+}
+
+/* Switched off: dimmed, no hover, no press. */
+:is(.btn-primary, .btn-secondary, .btn-text, .btn-ghost, .icon-btn, .toggle-btn, .hotkey-btn):disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.icon-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.icon-btn svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* `:where()` keeps these as light as before, so a page's pressed or armed
+   icon button still outranks the hover. */
+.icon-btn:hover:where(:not(:disabled)) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.icon-btn:active:where(:not(:disabled)) {
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* Delete, armed by the first click ("Delete?"). The pointer is still on the
+   button then, so the armed look also holds while it is hovered or pressed. */
+:is(.btn-primary, .btn-secondary, .btn-text, .btn-ghost, .icon-btn).armed,
+:is(.btn-primary, .btn-secondary, .btn-text, .btn-ghost, .icon-btn).armed:is(:hover, :active) {
+  background: var(--danger-bg);
+  border-color: var(--text-danger);
+  color: var(--text-danger);
+}
+
+/* A delete button (src/confirm-delete.ts) is as wide as the wider of its two
+   texts, "Delete" and "Delete?": both lie in it unseen, each on a row
+   without height, so arming it moves nothing beside it. */
+[data-delete-id] {
+  display: inline-grid;
+  justify-items: center;
+  align-content: center;
+  gap: 0;
+}
+
+[data-delete-id]::before,
+[data-delete-id]::after {
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+[data-delete-id]::before {
+  content: attr(data-delete-rest) / "";
+}
+
+[data-delete-id]::after {
+  content: attr(data-delete-ask) / "";
+}
+
+/* The line that tells a screen reader of an armed button stands at the end of
+   the page (src/confirm-delete.ts). Fixed, so its one pixel does not make
+   the window's page one pixel higher than the window. */
+#delete-live {
+  position: fixed;
+  top: 0;
+  left: 0;
+}
+
+/* While its delete runs the button rests. Not `disabled`: it keeps the
+   keyboard focus until the row goes. */
+[data-delete-id][aria-disabled="true"],
+[data-delete-id][aria-disabled="true"]:is(:hover, :active) {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* A link inside a sentence. 24 px to hit; the negative margin keeps the
+   line's height. */
+.link-btn {
+  padding: 4px 2px;
+  margin: -4px -2px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--text-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* ── Segmented choice (Hold / Toggle, Polished / Light) ── */
+
+.toggle-group {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.toggle-btn {
+  min-height: 28px;
+  padding: 4px 12px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs);
+  font-weight: 400;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.toggle-btn:hover:where(:not(:disabled)) {
+  color: var(--text);
+}
+
+.toggle-btn:active:where(:not(:disabled)) {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.toggle-btn.active,
+.toggle-btn[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.toggle-btn:is(.active, [aria-pressed="true"]):active:not(:disabled) {
+  background: var(--accent-active);
+}
+
+/* ── Key box (a hotkey) ─────────────────────────────── */
+
+kbd {
+  display: inline-block;
+  min-height: 28px;
+  padding: 4px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  font-family: var(--mono);
+  font-size: var(--fs-s);
+  line-height: 18px;
+  color: var(--text);
+  /* One line while there is room. A combination of four keys in a narrow
+     place takes a second line instead of running over the label. */
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.hotkey-btn {
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.hotkey-btn:hover:where(:not(:disabled)) kbd {
+  border-color: var(--accent);
+}
+
+.hotkey-btn:active:where(:not(:disabled)) kbd {
+  background: var(--bg);
+  border-color: var(--accent);
+}
+
+/* A key that is not set is a key box that says so ("Not set"), in every
+   place a key is shown: Home, Settings, a sound's tile. Its words are
+   quieter than a key's. */
+.hotkey-btn.key-unset:not(.capturing) kbd {
+  font-family: var(--font);
+  color: var(--text-2);
+}
+
+/* "Press a key combination…" may need two lines. */
+.hotkey-btn.capturing kbd {
+  max-width: 240px;
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  white-space: normal;
+  text-align: left;
+}
+
+.hotkey-control {
+  align-items: center;
+  gap: var(--s1);
+  /* The x stays beside its key box; a long combination breaks inside the box. */
+  flex-wrap: nowrap;
+}
+
+/* ── Tab bar ────────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--s5);
+  margin-bottom: var(--s4);
+  border-bottom: 1px solid var(--line);
+}
+
+/* The open tab's label is bolder. Every tab keeps the room of its bold
+   label (it lies in the tab unseen, on a row without height: data-label,
+   kept in the Display Language by src/i18n.ts), so no label moves when
+   another tab is opened. */
+.tab {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  margin-bottom: -1px;
+  padding: var(--s2) 0;
+  border: none;
+  border-bottom: 2px solid transparent;
+  /* The shape of its focus ring. */
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--text-2);
+  font-weight: 400;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tab::before {
+  content: attr(data-label) / "";
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  font-weight: 600;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* The mark under the open tab, on the bar's line. Drawn apart from the
+   tab's own edge, which is round for the focus ring. */
+.tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 2px;
+  background: var(--accent);
+}
+
+/* ── Fold ("Advanced") ──────────────────────────────── */
+
+.fold {
+  margin-top: var(--s4);
+}
+
+.fold > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 32px;
+  margin-left: calc(-1 * var(--s2));
+  padding: var(--s1) var(--s2);
+  border-radius: var(--radius-s);
+  color: var(--text-2);
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+
+.fold > summary::-webkit-details-marker,
+.sb-devices > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The one mark of what opens below: also on the Soundboard's "Devices". */
+.fold > summary::before,
+.sb-devices > summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+.fold[open] > summary {
+  margin-bottom: var(--s2);
+  color: var(--text);
+}
+
+.fold[open] > summary::before,
+.sb-devices[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.fold[open] > .fold-body {
+  animation: fold-in var(--ease);
+}
+
+@keyframes fold-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── List row: text, a second line, actions at the end ── */
+
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The actions stand beside the text while the text keeps half the row (at
+   most 16rem); with less they go below it, at the right. */
+.list-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s2) var(--s3);
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.list-row:last-child {
+  border-bottom: none;
+}
+
+.list-main {
+  flex: 1 1 min(16rem, 50%);
+  min-width: 0;
+}
+
+.list-primary {
+  overflow-wrap: anywhere;
+}
+
+.list-secondary {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-s);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.list-actions {
+  flex: 0 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+  max-width: 100%;
+  margin-left: auto;
+}
+
+/* A list's heading with its search field or count. */
+.list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s3);
+  padding: var(--s3) 0 var(--s2);
+}
+
+.list-title {
+  font-size: var(--fs);
+  font-weight: 600;
+}
+
+.list-head input[type="search"] {
+  flex: 0 1 240px;
+  min-width: 120px;
+}
+
+/* ── Status pill ────────────────────────────────────── */
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  max-width: 100%;
+  min-height: 24px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: var(--fs-s);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.status-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-pill[data-tone="ok"] {
+  background: var(--ok-bg);
+  color: var(--text-ok);
+}
+
+.status-pill[data-tone="warn"] {
+  background: var(--warn-bg);
+  color: var(--text-warn);
+}
+
+.status-pill[data-tone="rec"] {
+  background: var(--danger-bg);
+  color: var(--text-danger);
+}
+
+.status-pill[data-tone="busy"] {
+  background: var(--accent-bg);
+  color: var(--text-accent);
+}
+
+.status-pill:is([data-tone="rec"], [data-tone="busy"]) .status-dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* A meeting records or a file runs while the pill says something else.
+   A ring, so it does not read as a second status dot. */
+.status-marker {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--text-danger);
+  border-radius: 50%;
+}
+
+.status-marker[data-marker="file"] {
+  border-color: var(--text-accent);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ── Progress: a bar and always its numbers ─────────── */
+
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.progress-track,
+#progress-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.progress-fill,
+#progress-fill {
+  width: 0%;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  font-size: var(--fs-s);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Empty state ────────────────────────────────────── */
+
+/* A sentence or two: a hint, which has the line it stands on (see "How wide
+   a text is" in tokens.css). */
+.empty-state {
+  padding: var(--s4) 0;
+  color: var(--text-2);
+}
+
+/* ── Inline notice ──────────────────────────────────── */
+
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s3);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.notice[data-tone="ok"] {
+  background: var(--ok-bg);
+}
+
+.notice[data-tone="warn"] {
+  background: var(--warn-bg);
+}
+
+.notice[data-tone="error"] {
+  background: var(--danger-bg);
+}
+
+.notice-text {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+/* The notice of every page: a save the backend refused, settings that did
+   not load, a backend that does not answer. It lies over the page at the
+   bottom of the content area, on the pages' left edge: it pushes nothing
+   down (the control that was just used stays where it is), it covers no way
+   through the window (under the title's row it lay over all five tabs of
+   Settings, which could not be clicked until it was closed, and over Home's
+   "Hold … and speak"), and it stays in view while the page scrolls, until
+   the next save that works or its own button. A page leaves its height free
+   at its end meanwhile (--notice-room, written by src/main.ts; styles/
+   shell.css): scrolled down, the page's last row stands over the notice,
+   not under it. Placed against the window: the sidebar's 200 px and the
+   pages' padding at its left and below it. */
+.page-notice {
+  position: fixed;
+  bottom: var(--s5);
+  left: calc(200px + var(--s5));
+  z-index: 3;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  width: min(720px, calc(100vw - 200px - 2 * var(--s5) - 6px));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.page-notice .notice-text {
+  flex: 1 1 0;
+  overflow-wrap: anywhere;
+}
+
+/* Tones of a status line under a label. */
+[data-tone="ok"]:is(.label-hint, .progress-text) {
+  color: var(--text-ok);
+}
+
+[data-tone="warn"]:is(.label-hint, .progress-text) {
+  color: var(--text-warn);
+}
+
+[data-tone="error"]:is(.label-hint, .progress-text) {
+  color: var(--text-danger);
+}
+
+/* ── Windows contrast themes ────────────────────────── */
+
+/* In a contrast theme (Windows: Settings > Accessibility > Contrast themes)
+   the browser paints with the theme's few colours: every ground is the
+   window's, every text and every edge the text's. A state this app shows
+   with a colour of its own is gone then, and what has a ground and no edge
+   is not there at all: without these rules a switch could only be seen
+   while it had the focus, and no "selected" showed anywhere.
+
+   So every shape has an edge here, and what is on or selected has the
+   theme's own pair for that (Highlight / HighlightText). A colour that is
+   named after the system is kept by the browser; any other is replaced.
+   forced-color-adjust: none is set where a ground has to stay a ground.
+   The focus ring is the theme's and stays as it is. */
+@media (forced-colors: active) {
+  /* Areas that were a ground of their own. */
+  .card,
+  .notice,
+  .status-pill,
+  .toggle-group {
+    border: 1px solid CanvasText;
+  }
+
+  /* A switch: a track with an edge and a thumb in it; on, the track is
+     filled and the thumb stands at its other end. */
+  .switch-slider {
+    border: 1px solid ButtonText;
+    background: Canvas;
+  }
+
+  .switch-slider::before {
+    left: 2px;
+    top: 2px;
+    background: ButtonText;
+  }
+
+  .switch input:checked + .switch-slider {
+    border-color: Highlight;
+    background: Highlight;
+  }
+
+  .switch input:checked + .switch-slider::before {
+    background: HighlightText;
+  }
+
+  .switch input:disabled + .switch-slider {
+    border-color: GrayText;
+    opacity: 1;
+  }
+
+  .switch input:disabled + .switch-slider::before {
+    background: GrayText;
+  }
+
+  .switch input:disabled:checked + .switch-slider {
+    background: GrayText;
+  }
+
+  .switch input:disabled:checked + .switch-slider::before {
+    background: Canvas;
+  }
+
+  /* The chosen half of a segmented choice, and a Delete that is armed. */
+  .toggle-btn.active,
+  .toggle-btn[aria-pressed="true"],
+  :is(.btn-primary, .btn-secondary, .btn-text, .btn-ghost, .icon-btn).armed,
+  :is(.btn-primary, .btn-secondary, .btn-text, .btn-ghost, .icon-btn).armed:is(:hover, :active) {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  /* Dimmed twice (the theme's grey, and the half opacity) could not be read. */
+  :is(.btn-primary, .btn-secondary, .btn-text, .btn-ghost, .icon-btn, .toggle-btn, .hotkey-btn):disabled,
+  :is(select, input:not([type="checkbox"], [type="radio"]), textarea):disabled,
+  [data-delete-id][aria-disabled="true"] {
+    opacity: 1;
+  }
+
+  /* The open tab has its mark; the others have none (their see-through
+     edge, which keeps the bar from moving, would be painted as a line). The
+     tabs stand on the bar's line, not over it: an edge in the window's
+     ground over the line would cut it into pieces. */
+  .tab {
+    margin-bottom: 0;
+    border-bottom-color: Canvas;
+  }
+
+  .tab[aria-selected="true"] {
+    border-bottom-color: Highlight;
+  }
+
+  .tab[aria-selected="true"]::after {
+    background: Highlight;
+  }
+
+  /* A key box that listens for its key. */
+  .hotkey-btn.capturing kbd {
+    border-color: Highlight;
+    border-style: dashed;
+  }
+
+  /* Progress: a track with an edge, filled as far as it has come. */
+  .progress-track,
+  #progress-bar {
+    border: 1px solid CanvasText;
+    box-sizing: content-box;
+    background: Canvas;
+  }
+
+  .progress-fill,
+  #progress-fill {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+
+  /* The dot of a status, and the ring of what runs beside it. */
+  .status-dot {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  .status-marker,
+  .status-marker[data-marker="file"] {
+    border-color: CanvasText;
+  }
+
+  /* A select's arrow is a picture in a colour of the app's own, which stays
+     as it is on any ground: the system's arrow instead. */
+  select {
+    appearance: auto;
+    -webkit-appearance: auto;
+    padding-right: 12px;
+    background-image: none;
+  }
+}

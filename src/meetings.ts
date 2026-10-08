@@ -13,10 +13,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { getLang, t } from "./i18n";
+import { confirmDelete, disarmDelete, FailureSaid, nameDelete } from "./confirm-delete";
+import { stateOnce } from "./start";
+import { speechModel } from "./models.ts";
 
 export interface MeetingsHost {
   settings(): { meetingReminderOff: boolean; meetingHeadphonesSeen: boolean };
-  saveSettings(patch: { meetingReminderOff?: boolean; meetingHeadphonesSeen?: boolean }): Promise<void>;
+  /** False when it was not saved (the page has said so, src/main.ts). */
+  saveSettings(patch: { meetingReminderOff?: boolean; meetingHeadphonesSeen?: boolean }): Promise<boolean>;
   /** Show the Meetings section (a meeting started from the tray or hotkey). */
   showSection(): void;
 }
@@ -177,7 +181,6 @@ let following = true;
 let headphonesThisMeeting = false;
 let clockTimer: number | undefined;
 let searchTimer: number | undefined;
-let deleteArmed: number | undefined;
 /** The newest `meeting_get` and `meeting_list` asked for: an older answer
  *  that arrives later is dropped. */
 let openSeq = 0;
@@ -510,7 +513,8 @@ function renderView() {
   if (fresh) {
     editing?.end(true);
     setExportMenu(false);
-    resetDelete();
+    // "Delete?" was asked about the meeting that was open before.
+    disarmDelete("meeting");
     Object.assign(drawn, { id: m.id, lang: getLang(), hints: "", notes: "", chips: "", paragraphs: [] });
     hintEl.replaceChildren();
     notesEl.replaceChildren();
@@ -518,14 +522,19 @@ function renderView() {
     transcriptEl.replaceChildren();
   }
   const live = m.state === "recording";
+  // For the style sheet: what stands in the notes' place depends on it.
+  viewEl.dataset.state = m.state;
   viewTitle.textContent = m.title;
   const meta = live ? [when(m.startedAt, m.utcOffsetMin)] : [clock(m.lengthMs), when(m.startedAt, m.utcOffsetMin)];
-  if (m.whisperModel) meta.push(fill("mt_meta_model", { model: m.whisperModel }));
+  // The models by the names the rest of the window gives them ("Large v3 Turbo q8"), not by their ids.
+  if (m.whisperModel) meta.push(fill("mt_meta_model", { model: m.whisperModel.split(", ").map((id) => speechModel(id).name).join(", ") }));
   viewMeta.textContent = meta.join(" · ");
   copyBtn.disabled = view.paragraphs.length === 0;
   exportBtn.disabled = live || m.lines.length === 0;
   deleteBtn.disabled = live || m.state === "finishing" || !!finishingStep(m.id);
-  if (deleteBtn.disabled) resetDelete();
+  if (deleteBtn.disabled) disarmDelete("meeting");
+  // Named after the meeting, like a row's Delete ("Delete: Weekly sync"); the title can be edited.
+  if (deleteBtn.dataset.deleteName !== m.title) nameDelete(deleteBtn, m.title);
   transcriptEl.dataset.empty = live ? t("mt_transcript_waiting") : m.state === "finished" ? t("mt_transcript_empty") : "";
   // While lines arrive the transcript is a log (new ones are read out); a
   // saved one is a region to read.
@@ -706,7 +715,8 @@ function renderNotes(m: Meeting) {
     part.className = "mt-notes-section";
     const head = document.createElement("div");
     head.className = "mt-notes-head";
-    const h = document.createElement("h4");
+    // Under the meeting's title, which is the page's second level.
+    const h = document.createElement("h3");
     h.textContent = t(`mt_${key}`);
     const copyOne = document.createElement("button");
     copyOne.className = "btn-ghost";
@@ -1075,31 +1085,20 @@ async function exportAs(kind: ExportKind) {
   if (view?.meeting.id === m.id) showFlash(done.text, done.tone);
 }
 
-function resetDelete() {
-  window.clearTimeout(deleteArmed);
-  deleteArmed = undefined;
-  deleteBtn.classList.remove("armed");
-  deleteBtn.textContent = t("mt_delete");
-}
-
-/** Asks once: the first click arms the button for 3 seconds. */
+/** Delete the open meeting (the button asks first: src/confirm-delete.ts).
+ *  A failure says why in the meeting's notice (read out from there), and the
+ *  button says that it failed like every other delete. */
 async function deleteMeeting() {
   if (!view) return;
-  if (deleteArmed === undefined) {
-    deleteBtn.classList.add("armed");
-    deleteBtn.textContent = t("mt_delete_confirm");
-    deleteArmed = window.setTimeout(resetDelete, 3000);
-    return;
-  }
   const id = view.meeting.id;
-  resetDelete();
   try {
     await invoke("meeting_delete", { id });
-    // Its "meetings-changed" may have closed the view already.
-    if (!view || view.meeting.id === id) await closeView();
   } catch (e) {
     showFlash(errorText(e), "error");
+    throw new FailureSaid(String(e));
   }
+  // Its "meetings-changed" may have closed the view already.
+  if (!view || view.meeting.id === id) await closeView();
 }
 
 // ── Library ───────────────────────────────────────────
@@ -1250,7 +1249,7 @@ export async function initMeetings(h: MeetingsHost) {
     setExportMenu(false);
     if (returnFocus) exportBtn.focus();
   });
-  deleteBtn.addEventListener("click", deleteMeeting);
+  confirmDelete(deleteBtn, "meeting", deleteMeeting);
   transcriptEl.addEventListener("click", (e) => {
     const play = (e.target as Element).closest<HTMLButtonElement>(".mt-play");
     const row = play?.closest<HTMLElement>(".mt-para");
@@ -1278,8 +1277,11 @@ export async function initMeetings(h: MeetingsHost) {
     if (section.classList.contains("active") && !view && !status.recording) void refreshPlaceholder();
   }, 30_000);
 
-  await listen<Status>("meeting-status", (e) => onStatus(e.payload));
-  await listen<LinesChanged>("meeting-lines", (e) => {
+  // The five listeners are registered together and waited for once: one
+  // after the other, each was a round trip to the backend before the page
+  // could ask how things stand.
+  const onMeetingStatus = listen<Status>("meeting-status", (e) => onStatus(e.payload));
+  const onLines = listen<LinesChanged>("meeting-lines", (e) => {
     linesSeen++;
     const { id, from, paragraphs } = e.payload;
     if (!view || view.meeting.id !== id) return;
@@ -1293,26 +1295,29 @@ export async function initMeetings(h: MeetingsHost) {
     renderSpeakers();
     renderTranscript();
   });
-  await listen("meetings-changed", () => {
+  const onChanged = listen("meetings-changed", () => {
     if (view) void open(view.meeting.id);
     else void refreshList();
   });
-  await listen<Playing | null>("meeting-playing", (e) => {
+  const onPlaying = listen<Playing | null>("meeting-playing", (e) => {
     playing = e.payload;
     syncRows();
   });
-  await listen<{ percent: number }>("speaker-model-progress", (e) => {
+  const onSpeakerModel = listen<{ percent: number }>("speaker-model-progress", (e) => {
     speakerModelPercent = Math.round(e.payload.percent);
     if (running.has("speaker-model")) renderHints();
   });
+  await Promise.all([onMeetingStatus, onLines, onChanged, onPlaying, onSpeakerModel]);
 
   const seen = statusSeen;
   try {
-    const current = await invoke<{ status: Status; meeting: MeetingView | null }>("meeting_state");
-    // A status event during the question is newer than its answer.
+    // The sidebar's status asks the same at the start: asked once (src/start.ts).
+    const current = await stateOnce<{ status: Status; meeting: MeetingView | null }, Status>("meeting_state", "meeting-status");
+    // A status event during the question is newer than its answer: one this
+    // page heard itself, or one that came before its listener was there.
     if (seen === statusSeen) {
-      status = current.status;
-      if (current.meeting && !view) view = current.meeting;
+      status = current.later()?.payload ?? current.answer.status;
+      if (current.answer.meeting && !view) view = current.answer.meeting;
     }
   } catch (e) {
     console.error("meeting_state failed:", e);

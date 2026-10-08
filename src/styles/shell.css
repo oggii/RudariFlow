@@ -1,0 +1,250 @@
+/* The window: title bar, sidebar with five sections, content area.
+
+   ── The layout system: one for every page ────────────
+
+   1. A page's content runs from the common left edge to the window's right
+      edge (the content area's padding, --s5), at every window size. No page
+      has a max-width that leaves the right part of the window empty. So
+      every page has the same left edge and the same right edge.
+
+   2. Inside that width a page has columns. How many is decided on the room
+      beside the sidebar (roomBeside() in src/shell.ts: #content.offsetWidth,
+      the width with the scrollbar's own room in it, so a scrollbar that
+      comes or goes cannot flip a step). shell.ts writes the steps a window
+      has reached on every page as classes:
+
+        under 900 px   one column, on every page
+        .wide   900    two columns where a narrow side stands beside a list:
+                       Home (controls, dictations), the Soundboard (its
+                       settings panel, the sounds)
+        .roomy  1250   two columns where both sides are setting rows or
+                       texts: Settings (the main card, the Advanced fold;
+                       General's two cards), the Meetings library (its rows,
+                       filled column by column), an open meeting and the live
+                       view (notes, or the hints that stand in for them;
+                       transcript), Files (the file, its options and its
+                       summary; transcript)
+        .wider  1600   more only where a page has enough separate things:
+                       Home's controls are two columns of cards, and the
+                       setup steps stand beside the optional card and the
+                       dictations
+
+      A page of setting rows is one column until 1250 px, not until 900: a
+      column narrower than about 560 px breaks a row's hint into three lines.
+      Between the steps the one column fills the width (rows end at the right
+      edge). Where one column of rows would be absurdly wide, the answer is
+      the second column, never an empty half.
+
+   3. One gutter between two columns, on every page: --gutter (tokens.css).
+      The side column beside a transcript is --side-col on both pages that
+      have one.
+
+   4. A frame or card takes its column's width, and a text in a frame of its
+      own fills it: a transcript's frame runs to the window's edge, it has
+      the same padding left and right, and its lines end at its inner right
+      edge, at every window size ("How wide a text is" in tokens.css).
+
+   5. A wider form is never the higher one, and every step is decided on
+      offsetWidth. tools/ui-check sweeps each step in a window that draws its
+      scrollbar (layoutHolds, settingsHold, boardHolds, pagesHold) and holds
+      every page to one left and one right edge (the "edges" page). */
+
+#app {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+}
+
+#titlebar {
+  flex-shrink: 0;
+  width: 100%;
+  height: 32px;
+}
+
+#app-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── Sidebar ────────────────────────────────────────── */
+
+/* Everything fits at 900×600; if it ever does not, the sidebar scrolls. */
+#sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 200px;
+  min-width: 200px;
+  padding: 0 var(--s2) var(--s3);
+  overflow-y: auto;
+}
+
+/* One left edge for the whole sidebar, 12 px inside its items: the logo's
+   mark, the status pill, the items' icons and the version. */
+.sidebar-header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s1) var(--s2) var(--s4) var(--s3);
+}
+
+/* The PNG is a square with the mark in its middle band: one line of it is
+   shown. The mark begins 18 px into the 136 px, so the box is pulled left
+   by as much and the mark stands on the sidebar's edge. */
+.app-logo {
+  display: block;
+  width: 136px;
+  height: 30px;
+  margin-left: -18px;
+  object-fit: cover;
+  object-position: center;
+}
+
+/* A long status ("Für ein Spiel freigegeben") takes a second line. */
+#status-indicator {
+  border-radius: var(--radius-card);
+}
+
+/* "Setup needed: no speech model": the reason stays together, the line
+   breaks after the colon. */
+.status-reason {
+  display: inline-block;
+}
+
+#sidebar-nav {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  min-height: 36px;
+  padding: var(--s2) var(--s3);
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-2);
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav-item:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.nav-item[aria-current="page"] {
+  background: var(--accent-bg);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.nav-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+/* Settings sits at the bottom, above the version. */
+.nav-settings {
+  margin-top: auto;
+}
+
+.sidebar-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: var(--s2) var(--s3) 0;
+}
+
+.version-text {
+  font-size: var(--fs-s);
+  color: var(--text-2);
+}
+
+.credit-text {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  font-size: var(--fs-s);
+  color: var(--text-2);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.credit-text:hover {
+  color: var(--text-accent);
+}
+
+/* ── Content area ───────────────────────────────────── */
+
+/* What is read out and not shown (.sr-only) is placed inside the content
+   area and scrolls with the page. Placed against the window, such a line far
+   down a long page made the window's own document higher than the window,
+   and bringing it into view moved everything, title bar and sidebar too. */
+#content {
+  flex: 1;
+  position: relative;
+  overflow-y: auto;
+}
+
+/* A page: from the common left edge to the window's right edge (the layout
+   system above). While the page's notice shows (components.css), a page
+   ends that much higher: its last row is never under the notice. */
+.content-section {
+  display: none;
+  margin: 0;
+  padding: var(--s2) var(--s5) calc(var(--s5) + var(--notice-room, 0px));
+}
+
+.content-section.active {
+  display: block;
+  animation: page-in var(--ease);
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A paragraph that opens a Settings tab. */
+.panel-lead {
+  margin: 0 0 var(--s4);
+}
+
+/* A contrast theme (see components.css): the sidebar's current page has the
+   theme's colours for what is selected, and the sidebar an edge towards the
+   page (both have the window's ground). */
+@media (forced-colors: active) {
+  #sidebar {
+    border-right: 1px solid CanvasText;
+  }
+
+  /* The logo is a light picture for the app's dark ground: on a theme with a
+     light ground it is turned dark, or it would not be there. */
+  @media (prefers-color-scheme: light) {
+    .app-logo {
+      filter: invert(1);
+    }
+  }
+
+  .nav-item[aria-current="page"] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+}

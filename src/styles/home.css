@@ -1,0 +1,843 @@
+/* Home: the dictation page. One column; two from 900 px beside the sidebar
+   (the class "wide", set by src/home.ts together with the order of the
+   cards); from 1600 px the controls' side is two columns of cards itself
+   (the class "wider"). The page takes the window's whole width, like every
+   page (the layout system: styles/shell.css). */
+
+.home-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s3);
+}
+
+/* The key in the sentence. No room after it: a comma may follow. */
+#home-how kbd {
+  margin-left: 2px;
+}
+
+#home-notice {
+  margin-bottom: var(--s4);
+}
+
+.home-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gutter);
+}
+
+.home-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gutter);
+  min-width: 0;
+}
+
+/* Cards in a column are spaced by the column's gap. */
+.home-grid .card + .card {
+  margin-top: 0;
+}
+
+.home-grid.wide {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  align-items: start;
+}
+
+/* A large window: the two sides keep their share, so the list never gets
+   narrower when the window grows. The controls' side is two columns of
+   cards: hotkeys and quick switches, below them what is loaded and "add a
+   word"; the quick switches have the wider one for their selects. A card is
+   as high as its rows, not as its neighbour. This layout is never higher
+   than the one below 1600 px (src/home.ts, layout). */
+.home-grid.wider > .home-col {
+  display: grid;
+  grid-template-columns: minmax(0, 4fr) minmax(0, 5fr);
+  align-items: start;
+}
+
+/* Hotkeys and quick switches end on one line: the lower card's rows share
+   the height the taller one has. What is loaded and "add a word" take the
+   whole side below them, so a value keeps its one line. */
+.home-grid.wider #home-hotkeys,
+.home-grid.wider #home-switches {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+}
+
+.home-grid.wider #home-hotkeys > .setting-row,
+.home-grid.wider #home-switches > .setting-row {
+  flex: 1 0 auto;
+}
+
+.home-grid.wider #home-loaded,
+.home-grid.wider #home-word-form {
+  grid-column: 1 / -1;
+}
+
+/* One column: the cards of the left column and "Recent dictations" are one list. */
+.home-grid:not(.wide) > .home-col {
+  display: contents;
+}
+
+/* While the setup steps show (src/home.ts, layout): of the daily view only
+   the recent dictations, under the steps and as wide as they are. The
+   controls are what the steps stand in for. */
+.home-grid.list-only > .home-col {
+  display: none;
+}
+
+/* One column (the smallest window, 900×600): the four keys stand two by
+   two, each with its name before it as in the wide card, and their rows
+   are lower. So the list that is used every day starts on the first
+   screen: in German its head and its first dictation show without
+   scrolling. A key box that asks for its key in a sentence goes under its
+   name. */
+.home-grid:not(.wide) #home-hotkeys {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: calc(2 * var(--s4));
+  padding-top: var(--s1);
+  padding-bottom: var(--s1);
+}
+
+.home-grid:not(.wide) #home-hotkeys > .setting-row {
+  flex-wrap: wrap;
+  min-height: 46px;
+  padding: var(--s2) 0;
+}
+
+.home-grid:not(.wide) #home-hotkeys > .setting-row:nth-last-child(-n + 2) {
+  border-bottom: none;
+}
+
+/* The name keeps its width; what does not fit beside it goes under it, at
+   the right. */
+.home-grid:not(.wide) #home-hotkeys .setting-label {
+  flex: 1 0 auto;
+}
+
+.home-grid:not(.wide) #home-hotkeys .setting-control {
+  max-width: 100%;
+  margin-left: auto;
+}
+
+.home-grid:not(.wide) #home-switches {
+  padding-top: var(--s1);
+  padding-bottom: var(--s1);
+}
+
+.home-grid:not(.wide) #home-switches > .setting-row {
+  padding: var(--s2) 0;
+}
+
+/* ── Quick switches ─────────────────────────────────── */
+
+/* The two choices of the card have one form at every width: each select
+   beside its name, on the name's line. The name keeps its one line and the
+   select takes the room that is left (a setting row's 60 % would cut "Gleiche
+   Sprache wie gesprochen"), up to a field's width, and gives way before
+   anything goes to a second line. Left alone, each row decided for itself:
+   in German "Gesprochene Sprache" stood over its select while "Schreiben in"
+   stood beside its own, in every window from 1800 px and from 1100 to
+   1239 px. (A row may still wrap: the line that says why "Write in" does
+   nothing stands under its row.) */
+#home-switches {
+  container: switches / inline-size;
+}
+
+#home-switches .setting-row {
+  flex-wrap: wrap;
+}
+
+#home-switches .setting-control {
+  max-width: 100%;
+}
+
+#home-switches .setting-row:has(select) > .setting-label {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+#home-switches .setting-row:has(select) > .setting-control {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+#home-switches .setting-control > select {
+  width: 100%;
+  min-width: 0;
+  max-width: 320px;
+}
+
+/* A card too narrow for the longer name beside a select of 180 px (less
+   than 340 px between its paddings; no window of 900 px or more has one,
+   the card has 348 px at its narrowest): both selects stand under their
+   names, never one of them alone. */
+@container switches (max-width: 339px) {
+  #home-switches .setting-row:has(select) > .setting-control {
+    flex-basis: 100%;
+  }
+
+  #home-switches .setting-control > select {
+    max-width: none;
+  }
+}
+
+/* Why a row's setting does nothing at the moment, on a line of its own under the row. */
+.home-row-hint {
+  flex: 1 0 100%;
+}
+
+/* The AI's state with "Retry" after it, in one line of text. */
+#home-ai-status {
+  display: inline;
+}
+
+#home-ai-retry {
+  font-size: var(--fs-s);
+}
+
+/* ── What is loaded: three lines that lead to their setting ── */
+
+.home-loaded {
+  padding-top: var(--s2);
+  padding-bottom: var(--s2);
+}
+
+.home-loaded-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+  width: 100%;
+  min-height: 32px;
+  padding: var(--s1) 0;
+  border: none;
+  border-radius: var(--radius-s);
+  background: none;
+  font-size: var(--fs-s);
+  text-align: left;
+  cursor: pointer;
+}
+
+.home-loaded-row:hover .home-loaded-value {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.home-loaded-name {
+  flex-shrink: 0;
+  color: var(--text-2);
+}
+
+.home-loaded-value {
+  min-width: 0;
+  color: var(--text);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* A value is plain text; only what is missing or failed has a colour. */
+.home-loaded-value[data-tone="warn"] {
+  color: var(--text-warn);
+}
+
+.home-loaded-value[data-tone="error"] {
+  color: var(--text-danger);
+}
+
+/* ── Add a word ─────────────────────────────────────── */
+
+.home-word {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding-top: var(--s3);
+  padding-bottom: var(--s3);
+}
+
+.home-word-row {
+  display: flex;
+  gap: var(--s2);
+}
+
+.home-word-row input {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+}
+
+.home-word .status-line:empty {
+  display: none;
+}
+
+/* ── Recent dictations ──────────────────────────────── */
+
+/* The rows ask this card how wide it is (the @container rule below). */
+.home-recent {
+  container-type: inline-size;
+  padding-bottom: var(--s2);
+}
+
+/* A dictation has its row's width, in every form of the list. In the wide
+   one, where the actions stand beside the text, that is the room up to
+   their column (the @container rule for 840 px below). No form caps it: a
+   cap made the text wrap earlier than its row and left the row half empty. */
+.history-text {
+  white-space: pre-wrap;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+/* App, time, length: one line that does not break (no dot is ever left at
+   a line's end); a name that is too long for it ends in an ellipsis. What
+   was said in Edit mode stands under it and wraps like the sentence it is. */
+.history-parts {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-edit {
+  display: block;
+}
+
+/* Every row has one shape, whatever it can do; which one, the list's width
+   decides for all rows together (the @container rules below), not a row's
+   number of actions.
+
+   Row actions. "Copy" is what a dictation is opened for: it always shows,
+   and it is the row's last action, at the card's right edge, where the
+   search field and the lines between the rows end. So the "Copy" of all
+   rows stand under each other. The others (.history-more: Delete, apart
+   from the rest at their left end, then Original, Play, Re-run) stand to
+   its left and show while the pointer is on the row or the focus is in it:
+   eight rows no longer carry thirty grey words. The focus, not only the
+   keyboard's: after a click on Re-run with the pointer gone the focus is
+   still on that button, and Enter would start a Re-run nobody sees. They
+   keep their places while they are not seen, so nothing moves when they
+   come; they stay in the page, in the Tab order and named.
+   An action that says something of the moment stays in view: an armed
+   "Delete?", "Stop" while the recording plays, "AI version" while the
+   original shows, "Transcribing…", a failure (data-on, src/history.ts).
+
+   In a narrow list (this is its form: a card under 600 px, which is every
+   window from 1100 to 1439 px): the text, and under it one line with the
+   app, the time and the length at the left and "Copy" at the right. The
+   other actions take that same line, to the left of "Copy", and the line's
+   words are not shown meanwhile (they stay in the page: a screen reader
+   still reads them). A row has one height whatever shows. */
+.history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 var(--s2);
+  align-items: start;
+}
+
+.history-item > .list-main,
+.history-actions {
+  display: contents;
+}
+
+.history-text {
+  grid-column: 1 / -1;
+}
+
+.history-meta {
+  grid-area: 2 / 1;
+  min-width: 0;
+  margin-top: 0;
+}
+
+/* The line is as high as the actions beside it: its words and theirs stand
+   on one middle line. */
+.history-parts {
+  line-height: 28px;
+}
+
+/* The other actions lie over the line, from its right end: over it also
+   while its words are not drawn (what has an opacity is painted late, and
+   took the clicks meant for the buttons). */
+.history-more {
+  position: relative;
+  z-index: 1;
+  grid-area: 2 / 1;
+  justify-self: end;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+  max-width: calc(100% + var(--s2));
+  margin-left: calc(-1 * var(--s2));
+}
+
+.history-more > [data-delete-id] {
+  margin-right: var(--s3);
+}
+
+/* "Copy" ends at the row's right edge with its words, not with its box. It
+   is as wide as the wider of its two words, "Copy" and "Copied" (both lie
+   in it unseen, each on a row without height, as in a delete button): the
+   others do not move when it is pressed. */
+.history-actions > [data-action="copy"] {
+  grid-area: 2 / 2;
+  display: inline-grid;
+  justify-items: end;
+  align-content: center;
+  gap: 0;
+  margin-right: calc(-1 * var(--s2));
+}
+
+.history-actions > [data-action="copy"]::before,
+.history-actions > [data-action="copy"]::after {
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+.history-actions > [data-action="copy"]::before {
+  content: attr(data-rest) / "";
+}
+
+.history-actions > [data-action="copy"]::after {
+  content: attr(data-done) / "";
+}
+
+@media (hover: hover) and (forced-colors: none) {
+  .history-item:not(:hover, :focus-within) .history-more > :not(.armed, [data-on], [aria-disabled="true"]) {
+    opacity: 0;
+  }
+
+  /* The narrow list: while a row's other actions show, its line's words do not. */
+  @container not (min-width: 600px) {
+    .history-item:is(:hover, :focus-within, :has(.history-more > :is(.armed, [data-on], [aria-disabled="true"]))) .history-parts {
+      opacity: 0;
+    }
+  }
+}
+
+/* Where no pointer hovers (touch) and in a contrast theme all actions
+   always show: in the narrow list the others then have a line of their own
+   under the row's, and its words stay. */
+@media (hover: none), (forced-colors: active) {
+  .history-more {
+    grid-area: 3 / 1 / auto / -1;
+    max-width: none;
+    margin-right: calc(-1 * var(--s2));
+  }
+}
+
+/* With more room the row's line has two parts that never share their
+   place: the app, the time and the length at the left, all actions at the
+   right; the text keeps the row's whole width. From 600 px, so that the
+   smallest window (a list of 620 px, 614 with the page's scrollbar) has
+   this shape with and without the scrollbar. The rows share the list's two
+   columns: the second is as wide as the row with the most actions needs. */
+@container (min-width: 600px) {
+  .history-list {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: var(--s3);
+  }
+
+  .history-item {
+    grid-template-columns: subgrid;
+    grid-column: 1 / -1;
+    column-gap: var(--s3);
+    align-items: center;
+  }
+
+  .history-parts {
+    line-height: inherit;
+  }
+
+  .history-actions {
+    grid-area: 2 / 2;
+    display: flex;
+    flex-wrap: nowrap;
+    max-width: none;
+    /* "Copy" ends at the row's right edge with its words: the row's margin takes its box's padding. */
+    margin: 0 calc(-1 * var(--s2)) 0 0;
+  }
+
+  /* Its buttons are the actions' own here. */
+  .history-more {
+    display: contents;
+  }
+
+  .history-actions > [data-action="copy"] {
+    margin-right: 0;
+  }
+}
+
+/* A wide list: the actions stand beside the text, which runs up to their
+   column, one gap before it. */
+@container (min-width: 840px) {
+  .history-item {
+    align-items: start;
+    row-gap: 2px;
+  }
+
+  .history-text {
+    grid-column: 1;
+  }
+
+  .history-actions {
+    grid-row: 1 / span 2;
+  }
+}
+
+/* Re-run while it runs: it keeps the focus and its words, and does nothing. */
+.history-actions .btn-text[aria-disabled="true"],
+.history-actions .btn-text[aria-disabled="true"]:is(:hover, :active) {
+  background: transparent;
+  color: var(--text-2);
+  cursor: default;
+}
+
+/* "Show all" starts at the rows' left edge; the way to the list's setting
+   ends at their right edge, where "Copy" does: a small, quiet link, not a
+   third button. */
+.home-recent-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 calc(-1 * var(--s2));
+  padding: var(--s1) 0;
+}
+
+#history-settings {
+  margin-left: auto;
+  font-weight: 400;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+
+#history-settings:hover {
+  background: none;
+  text-decoration-color: currentColor;
+}
+
+/* "History is off. …" ends in the way to its setting. */
+#history-empty .link-btn {
+  font: inherit;
+}
+
+.home-recent-foot:not(:has(button:not(.hidden))) {
+  display: none;
+}
+
+/* ── First run ──────────────────────────────────────── */
+
+/* The steps instead of the daily view, and the optional card. Like every
+   page they have the window's width (a step is a row: what it is at the
+   left, its one button at the right edge). After the setup the card heads
+   the daily view. */
+#home-setup,
+#home-ai-card {
+  margin: 0 0 var(--gutter);
+}
+
+/* A large window (1600 px beside the sidebar: the class "wider" on the
+   page, set by src/shell.ts): Home's grid, with the two sides' shares of
+   the daily view. The three steps at the left; at the right the optional
+   card and, for someone who has dictated before, the recent dictations.
+   Nothing is moved in the page: the Tab order is steps, card, list. With
+   neither card nor list the steps keep the page's width. */
+#section-home.wider.active:has(> #home-setup:not(.hidden)):has(> :is(#home-ai-card, #home-daily):not(.hidden)) {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  grid-template-rows: auto auto auto 1fr;
+  column-gap: var(--gutter);
+  align-items: start;
+}
+
+#section-home.wider:has(> #home-setup:not(.hidden)) > :is(.section-header, #home-notice) {
+  grid-column: 1 / -1;
+}
+
+#section-home.wider:has(> :is(#home-ai-card, #home-daily):not(.hidden)) > #home-setup:not(.hidden) {
+  grid-area: 3 / 1 / span 2;
+}
+
+#section-home.wider:has(> #home-setup:not(.hidden)) > #home-ai-card {
+  grid-area: 3 / 2;
+}
+
+#section-home.wider:has(> #home-setup:not(.hidden)) > #home-daily {
+  grid-area: 4 / 2;
+}
+
+.setup-steps {
+  list-style: none;
+}
+
+/* A step: its mark, what it is and how it stands, its one action. */
+.setup-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--s2) var(--s3);
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.setup-steps > .setup-step:last-child,
+.home-setup > .setup-step {
+  border-bottom: none;
+}
+
+/* The number of a step that is to do, in the colour of the button that
+   does it; a tick once it is done. */
+.setup-num {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  margin-top: -2px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--fs-s);
+  font-weight: 600;
+  line-height: 24px;
+  text-align: center;
+}
+
+.setup-step[data-state="done"] .setup-num {
+  background: var(--ok-bg);
+  color: var(--text-ok);
+}
+
+.setup-step[data-state="problem"] .setup-num {
+  background: var(--warn-bg);
+  color: var(--text-warn);
+}
+
+/* The optional card's "+" is no step to do. */
+#setup-ai .setup-num {
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+
+.setup-main {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* What a step says is the page's text here, not a hint under a setting. */
+.setup-main > .status-line,
+.setup-ai-live > .status-line {
+  font-size: var(--fs);
+}
+
+/* The level: the bar and what it is for, on one line while there is room.
+   While the level rests (nobody uses the window) the line alone says so:
+   the row keeps its height. */
+.setup-meter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s3);
+  margin-top: var(--s1);
+}
+
+.setup-level {
+  flex: 0 0 auto;
+  width: 200px;
+  max-width: 100%;
+  height: 8px;
+  border-radius: 4px;
+}
+
+/* The level follows the voice at once. */
+.setup-level .progress-fill {
+  border-radius: 4px;
+  background: var(--text-ok);
+  transition: width 80ms linear;
+}
+
+.setup-main .progress {
+  max-width: 420px;
+  margin-top: var(--s1);
+}
+
+/* At the top of its step: a step that grows (a download's bar, a longer
+   line) does not move the button that was just pressed. */
+.setup-action {
+  flex-shrink: 0;
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s2);
+  max-width: 50%;
+}
+
+/* The list of microphones takes a line of its own under the step's text,
+   so the longest name fits. */
+.setup-action:has(> select:not(.hidden)) {
+  flex: 1 0 100%;
+  max-width: none;
+  justify-content: flex-start;
+  padding-left: calc(24px + var(--s3));
+}
+
+.setup-action > select {
+  width: auto;
+  max-width: 100%;
+}
+
+/* "Change" stays beside the key, also while the key box asks for the new
+   key in a sentence: the sentence takes two lines in the box. */
+.setup-action.hotkey-control {
+  flex-wrap: nowrap;
+}
+
+/* A button whose work runs ("Downloading…"): it keeps its place and the
+   keyboard focus, and does nothing. */
+.setup-action [aria-disabled="true"],
+.setup-action [aria-disabled="true"]:is(:hover, :active) {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--text-2);
+  cursor: default;
+}
+
+/* The optional card is flat: what it is and what it does in one line where
+   the window has the room, its two buttons at the right, and no more room
+   above and below than the card's own. Text that does not fit beside the
+   title goes under it.
+
+   The card has one height at every width, whether it rests, downloads or
+   has failed: the daily view under it does not move when Download is
+   pressed. Two things see to that. Its line always takes the room of the
+   text the card rests on, and the two buttons that of their widest words. */
+#setup-ai {
+  align-items: center;
+  padding: 0;
+}
+
+#setup-ai .setup-num {
+  margin-top: 0;
+}
+
+#setup-ai .setup-main {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--s3);
+}
+
+#setup-ai .setup-main > .label-text {
+  flex: none;
+}
+
+/* The line beside the title or under it. The text the card rests on
+   (data-rest, src/home.ts) lies under it unseen, as wide and as high as it
+   is when it shows: what the line says meanwhile (shorter, by its wording)
+   changes neither where the line stands nor how many rows it takes. */
+.setup-ai-line {
+  flex: 1 1 auto;
+  display: grid;
+  min-width: 0;
+}
+
+.setup-ai-line::before {
+  content: attr(data-rest);
+  grid-area: 1 / 1;
+  visibility: hidden;
+  font-size: var(--fs);
+  line-height: 1.45;
+}
+
+/* What the line says, and while the model downloads the bar and its
+   numbers after it, on the text's row (under it only where the window is
+   too narrow for both). */
+.setup-ai-live {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: flex-start;
+  gap: 0 var(--s3);
+  min-width: 0;
+}
+
+#setup-ai .progress {
+  flex: 1 1 200px;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--s3);
+  max-width: 420px;
+  margin-top: 0;
+}
+
+#setup-ai .progress-track {
+  flex: 1 1 0;
+  min-width: 48px;
+}
+
+#setup-ai .progress-text {
+  flex: none;
+}
+
+#setup-ai .setup-action {
+  align-self: center;
+}
+
+/* A button of the card is as wide as its widest words ("Download",
+   "Downloading…", "Retry"; "Not now", "Hide"): the others lie in it unseen
+   (data-alt, data-alt2), each on a row without height. */
+#setup-ai .setup-action > button {
+  display: inline-grid;
+  justify-items: center;
+  align-content: center;
+  gap: 0;
+}
+
+#setup-ai .setup-action > button::before,
+#setup-ai .setup-action > button::after {
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+#setup-ai .setup-action > button::before {
+  content: attr(data-alt);
+}
+
+#setup-ai .setup-action > button::after {
+  content: attr(data-alt2);
+}
+
+/* A contrast theme (see components.css): a step's mark keeps its round
+   shape, a step that is done has the theme's colours for that, and the
+   microphone's level is filled like every bar. */
+@media (forced-colors: active) {
+  .setup-num,
+  #setup-ai .setup-num {
+    border: 1px solid CanvasText;
+    line-height: 22px;
+  }
+
+  .setup-step[data-state="done"] .setup-num {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  .setup-level .progress-fill {
+    background: Highlight;
+  }
+}

@@ -80,6 +80,14 @@ impl ActiveBackend {
             ActiveBackend::Cpu => "CPU".to_string(),
         }
     }
+
+    /// The device as the window names it: "NVIDIA GeForce RTX 5080 (CUDA)", "CPU".
+    fn device_name(&self) -> String {
+        match self {
+            ActiveBackend::Gpu(d) => format!("{} ({})", d.name, d.api.label()),
+            ActiveBackend::Cpu => "CPU".to_string(),
+        }
+    }
 }
 
 /// Name of the GPU Whisper uses (or will use) for this `gpuBackend` setting;
@@ -217,8 +225,8 @@ pub fn model_download_url(model_size: &str) -> String {
     )
 }
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
@@ -234,6 +242,30 @@ pub struct PartialTranscript {
     pub is_final: bool,
 }
 
+/// What the window's status shows about the model in memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LoadState {
+    /// No model in memory: not loaded yet, unloaded or let go of.
+    Unloaded,
+    /// `ensure_loaded` is loading one.
+    Loading,
+    Loaded,
+    /// The last load failed; the next dictation tries again.
+    Failed,
+}
+
+impl LoadState {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Loading,
+            2 => Self::Loaded,
+            3 => Self::Failed,
+            _ => Self::Unloaded,
+        }
+    }
+}
+
 pub struct WhisperEngine {
     inner: Mutex<EngineState>,
     /// Flash attention from the settings (PC check); `None` = per API.
@@ -242,6 +274,16 @@ pub struct WhisperEngine {
     released: AtomicBool,
     /// Who runs next when a dictation, a meeting and a file wait.
     gate: Gate,
+    /// `LoadState` as a number, read without the engine's lock (which
+    /// waits for a load or a transcription that runs).
+    load_state: AtomicU8,
+    /// Where the loaded model runs (`ActiveBackend::device_name`); empty
+    /// while none is loaded.
+    device: Mutex<String>,
+    /// Called when the load state changes (`on_load_change`).
+    load_changed: OnceLock<Box<dyn Fn() + Send + Sync>>,
+    /// A model was loaded at least once since the start (`loaded_once`).
+    loaded_once: AtomicBool,
 }
 
 struct EngineState {
@@ -267,6 +309,53 @@ impl WhisperEngine {
             flash_attn: Mutex::new(None),
             released: AtomicBool::new(false),
             gate: Gate::new(),
+            load_state: AtomicU8::new(LoadState::Unloaded as u8),
+            device: Mutex::new(String::new()),
+            load_changed: OnceLock::new(),
+            loaded_once: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether a model is in memory, loading or failed to load. Never waits.
+    pub fn load_state(&self) -> LoadState {
+        LoadState::from_u8(self.load_state.load(Ordering::SeqCst))
+    }
+
+    /// True once a model was loaded since the start. From then on "no model
+    /// in memory" means it was unloaded (Free GPU, a game, idle, the PC
+    /// check), not that the start's load is still to come.
+    pub fn loaded_once(&self) -> bool {
+        self.loaded_once.load(Ordering::SeqCst)
+    }
+
+    /// Where the loaded model runs, e.g. "NVIDIA GeForce RTX 5080 (CUDA)";
+    /// empty while none is loaded.
+    pub fn device(&self) -> String {
+        self.device.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Have `changed` called whenever the load state changes or the model
+    /// is let go of. Set once, at start. It is called with the engine's
+    /// lock held: it must not load, unload or transcribe.
+    pub fn on_load_change(&self, changed: Box<dyn Fn() + Send + Sync>) {
+        let _ = self.load_changed.set(changed);
+    }
+
+    /// True when the state changed (the change was then announced).
+    fn set_load_state(&self, state: LoadState) -> bool {
+        if state != LoadState::Loaded {
+            self.device.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        }
+        let changed = self.load_state.swap(state as u8, Ordering::SeqCst) != state as u8;
+        if changed {
+            self.notify_load_change();
+        }
+        changed
+    }
+
+    fn notify_load_change(&self) {
+        if let Some(changed) = self.load_changed.get() {
+            changed();
         }
     }
 
@@ -283,7 +372,9 @@ impl WhisperEngine {
     /// Drop the cached model. Next call reloads. Used when settings change
     /// and to free the GPU on battery.
     pub fn invalidate(&self) {
-        self.lock().loaded = None;
+        let mut state = self.lock();
+        state.loaded = None;
+        self.set_load_state(LoadState::Unloaded);
     }
 
     /// Free the GPU (Free GPU hotkey): drop the model like `invalidate`, and
@@ -293,7 +384,11 @@ impl WhisperEngine {
     pub fn release(&self) {
         let mut state = self.lock();
         state.loaded = None;
-        self.released.store(true, Ordering::SeqCst);
+        let was = self.released.swap(true, Ordering::SeqCst);
+        // Let go of while nothing was loaded: the state stays, "freed" is news.
+        if !self.set_load_state(LoadState::Unloaded) && !was {
+            self.notify_load_change();
+        }
     }
 
     /// Released by `release` and not loaded since.
@@ -323,10 +418,12 @@ impl WhisperEngine {
             state.loaded = None;
         }
 
+        self.set_load_state(LoadState::Loading);
         let devices = list_gpu_devices();
         let candidates = backend_candidates(gpu_backend, &devices);
         if candidates.is_empty() {
             let wanted = if gpu_backend == "cuda" { "NVIDIA CUDA" } else { "Vulkan" };
+            self.set_load_state(LoadState::Failed);
             return Err(format!("No {} GPU found (detected: {:?})", wanted, devices));
         }
 
@@ -348,6 +445,9 @@ impl WhisperEngine {
                     });
                     state.loads += 1;
                     self.released.store(false, Ordering::SeqCst);
+                    *self.device.lock().unwrap_or_else(|p| p.into_inner()) = backend.device_name();
+                    self.loaded_once.store(true, Ordering::SeqCst);
+                    self.set_load_state(LoadState::Loaded);
                     return Ok(backend);
                 }
                 Err(e) => {
@@ -360,6 +460,7 @@ impl WhisperEngine {
                 }
             }
         }
+        self.set_load_state(LoadState::Failed);
         Err(last_err)
     }
 
@@ -757,6 +858,41 @@ mod tests {
             panic!("no model file, so no run");
         };
         assert_ne!(error, NO_MODEL, "the model was loaded once more (and that load failed)");
+    }
+
+    #[test]
+    fn the_load_state_follows_loads_and_unloads() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+        let engine = WhisperEngine::new();
+        let changes = Arc::new(AtomicUsize::new(0));
+        let seen = changes.clone();
+        engine.on_load_change(Box::new(move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(engine.load_state(), LoadState::Unloaded);
+        assert_eq!(engine.device(), "");
+        // A load that fails: loading, then failed.
+        assert!(engine.ensure_loaded(Path::new("no-such-model.bin"), "cpu").is_err());
+        assert_eq!(engine.load_state(), LoadState::Failed);
+        assert_eq!(changes.load(Ordering::SeqCst), 2);
+        assert!(!engine.loaded_once(), "nothing was loaded yet");
+        // A settings change drops the model (and the failure).
+        engine.invalidate();
+        assert_eq!(engine.load_state(), LoadState::Unloaded);
+        assert_eq!(changes.load(Ordering::SeqCst), 3);
+        engine.invalidate();
+        assert_eq!(changes.load(Ordering::SeqCst), 3, "nothing changed");
+        // Free GPU with nothing loaded: still unloaded, but freed is news.
+        engine.release();
+        assert_eq!(engine.load_state(), LoadState::Unloaded);
+        assert_eq!(changes.load(Ordering::SeqCst), 4);
+        engine.release();
+        assert_eq!(changes.load(Ordering::SeqCst), 4, "already let go of");
+        assert_eq!(serde_json::to_string(&LoadState::Loading).unwrap(), "\"loading\"");
+        assert_eq!(ActiveBackend::Cpu.device_name(), "CPU");
+        let card = GpuDevice { gpu_index: 0, api: GpuApi::Cuda, name: "NVIDIA GeForce RTX 5080".into(), integrated: false, memory_mib: 16_303 };
+        assert_eq!(ActiveBackend::Gpu(card).device_name(), "NVIDIA GeForce RTX 5080 (CUDA)");
     }
 
     #[test]

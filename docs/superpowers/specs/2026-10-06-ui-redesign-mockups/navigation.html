@@ -1,0 +1,136 @@
+<style>
+  .rf { background:#0b0b0d; color:#e9e9ee; border-radius:10px; display:flex; height:330px; font:12px/1.35 system-ui,sans-serif; overflow:hidden; border:1px solid #26262b; text-align:left; }
+  .rf-side { width:128px; background:#0e0e11; border-right:1px solid #1e1e23; padding:10px 8px; display:flex; flex-direction:column; gap:2px; flex:none; }
+  .rf-logo { font-weight:700; font-size:12px; padding:2px 6px 8px; display:flex; align-items:center; gap:6px; }
+  .rf-dot { width:7px; height:7px; border-radius:50%; background:#3ddc84; display:inline-block; }
+  .rf-item { padding:6px 8px; border-radius:6px; color:#a9a9b3; }
+  .rf-item.on { background:#1c1c22; color:#fff; box-shadow:inset 2px 0 0 #6b6ff5; }
+  .rf-sub { padding:4px 8px 4px 22px; color:#8a8a95; font-size:11px; }
+  .rf-sub.on { color:#fff; }
+  .rf-grp { font-size:9px; letter-spacing:.08em; text-transform:uppercase; color:#5f5f69; padding:8px 8px 2px; }
+  .rf-spacer { flex:1; }
+  .rf-main { flex:1; padding:14px 16px; overflow:hidden; }
+  .rf-h { font-size:15px; font-weight:650; margin-bottom:8px; }
+  .rf-tabs { display:flex; gap:12px; border-bottom:1px solid #24242a; margin-bottom:10px; font-size:11px; color:#8a8a95; }
+  .rf-tabs span { padding:0 0 6px; }
+  .rf-tabs .on { color:#fff; box-shadow:inset 0 -2px 0 #6b6ff5; }
+  .rf-card { background:#131317; border:1px solid #23232a; border-radius:8px; padding:8px 10px; margin-bottom:8px; }
+  .rf-row { display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-bottom:1px solid #1c1c22; }
+  .rf-row:last-child { border-bottom:0; }
+  .rf-key { font:11px ui-monospace,monospace; background:#1c1c22; border:1px solid #2c2c34; border-radius:5px; padding:1px 6px; color:#cfcfe0; }
+  .rf-ok { color:#3ddc84; } .rf-mute { color:#8a8a95; }
+  .rf-sw { width:26px; height:14px; border-radius:8px; background:#6b6ff5; position:relative; display:inline-block; }
+  .rf-sw::after { content:""; position:absolute; right:2px; top:2px; width:10px; height:10px; border-radius:50%; background:#fff; }
+  .rf-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+  .cards3 { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+  @media (max-width:1100px){ .cards3{ grid-template-columns:1fr; } }
+</style>
+
+<h2>How should the main navigation work?</h2>
+<p class="subtitle">Today: 10 flat tabs. All three options add a Home page and shrink the sidebar. Pick the one that feels clearest (you can also mix: tell me in the terminal).</p>
+
+<div class="cards cards3">
+
+  <div class="card" data-choice="A-tabs" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="rf">
+        <div class="rf-side">
+          <div class="rf-logo">rudariflow <span class="rf-dot"></span></div>
+          <div class="rf-item">Home</div>
+          <div class="rf-item on">Dictate</div>
+          <div class="rf-item">Files</div>
+          <div class="rf-item">Meetings</div>
+          <div class="rf-item">Soundboard</div>
+          <div class="rf-spacer"></div>
+          <div class="rf-item">Settings</div>
+        </div>
+        <div class="rf-main">
+          <div class="rf-h">Dictate</div>
+          <div class="rf-tabs"><span class="on">Hotkeys</span><span>Language &amp; model</span><span>AI cleanup</span><span>Dictionary</span><span>History</span></div>
+          <div class="rf-card">
+            <div class="rf-row"><span>Dictate</span><span class="rf-key">Mouse5</span></div>
+            <div class="rf-row"><span>Paste last</span><span class="rf-key">Alt+Shift+V</span></div>
+            <div class="rf-row"><span>Rewrite last</span><span class="rf-key">Mouse4</span></div>
+            <div class="rf-row"><span class="rf-mute">Advanced ▸</span><span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — 6 items, tabs inside "Dictate"</h3>
+      <p>Home · Dictate · Files · Meetings · Soundboard · Settings. Everything about dictation is under Dictate, as tabs along the top. Settings holds only app-wide things (language, autostart, GPU, models).</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="B-groups" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="rf">
+        <div class="rf-side">
+          <div class="rf-logo">rudariflow <span class="rf-dot"></span></div>
+          <div class="rf-item">Home</div>
+          <div class="rf-grp">Dictation</div>
+          <div class="rf-sub on">Hotkeys</div>
+          <div class="rf-sub">AI cleanup</div>
+          <div class="rf-sub">Dictionary</div>
+          <div class="rf-sub">History</div>
+          <div class="rf-grp">Tools</div>
+          <div class="rf-sub">Files</div>
+          <div class="rf-sub">Meetings</div>
+          <div class="rf-sub">Soundboard</div>
+          <div class="rf-spacer"></div>
+          <div class="rf-item">Settings</div>
+        </div>
+        <div class="rf-main">
+          <div class="rf-h">Hotkeys</div>
+          <div class="rf-card">
+            <div class="rf-row"><span>Dictate</span><span class="rf-key">Mouse5</span></div>
+            <div class="rf-row"><span>Paste last</span><span class="rf-key">Alt+Shift+V</span></div>
+            <div class="rf-row"><span>Rewrite last</span><span class="rf-key">Mouse4</span></div>
+            <div class="rf-row"><span class="rf-mute">Advanced ▸</span><span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — grouped sidebar, one level</h3>
+      <p>Everything stays one click away, but the sidebar has labelled groups (Dictation / Tools) and fewer entries (Replacements joins Dictionary, Engine + Recording move into Settings). No tabs inside pages.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="C-home-is-dictate" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="rf">
+        <div class="rf-side">
+          <div class="rf-logo">rudariflow <span class="rf-dot"></span></div>
+          <div class="rf-item on">Home</div>
+          <div class="rf-item">Files</div>
+          <div class="rf-item">Meetings</div>
+          <div class="rf-item">Soundboard</div>
+          <div class="rf-spacer"></div>
+          <div class="rf-item">Settings</div>
+        </div>
+        <div class="rf-main">
+          <div class="rf-h">Ready to dictate <span class="rf-ok" style="font-size:11px;font-weight:400">● Whisper · AI cleanup on</span></div>
+          <div class="rf-grid">
+            <div class="rf-card"><div class="rf-mute">Dictate</div><span class="rf-key">Mouse5</span></div>
+            <div class="rf-card"><div class="rf-mute">Paste last</div><span class="rf-key">Alt+Shift+V</span></div>
+            <div class="rf-card"><div class="rf-mute">Rewrite</div><span class="rf-key">Mouse4</span></div>
+          </div>
+          <div class="rf-card">
+            <div class="rf-row"><span>AI cleanup</span><span class="rf-sw"></span></div>
+            <div class="rf-row"><span>Language</span><span class="rf-mute">Auto ▾</span></div>
+          </div>
+          <div class="rf-card"><div class="rf-mute" style="margin-bottom:4px">Recent dictations</div>
+            <div class="rf-row"><span>Können wir das Meeting auf …</span><span class="rf-mute">2 min</span></div>
+            <div class="rf-row"><span>Please send me the updated …</span><span class="rf-mute">14 min</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — 5 items, Home <em>is</em> dictation</h3>
+      <p>Home · Files · Meetings · Soundboard · Settings. Home shows status, your hotkeys, the two or three switches you actually change, and recent dictations (with search). Dictionary, AI rules, models etc. live in Settings (with tabs + Advanced).</p>
+    </div>
+  </div>
+
+</div>

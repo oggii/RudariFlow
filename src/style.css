@@ -1,873 +1,60 @@
-:root {
-  --bg:             #09090b;
-  --sidebar-bg:     #0c0c0e;
-  --surface:        #131316;
-  --surface-hover:  #1a1a1f;
-  --surface-active: #1f1f26;
-  --text:           #ececef;
-  --text-secondary: #6e6e76;
-  --text-tertiary:  #3e3e44;
-  --accent:         #5e6ad2;
-  --accent-hover:   #6872db;
-  --accent-subtle:  rgba(94, 106, 210, 0.12);
-  --green:          #3ecf6e;
-  --red:            #e5484d;
-  --yellow:         #f5a623;
-  --border:         rgba(255, 255, 255, 0.06);
-  --border-strong:  rgba(255, 255, 255, 0.1);
-  --radius:         6px;
-  --radius-lg:      8px;
-  --font:           'IBM Plex Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --transition:     150ms ease;
-}
+/* RudariFlow's styles. The order matters: the tokens, the shared components,
+   the window, then the pages (which add layout to the components). */
+@import "./styles/tokens.css";
+@import "./styles/components.css";
+@import "./styles/shell.css";
+@import "./styles/home.css";
+@import "./styles/settings.css";
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-body {
-  font-family: var(--font);
-  background: var(--bg);
-  color: var(--text);
-  user-select: none;
-  -webkit-user-select: none;
-  font-size: 13px;
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  overflow: hidden;
-}
-
-/* ── App Shell ──────────────────────────────────────── */
-
-#app {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  width: 100vw;
-}
-
-#titlebar {
-  height: 38px;
-  width: 100%;
-  flex-shrink: 0;
-  background: var(--sidebar-bg);
-}
-
-#app-body {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-}
-
-/* ── Sidebar ────────────────────────────────────────── */
-
-#sidebar {
-  width: 220px;
-  min-width: 220px;
-  background: var(--sidebar-bg);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  padding: 16px 0;
-}
-
-.sidebar-header {
-  padding: 0 16px 16px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 8px;
-}
-
-.app-identity {
-  display: flex;
-  align-items: center;
-  margin-bottom: 14px;
-}
-
-.app-logo {
-  width: 100%;
-  max-width: 160px;
-  height: auto;
-  display: block;
-}
-
-#status-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--surface);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-}
-
-#status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--green);
-  flex-shrink: 0;
-  box-shadow: 0 0 6px rgba(62, 207, 110, 0.4);
-}
-
-#status-dot.ready {
-  background: var(--green);
-  box-shadow: 0 0 6px rgba(62, 207, 110, 0.4);
-}
-
-#status-dot.recording {
-  background: var(--red);
-  box-shadow: 0 0 6px rgba(229, 72, 77, 0.5);
-  animation: pulse 1s ease-in-out infinite;
-}
-
-#status-dot.transcribing {
-  background: var(--yellow);
-  box-shadow: 0 0 6px rgba(245, 166, 35, 0.4);
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-
-#status-text {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-/* ── Navigation ─────────────────────────────────────── */
-
-#sidebar-nav {
-  flex: 1;
-  padding: 4px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-radius: var(--radius);
-  color: var(--text-secondary);
-  text-decoration: none;
-  font-size: 13px;
-  font-weight: 400;
-  cursor: pointer;
-  transition: all var(--transition);
-  position: relative;
-}
-
-.nav-item:hover {
-  color: var(--text);
-  background: var(--surface-hover);
-}
-
-.nav-item.active {
-  color: var(--text);
-  background: var(--surface-active);
-  font-weight: 500;
-}
-
-.nav-item.active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 2px;
-  height: 16px;
-  background: var(--accent);
-  border-radius: 1px;
-}
-
-.nav-icon {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  opacity: 0.6;
-}
-
-.nav-item.active .nav-icon {
-  opacity: 1;
-}
-
-/* ── Sidebar Footer ─────────────────────────────────── */
-
-.sidebar-footer {
-  padding: 12px 16px 14px;
-  border-top: 1px solid var(--border);
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.version-text {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  font-weight: 400;
-}
-
-.credit-text {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  font-weight: 400;
-  letter-spacing: 0.02em;
-  opacity: 0.7;
-  text-decoration: none;
-  cursor: pointer;
-  transition: opacity 120ms ease, color 120ms ease;
-}
-.credit-text:hover {
-  opacity: 1;
-  color: var(--accent, #6c8cff);
-}
-
-input[type="range"] {
-  width: 160px;
-  accent-color: var(--accent, #6c8cff);
-}
-
-.switch {
-  position: relative;
-  display: inline-block;
-  width: 40px;
-  height: 22px;
-}
-.switch input {
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-.switch-slider {
-  position: absolute;
-  cursor: pointer;
-  inset: 0;
-  background: rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
-  transition: background 160ms ease;
-}
-.switch-slider::before {
-  content: "";
-  position: absolute;
-  height: 16px;
-  width: 16px;
-  left: 3px;
-  top: 3px;
-  background: #fff;
-  border-radius: 50%;
-  transition: transform 160ms ease;
-}
-.switch input:checked + .switch-slider {
-  background: var(--accent, #6c8cff);
-}
-.switch input:checked + .switch-slider::before {
-  transform: translateX(18px);
-}
-
-/* ── Content Area ───────────────────────────────────── */
-
-#content {
-  flex: 1;
-  overflow-y: auto;
-  background: var(--bg);
-}
-
-.content-section {
-  display: none;
-  max-width: 680px;
-  margin: 0 auto;
-  padding: 32px 40px;
-  animation: fadeIn 200ms ease;
-}
-
-.content-section.active {
-  display: block;
-}
-
-/* The Files tab uses the whole window: the transcript takes the height. */
-#section-files {
-  max-width: none;
-}
-
-/* The Soundboard may grow wide (two columns, see "Soundboard layout"). */
-#section-soundboard {
-  max-width: none;
-  container: sbmain / inline-size;
-}
+/* The Soundboard's sounds are tiles that fill the page's width (see
+   "Soundboard layout"). */
 #section-soundboard .sb-layout {
-  max-width: 680px;
-  margin: 0 auto;
+  margin: 0;
 }
 
+/* ── Files ──────────────────────────────────────────── */
+
+/* The page has the window's width and its height (the layout system:
+   styles/shell.css). What to set comes before where to drop: the options
+   first, then the drop zone. Without a file the zone takes the height that
+   is free: a target as large as the window allows, its prompt in the
+   middle. (The options stood under it, at the window's bottom: 880 px from
+   "Choose file…" at 1920×1080.) With a file the zone is one line and the
+   transcript has the height.
+
+   One column, under 1250 px beside the sidebar: the options, the zone, the
+   file's line, "Summarise with AI" and the summary it writes, then the
+   transcript under its toolbar and its speakers.
+
+   Two columns from there (class "roomy", set by shell.ts), once a file is
+   loaded: the side column at the left holds the file and what is done with
+   it (the options, the zone's line, the file's line with its progress,
+   "Summarise with AI" and the summary); the transcript stands at the right
+   under its toolbar, in a frame that runs to the window's right edge and
+   down to its bottom, and its text fills the frame. It is the shape of an
+   open meeting (notes at the left, transcript at the right), with the same
+   side column (--side-col) and the same gutter. Nothing is moved in the
+   page for it: the page's order is the side column from top to bottom and
+   then the transcript's, and so is Tab's. */
 #section-files.active {
   display: flex;
   flex-direction: column;
   min-height: 100%;
 }
 
-#section-files .file-result:not(.hidden) {
-  flex: 1;
+.file-drop {
+  flex: 1 0 auto;
   display: flex;
   flex-direction: column;
-  min-height: 0;
-}
-
-#section-files .file-text {
-  flex: 1;
-  min-height: 260px;
-  resize: none;
-}
-
-.file-summary.collapsed .file-summary-text {
-  display: none;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.section-header {
-  margin-bottom: 28px;
-}
-
-.section-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text);
-  letter-spacing: -0.02em;
-  margin-bottom: 4px;
-}
-
-.section-desc {
-  font-size: 13px;
-  color: var(--text-secondary);
-  font-weight: 400;
-}
-
-/* ── Settings List ──────────────────────────────────── */
-
-.settings-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.setting-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 32px;
-  padding: 16px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.setting-row:first-child {
-  padding-top: 0;
-}
-
-.setting-row:last-child {
-  border-bottom: none;
-}
-
-.setting-label {
-  flex: 0 1 auto;
-  min-width: 200px;
-}
-
-.label-text {
-  display: block;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text);
-  margin-bottom: 2px;
-}
-
-.label-hint {
-  display: block;
-  font-size: 12px;
-  color: var(--text-secondary);
-  line-height: 1.4;
-}
-
-.setting-control {
-  flex: 1;
-  display: flex;
-  justify-content: flex-end;
-  /* Controls keep their natural width; the label's hint wraps instead. */
-  min-width: min-content;
-}
-
-.setting-control > select {
-  width: auto;
-  min-width: 200px;
-}
-
-/* ── Form Controls ──────────────────────────────────── */
-
-select,
-input[type="password"],
-input[type="text"] {
-  width: 100%;
-  max-width: 280px;
-  padding: 7px 12px;
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  font-family: var(--font);
-  font-size: 13px;
-  outline: none;
-  transition: border-color var(--transition);
-  appearance: none;
-  -webkit-appearance: none;
-}
-
-select {
-  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236e6e76' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  padding-right: 32px;
-  cursor: pointer;
-}
-
-select:focus,
-input[type="password"]:focus,
-input[type="text"]:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-subtle);
-}
-
-input[type="password"]::placeholder,
-input[type="text"]::placeholder,
-textarea::placeholder {
-  color: var(--text-secondary);
-  opacity: 0.6;
-}
-
-/* ── Toggle Group ───────────────────────────────────── */
-
-.toggle-group {
-  display: inline-flex;
-  gap: 2px;
-  background: var(--surface);
-  border-radius: var(--radius);
-  padding: 2px;
-  border: 1px solid var(--border);
-}
-
-.toggle-btn {
-  padding: 6px 14px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-family: var(--font);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all var(--transition);
-  white-space: nowrap;
-}
-
-.toggle-btn:hover {
-  color: var(--text);
-}
-
-.toggle-btn.active {
-  background: var(--accent);
-  color: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-}
-
-/* ── Buttons ────────────────────────────────────────── */
-
-.btn-primary {
-  padding: 7px 16px;
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  border-radius: var(--radius);
-  font-family: var(--font);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all var(--transition);
-  white-space: nowrap;
-}
-
-.btn-primary:hover {
-  background: var(--accent-hover);
-}
-
-.btn-primary:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* ── Model Row ──────────────────────────────────────── */
-
-.model-row {
-  display: flex;
-  gap: 8px;
-  width: 100%;
-  max-width: 280px;
-}
-
-.model-row select {
-  flex: 1;
-  max-width: none;
-}
-
-/* ── Progress Bar ───────────────────────────────────── */
-
-#download-progress {
-  padding: 0 0 16px;
-  border-bottom: 1px solid var(--border);
-}
-
-#progress-bar {
-  height: 3px;
-  background: var(--surface);
-  border-radius: 2px;
-  overflow: hidden;
-  margin-top: 8px;
-}
-
-#progress-fill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 2px;
-  transition: width 0.3s ease;
-  width: 0%;
-}
-
-/* ── Kbd ────────────────────────────────────────────── */
-
-kbd {
-  display: inline-block;
-  padding: 5px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 12px;
-  color: var(--text-secondary);
-  letter-spacing: 0.02em;
-}
-
-/* ── Hotkey button ──────────────────────────────────── */
-
-.hotkey-btn {
-  background: transparent;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  font: inherit;
-  color: inherit;
-}
-.hotkey-btn:focus { outline: none; }
-.hotkey-btn:hover kbd {
-  border-color: var(--accent, #6c8cff);
-}
-.hotkey-btn.capturing kbd {
-  border-color: var(--accent, #6c8cff);
-  background: rgba(108, 140, 255, 0.12);
-  color: var(--text-primary, #fff);
-}
-
-/* ── Utility ────────────────────────────────────────── */
-
-.hidden {
-  display: none !important;
-}
-
-/* ── Scrollbar ──────────────────────────────────────── */
-
-#content::-webkit-scrollbar {
-  width: 6px;
-}
-
-#content::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-#content::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: 3px;
-}
-
-#content::-webkit-scrollbar-thumb:hover {
-  background: var(--text-tertiary);
-}
-
-/* ── Selection ──────────────────────────────────────── */
-
-::selection {
-  background: var(--accent-subtle);
-  color: var(--text);
-}
-
-/* ── Small buttons ──────────────────────────────────── */
-
-.btn-secondary {
-  padding: 7px 14px;
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  font-family: var(--font);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background var(--transition), border-color var(--transition), color var(--transition);
-  white-space: nowrap;
-}
-.btn-secondary:hover {
-  background: var(--surface-hover);
-}
-.btn-secondary.armed {
-  background: var(--red);
-  border-color: var(--red);
-  color: #fff;
-}
-
-.btn-ghost {
-  padding: 3px 8px;
-  background: transparent;
-  color: var(--text-secondary);
-  border: none;
-  border-radius: 4px;
-  font-family: var(--font);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background var(--transition), color var(--transition);
-  white-space: nowrap;
-}
-.btn-ghost:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--surface-hover);
-}
-.btn-ghost:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-
-.icon-btn {
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: transparent;
-  color: var(--text-secondary);
-  border: none;
-  border-radius: var(--radius);
-  cursor: pointer;
-  transition: background var(--transition), color var(--transition);
-}
-.icon-btn svg {
-  width: 11px;
-  height: 11px;
-}
-.icon-btn:hover {
-  color: var(--text);
-  background: var(--surface-hover);
-}
-
-.btn-secondary:focus-visible,
-.btn-ghost:focus-visible,
-.icon-btn:focus-visible,
-.hotkey-btn:focus-visible kbd {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.hotkey-control {
-  align-items: center;
-  gap: 4px;
-}
-
-.empty-state {
-  font-size: 13px;
-  color: var(--text-secondary);
-  padding: 4px 0 16px;
-}
-
-/* ── Unused models (Engine tab) ─────────────────────── */
-
-.unused-model-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-bottom: 16px;
-}
-.unused-model-list:empty {
-  display: none;
-}
-
-.unused-model-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 10px 14px;
-}
-
-.unused-model-info {
-  min-width: 0;
-}
-
-.unused-model-name {
-  display: block;
-  font-size: 13px;
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-
-.unused-model-error {
-  color: var(--red);
-}
-
-/* ── Replacements ───────────────────────────────────── */
-
-.replacement-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.replacement-list:empty {
-  display: none;
-}
-
-.replacement-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.6fr) auto;
-  align-items: start;
-  gap: 8px;
-}
-
-.replacement-row input[type="text"] {
-  max-width: none;
-}
-
-.replacement-arrow {
-  color: var(--text-secondary);
-  padding-top: 7px;
-}
-
-.replacement-to {
-  width: 100%;
-  min-height: 33px;
-  field-sizing: content;
-  resize: none;
-  overflow: hidden;
-  font: inherit;
-  line-height: 1.4;
-  padding: 7px 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  color: var(--text);
-  outline: none;
-  transition: border-color var(--transition);
-}
-.replacement-to:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-subtle);
-}
-
-.replacement-row .icon-btn {
-  margin-top: 3px;
-}
-
-/* ── History ────────────────────────────────────────── */
-
-.history-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin: 8px 0 12px;
-  min-height: 31px;
-}
-
-.history-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-bottom: 24px;
-}
-
-.history-item {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 12px 14px 8px;
-}
-
-.history-text {
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  user-select: text;
-  -webkit-user-select: text;
-  cursor: text;
-}
-
-.history-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 8px;
-}
-
-.history-meta {
-  font-size: 11px;
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.history-actions {
-  display: flex;
-  gap: 2px;
-  margin-right: -6px;
-}
-
-/* ── Files ──────────────────────────────────────────── */
-
-.file-drop {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
   gap: 6px;
   padding: 22px 16px 18px;
-  margin-bottom: 16px;
+  margin-bottom: var(--s4);
   border: 1px dashed var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
   text-align: center;
-  transition: border-color 0.15s ease, background 0.15s ease;
 }
 .file-drop.dragging {
   border-color: var(--accent);
@@ -877,16 +64,177 @@ kbd {
   color: var(--text-secondary);
 }
 .file-drop-title {
-  font-size: 13px;
+  font-size: var(--fs);
   font-weight: 600;
   color: var(--text);
 }
 .file-drop .btn-secondary {
   margin-top: 6px;
 }
+/* Without a file the zone ends the page. */
+#section-files:not(.has-file) .file-drop {
+  margin-bottom: 0;
+}
+
+/* The options over the zone. With room for two columns and no file yet,
+   the two settings stand side by side, each in its half of the card: their
+   texts start where the texts of two cards side by side would. */
+#section-files.roomy:not(.has-file) .files-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: calc(var(--gutter) + 2 * var(--s4));
+}
+#section-files.roomy:not(.has-file) .files-options > .setting-row {
+  border-bottom: none;
+}
+/* "More" belongs to the options' short form (below). */
+#section-files:not(.has-file) .files-options > .hint-more {
+  display: none;
+}
+
+/* A file is loaded: the zone is one line, so the transcript starts on the
+   first screen. */
+#section-files.has-file .file-drop {
+  flex: none;
+  flex-direction: row;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  margin-bottom: var(--s3);
+}
+#section-files.has-file .file-drop .label-hint,
+#section-files.has-file .section-desc {
+  display: none;
+}
+#section-files.has-file .file-drop .btn-secondary {
+  margin-top: 0;
+}
+#section-files.has-file .section-header {
+  margin-bottom: var(--s3);
+}
+#section-files.has-file .files-options {
+  margin-bottom: var(--s3);
+}
+
+/* And the options are their short form: the two choices side by side, each
+   under its name, without their hints. "More" at the end opens the card as
+   it is without a file (the hints under the names, a choice per row), and
+   so does the speakers' line while it has something to say that is no hint:
+   its model downloads, or could not be downloaded (data-state, set by
+   src/files.ts). */
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s2) var(--s3);
+  padding-top: var(--s2);
+  padding-bottom: var(--s3);
+}
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) > .setting-row {
+  flex: 2 1 120px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0;
+  border-bottom: none;
+}
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) .label-hint {
+  display: none;
+}
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) .setting-label {
+  flex: none;
+}
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) .label-text {
+  font-size: var(--fs-s);
+  color: var(--text-2);
+}
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) .setting-control {
+  max-width: none;
+}
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) select {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) > .setting-row:first-child {
+  flex: 3 1 190px;
+}
+/* "More" stands on the selects' middle line; opened, it is the card's last line. */
+.files-options > .hint-more {
+  align-self: flex-end;
+  margin: 0 0 5px;
+}
+#section-files.has-file .files-options:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"]) > .hint-more {
+  display: inline-block;
+  margin: var(--s1) 0 var(--s2) -2px;
+}
+#section-files.has-file .files-options:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"]) > .setting-row:last-of-type {
+  border-bottom: 1px solid var(--line);
+}
+/* Opened in the side column, a choice stands under its name and hint: the
+   column is too narrow for both side by side. */
+#section-files.roomy.has-file .files-options > .setting-row {
+  flex-direction: column;
+  align-items: stretch;
+}
+#section-files.roomy.has-file .files-options .setting-control {
+  max-width: none;
+  justify-content: flex-start;
+}
+
+/* Two columns (see the head of this part): the parts of the side column
+   one under the other at the left, the result beside all of them. Its
+   toolbar is as high as the options' line and its buttons stand on the
+   selects' level: both columns start with a line of one height, and the
+   transcript's frame starts where the zone's line does. */
+#section-files.roomy.has-file.active {
+  display: grid;
+  grid-template-columns: var(--side-col) minmax(0, 1fr);
+  grid-template-rows: repeat(6, auto) minmax(0, 1fr);
+  column-gap: var(--gutter);
+}
+#section-files.roomy.has-file > .section-header {
+  grid-area: 1 / 1 / 2 / -1;
+}
+#section-files.roomy.has-file > .file-drop {
+  grid-area: 3 / 1;
+}
+/* The zone's line in the side column: its words and its button, without the mark. */
+#section-files.roomy.has-file .file-drop-icon {
+  display: none;
+}
+#section-files.roomy.has-file > .files-options {
+  grid-area: 2 / 1;
+}
+#section-files.roomy.has-file > .file-job {
+  grid-area: 4 / 1;
+}
+#section-files.roomy.has-file > .file-summarize {
+  grid-area: 5 / 1;
+  justify-self: start;
+}
+#section-files.roomy.has-file > .file-summary {
+  grid-area: 6 / 1;
+  align-self: start;
+  margin-bottom: 0;
+}
+#section-files.roomy.has-file > .file-result {
+  grid-area: 2 / 2 / -1 / 3;
+}
+/* The options' line beside it: a name's line, the selects' level (where the
+   toolbar's own controls stand), the card's padding. */
+#section-files.roomy.has-file .file-toolbar {
+  min-height: calc(var(--s2) + var(--fs-s) * 1.45 + 2px + 34px + var(--s3));
+  padding: calc(var(--s2) + var(--fs-s) * 1.45 + 2px) 0 var(--s3);
+  margin-bottom: var(--s3);
+}
 
 .files-options {
-  margin-bottom: 16px;
+  margin-bottom: var(--s4);
+}
+
+.file-summary.collapsed .file-summary-text {
+  display: none;
 }
 
 .file-job {
@@ -903,7 +251,7 @@ kbd {
   min-height: 28px;
 }
 .file-name {
-  font-size: 13px;
+  font-size: var(--fs);
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -921,11 +269,15 @@ kbd {
 .file-status[data-tone="ok"] { color: var(--green); }
 .file-status[data-tone="error"] { color: var(--red); }
 
+/* The result: the transcript under its toolbar and its speakers, and it
+   takes the height that is left. The lines' distances are margins: a gap
+   would also stand around a line that is not there. */
 .file-result {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding-bottom: 24px;
+  min-width: 0;
+  min-height: 0;
 }
 .file-toolbar {
   display: flex;
@@ -933,10 +285,21 @@ kbd {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+/* "Summarise with AI" heads the summary it writes: under the file's line,
+   before the transcript. There while there is a transcript to summarise. */
+.file-summarize {
+  align-self: flex-start;
+  margin-bottom: var(--s3);
+}
+#section-files:not(:has(> .file-result:not(.hidden))) > .file-summarize {
+  display: none;
 }
 .file-times {
   display: inline-flex;
   align-items: center;
+  min-height: 24px;
   gap: 6px;
   font-size: 12px;
   color: var(--text-secondary);
@@ -980,13 +343,16 @@ kbd {
 .export-list button:focus-visible {
   background: var(--bg);
 }
+/* The frame has its column's width and the text fills it: the same padding
+   left and right, and a line ends at the frame's inner edge. */
 .file-text {
+  flex: 1 1 auto;
   width: 100%;
-  min-height: 220px;
-  resize: vertical;
+  min-height: 260px;
+  resize: none;
   padding: 12px 14px;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs);
   line-height: 1.55;
   color: var(--text);
   background: var(--surface);
@@ -995,25 +361,29 @@ kbd {
   user-select: text;
   -webkit-user-select: text;
 }
+/* A card like every card: the surface, no edge (an accent outline read as
+   the keyboard focus). */
 .file-summary {
-  background: var(--surface);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-lg);
+  margin-bottom: var(--s3);
   padding: 10px 14px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
 }
 .file-summary-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--s1);
   margin-bottom: 4px;
 }
+/* The title left, Hide and Copy together at the right. */
 .file-summary-title {
+  margin-right: auto;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
 }
 .file-summary-text {
-  font-size: 13px;
+  font-size: var(--fs);
   line-height: 1.55;
   color: var(--text);
   white-space: pre-wrap;
@@ -1022,144 +392,44 @@ kbd {
   -webkit-user-select: text;
 }
 .file-summary-text[data-tone="error"] { color: var(--red); }
+/* In one column the summary stands over the transcript: it shows its first
+   five lines (two in a window lower than 700 px), so the transcript's first
+   lines are still on the first screen (at 900×600 the transcript began
+   below the window with a summary open). "More" under it opens the rest in
+   place and "Less" closes it again; it is there only while the summary is
+   longer than that (src/rows.ts). "Copy" copies the whole summary either
+   way. Beside the transcript (two columns) the summary is shown whole. */
+#section-files:not(.roomy) .file-summary:not(.collapsed, :has(> .hint-more[aria-expanded="true"])) .file-summary-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  overflow: hidden;
+}
+@media (max-height: 699px) {
+  #section-files:not(.roomy) .file-summary:not(.collapsed, :has(> .hint-more[aria-expanded="true"])) .file-summary-text {
+    -webkit-line-clamp: 2;
+  }
+}
+.file-summary > .hint-more {
+  margin: 0 0 -4px -2px;
+}
+#section-files.roomy .file-summary > .hint-more,
+.file-summary.collapsed > .hint-more {
+  display: none;
+}
 
 /* ── AI cleanup ─────────────────────────────────────── */
-
-.subsection-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-  margin: 28px 0 4px;
-}
-
-.subsection-desc {
-  font-size: 12px;
-  color: var(--text-secondary);
-  line-height: 1.45;
-  margin-bottom: 12px;
-  max-width: 560px;
-}
 
 .ai-status[data-tone="ok"] { color: var(--green); }
 .ai-status[data-tone="warn"] { color: var(--yellow); }
 .ai-status[data-tone="error"] { color: var(--red); }
 
-.link-btn {
-  background: none;
-  border: none;
-  padding: 0;
-  font: inherit;
-  color: var(--accent);
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.ai-model-row {
-  max-width: 440px;
-}
-
-.download-progress {
-  padding: 0 0 16px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.progress-track {
-  height: 3px;
-  background: var(--surface);
-  border-radius: 2px;
-  overflow: hidden;
-  margin-top: 8px;
-}
-
-.progress-fill {
-  height: 100%;
-  width: 0%;
-  background: var(--accent);
-  border-radius: 2px;
-  transition: width 0.3s ease;
-}
-
-.field-textarea {
-  width: 100%;
-  min-height: 56px;
-  resize: vertical;
-  font: inherit;
-  line-height: 1.45;
-  padding: 8px 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  color: var(--text);
-  outline: none;
-  transition: border-color var(--transition);
-}
-.field-textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-subtle);
-}
-
-.rule-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.rule-list:empty {
-  display: none;
-}
-
-.rule-row {
-  display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 2fr) auto auto auto;
-  align-items: start;
-  gap: 8px;
-}
-
-.rule-row input[type="text"] {
-  max-width: none;
-}
-
-.rule-instructions {
-  width: 100%;
-  min-height: 33px;
-  field-sizing: content;
-  resize: none;
-  overflow: hidden;
-  font: inherit;
-  line-height: 1.4;
-  padding: 7px 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  color: var(--text);
-  outline: none;
-  transition: border-color var(--transition), opacity var(--transition);
-}
-.rule-instructions:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-subtle);
-}
-.rule-instructions:disabled {
-  opacity: 0.4;
-}
-
-.pc-check-result {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 0 0 12px;
-}
 .pc-check-result pre {
   width: 100%;
   margin: 0;
   padding: 10px 12px;
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  font-size: 11px;
+  font-family: var(--mono);
+  font-size: var(--fs-s);
   line-height: 1.5;
   white-space: pre-wrap;
   color: var(--text-secondary);
@@ -1168,34 +438,11 @@ kbd {
   border-radius: var(--radius);
 }
 
-.rule-language {
-  width: 132px;
-  height: 33px;
-}
-
-.rule-off {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 33px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.rule-off input {
-  accent-color: var(--accent);
-}
-
-.rule-row .icon-btn {
-  margin-top: 3px;
-}
-
 .ai-test {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding-bottom: 32px;
+  padding-bottom: var(--s3);
 }
 
 .ai-test-controls {
@@ -1225,114 +472,7 @@ kbd {
 #ai-test-meta[data-tone="warn"] { color: var(--yellow); }
 #ai-test-meta[data-tone="error"] { color: var(--red); }
 
-/* ── Dictionary ─────────────────────────────────────── */
-
-#dict-count {
-  opacity: 0.75;
-}
-
-.dict-options {
-  margin-bottom: 16px;
-}
-
-.dict-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-}
-
-.dict-add {
-  display: flex;
-  gap: 8px;
-  padding: 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.dict-add input[type="text"] {
-  flex: 1;
-  max-width: none;
-  background: var(--bg);
-}
-
-.dict-add-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.dict-add-btn svg {
-  width: 11px;
-  height: 11px;
-}
-
-.dict-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 8px 12px 8px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.dict-row:last-child {
-  border-bottom: none;
-}
-.dict-row:hover {
-  background: var(--surface-hover);
-}
-
-.dict-term {
-  font-size: 13px;
-  color: var(--text);
-  overflow-wrap: anywhere;
-  user-select: text;
-  -webkit-user-select: text;
-}
-
-.dict-empty {
-  padding: 16px;
-}
-
-.dict-suggest {
-  margin-bottom: 12px;
-  border-color: var(--accent);
-}
-.dict-suggest-title {
-  margin: 0;
-  padding: 10px 16px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  border-bottom: 1px solid var(--border);
-}
-.dict-suggest-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.dict-suggest-actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.dict-io {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 12px;
-}
-#dict-io-status[data-tone="error"] {
-  color: var(--red);
-}
-
-.dict-tip {
-  margin: 10px 0 0;
-}
-
-.dict-long {
-  color: var(--yellow);
-}
+/* ── Write in: its warnings ── */
 
 .ai-output-warn {
   color: var(--yellow);
@@ -1345,7 +485,7 @@ kbd {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .file-speaker-chips {
@@ -1375,7 +515,6 @@ kbd {
 
 .speaker-chip-input {
   width: 140px;
-  outline: none;
   border-color: var(--accent);
   user-select: text;
   -webkit-user-select: text;
@@ -1402,51 +541,59 @@ kbd {
   min-width: 0;
 }
 
-/* Soundboard layout: with room (main content area >= 900 px) the settings sit
-   in a left column and the sound library in a wide right column. The page
-   scrolls as one; the pop-out and narrow windows keep one column. */
-@container sbmain (min-width: 900px) {
-  #section-soundboard .sb-layout {
-    max-width: 1800px;
-    display: grid;
-    grid-template-columns: minmax(360px, 460px) minmax(0, 1fr);
-    grid-template-rows: auto 1fr;
-    column-gap: 40px;
-    align-items: start;
-  }
-  #section-soundboard .section-header {
-    grid-column: 1;
-    grid-row: 1;
-  }
-  /* The board root dissolves so its two groups are grid items. */
-  #section-soundboard #sb-root {
-    display: contents;
-  }
-  #section-soundboard .sb-col-settings {
-    grid-column: 1;
-    grid-row: 2;
-  }
-  #section-soundboard .sb-col-library,
-  #section-soundboard #sb-root > .sb-popped {
-    grid-column: 2;
-    grid-row: 1 / span 2;
-  }
-  /* The narrower settings column: long hints wrap instead of running under the controls. */
-  #section-soundboard .sb-col-settings .setting-row {
-    gap: 16px;
-  }
-  #section-soundboard .sb-col-settings .setting-label {
-    min-width: 0;
-  }
-  #section-soundboard .sb-col-settings .setting-control {
-    flex: 0 0 auto;
-  }
-  /* Drop target outline moves to the whole layout (the root has no box). */
-  #section-soundboard .sb-layout:has(.sb.dragging) {
-    outline: 1px dashed var(--accent);
-    outline-offset: 6px;
-    border-radius: var(--radius-lg);
-  }
+/* The sounds first: a bar, then the settings panel (if it is open) and the
+   library. In a wide window (class "wide", set by board.ts) the open panel
+   is the left column. */
+.sb-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+/* The switch with its text asks for 420 px: where the bar has less beside
+   the three buttons (the smallest window, the pop-out), the buttons go under
+   it in both languages, and the text keeps the bar's width instead of a
+   column of 220 px. */
+.sb-bar-mic {
+  flex: 1 1 420px;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-width: 0;
+}
+.sb-bar-text {
+  min-width: 0;
+}
+.sb-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+/* "Soundboard settings" while its panel is open: the look of a chosen chip. */
+.sb-bar-actions [aria-expanded="true"] {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+.sb-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+/* One gutter between two columns, as on every page (--gutter, tokens.css). */
+.sb.wide.panel-open .sb-body {
+  display: grid;
+  grid-template-columns: minmax(340px, 420px) minmax(0, 1fr);
+  column-gap: var(--gutter);
+  align-items: start;
+}
+.sb-col-settings {
+  padding: var(--s3) var(--s4);
+  border-radius: var(--radius-card);
+  background: var(--surface);
 }
 .sb-control {
   align-items: center;
@@ -1454,9 +601,25 @@ kbd {
   min-width: 0;
   gap: 8px;
 }
-.sb-control > .switch,
-.sb-control > .hotkey-control {
+.sb-control > .switch {
   flex-shrink: 0;
+}
+/* A key box of the board with its x and, where another program has the key,
+   the note after it: one line that may shrink. What the box says then breaks
+   inside the box, and the note wraps beside it. */
+.sb-hotkey {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+}
+.sb-hotkey > .hotkey-btn {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.sb-hotkey > .sb-note {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: var(--s1);
 }
 .sb-status {
   margin-top: 6px;
@@ -1486,15 +649,17 @@ kbd {
   padding: 10px 14px;
 }
 .sb-devices > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  list-style: none;
+  min-height: 24px;
+  /* The shape of its focus ring. */
+  border-radius: var(--radius-s);
   cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: var(--fs);
+  font-weight: 400;
   color: var(--text);
-}
-.sb-devices > summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 4px;
 }
 .sb-devices[open] > summary {
   margin-bottom: 14px;
@@ -1532,9 +697,17 @@ kbd {
   border-color: var(--accent);
   background: var(--accent-subtle);
 }
-.sb-chip:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+/* The board's fields that rename in place (a category's chip, a sound's
+   name) have the size of what they replace. They are text fields by their
+   type, and a form's text field (components.css) is 34 px high and as wide
+   as its line: the chips' bar and a sound's tile grew while one was open. */
+.sb .speaker-chip-input {
+  width: 140px;
+  max-width: 100%;
+  min-height: 0;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
 }
 .sb-notice {
   font-size: 12px;
@@ -1543,20 +716,46 @@ kbd {
 }
 .sb-notice[data-tone="ok"] { color: var(--green); }
 .sb-notice[data-tone="error"] { color: var(--red); }
-.sb-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-bottom: 24px;
+/* Some sounds were added and some were not: what worked keeps its colour,
+   only the failures are red. */
+.sb-notice-ok {
+  color: var(--green);
 }
+/* The sounds are tiles that fill the library's width: one column in a narrow
+   window and in the pop-out, more with room (two beside the open panel at
+   1600 px of window, four at 2560 px). A narrower library has fewer columns
+   and is the higher one, so a scrollbar never takes a column back and forth.
+   The tiles of a row share its height: one that says "File missing", or whose
+   second line wrapped, is not higher than its neighbours. They share its
+   three lines too (each tile takes three rows of the list and passes them on
+   to its parts: `subgrid`): the first line, the controls, and the note of a
+   key another program has. So the controls of a row's tiles stand on one
+   level whatever one of them says above or below its own. The space between
+   two rows of tiles is each tile's own margin: a gap of the list would also
+   stand between a tile's three lines. */
+.sb-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr));
+  gap: 0 var(--s2);
+  padding-bottom: var(--s4);
+}
+.sb-list > .empty-state {
+  grid-column: 1 / -1;
+}
+/* A tile's first line stands at its top and its controls at the bottom of
+   their line, also in a tile that is higher than its own content. */
 .sb-row {
+  grid-row: span 3;
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr) auto;
+  grid-template-rows: subgrid;
   grid-template-areas:
     "play main side"
-    ". controls controls";
-  align-items: center;
-  gap: 6px 12px;
+    "controls controls controls"
+    "note note note";
+  align-items: start;
+  gap: 0 12px;
+  margin-bottom: var(--s2);
   padding: 10px 12px;
   border: 1px solid transparent;
   border-radius: var(--radius-lg);
@@ -1601,23 +800,36 @@ kbd {
 .sb-name {
   align-self: flex-start;
   max-width: 100%;
+  /* 24 px to hit, also for a name of two or three letters. */
+  min-width: 24px;
+  min-height: 24px;
   padding: 0;
   border: none;
+  /* The shape of its focus ring. */
+  border-radius: var(--radius-s);
   background: none;
   color: var(--text);
   font: inherit;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: var(--fs);
+  font-weight: 400;
   text-align: left;
   cursor: text;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sb-play:focus-visible,
-.sb-name:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+/* A sound's name while it is renamed: the name's own box (24 px, the name's
+   type, its text where the name's stood), so the tile keeps its height. */
+.sb-main > .speaker-chip-input {
+  align-self: flex-start;
+  width: 100%;
+  max-width: 320px;
+  height: 24px;
+  margin-left: -7px;
+  padding: 0 6px;
+  border-radius: var(--radius-s);
+  font-size: var(--fs);
+  font-weight: 400;
 }
 .sb-progress {
   height: 3px;
@@ -1638,6 +850,8 @@ kbd {
   grid-area: side;
   display: flex;
   align-items: center;
+  /* As high as the play button: both stand on one middle line. */
+  min-height: 32px;
   gap: 6px;
 }
 /* Loop on: the accent, also on a playing row's tinted background. */
@@ -1651,32 +865,65 @@ kbd {
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
-.sb-delete.armed {
-  color: var(--red);
-}
+/* A tile's second line: category, hotkey, volume. The first two have the
+   same width in every tile (a tile is 440 px or more) and the volume ends at
+   the tile's right edge like the first line, so the controls of the tiles
+   stand under each other. What does not fit goes to a line of its own inside
+   the tile and never leaves it: the volume while the key box asks for its
+   key or says why not and beside a combination of four keys; in
+   the pop-out, whose tile is narrower than the three together, always. */
 .sb-controls {
   grid-area: controls;
+  align-self: end;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: var(--s2) 10px;
+  min-width: 0;
+  margin-top: var(--s2);
+}
+/* "Taken by another program" has the tile's third line, under the key box
+   it is about (past the category and the gap after it), so the three
+   controls stay on one line. */
+.sb-row > .sb-note {
+  grid-area: note;
+  margin-top: var(--s1);
+  padding-left: 150px;
 }
 .sb-controls select {
-  width: auto;
-  min-width: 140px;
+  flex: 0 0 140px;
+  width: 140px;
+  min-width: 0;
   padding-top: 4px;
   padding-bottom: 4px;
   font-size: 12px;
 }
+.sb-controls .sb-hotkey {
+  min-width: 140px;
+}
+/* The volume gives way before it goes to a line of its own: down to 80 px
+   with its number, which is what a tile of 450 px has left beside a
+   combination of three keys. So the tiles of a row keep one height in the
+   common case; only a combination of four keys still takes the second line. */
+.sb-controls .sb-slider {
+  flex: 1 1 80px;
+  display: flex;
+  justify-content: flex-end;
+  min-width: 80px;
+}
 .sb-controls .sb-slider input[type="range"] {
-  width: 110px;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 24px;
+  max-width: 160px;
 }
 .sb-note {
-  font-size: 11px;
+  font-size: var(--fs-s);
   color: var(--yellow);
 }
-/* A sound's hotkey while the sound hotkeys are switched off. */
-.sb-hotkey.off .hotkey-btn:not(.capturing) kbd {
+/* A sound's hotkey while the sound hotkeys are switched off. ("Not set" is
+   in its quiet words already: dimmed once more it could not be read.) */
+.sb-hotkey.off .hotkey-btn:not(.capturing, .key-unset) kbd {
   opacity: 0.5;
 }
 .sb-popped {
@@ -1685,16 +932,37 @@ kbd {
   align-items: flex-start;
   gap: 8px;
 }
-/* Narrow windows (the pop-out): label above its control. */
+/* Narrow windows (the pop-out): label above its control. The label has the
+   row's width: left as wide as its own words, a hint that ends in "More"
+   broke before its last word although the row had the line free (the room
+   kept for "Less" was not part of that width). */
 @media (max-width: 700px) {
   .sb .setting-row {
     flex-direction: column;
     align-items: flex-start;
     gap: 8px;
   }
+  .sb .setting-row > .setting-label {
+    align-self: stretch;
+  }
   .sb-control {
     justify-content: flex-start;
   }
+}
+/* A device's dropdown takes the panel's width, under its label: all three
+   are one width, in the pop-out too (so after the rule above, which would
+   leave each as wide as its own name). */
+.sb .sb-devices .setting-row {
+  flex-direction: column;
+  align-items: stretch;
+}
+.sb-devices .setting-control {
+  max-width: none;
+  justify-content: flex-start;
+}
+.sb-devices select {
+  width: 100%;
+  max-width: none;
 }
 @media (prefers-reduced-motion: reduce) {
   .sb,
@@ -1725,17 +993,23 @@ body.sb-page {
 .sb-page .sb-slider input[type="range"] {
   width: 110px;
 }
+/* In the pop-out a tile is narrower than its three controls with a volume
+   one can still set: there the volume keeps its own line, as wide as the
+   tile, instead of shrinking beside the key. */
+.sb-page .sb-controls .sb-slider {
+  flex-basis: 110px;
+  min-width: 110px;
+}
 
 /* ── Meetings ───────────────────────────────────────── */
 
 /* The tab takes the window's height: an open meeting's transcript scrolls in
-   its own box, which is what "Jump to live" follows. The column is as wide
-   as the other tabs'; an open meeting gets more, and with room its notes
-   stand beside the transcript (see the container query below). */
-#section-meetings {
-  max-width: none;
-  container: mtmain / inline-size;
-}
+   its own box, which is what "Jump to live" follows. The page has the
+   window's width like every page (the layout system, styles/shell.css). In
+   one column the library is a list of rows that fill it, and an open
+   meeting is its hints, its notes and its transcript one under the other.
+   From 1250 px beside the sidebar (class "roomy", set by shell.ts) there
+   are two columns: see "Meetings: two columns" at the end of this part. */
 #section-meetings.active {
   display: flex;
   flex-direction: column;
@@ -1746,12 +1020,8 @@ body.sb-page {
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 600px;
   min-height: 0;
-  margin: 0 auto;
-}
-#section-meetings.mt-open .mt-layout {
-  max-width: 760px;
+  margin: 0;
 }
 /* An open meeting has the tab to itself; "All meetings" leads back. */
 #section-meetings.mt-open .section-header,
@@ -1759,21 +1029,6 @@ body.sb-page {
 #section-meetings.mt-open .mt-error,
 #section-meetings.mt-recording .mt-start {
   display: none;
-}
-#section-meetings .btn-primary:focus-visible,
-.mt-modal .btn-primary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* Read out, not shown: "Recording started". */
-.mt-sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
 }
 
 .mt-start {
@@ -1797,8 +1052,8 @@ body.sb-page {
   gap: 10px;
   padding: 8px 8px 8px 14px;
   margin-bottom: 8px;
-  background: rgba(229, 72, 77, 0.1);
-  border: 1px solid rgba(229, 72, 77, 0.45);
+  background: var(--danger-bg);
+  border: 1px solid var(--text-danger);
   border-radius: var(--radius-lg);
 }
 .mt-bar-dot {
@@ -1807,7 +1062,6 @@ body.sb-page {
   height: 8px;
   border-radius: 50%;
   background: var(--red);
-  box-shadow: 0 0 6px rgba(229, 72, 77, 0.5);
   animation: pulse 1.6s ease-in-out infinite;
 }
 .mt-bar-time {
@@ -1833,10 +1087,6 @@ body.sb-page {
 }
 .mt-bar-title:hover {
   opacity: 1;
-}
-.mt-bar-title:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
 }
 .mt-stop {
   flex-shrink: 0;
@@ -1941,10 +1191,6 @@ body.sb-page {
 .mt-view-title:hover {
   background: var(--surface-hover);
 }
-.mt-view-title:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
 .mt-view-title-wrap:has(.mt-title-edit) {
   align-self: stretch;
 }
@@ -1956,8 +1202,6 @@ body.sb-page {
   line-height: 1.35;
   background: var(--surface);
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-subtle);
-  outline: none;
 }
 .mt-view-meta {
   font-variant-numeric: tabular-nums;
@@ -1983,6 +1227,8 @@ body.sb-page {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
 }
+/* A hint row's sentence has the row's line (see "How wide a text is" in
+   tokens.css). */
 .mt-hint-text {
   flex: 1 1 260px;
   min-width: 0;
@@ -1998,8 +1244,8 @@ body.sb-page {
 }
 .mt-hint-row[data-tone="warn"] {
   color: var(--text);
-  background: rgba(245, 166, 35, 0.07);
-  border-color: rgba(245, 166, 35, 0.4);
+  background: var(--warn-bg);
+  border-color: var(--text-warn);
 }
 .mt-hint-row[data-tone="busy"] { color: var(--text); }
 .mt-hint-row[data-tone="ok"] { color: var(--green); }
@@ -2013,6 +1259,26 @@ body.sb-page {
   flex-direction: column;
   gap: 12px;
   min-height: 0;
+}
+/* The hint rows and the notes: in one column they are parts of the page's
+   one stack, in two columns they are the side column (see "Meetings: two
+   columns"). */
+.mt-side {
+  display: contents;
+}
+/* What is said of the notes while there are neither notes nor a hint row.
+   From 1250 px beside the sidebar only (see "Meetings: two columns"): in
+   the notes' place where the page has two columns, over the transcript
+   where a meeting that records has one. A quiet line, like every empty
+   state. */
+.mt-notes-none {
+  display: none;
+  padding: 8px 0;
+  color: var(--text-secondary);
+}
+.mt-view:not([data-state="recording"]) .mt-notes-live,
+.mt-view[data-state="recording"] .mt-notes-never {
+  display: none;
 }
 .mt-main {
   flex: 1 1 0px;
@@ -2036,8 +1302,8 @@ body.sb-page {
   flex-direction: column;
   gap: 14px;
   padding: 12px 16px 14px;
+  /* A card like every card: no accent outline, which read as the keyboard focus. */
   background: var(--surface);
-  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
   border-radius: var(--radius-lg);
   user-select: text;
   -webkit-user-select: text;
@@ -2049,7 +1315,7 @@ body.sb-page {
   gap: 8px;
   margin-bottom: 2px;
 }
-.mt-notes-head h4 {
+.mt-notes-head h3 {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
@@ -2081,6 +1347,7 @@ body.sb-page {
 .mt-checklist label {
   display: flex;
   align-items: flex-start;
+  min-height: 24px;
   gap: 8px;
   cursor: pointer;
 }
@@ -2092,10 +1359,6 @@ body.sb-page {
   accent-color: var(--accent);
   color-scheme: dark;
   cursor: pointer;
-}
-.mt-checklist input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 .mt-checklist input:checked + span {
   color: var(--text-secondary);
@@ -2128,20 +1391,6 @@ body.sb-page {
   font-size: 12px;
   color: var(--text-secondary);
 }
-.mt-transcript:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-.mt-transcript::-webkit-scrollbar {
-  width: 6px;
-}
-.mt-transcript::-webkit-scrollbar-track {
-  background: transparent;
-}
-.mt-transcript::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: 3px;
-}
 .mt-para {
   flex-shrink: 0;
 }
@@ -2160,11 +1409,11 @@ body.sb-page {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
-/* Lighter than the accent: readable at this size on the surface. */
 .mt-para[data-track="you"] .mt-para-who {
-  color: color-mix(in srgb, var(--accent) 55%, #fff);
+  color: var(--text-accent);
 }
-/* Under the time, past the play button. */
+/* Under the time, past the play button. The frame is as wide as its column
+   and the text fills it: a line ends at the frame's inner right edge. */
 .mt-para-text {
   padding-left: 32px;
   line-height: 1.55;
@@ -2206,10 +1455,6 @@ body.sb-page {
   opacity: 0.35;
   cursor: default;
 }
-.mt-play:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 .mt-live {
   position: absolute;
   left: 50%;
@@ -2241,26 +1486,22 @@ body.sb-page {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   font-family: var(--font);
-  font-size: 13px;
-  outline: none;
+  font-size: var(--fs);
   transition: border-color var(--transition);
 }
-.mt-search:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-subtle);
-}
 .mt-search::placeholder {
-  color: var(--text-secondary);
-  opacity: 0.6;
+  color: var(--text-2);
 }
+/* The rows are spaced by their own margin: in two columns (below) the list
+   is columns of text flow, which know no gap between the rows. */
 .mt-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-bottom: 8px;
+  display: block;
+  padding-bottom: 2px;
 }
 .mt-item {
   display: grid;
+  width: 100%;
+  margin-bottom: 6px;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 2px 12px;
@@ -2269,18 +1510,13 @@ body.sb-page {
   font: inherit;
   color: var(--text);
   background: var(--surface);
-  border: 1px solid var(--border);
+  /* A row of the card family, like a sound's tile: the surface, no edge. */
+  border: 1px solid transparent;
   border-radius: var(--radius-lg);
   cursor: pointer;
-  transition: background var(--transition), border-color var(--transition);
 }
 .mt-item:hover {
   background: var(--surface-hover);
-  border-color: var(--border-strong);
-}
-.mt-item:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
 }
 .mt-item-title,
 .mt-item-meta {
@@ -2290,7 +1526,7 @@ body.sb-page {
   white-space: nowrap;
 }
 .mt-item-title {
-  font-weight: 500;
+  font-weight: 400;
 }
 .mt-item-meta {
   font-variant-numeric: tabular-nums;
@@ -2300,19 +1536,19 @@ body.sb-page {
   grid-row: 1 / span 2;
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--fs-s);
   font-weight: 600;
   white-space: nowrap;
   background: var(--accent-subtle);
   color: var(--text);
 }
 .mt-badge[data-state="recording"] {
-  background: rgba(229, 72, 77, 0.18);
-  color: var(--red);
+  background: var(--danger-bg);
+  color: var(--text-danger);
 }
 .mt-badge[data-state="interrupted"] {
-  background: rgba(245, 166, 35, 0.16);
-  color: var(--yellow);
+  background: var(--warn-bg);
+  color: var(--text-warn);
 }
 
 /* A modal <dialog> (showModal): the page behind is inert and dimmed by the
@@ -2349,28 +1585,134 @@ body.sb-page {
   margin-top: 6px;
 }
 
-/* Room for two columns: the notes beside the transcript, which then has the
-   window's height. */
-@container mtmain (min-width: 1040px) {
-  #section-meetings.mt-open.mt-has-notes .mt-layout {
-    max-width: 1320px;
-  }
-  #section-meetings.mt-has-notes .mt-body {
-    flex-direction: row;
-    gap: 20px;
-  }
-  #section-meetings.mt-has-notes .mt-notes {
-    flex: 0 0 clamp(340px, 36%, 460px);
-    align-self: flex-start;
-  }
-  #section-meetings.mt-has-notes .mt-main {
-    min-height: 320px;
-  }
+/* ── Meetings: two columns ──────────────────────────── */
+
+/* The library: the meetings in two columns that are filled one after the
+   other (columns of text flow, as the Dictionary's words are). The list is
+   sorted by date, newest first, and a list that is sorted reads downwards:
+   the left column is the newer half, the right one goes on where it ends.
+   Filled across, the dates would zigzag (5 Oct, 2 Oct / 28 Sep, 27 Sep …)
+   and the eye would have to cross the whole window for every second entry.
+   With two meetings both stand side by side on the first line, the same in
+   either way. The order in the page, and Tab's, is the list's own. */
+#section-meetings.roomy .mt-list {
+  columns: 2;
+  column-gap: var(--gutter);
+}
+#section-meetings.roomy .mt-item {
+  break-inside: avoid;
+}
+/* An open meeting, with notes or without: the side column at the left, the
+   transcript at the right in a frame that runs to the window's right edge
+   and has the window's height. The side column holds what is said about the
+   meeting (its hint rows with their buttons, "Write notes" among them) and
+   its notes; a finished meeting that has neither says so in the notes'
+   place with one line. So a saved meeting has one shape whether it has
+   notes or not, and the head's buttons end at the window's right edge in
+   both. */
+#section-meetings.roomy .mt-body {
+  display: grid;
+  grid-template-columns: var(--side-col) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--gutter);
+}
+#section-meetings.roomy .mt-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-self: start;
+  min-width: 0;
+}
+#section-meetings.roomy .mt-main {
+  min-height: 320px;
+}
+#section-meetings.roomy .mt-side:not(:has(> :is(.mt-hint, .mt-notes):not(.hidden))) > .mt-notes-none {
+  display: block;
+}
+/* A meeting that records has nothing beside its transcript for as long as
+   it runs: no notes yet, and a hint row only when something is the matter.
+   Until one of the two is there the page is one column: the line that says
+   when the notes come, and under it the transcript, the page's only
+   content, at the window's width (as a side column the line alone took 489
+   of 1288 px at 1536×864, and 622 of 1672 px at 1920×1080, for the whole
+   meeting). With a hint row or notes it is the two columns of every open
+   meeting. */
+#section-meetings.roomy .mt-view[data-state="recording"] .mt-body:not(:has(> .mt-side > :is(.mt-hint, .mt-notes):not(.hidden))) {
+  display: flex;
+}
+#section-meetings.roomy .mt-view[data-state="recording"] .mt-side:not(:has(> :is(.mt-hint, .mt-notes):not(.hidden))) {
+  display: contents;
+}
+#section-meetings.roomy .mt-view[data-state="recording"] .mt-side:not(:has(> :is(.mt-hint, .mt-notes):not(.hidden))) > .mt-notes-none {
+  padding: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   .mt-bar-dot,
   .mt-finishing-line::before,
   .mt-hint-row[data-tone="busy"] .mt-hint-text::before {
     animation: none;
+  }
+}
+
+/* ── Windows contrast themes ────────────────────────── */
+
+/* See components.css. The pages' own shapes and states: the Soundboard's
+   bar, tiles, chips and loop, a file's drop zone, a meeting that records. */
+@media (forced-colors: active) {
+  .sb-bar,
+  .sb-hint,
+  .sb-progress {
+    border: 1px solid CanvasText;
+  }
+
+  /* What is chosen or on: a category's chip, "Soundboard settings" while
+     its panel is open, a sound that loops. */
+  .sb-chip[aria-pressed="true"],
+  .sb-bar-actions [aria-expanded="true"],
+  .sb-loop[aria-pressed="true"] {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+    box-shadow: none;
+    color: HighlightText;
+  }
+
+  /* A sound that plays: a heavier edge in the theme's highlight, and its bar. */
+  .sb-row.playing {
+    border-color: Highlight;
+    outline: 1px solid Highlight;
+  }
+
+  .sb-progress {
+    height: 5px;
+    background: Canvas;
+  }
+
+  .sb-progress-fill {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+
+  /* A file dragged over its place. (The board's dashed outline is see-through
+     at rest, which a contrast theme would paint: the window's ground instead.) */
+  .sb {
+    outline-color: Canvas;
+  }
+
+  .file-drop.dragging {
+    border-style: solid;
+    border-color: Highlight;
+  }
+
+  .sb.dragging {
+    outline-color: Highlight;
+  }
+
+  /* The dot of a meeting that records, and the dot of an end step that runs. */
+  .mt-bar-dot,
+  .mt-finishing-line::before,
+  .mt-hint-row[data-tone="busy"] .mt-hint-text::before {
+    forced-color-adjust: none;
+    background: CanvasText;
   }
 }

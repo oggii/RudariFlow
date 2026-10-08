@@ -6,8 +6,11 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { deleteButton, FailureSaid } from "../confirm-delete";
 import { t } from "../i18n";
 import { hotkeyLabel, startCapture } from "../hotkey-capture";
+import { matches } from "../search.ts";
+import { prefs, roomBeside, updatePrefs, WIDE } from "../shell";
 import {
   api,
   EXTENSIONS,
@@ -22,6 +25,8 @@ import {
 } from "./api";
 
 const CABLE_URL = "https://vb-audio.com/Cable/";
+/** The settings panel's id (one board per window). */
+const PANEL_ID = "sb-panel";
 /** Set once the Discord hint was dismissed (a per-PC convenience). */
 const HINT_KEY = "rudariflow-soundboard-hint-seen";
 
@@ -40,9 +45,13 @@ export interface BoardOptions {
 }
 
 export interface BoardView {
-  /** Load the state again and redraw (also after a language change). */
+  /** Load the state again and redraw. */
   refresh(): Promise<void>;
-  /** The tab is shown: files dropped on the window are added. */
+  /** Draw the board again from the state it has, in the language of now:
+   *  nothing is asked. With `forget`, the notice line is emptied (it was
+   *  written in the Display Language of its moment). */
+  redraw(forget?: boolean): void;
+  /** The page is shown: files dropped on the window are added. */
   setActive(active: boolean): void;
 }
 
@@ -82,14 +91,15 @@ function clock(ms: number): string {
 }
 
 function problemText(p: Problem): string {
+  // A device's name and the backend's detail are text, never a pattern ("$&").
   return t(`sb_err_${p.reason}`)
-    .replace("{device}", t(`sb_dev_${p.device}`))
-    .replace("{name}", p.name)
-    .replace("{detail}", p.detail);
+    .replace("{device}", () => t(`sb_dev_${p.device}`))
+    .replace("{name}", () => p.name)
+    .replace("{detail}", () => p.detail);
 }
 
 function statusText(s: Status): string {
-  if (s.state === "on") return t("sb_status_on").replace("{cable}", s.cable);
+  if (s.state === "on") return t("sb_status_on").replace("{cable}", () => s.cable);
   if (s.state === "error") return problemText(s.problem);
   return t("sb_status_off");
 }
@@ -99,7 +109,7 @@ function reasonText(error: string): string {
   const [code, ...rest] = error.split(": ");
   const key = `sb_reason_${code}`;
   const text = t(key);
-  return text === key ? error : text.replace("{detail}", rest.join(": "));
+  return text === key ? error : text.replace("{detail}", () => rest.join(": "));
 }
 
 function hintSeen(): boolean {
@@ -126,6 +136,8 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
   /** The category chip that filters the list; "" = All. */
   let category = "";
   let devicesOpen = false;
+  /** Hints whose "More" is open, by row; kept over redraws. */
+  const openHints = new Set<string>();
   /** Rename fields and hotkey captures open: redraws wait until they close. */
   let editing = 0;
   let pending = false;
@@ -134,21 +146,30 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
   /** Newest refresh started / applied (an older answer is dropped). */
   let refreshSeq = 0;
   let appliedSeq = 0;
-  let notice = { text: "", tone: "" };
-  let armedDelete: string | null = null;
-  let armedTimer: number | undefined;
+  /** The notice line. `ok`: what worked, said before `text` in its own colour (some sounds were added, some not). */
+  let notice: { text: string; tone: string; ok?: string } = { text: "", tone: "" };
   let listBox: HTMLElement | null = null;
+  /** The refresh that is out; null: none. */
+  let refreshing: Promise<void> | null = null;
   root.classList.add("sb");
 
   async function refresh() {
     const seq = ++refreshSeq;
-    const fresh = await api.state();
-    if (!devices) devices = await api.devices().catch(() => null);
-    // A newer refresh already drew; this answer is older.
-    if (seq < appliedSeq) return;
-    appliedSeq = seq;
-    state = fresh;
-    render();
+    const run = (async () => {
+      const fresh = await api.state();
+      if (!devices) devices = await api.devices().catch(() => null);
+      // A newer refresh already drew; this answer is older.
+      if (seq < appliedSeq) return;
+      appliedSeq = seq;
+      state = fresh;
+      render();
+    })();
+    refreshing = run;
+    try {
+      await run;
+    } finally {
+      if (refreshing === run) refreshing = null;
+    }
   }
 
   function render() {
@@ -171,9 +192,16 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     showPlaying(state.playing);
   }
 
-  function setNotice(text: string, tone = "") {
-    notice = { text, tone };
+  function setNotice(text: string, tone = "", ok = "") {
+    notice = { text, tone, ok };
     render();
+  }
+
+  /** A delete failed: the notice line says why (read out from there), and the
+   *  button says that it failed like every other delete (src/confirm-delete.ts). */
+  function failedDelete(text: string, e: unknown): never {
+    setNotice(text, "error");
+    throw new FailureSaid(String(e));
   }
 
   /** A command failed: say so in the notice line, and redraw from the backend's state. */
@@ -183,40 +211,156 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     void refresh().catch(console.error);
   }
 
+  /** The window the board is in: the pop-out, or the tab with room for two columns or not.
+   *  Decided on the room beside the sidebar with the scrollbar's own room in it
+   *  (`roomBeside`): the two forms differ in height, and a step that a
+   *  scrollbar could take back would flip in every frame. */
+  function layout(): "popout" | "wide" | "narrow" {
+    if (options.popOut) return "popout";
+    return roomBeside() >= WIDE ? "wide" : "narrow";
+  }
+
+  /** The settings panel: as the user left it for this layout; else open only where it has a column of its own. */
+  function panelOpen(): boolean {
+    return prefs.panels[layout()] ?? layout() === "wide";
+  }
+
+  /** The sounds first: a bar (virtual microphone, Stop all, Pop out, Soundboard settings),
+   *  then the settings panel if it is open (the left column in a wide window) and the library. */
   function build(s: BoardState): HTMLElement[] {
+    const open = panelOpen();
+    root.classList.toggle("wide", layout() === "wide");
+    root.classList.toggle("panel-open", open);
     if (!options.popOut && s.board.window.poppedOut) return [popped()];
     listBox = el("div", "sb-list");
     fillList(listBox, s);
-    // Two groups: settings (left in a wide main window) and the sound library (right).
-    const settings = el("div", "sb-col sb-col-settings");
-    settings.append(top(s), devicesBox(s), ...hints(s));
     const library = el("div", "sb-col sb-col-library");
     library.append(toolbar(), chips(s));
     if (notice.text) {
-      const line = el("p", "sb-notice", notice.text);
+      const line = el("p", "sb-notice");
+      if (notice.ok) line.append(el("span", "sb-notice-ok", notice.ok), "\n");
+      line.append(notice.text);
       line.dataset.tone = notice.tone;
       line.setAttribute("role", "status");
       library.append(line);
     }
     library.append(listBox);
-    return [settings, library];
+    const body = el("div", "sb-body");
+    if (open) body.append(panel(s));
+    body.append(library);
+    return [bar(s, open), ...cableHint(s), body];
+  }
+
+  function bar(s: BoardState, open: boolean): HTMLElement {
+    const b = el("div", "sb-bar");
+    const onSwitch = toggle("enabled", t("sb_switch_label"), s.status.state === "on", async (wanted, input) => {
+      if (switching) return;
+      switching = true;
+      input.disabled = true;
+      try {
+        const status = await api.setEnabled(wanted);
+        if (state) state.status = status;
+      } catch (e) {
+        console.error("soundboard_set_enabled failed:", e);
+        notice = { text: reasonText(String(e)), tone: "error" };
+      }
+      switching = false;
+      render();
+    });
+    onSwitch.querySelector("input")!.disabled = switching;
+    // What the switch does stands with it, in the form of every setting's
+    // label: one line and "More"; then what it does right now.
+    const text = labelWithMore("switch", t("sb_switch_label"), t("sb_switch_hint"), t("sb_switch_more"));
+    text.classList.add("sb-bar-text");
+    const status = el("span", "label-hint sb-status status-line", statusText(s.status));
+    status.dataset.tone = s.status.state;
+    // The switch is read out with what it does right now ("On: your mic + sounds → …").
+    status.id = `${PANEL_ID}-status`;
+    onSwitch.querySelector("input")!.setAttribute("aria-describedby", status.id);
+    text.append(status);
+    const mic = el("div", "sb-bar-mic");
+    mic.append(onSwitch, text);
+
+    const actions = el("div", "sb-bar-actions");
+    actions.append(button("btn-secondary", t("sb_stop_all"), "stop-all", () => void api.stopAll().catch(fail)));
+    if (!options.popOut) actions.append(button("btn-secondary", t("sb_pop_out"), "pop-out", () => void api.popOut(true).catch(fail)));
+    // A disclosure: the button says whether its panel is open and keeps the
+    // focus (`render` gives it back by its key). The choice is kept for this
+    // layout; the pop-out and the main window share the store (`updatePrefs`).
+    const settings = button("btn-secondary", t("sb_settings"), "settings", () => {
+      const open = !panelOpen();
+      updatePrefs((p) => (p.panels[layout()] = open));
+      render();
+    });
+    settings.setAttribute("aria-expanded", String(open));
+    // It names its panel only while there is one in the page.
+    if (open) settings.setAttribute("aria-controls", PANEL_ID);
+    actions.append(settings);
+    b.append(mic, actions);
+    return b;
   }
 
   function row(label: string, hint: string, ...controls: HTMLElement[]): HTMLElement {
+    return rowWithMore("", label, hint, "", ...controls);
+  }
+
+  /** A row whose one-line hint has a longer text behind "More" (`id` keeps it open over redraws). */
+  function rowWithMore(id: string, label: string, hint: string, more: string, ...controls: HTMLElement[]): HTMLElement {
     const r = el("div", "setting-row");
-    const l = el("div", "setting-label");
-    l.append(el("span", "label-text", label));
-    if (hint) l.append(el("span", "label-hint", hint));
     const c = el("div", "setting-control sb-control");
     c.append(...controls);
-    r.append(l, c);
+    r.append(labelWithMore(id, label, hint, more), c);
     return r;
+  }
+
+  /** A key's row: the label and its hint above, the key box below. The box asks
+   *  for its key in a sentence and says in one why a key was refused, and
+   *  beside the label that would cover the label's end and the hint. */
+  function keyRow(id: string, label: string, hint: string, more: string, control: HTMLElement): HTMLElement {
+    const r = rowWithMore(id, label, hint, more, control);
+    r.classList.add("stack");
+    return r;
+  }
+
+  /** A setting's label: its name, its one-line hint and, behind "More", the longer text. */
+  function labelWithMore(id: string, label: string, hint: string, more: string): HTMLElement {
+    const l = el("div", "setting-label");
+    l.append(el("span", "label-text", label));
+    if (hint) {
+      const h = el("span", "label-hint");
+      h.append(el("span", "", hint));
+      l.append(h);
+      if (more) {
+        const open = openHints.has(id);
+        const longId = `${PANEL_ID}-more-${id}`;
+        const b = button("hint-more", t(open ? "hint_less" : "hint_more"), `more-${id}`, () => {
+          if (open) openHints.delete(id);
+          else openHints.add(id);
+          render();
+        });
+        // rows.ts leaves it alone: this board redraws and keeps the state itself.
+        b.dataset.own = "";
+        b.setAttribute("aria-expanded", String(open));
+        b.setAttribute("aria-controls", longId);
+        // Named after its row like every "More" of Settings (rows.ts, `nameMore`).
+        b.setAttribute("aria-label", t(open ? "hint_less_about" : "hint_more_about").replace("{label}", () => label));
+        // No space before it: the room between the hint and "More" is the button's own (components.css).
+        h.append(b);
+        const long = el("span", "label-hint hint-long", more);
+        long.id = longId;
+        long.hidden = !open;
+        l.append(long);
+      }
+    }
+    return l;
   }
 
   function toggle(key: string, label: string, checked: boolean, onChange: (on: boolean, input: HTMLInputElement) => void): HTMLElement {
     const wrap = el("label", "switch");
     const input = el("input");
     input.type = "checkbox";
+    // A switch is a switch to a screen reader, not a checkbox (src/rows.ts does the same for Settings).
+    input.setAttribute("role", "switch");
     input.checked = checked;
     input.dataset.key = key;
     input.setAttribute("aria-label", label);
@@ -254,7 +398,10 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
           await save(combo);
           current = combo;
         },
-        render: () => (kbd.textContent = hotkeyLabel(current)),
+        render: () => {
+          kbd.textContent = hotkeyLabel(current);
+          btn.classList.toggle("key-unset", !current);
+        },
         done: () => {
           editing--;
           if (pending) render();
@@ -263,6 +410,8 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       if (started) editing++;
     });
     btn.append(kbd);
+    // "Not set" in the quieter words of every key box without a key (components.css).
+    btn.classList.toggle("key-unset", !current);
     btn.setAttribute("aria-label", `${t("sb_hotkey")}: ${hotkeyLabel(current)}${off && current ? ` (${t("sb_sound_hotkeys_off_note")})` : ""}`);
     if (off && current) btn.title = t("sb_sound_hotkeys_off_note");
     wrap.append(btn);
@@ -271,53 +420,46 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     return wrap;
   }
 
-  function top(s: BoardState): HTMLElement {
+  /** "Soundboard settings": what is set once. The virtual microphone's switch is in the bar. */
+  function panel(s: BoardState): HTMLElement {
     const b = s.board;
+    const box = el("div", "sb-col sb-col-settings");
+    box.id = PANEL_ID;
+    // Named like the button that opens it: who comes into it hears where they are.
+    box.setAttribute("role", "group");
+    box.setAttribute("aria-label", t("sb_settings"));
     const list = el("div", "settings-list sb-top");
-    const onSwitch = toggle("enabled", t("sb_switch_label"), s.status.state === "on", async (wanted, input) => {
-      if (switching) return;
-      switching = true;
-      input.disabled = true;
-      try {
-        const status = await api.setEnabled(wanted);
-        if (state) state.status = status;
-      } catch (e) {
-        console.error("soundboard_set_enabled failed:", e);
-        notice = { text: reasonText(String(e)), tone: "error" };
-      }
-      switching = false;
-      render();
-    });
-    onSwitch.querySelector("input")!.disabled = switching;
-    const switchRow = row(t("sb_switch_label"), t("sb_switch_hint"), onSwitch);
-    const status = el("span", "label-hint sb-status", statusText(s.status));
-    status.dataset.tone = s.status.state;
-    switchRow.querySelector(".setting-label")?.append(status);
     list.append(
-      switchRow,
       row(t("sb_others_label"), t("sb_others_hint"), slider("others", t("sb_others_label"), b.othersVolume, (v) => void api.setVolumes(v, b.meVolume).catch(fail))),
       row(t("sb_me_label"), t("sb_me_hint"), slider("me", t("sb_me_label"), b.meVolume, (v) => void api.setVolumes(b.othersVolume, v).catch(fail))),
       row(t("sb_layer_label"), t("sb_layer_hint"), toggle("layer", t("sb_layer_label"), b.layer, (on) => void api.setLayer(on).catch(fail))),
-      row(
-        t("sb_stop_hotkey_label"),
-        t("sb_stop_hotkey_hint"),
-        hotkeyControl("stop-hotkey", b.stopHotkey, s.hotkeysTaken.includes("stopSounds"), (combo) => api.setStopHotkey(combo)),
-      ),
-      row(
+      rowWithMore(
+        "sound-hotkeys",
         t("sb_sound_hotkeys_label"),
         t("sb_sound_hotkeys_hint"),
+        t("sb_sound_hotkeys_more"),
         toggle("sound-hotkeys", t("sb_sound_hotkeys_label"), b.soundHotkeys, (on) => void api.setSoundHotkeys(on).catch(fail)),
       ),
-      row(
+      keyRow(
+        "toggle-hotkey",
         t("sb_toggle_hotkey_label"),
         t("sb_toggle_hotkey_hint"),
+        t("sb_hotkey_more"),
         hotkeyControl("toggle-hotkey", b.toggleHotkey, s.hotkeysTaken.includes("toggleSoundHotkeys"), (combo) => api.setToggleHotkey(combo)),
+      ),
+      keyRow(
+        "stop-hotkey",
+        t("sb_stop_hotkey_label"),
+        t("sb_stop_hotkey_hint"),
+        t("sb_hotkey_more"),
+        hotkeyControl("stop-hotkey", b.stopHotkey, s.hotkeysTaken.includes("stopSounds"), (combo) => api.setStopHotkey(combo)),
       ),
     );
     if (options.popOut) {
       list.append(row(t("sb_always_on_top"), "", toggle("on-top", t("sb_always_on_top"), b.window.alwaysOnTop, (on) => void api.setAlwaysOnTop(on).catch(fail))));
     }
-    return list;
+    box.append(list, devicesBox(s), ...discordHint(s));
+    return box;
   }
 
   function devicesBox(s: BoardState): HTMLElement {
@@ -348,7 +490,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       const saved = s.board.devices[kind];
       const names = (kind === "microphone" ? devices?.inputs : devices?.outputs) ?? [];
       const auto = devices?.automatic[kind];
-      select.append(option("", auto ? t("sb_auto").replace("{name}", auto) : t("sb_auto_none")));
+      select.append(option("", auto ? t("sb_auto").replace("{name}", () => auto) : t("sb_auto_none")));
       for (const name of names) select.append(option(name, name));
       if (saved && !names.includes(saved)) select.append(option(saved, `${saved} (${t("mic_not_connected")})`));
       select.value = saved;
@@ -362,18 +504,28 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     return box;
   }
 
-  function hints(s: BoardState): HTMLElement[] {
-    const noCable = devices !== null && !devices.automatic.cable && !s.board.devices.cable;
+  function noCable(s: BoardState): boolean {
+    return devices !== null && !devices.automatic.cable && !s.board.devices.cable;
+  }
+
+  /** No virtual cable: the board cannot work, so this shows whether the panel is open or not.
+   *  With it, how to choose the cable in Discord: who installs the cable needs that next,
+   *  also when "Got it" was pressed on an earlier day. */
+  function cableHint(s: BoardState): HTMLElement[] {
+    if (!noCable(s)) return [];
     const box = el("div", "sb-hint");
-    if (noCable) {
-      box.append(
-        el("p", "", t("sb_cable_missing")),
-        button("btn-secondary", t("sb_cable_link"), "cable-link", () => void openExternal(CABLE_URL).catch(console.error)),
-        el("p", "", t("sb_discord_hint")),
-      );
-      return [box];
-    }
-    if (hintSeen()) return [];
+    box.append(
+      el("p", "", t("sb_cable_missing")),
+      button("btn-secondary", t("sb_cable_link"), "cable-link", () => void openExternal(CABLE_URL).catch(console.error)),
+      el("p", "", t("sb_discord_hint")),
+    );
+    return [box];
+  }
+
+  /** How to choose the cable in Discord, in the panel until "Got it" (without a cable the box above says it). */
+  function discordHint(s: BoardState): HTMLElement[] {
+    if (noCable(s) || hintSeen()) return [];
+    const box = el("div", "sb-hint");
     box.append(
       el("p", "", t("sb_discord_hint")),
       button("btn-ghost", t("sb_hint_dismiss"), "hint-dismiss", () => {
@@ -399,12 +551,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
         showPlaying(state.playing);
       }
     });
-    bar.append(
-      button("btn-secondary", t("sb_add"), "add", () => void chooseFiles()),
-      search,
-      button("btn-secondary", t("sb_stop_all"), "stop-all", () => void api.stopAll().catch(fail)),
-    );
-    if (!options.popOut) bar.append(button("btn-secondary", t("sb_pop_out"), "pop-out", () => void api.popOut(true).catch(fail)));
+    bar.append(button("btn-secondary", t("sb_add"), "add", () => void chooseFiles()), search);
     return bar;
   }
 
@@ -425,9 +572,14 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
         const rename = iconButton(PEN_ICON, t("sb_category_rename"), `chip-${c.id}-rename`, () =>
           inlineEdit(rename, c.name, t("sb_category_placeholder"), (name) => api.categoryRename(c.id, name)),
         );
-        const remove = iconButton(X_ICON, t("sb_category_delete"), `chip-${c.id}-delete`, () => {
-          api.categoryRemove(c.id).catch((e) => setNotice(reasonText(String(e)), "error"));
-        });
+        const remove = deleteButton(
+          `category-${c.id}`,
+          () => api.categoryRemove(c.id).catch((e) => failedDelete(reasonText(String(e)), e)),
+          // The chip goes with its category: "All" takes the focus.
+          { name: c.name, after: () => root.querySelector<HTMLElement>('[data-key="chip-all"]') },
+        );
+        remove.title = t("sb_category_delete");
+        remove.dataset.key = `chip-${c.id}-delete`;
         bar.append(rename, remove);
       }
     }
@@ -481,8 +633,8 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       box.append(el("p", "empty-state", t("sb_empty")));
       return;
     }
-    const q = query.trim().toLowerCase();
-    const shown = s.board.sounds.filter((x) => (!category || x.category === category) && (!q || x.name.toLowerCase().includes(q)));
+    // The search of every list (src/search.ts): each word, in any order, with or without accents.
+    const shown = s.board.sounds.filter((x) => (!category || x.category === category) && matches([x.name], query));
     if (shown.length === 0) box.append(el("p", "empty-state", t("sb_empty_filter")));
     for (const sound of shown) box.append(soundRow(sound, s));
   }
@@ -514,7 +666,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     if (missing) main.append(el("span", "sb-note", t("sb_missing")));
 
     const side = el("div", "sb-side");
-    side.append(loopButton(sound, s.board.soundHotkeys), el("span", "sb-length", clock(sound.durationMs)), deleteButton(sound));
+    side.append(loopButton(sound, s.board.soundHotkeys), el("span", "sb-length", clock(sound.durationMs)), soundDelete(sound));
 
     const controls = el("div", "sb-controls");
     const cat = el("select", "sb-category");
@@ -523,18 +675,22 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     cat.append(option("", t("sb_no_category")), ...s.board.categories.map((c) => option(c.id, c.name)));
     cat.value = sound.category;
     cat.addEventListener("change", () => void api.setCategory(sound.id, cat.value).catch(fail));
+    // A key another program has: the note is the tile's own third line, not
+    // a part of the key control, so category, key and volume stay on one line.
+    const hotkey = hotkeyControl(`${sound.id}-hotkey`, sound.hotkey, false, (combo) => api.setHotkey(sound.id, combo), !s.board.soundHotkeys);
     controls.append(
       cat,
-      hotkeyControl(
-        `${sound.id}-hotkey`,
-        sound.hotkey,
-        s.hotkeysTaken.includes(sound.id),
-        (combo) => api.setHotkey(sound.id, combo),
-        !s.board.soundHotkeys,
-      ),
+      hotkey,
       slider(`${sound.id}-volume`, `${t("sb_volume")}: ${sound.name}`, sound.volume, (v) => void api.setSoundVolume(sound.id, v).catch(fail)),
     );
     r.append(play, main, side, controls);
+    if (s.hotkeysTaken.includes(sound.id)) {
+      const note = el("span", "sb-note", t("sb_hotkey_elsewhere"));
+      // Read out with the key it is about.
+      note.id = `sb-taken-${sound.id}`;
+      hotkey.querySelector(".hotkey-btn")?.setAttribute("aria-describedby", note.id);
+      r.append(note);
+    }
     return r;
   }
 
@@ -553,24 +709,15 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     return b;
   }
 
-  function deleteButton(sound: Sound): HTMLElement {
-    const armed = armedDelete === sound.id;
-    const label = t(armed ? "sb_delete_confirm" : "sb_delete");
-    const b = button(`btn-ghost sb-delete${armed ? " armed" : ""}`, label, `${sound.id}-delete`, () => {
-      window.clearTimeout(armedTimer);
-      if (armedDelete !== sound.id) {
-        armedDelete = sound.id;
-        armedTimer = window.setTimeout(() => {
-          armedDelete = null;
-          render();
-        }, 3000);
-        render();
-        return;
-      }
-      armedDelete = null;
-      api.remove(sound.id).catch((e) => setNotice(`${sound.name}: ${reasonText(String(e))}`, "error"));
-    });
-    b.setAttribute("aria-label", `${label}: ${sound.name}`);
+  function soundDelete(sound: Sound): HTMLElement {
+    const b = deleteButton(
+      `sound-${sound.id}`,
+      () => api.remove(sound.id).catch((e) => failedDelete(`${sound.name}: ${reasonText(String(e))}`, e)),
+      // After the last sound "Add sounds…" takes the focus.
+      { name: sound.name, after: () => root.querySelector<HTMLElement>('[data-key="add"]') },
+    );
+    b.classList.add("sb-delete");
+    b.dataset.key = `${sound.id}-delete`;
     return b;
   }
 
@@ -606,7 +753,7 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
 
   async function addPaths(paths: string[]) {
     if (paths.length === 0) return;
-    setNotice(paths.length === 1 ? t("sb_adding_one") : t("sb_adding").replace("{n}", String(paths.length)));
+    setNotice(paths.length === 1 ? t("sb_adding_one") : t("sb_adding").replace("{n}", () => String(paths.length)));
     let results: AddResult[];
     try {
       results = await api.add(paths);
@@ -616,10 +763,10 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     }
     const failed = results.filter((r) => r.error);
     const added = results.length - failed.length;
-    const lines: string[] = [];
-    if (added > 0) lines.push(added === 1 ? t("sb_added_one") : t("sb_added").replace("{n}", String(added)));
-    for (const f of failed) lines.push(`${f.name}: ${reasonText(f.error ?? "")}`);
-    setNotice(lines.join("\n"), failed.length > 0 ? "error" : "ok");
+    const worked = added > 0 ? (added === 1 ? t("sb_added_one") : t("sb_added").replace("{n}", () => String(added))) : "";
+    // Only the failures are red: what was added is said first, in the colour of what worked.
+    if (failed.length === 0) setNotice(worked, "ok");
+    else setNotice(failed.map((f) => `${f.name}: ${reasonText(f.error ?? "")}`).join("\n"), "error", worked);
   }
 
   function popped(): HTMLElement {
@@ -648,13 +795,30 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       void addPaths(p.paths);
     }
   });
+  // The tab got room for two columns, or lost it: the panel follows its layout's choice.
+  const content = document.getElementById("content");
+  if (content) {
+    let was = layout();
+    new ResizeObserver(() => {
+      if (layout() === was) return;
+      was = layout();
+      render();
+    }).observe(content);
+  }
   void refresh().catch(console.error);
 
   return {
     refresh,
+    redraw(forget = false) {
+      if (forget) notice = { text: "", tone: "" };
+      render();
+    },
     setActive(on: boolean) {
       active = on;
-      if (on) void refresh().catch(console.error);
+      // The board is asked for when it is mounted: shown right after that
+      // (the window opens on it), the answer that is on its way is the one
+      // to wait for, not a second question.
+      if (on && !refreshing) void refresh().catch(console.error);
     },
   };
 }

@@ -1,4 +1,4 @@
-// Files tab: transcribe an audio or video file (drop it anywhere on the
+// Files: transcribe an audio or video file (drop it anywhere on the
 // window or choose it), with the text appearing block by block, and an
 // optional AI summary. The work runs in the backend (`transcribe_file`,
 // `summarize_text`).
@@ -8,10 +8,13 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { getLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
+import { setDownload, setFileRunning } from "./activity";
+import { confirmDelete } from "./confirm-delete";
 
 export interface FilesHost {
   settings(): { language: string; fileSpeakers: string };
-  saveSettings(patch: { fileSpeakers?: string }): Promise<void>;
+  /** False when it was not saved (the page has said so, src/main.ts). */
+  saveSettings(patch: { fileSpeakers?: string }): Promise<boolean>;
   /** Show the Files section (a file dropped on another tab). */
   showSection(): void;
   /** False while another tab takes files dropped on the window (the Soundboard). */
@@ -49,6 +52,7 @@ interface DownloadProgress {
 
 const EXTENSIONS = ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "oga", "wma", "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "3gp", "amr"];
 
+const section = document.getElementById("section-files")!;
 const drop = document.getElementById("file-drop")!;
 const chooseBtn = document.getElementById("file-choose") as HTMLButtonElement;
 const languageSelect = document.getElementById("file-language") as HTMLSelectElement;
@@ -57,6 +61,11 @@ const nameEl = document.getElementById("file-name")!;
 const statusEl = document.getElementById("file-status")!;
 const cancelBtn = document.getElementById("file-cancel") as HTMLButtonElement;
 const fill = document.getElementById("file-progress-fill")!;
+/** The bar: a progress bar to a screen reader too, named after the file. */
+const bar = document.getElementById("file-progress-bar")!;
+/** Read out, not shown: how the run ended. The status line itself changes
+ *  with every step ("Transcribing 0:12 of 4:05"), so it is no live region. */
+const live = document.getElementById("file-live")!;
 const result = document.getElementById("file-result")!;
 const timesToggle = document.getElementById("file-times") as HTMLInputElement;
 const textArea = document.getElementById("file-text") as HTMLTextAreaElement;
@@ -118,10 +127,15 @@ function clock(ms: number): string {
 function setStatus(text: string, tone = "") {
   statusEl.textContent = text;
   statusEl.dataset.tone = tone;
+  // What the bar says to a screen reader that asks it.
+  if (text) bar.setAttribute("aria-valuetext", text);
+  else bar.removeAttribute("aria-valuetext");
 }
 
 function setProgress(fraction: number) {
-  fill.style.width = `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
+  const percent = Math.round(Math.min(1, Math.max(0, fraction)) * 100);
+  fill.style.width = `${percent}%`;
+  bar.setAttribute("aria-valuenow", String(percent));
 }
 
 function errorText(e: unknown): string {
@@ -144,7 +158,7 @@ function speakersNote(code: string): { text: string; error: boolean } {
   const neutral = ["cancelled", "none_found"];
   const known = ["no_model", "no_runtime", ...neutral];
   return {
-    text: known.includes(code) ? t(`files_speakers_missing_${code}`) : t("files_speakers_missing_error").replace("{error}", code),
+    text: known.includes(code) ? t(`files_speakers_missing_${code}`) : t("files_speakers_missing_error").replace("{error}", () => code),
     error: !neutral.includes(code),
   };
 }
@@ -163,7 +177,7 @@ async function showText() {
 }
 
 function defaultName(i: number): string {
-  return t("files_speaker_n").replace("{n}", String(i + 1));
+  return t("files_speaker_n").replace("{n}", () => String(i + 1));
 }
 
 function renderChips() {
@@ -183,6 +197,8 @@ function renameSpeaker(i: number, chip: HTMLButtonElement) {
   const input = document.createElement("input");
   input.className = "speaker-chip-input";
   input.value = names[i];
+  // Named like the same field of a meeting: "Rename Speaker 1".
+  input.setAttribute("aria-label", t("mt_rename_speaker").replace("{name}", () => names[i]));
   chip.replaceWith(input);
   input.focus();
   input.select();
@@ -204,6 +220,14 @@ function renameSpeaker(i: number, chip: HTMLButtonElement) {
   input.addEventListener("blur", () => apply(true));
 }
 
+/** The line under Speakers: its hint, or what the speaker model's download
+ *  does. With a state it stays on screen where the options are one line
+ *  without their hints (a file is loaded: src/style.css). */
+function speakersSay(text: string, state: "" | "busy" | "error" = "") {
+  speakersHint.textContent = text;
+  speakersHint.dataset.state = state;
+}
+
 /** Download the speaker model if needed; true when it is ready. */
 function ensureSpeakerModel(): Promise<boolean> {
   if (modelDownload) return modelDownload;
@@ -211,14 +235,15 @@ function ensureSpeakerModel(): Promise<boolean> {
     try {
       const status = await invoke<{ downloaded: boolean }>("speaker_model_status");
       if (status.downloaded) return true;
-      speakersHint.textContent = t("files_speakers_downloading").replace("{percent}", "0");
+      speakersSay(t("files_speakers_downloading").replace("{percent}", () => "0"), "busy");
       await invoke("speaker_model_download");
-      speakersHint.textContent = t("files_speakers_hint");
+      speakersSay(t("files_speakers_hint"));
       return true;
     } catch {
-      speakersHint.textContent = t("files_speakers_download_failed");
+      speakersSay(t("files_speakers_download_failed"), "error");
       return false;
     } finally {
+      setDownload("speaker", null);
       modelDownload = null;
     }
   })();
@@ -239,6 +264,7 @@ async function transcribe(path: string) {
     return;
   }
   running = true;
+  setFileRunning(true);
   cancelRequested = false;
   segments = [];
   names = [];
@@ -248,6 +274,8 @@ async function transcribe(path: string) {
   fileName = path.split(/[\\/]/).pop() ?? path;
   nameEl.textContent = fileName;
   job.classList.remove("hidden");
+  // A file is loaded: the drop zone shrinks, so the transcript starts on the first screen.
+  section.classList.add("has-file");
   cancelBtn.classList.remove("hidden");
   result.classList.remove("hidden");
   summaryRun++;
@@ -260,6 +288,7 @@ async function transcribe(path: string) {
   updateClear();
   setProgress(0);
   setStatus(t("files_reading"));
+  live.textContent = "";
   speakersOn = false;
   try {
     // A failed or missing model must not drop the transcript: wait for a
@@ -285,11 +314,12 @@ async function transcribe(path: string) {
     renderChips();
     await showText();
     setProgress(1);
-    const secs = (transcript.elapsedMs / 1000).toFixed(1);
+    const { durationMs, elapsedMs, language } = transcript;
+    const secs = (elapsedMs / 1000).toFixed(1);
     let status = t("files_done")
-      .replace("{audio}", clock(transcript.durationMs))
-      .replace("{secs}", secs)
-      .replace("{language}", languageName(transcript.language));
+      .replace("{audio}", () => clock(durationMs))
+      .replace("{secs}", () => secs)
+      .replace("{language}", () => languageName(language));
     let tone = "ok";
     if (transcript.speakersError) {
       const note = speakersNote(transcript.speakersError);
@@ -297,14 +327,18 @@ async function transcribe(path: string) {
       tone = note.error ? "error" : "";
     }
     setStatus(status, tone);
+    // The end is said once: no step before it was.
+    live.textContent = status;
     setButtons(true);
   } catch (e) {
     setStatus(errorText(e), String(e) === "cancelled" ? "" : "error");
+    live.textContent = errorText(e);
     // Keep what was transcribed before a cancel, as plain text.
     setButtons(textArea.value.trim().length > 0, false);
     if (!textArea.value.trim()) result.classList.add("hidden");
   } finally {
     running = false;
+    setFileRunning(false);
     cancelBtn.classList.add("hidden");
     updateClear();
   }
@@ -326,10 +360,10 @@ function onProgress(p: FileProgress) {
     setStatus(t("files_loading"));
     setProgress(0.05);
   } else if (p.phase === "speakers") {
-    setStatus(t("files_speakers_running").replace("{percent}", String(p.done)));
+    setStatus(t("files_speakers_running").replace("{percent}", () => String(p.done)));
     setProgress(0.8 + (p.done / 100) * 0.2);
   } else {
-    setStatus(t("files_transcribing").replace("{done}", clock(p.done)).replace("{total}", clock(p.total)));
+    setStatus(t("files_transcribing").replace("{done}", () => clock(p.done)).replace("{total}", () => clock(p.total)));
     // Whisper ends at 80 % when the speakers are separated after it.
     const end = speakersOn ? 0.8 : 1;
     setProgress(0.05 + (p.total > 0 ? (p.done / p.total) * (end - 0.05) : 0));
@@ -398,7 +432,7 @@ function setExportMenu(open: boolean) {
 function exportMeta(): string {
   const parts = [clock(transcript?.durationMs ?? 0), languageName(transcript?.language ?? "")];
   if (names.length === 1) parts.push(t("files_speakers_count_one"));
-  else if (names.length) parts.push(t("files_speakers_count").replace("{n}", String(names.length)));
+  else if (names.length) parts.push(t("files_speakers_count").replace("{n}", () => String(names.length)));
   parts.push((transcribedAt ?? new Date()).toLocaleDateString(getLang()));
   return parts.join(" · ");
 }
@@ -428,7 +462,7 @@ async function exportAs(kind: ExportKind) {
     };
     try {
       await invoke("export_file", { kind, path, doc });
-      setStatus(t("files_exported").replace("{name}", path.split(/[\\/]/).pop() ?? path), "ok");
+      setStatus(t("files_exported").replace("{name}", () => path.split(/[\\/]/).pop() ?? path), "ok");
     } catch (e) {
       setStatus(`${t("files_err_failed")}: ${e}`, "error");
     }
@@ -467,9 +501,11 @@ function clearFile() {
   setButtons(false);
   nameEl.textContent = "";
   setStatus("");
+  live.textContent = "";
   setProgress(0);
   job.classList.add("hidden");
   result.classList.add("hidden");
+  section.classList.remove("has-file");
   // The Clear button went with the file line.
   chooseBtn.focus();
 }
@@ -495,7 +531,13 @@ export function initFiles(h: FilesHost) {
     invoke("cancel_file");
   });
   speakersSelect.addEventListener("change", async () => {
-    await host.saveSettings({ fileSpeakers: speakersSelect.value });
+    // Not saved: the list is back on what is saved, and no model is fetched for a choice that did not hold.
+    if (!(await host.saveSettings({ fileSpeakers: speakersSelect.value }))) {
+      // (Before the settings are read there is nothing to go back to.)
+      const settings: { fileSpeakers: string } | undefined = host.settings();
+      if (settings) speakersSelect.value = settings.fileSpeakers || "off";
+      return;
+    }
     if (speakersSelect.value !== "off") ensureSpeakerModel();
   });
   timesToggle.addEventListener("change", showText);
@@ -526,14 +568,17 @@ export function initFiles(h: FilesHost) {
     }
   });
   summarizeBtn.addEventListener("click", summarize);
-  clearBtn.addEventListener("click", clearFile);
+  // The transcript is nowhere but on this page: Clear asks first, like every
+  // delete (src/confirm-delete.ts). It keeps its word: no file is deleted.
+  confirmDelete(clearBtn, "file", clearFile, { label: "files_clear", armedLabel: "files_clear_confirm", armedSaid: "files_clear_said" });
   listen<FileProgress>("file-progress", (e) => onProgress(e.payload));
   listen<DownloadProgress>("speaker-model-progress", (e) => {
-    speakersHint.textContent = t("files_speakers_downloading").replace("{percent}", String(Math.round(e.payload.percent)));
+    speakersSay(t("files_speakers_downloading").replace("{percent}", () => String(Math.round(e.payload.percent))), "busy");
+    if (modelDownload) setDownload("speaker", e.payload.percent);
   });
   listen<[number, number]>("summary-progress", (e) => {
     const [done, total] = e.payload;
-    if (summarizing && total > 1) summaryEl.textContent = t("files_summarizing_parts").replace("{done}", String(done + 1)).replace("{total}", String(total));
+    if (summarizing && total > 1) summaryEl.textContent = t("files_summarizing_parts").replace("{done}", () => String(done + 1)).replace("{total}", () => String(total));
   });
   // A file dropped anywhere on the window is transcribed.
   getCurrentWebview().onDragDropEvent((event) => {

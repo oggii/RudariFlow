@@ -1,0 +1,135 @@
+/* Design tokens (look B: calm and airy dark). The one source for colours,
+   shape, space, type and motion; components.css, the pages and the pill
+   (src/overlay.html) use these names only. The typeface is Windows' own
+   (--font, --mono): no font file is shipped and nothing is fetched. */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces: the window, a card, a control on a card, a control hovered.
+     A pressed button sinks to --bg. */
+  --bg: #101014;
+  --surface: #17171d;
+  --surface-2: #1e1e26;
+  --surface-3: #272731;
+
+  /* Text. Every --text* has 4.5:1 or more on every surface above
+     (tools/ui-check checks it). */
+  --text: #ececf1;
+  --text-2: #a3a3af;
+  --text-accent: #9aa0ff;
+  --text-ok: #3ddc84;
+  --text-warn: #ffb347;
+  --text-danger: #ff7b7b;
+
+  /* The accent (hovered, pressed), what is written on it, and the tinted grounds. */
+  --accent: #7c83ff;
+  --accent-hover: #8f95ff;
+  --accent-active: #6f75e3;
+  --on-accent: #0c0c12;
+  --accent-bg: color-mix(in srgb, var(--accent) 16%, transparent);
+  --ok-bg: #12251a;
+  --warn-bg: #2a2010;
+  --danger-bg: #2a1418;
+
+  /* Lines: --line divides rows, --line-strong is the edge of a field and the
+     track of a switch that is off (3:1 or more on every surface above). */
+  --line: #2a2a35;
+  --line-strong: #727284;
+  --focus: #a5aaff;
+
+  /* Shape: cards 14 px, controls 8 px. */
+  --radius-card: 14px;
+  --radius: 8px;
+  --radius-s: 6px;
+
+  /* Space: 4-8-12-16-24. */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  /* Between two columns of a page, on every page (the layout system:
+     styles/shell.css). */
+  --gutter: var(--s4);
+
+  /* Type: 12 / 14 / 16 / 22, body 14. */
+  --fs-s: 12px;
+  --fs: 14px;
+  --fs-l: 16px;
+  --fs-xl: 22px;
+  /* Segoe UI, as in the mockups: Segoe UI Variable Text on Windows 11, Segoe
+     UI on Windows 10. Both have Regular, Semibold and Bold, and the webview
+     draws one of those three whatever weight is asked for (500 comes out
+     Semibold, 650 Bold, in either family). So the styles write the weight
+     that is drawn: 400 for text, labels and controls at rest, 600 for what
+     is chosen, a card's heading and a button that acts, 700 for a page's
+     heading. tools/ui-check holds the styles to these (static.mjs). */
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+  /* How wide a text is. A text fills its box: it has the width of the frame,
+     card or row it stands in, and a line ends at that box's inner right
+     edge, at every window size. No text is capped inside its box. (Until
+     the user tried the window a token --measure of 42em kept running text
+     to about 100 characters a line: a transcript then ended at 588 px of a
+     frame of 1034 and left 40 % of it empty.)
+
+     A text in a frame of its own, which has the same padding left and right:
+       .file-text                    a file's transcript (style.css)
+       .file-summary-text            a file's summary
+       .mt-para-text                 a meeting's transcript, also while it
+                                     records
+       .mt-notes-text, .mt-notes li  a meeting's notes
+       .ai-test-result p             what "Try it" answers
+       .sb-hint p                    the Soundboard's instructions
+     and .history-text, a dictation on Home: its row, up to the actions'
+     column where they stand beside it (home.css).
+
+     A hint has the width of its row or card: .card > .label-hint
+     (settings.css), .hint-long, the text behind "More" (components.css),
+     .empty-state, .mt-hint-text, .mt-warning and .mt-reminder (style.css); a
+     setting's one-line hint is one line by its own rule.
+
+     What stands on the page itself, in no box, keeps a width a line can be
+     read in, 72ch: a page's description under its title and the paragraph
+     that opens a Settings tab (.section-desc, .panel-lead; components.css).
+     A field with a width of its own is capped as a whole, never narrowed
+     from the inside: a rule's instructions and "Try it" (720 px,
+     settings.css).
+
+     tools/ui-check holds the first list to it on every page at every size:
+     the longest line of a text that wraps ends within one word of its
+     frame's inner right edge (inpage.js, FRAMED; the page "fills"). */
+
+  /* The side column beside a transcript (a meeting's notes, a file and its
+     summary): a share of the page, never narrower than a card of setting
+     rows reads, never wider than 622 px, so the transcript gets the room a
+     wide window adds. */
+  --side-col: clamp(360px, 38%, calc(42 * var(--fs) + 34px));
+
+  /* Motion: a page change and a fold opening, nothing else. */
+  --ease: 150ms ease-out;
+
+  /* Names from before the redesign, so the older page rules get the new
+     look. New rules use the names above. */
+  --surface-hover: var(--surface-2);
+  --text-secondary: var(--text-2);
+  --accent-subtle: var(--accent-bg);
+  --green: var(--text-ok);
+  --red: var(--text-danger);
+  --yellow: var(--text-warn);
+  --border: var(--line);
+  --border-strong: var(--line-strong);
+  --radius-lg: var(--radius-card);
+  /* Hover and focus change at once. */
+  --transition: 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

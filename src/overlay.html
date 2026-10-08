@@ -3,6 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <style>
+      /* The pill is a part of the app: it is set in the window's font
+         (Windows' own Segoe UI: no font file is loaded) and takes the
+         window's tokens (src/styles/tokens.css: the colours of text, of what
+         records, of what waits and of Edit mode, the type scale, the one
+         fade). The pill's own are what floats over any desktop: its
+         see-through ground, its edge and its resting bars. */
+      @import "./styles/tokens.css";
+      /* Not the tokens' dark colour scheme: it gives a page whose own ground
+         is see-through a dark ground from the browser, and the pill's window
+         must stay see-through around the pill, as it was. */
+      :root { color-scheme: normal; }
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body {
         background: transparent;
@@ -10,8 +21,8 @@
         user-select: none;
         -webkit-user-select: none;
         height: 100%;
-        font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
-        color: #fff;
+        font-family: var(--font);
+        color: var(--text);
       }
       body {
         display: flex;
@@ -42,14 +53,34 @@
         height: 22px;
         fill: rgba(255, 255, 255, 0.85);
       }
-      body[data-state="transcribing"] .mic-icon { fill: #ffb74d; }
+      body[data-state="transcribing"] .mic-icon { fill: var(--text-warn); }
 
+      /* The newest level is the bar at the right (the first one in the
+         markup: the row runs from right to left). Where the 32 bars have less
+         room than they need (Edit mode's chip stands beside them), the oldest
+         go, at the left, and each goes whole: a bar that does not fit wraps
+         to a second row, and only the first row shows. The cancel button
+         keeps its place inside the pill, and no bar is ever cut to a sliver.
+         The row is as high as the box whatever the bars' heights (::before),
+         so the bars stand on the box's middle line. */
       .waveform {
         flex: 1 1 auto;
+        min-width: 0;
         height: 28px;
         display: flex;
+        flex-direction: row-reverse;
+        flex-wrap: wrap;
         align-items: center;
-        gap: 3px;
+        align-content: flex-start;
+        gap: 0 3px;
+        overflow: hidden;
+      }
+      .waveform::before {
+        content: "";
+        flex: 0 0 0;
+        height: 28px;
+        /* It takes no room, and no gap either. */
+        margin-left: -3px;
       }
       .bar {
         flex: 1 1 0;
@@ -59,9 +90,9 @@
         border-radius: 2px;
         transition: height 80ms ease-out, background 200ms ease;
       }
-      body[data-state="recording"] .bar { background: #ff5c5c; }
+      body[data-state="recording"] .bar { background: var(--text-danger); }
       body[data-state="transcribing"] .bar {
-        background: rgba(255, 183, 77, 0.85);
+        background: var(--text-warn);
         animation: shimmer 1.2s ease-in-out infinite;
       }
       @keyframes shimmer {
@@ -71,83 +102,130 @@
 
       .cancel {
         flex: 0 0 auto;
-        width: 22px;
-        height: 22px;
+        width: 24px;
+        height: 24px;
         border-radius: 50%;
         background: rgba(255, 255, 255, 0.1);
         border: none;
-        color: #fff;
+        color: var(--text);
         font-size: 14px;
         line-height: 1;
         cursor: pointer;
         display: flex;
         align-items: center;
         justify-content: center;
-        transition: background 120ms ease;
       }
       .cancel:hover { background: rgba(255, 92, 92, 0.85); }
-      .cancel svg { width: 10px; height: 10px; stroke: #fff; }
+      .cancel svg { width: 10px; height: 10px; stroke: currentColor; }
+      /* What was said so far, on one line in the middle of the window. The
+         text grows with every segment Whisper sends, and what the user
+         watches is its end: a text that fits stands in the middle, a longer
+         one keeps its end in view and loses its beginning, which fades out
+         at the left. The line is a flex row that ends at its right edge
+         (justify-content) with the text as its one item; the item's auto
+         margins centre it while there is room and count as nothing once
+         there is none. The fade lies in the line's own left padding, where a
+         text that fits never stands.
+
+         The ground of a text state is solid (the window's card surface): on
+         the pill's own see-through ground the microphone, the bars and the
+         x showed faintly behind the words. It has the pill's own shape and
+         size (the window less the body's padding: 304 by 48 px, the same
+         round ends), so the pill keeps its outline from state to state.
+         As large as the window it was 320 by 64 px, and solid, the jump in
+         size showed. */
       .transcript {
         position: absolute;
-        inset: 0;
+        inset: 8px;
         display: flex;
         align-items: center;
-        justify-content: center;
-        padding: 0 18px;
+        padding: 0 4px;
         font-size: 12px;
-        font-weight: 500;
+        font-weight: 400;
         line-height: 1.3;
-        color: rgba(255, 255, 255, 0.95);
-        background: rgba(20, 20, 22, 0.92);
+        color: var(--text);
+        background: var(--surface);
         border-radius: 999px;
         border: 1px solid rgba(255, 255, 255, 0.08);
         opacity: 0;
         pointer-events: none;
-        text-overflow: ellipsis;
-        overflow: hidden;
         white-space: nowrap;
-        transition: opacity 120ms ease;
+        transition: opacity var(--ease);
+      }
+      .transcript-line {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        justify-content: flex-end;
+        padding: 0 16px;
+        overflow: hidden;
+        -webkit-mask-image: linear-gradient(to right, transparent, #000 16px);
+        mask-image: linear-gradient(to right, transparent, #000 16px);
+      }
+      .transcript-text {
+        flex: 0 0 auto;
+        margin: 0 auto;
       }
       body[data-state="transcribing"] .transcript,
       body[data-state="polishing"] .transcript { opacity: 1; }
-      /* AI cleanup: the Whisper text stays visible, labelled and gently pulsing. */
+      /* AI cleanup: the Whisper text stays visible, labelled and gently
+         pulsing. The text is done then: the label, and the text from its
+         start, ending in an ellipsis where it is longer than the line. */
       body[data-state="polishing"] .transcript {
-        justify-content: flex-start;
-        gap: 10px;
+        padding: 0 18px;
         animation: polish 1.4s ease-in-out infinite;
       }
       body[data-state="polishing"] .transcript::before {
         content: attr(data-phase);
         flex: 0 0 auto;
+        margin-right: 10px;
         padding: 3px 8px;
         border-radius: 999px;
-        background: rgba(124, 138, 255, 0.22);
-        color: #c9cfff;
-        font-size: 11px;
+        background: var(--accent-bg);
+        color: var(--text-accent);
+        font-size: 12px;
         font-weight: 600;
       }
+      body[data-state="polishing"] .transcript-line {
+        display: block;
+        padding: 0;
+        text-overflow: ellipsis;
+        -webkit-mask-image: none;
+        mask-image: none;
+      }
       @keyframes polish {
-        0%, 100% { color: rgba(255, 255, 255, 0.95); }
-        50% { color: rgba(255, 255, 255, 0.6); }
+        0%, 100% { color: var(--text); }
+        50% { color: var(--text-2); }
       }
+      /* Reduced motion: nothing in the pill moves; its states still change, at once. */
       @media (prefers-reduced-motion: reduce) {
-        body[data-state="polishing"] .transcript { animation: none; }
+        *,
+        *::before,
+        *::after {
+          animation: none !important;
+          transition: none !important;
+        }
       }
+      /* A notice has the pill's shape and size too (see .transcript). */
       .notice {
         position: absolute;
-        inset: 0;
+        inset: 8px;
         display: flex;
         align-items: center;
         justify-content: center;
         font-size: 12px;
-        font-weight: 500;
-        color: rgba(255, 255, 255, 0.95);
-        background: rgba(20, 20, 22, 0.92);
+        font-weight: 400;
+        color: var(--text);
+        background: var(--surface);
         border-radius: 999px;
         border: 1px solid rgba(255, 255, 255, 0.08);
+        /* A long notice takes two lines. */
+        padding: 0 18px;
+        line-height: 1.25;
+        text-align: center;
         opacity: 0;
         pointer-events: none;
-        transition: opacity 200ms ease;
+        transition: opacity var(--ease);
       }
       body[data-state="notice"] .notice { opacity: 1; }
 
@@ -159,15 +237,15 @@
         gap: 4px;
         padding: 3px 8px;
         border-radius: 999px;
-        background: rgba(124, 138, 255, 0.22);
-        color: #c9cfff;
-        font-size: 11px;
+        background: var(--accent-bg);
+        color: var(--text-accent);
+        font-size: 12px;
         font-weight: 600;
         white-space: nowrap;
       }
       body[data-edit="1"] .edit-chip { display: flex; }
-      body[data-edit="1"] .mic-icon { fill: #9aa5ff; }
-      body[data-edit="1"][data-state="recording"] .bar { background: #9aa5ff; }
+      body[data-edit="1"] .mic-icon { fill: var(--text-accent); }
+      body[data-edit="1"][data-state="recording"] .bar { background: var(--text-accent); }
 
       /* A meeting records: a small red dot, also between dictations (the
          window lets clicks through then, see recorder.rs rest_overlay). */
@@ -179,7 +257,7 @@
         width: 10px;
         height: 10px;
         border-radius: 50%;
-        background: #ff5c5c;
+        background: var(--text-danger);
         box-shadow: 0 0 0 2px rgba(20, 20, 22, 0.92);
         pointer-events: none;
       }
@@ -210,7 +288,7 @@
       </button>
     </div>
     <div class="notice" id="notice"></div>
-    <div class="transcript" id="transcript"></div>
+    <div class="transcript" id="transcript"><div class="transcript-line"><span class="transcript-text" id="transcript-text"></span></div></div>
     <div class="meeting-dot" id="meeting-dot" aria-hidden="true"></div>
     <script type="module">
       import { invoke } from "@tauri-apps/api/core";
@@ -232,11 +310,14 @@
       const BAR_COUNT = 32;
       const HISTORY = new Array(BAR_COUNT).fill(0);
       const waveform = document.getElementById("waveform");
+      // bars[i] shows HISTORY[i]: the last one is the newest level. In the
+      // markup the newest comes first (the row runs from right to left, and
+      // the bars that do not fit, the oldest, are the ones that wrap away).
       const bars = [];
       for (let i = 0; i < BAR_COUNT; i++) {
         const b = document.createElement("div");
         b.className = "bar";
-        waveform.appendChild(b);
+        waveform.prepend(b);
         bars.push(b);
       }
 
@@ -278,7 +359,7 @@
         if (state === "recording") {
           levelEventCount = 0;
           cumulative = "";
-          transcriptEl.textContent = "";
+          transcriptText.textContent = "";
         }
         if (state === "polishing") {
           const text = NOTICE_TEXT[pickLang()];
@@ -292,7 +373,10 @@
         else delete document.body.dataset.meeting;
       };
 
+      // The pill's text stands in a line of its own inside the box, so a long
+      // text keeps its end in view (see .transcript-line).
       const transcriptEl = document.getElementById("transcript");
+      const transcriptText = document.getElementById("transcript-text");
       let cumulative = "";
       listen("partial-transcript", (event) => {
         const p = event.payload || {};
@@ -304,7 +388,7 @@
           const seg = String(p.text || "").trim();
           if (seg) cumulative = (cumulative + " " + seg).trim();
         }
-        transcriptEl.textContent = cumulative;
+        transcriptText.textContent = cumulative;
       }).then(() => diag("partial-transcript listener registered"));
 
       const noticeEl = document.getElementById("notice");
@@ -337,29 +421,51 @@
           gpu_freed: "GPU freed", gpu_loading: "Loading models…", gpu_loaded: "Models loaded",
           gpu_failed: "Models could not be loaded",
           sb_hotkeys_off: "Sound hotkeys off", sb_hotkeys_on: "Sound hotkeys on",
-          mt_limit: "Meeting stopped at 4 hours", mt_no_model: "Download a Whisper model first",
+          mt_limit: "Meeting stopped at 4 hours", mt_no_model: "Download a speech model first",
           mt_disk_full: "Not enough disk space for a meeting", mt_pc_check: "Wait for the PC check to finish",
           mt_failed: "The meeting could not start",
+          no_model: "No speech model yet. Open RudariFlow to download one.", cancel: "Cancel recording",
         },
         de: {
           audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar", polishing: "Überarbeitung",
           mic_missing: "Mikrofon nicht gefunden", no_mic: "Kein Mikrofon gefunden",
-          rewrite_missing: "Letztes Diktat hier nicht gefunden", rewrite_needs_ai: "Umschreiben braucht KI-Korrektur und Bearbeiten",
+          rewrite_missing: "Letztes Diktat hier nicht gefunden", rewrite_needs_ai: "Umschreiben braucht KI-Korrektur und Bearbeiten per Stimme",
           rewrite_game: "Kein Umschreiben, solange die GPU für ein Spiel frei ist",
           edit_game: "Kein Bearbeiten, solange die GPU für ein Spiel frei ist",
           editing: "Bearbeiten", word: "Wort", words: "Wörter", edit_failed: "Bearbeiten ging nicht, Text unverändert",
           gpu_freed: "GPU freigegeben", gpu_loading: "Modelle werden geladen…", gpu_loaded: "Modelle geladen",
           gpu_failed: "Modelle konnten nicht geladen werden",
           sb_hotkeys_off: "Sound-Tastenkürzel aus", sb_hotkeys_on: "Sound-Tastenkürzel ein",
-          mt_limit: "Meeting nach 4 Stunden beendet", mt_no_model: "Zuerst ein Whisper-Modell herunterladen",
+          mt_limit: "Meeting nach 4 Stunden beendet", mt_no_model: "Zuerst ein Sprachmodell herunterladen",
           mt_disk_full: "Zu wenig Speicherplatz für ein Meeting", mt_pc_check: "Erst den PC-Check abwarten",
           mt_failed: "Das Meeting konnte nicht starten",
+          no_model: "Noch kein Sprachmodell. Öffne RudariFlow und lade eines herunter.", cancel: "Aufnahme abbrechen",
         },
       };
+      // The pill speaks the app's Display Language (Settings > General);
+      // before the first settings were saved, Windows' language.
+      let uiLanguage = "";
       function pickLang() {
-        const nav = (navigator.language || "en").toLowerCase();
-        return nav.startsWith("de") ? "de" : "en";
+        const lang = (uiLanguage || navigator.language || "en").toLowerCase();
+        return lang.startsWith("de") ? "de" : "en";
       }
+      function applyLanguage(lang) {
+        uiLanguage = String(lang || "");
+        // The document says which language it is in, as the main window does: a screen reader pronounces by it.
+        document.documentElement.lang = pickLang();
+        const cancel = document.getElementById("cancel");
+        cancel.title = NOTICE_TEXT[pickLang()].cancel;
+        cancel.setAttribute("aria-label", cancel.title);
+      }
+      invoke("get_settings").then((s) => applyLanguage(s && s.uiLanguage)).catch(() => applyLanguage(""));
+      listen("ui-language", (event) => applyLanguage(event.payload));
+
+      // A dictation could not start: "no_model" (no speech model downloaded yet).
+      listen("speech-notice", (event) => {
+        const text = { no_model: NOTICE_TEXT[pickLang()].no_model }[event.payload];
+        diag(`speech-notice received (${event.payload})`);
+        if (text) showNotice(text, 3200);
+      });
 
       listen("audio-empty", () => {
         diag("audio-empty received");

@@ -5,13 +5,31 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { setLang, getLang, detectDefaultLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
-import { initAiSettings, renderAiSettings, type AppRule } from "./ai-settings";
-import { initDictionary, renderDictionary } from "./dictionary";
+import { aiActivity, aiModelInfo, aiModelNamed, aiSummary, initAiSettings, refreshAiStatus, setUpAi, showAiSettings, type AppRule } from "./ai-settings";
+import { addWords, clearDictionaryStatus, initDictionary, renderDictionary } from "./dictionary";
+import { historyCount, initHistory, refreshHistory, renderHistory } from "./history";
+import { forgetHomeSaid, initHome, renderHome } from "./home";
 import { initFiles, renderFiles } from "./files";
 import { initMeetingQuit, initMeetings, renderMeetings } from "./meetings";
 import { playStart, playStop, playDiscard, setVolume } from "./sounds";
 import { hotkeyLabel, startCapture } from "./hotkey-capture";
 import { mountBoard } from "./soundboard/board";
+import { announceRoute, currentRoute, go, initShell, onRoute, prefs, reveal, startOn, updatePrefs } from "./shell";
+import { downloadFailure, NOT_STARTED, showProgress, type DownloadProgress } from "./progress";
+import { modelLabel, modelToSave, speechModel, SPEECH_MODELS } from "./models.ts";
+import { setDownload } from "./activity";
+import { currentSpeech, initStatus, onStatus, refreshSpeech, renderStatus } from "./status-view";
+import { recommend, setup, type Recommendation } from "./setup.ts";
+import { sizeText } from "./size.ts";
+import { askOnce, startWaitOver, stateOnce } from "./start";
+import { initClamps, initHints, nameRows } from "./rows";
+import { deleteButton, FailureSaid, repaintDeletes } from "./confirm-delete";
+import { initReplacements, readReplacements, renderReplacements, type Replacement } from "./replacements";
+
+// The language first, from what is known without the backend: the one this
+// window was last shown in, else Windows' own. The page's static text is in
+// it from the first moment; the settings follow when they are read.
+setLang(prefs.lang || detectDefaultLang());
 
 interface Settings {
   microphone: string;
@@ -53,39 +71,12 @@ interface Settings {
   idleUnloadMinutes: number;
 }
 
-interface Replacement {
-  from: string;
-  to: string;
-}
-
-interface HistoryEntry {
-  id: number;
-  text: string;
-  durationMs: number;
-  model: string;
-  hasAudio: boolean;
-  /** Text before AI cleanup, when the AI changed it. */
-  raw?: string | null;
-  /** Program the dictation went into, e.g. "whatsapp.root". */
-  app?: string;
-  /** What was said in Edit mode; `raw` then holds the selected text. */
-  edit?: string | null;
-}
-
 interface MicDevice {
   name: string;
   is_default: boolean;
 }
 
-interface DownloadProgress {
-  downloaded: number;
-  total: number;
-  percent: number;
-}
-
 // DOM elements
-const statusDot = document.getElementById("status-dot")!;
-const statusText = document.getElementById("status-text")!;
 const micSelect = document.getElementById("mic-select") as HTMLSelectElement;
 const engineLocal = document.getElementById("engine-local")!;
 const engineCloud = document.getElementById("engine-cloud")!;
@@ -100,27 +91,19 @@ const autostartToggle = document.getElementById("autostart-toggle") as HTMLInput
 const downloadBtn = document.getElementById("download-btn")!;
 const downloadProgress = document.getElementById("download-progress")!;
 const progressFill = document.getElementById("progress-fill")!;
+/** The speech model's bar with its numbers (src/progress.ts). */
+const speechProgress = { bar: document.getElementById("progress-bar")!, fill: progressFill, numbers: document.getElementById("download-numbers")! };
+const modelNote = document.getElementById("model-note")!;
+/** What a screen reader hears of the speech model's download: its start and its end. */
+const downloadLive = document.getElementById("download-live")!;
+const cloudNote = document.getElementById("engine-cloud-note")!;
 const groqKey = document.getElementById("groq-key") as HTMLInputElement;
 const modeToggle = document.getElementById("mode-toggle")!;
 const modePtt = document.getElementById("mode-ptt")!;
-const hotkeyText = document.getElementById("hotkey-text")!;
-const hotkeyBtn = document.getElementById("hotkey-btn") as HTMLButtonElement;
-const pasteLastBtn = document.getElementById("paste-last-btn") as HTMLButtonElement;
-const pasteLastText = document.getElementById("paste-last-text")!;
-const pasteLastClear = document.getElementById("paste-last-clear") as HTMLButtonElement;
 const pcCheckBtn = document.getElementById("pc-check-btn") as HTMLButtonElement;
 const pcCheckResult = document.getElementById("pc-check-result")!;
 const pcCheckReport = document.getElementById("pc-check-report")!;
 const pcCheckCopy = document.getElementById("pc-check-copy") as HTMLButtonElement;
-const rewriteLastBtn = document.getElementById("rewrite-last-btn") as HTMLButtonElement;
-const rewriteLastText = document.getElementById("rewrite-last-text")!;
-const rewriteLastClear = document.getElementById("rewrite-last-clear") as HTMLButtonElement;
-const freeGpuBtn = document.getElementById("free-gpu-btn") as HTMLButtonElement;
-const freeGpuText = document.getElementById("free-gpu-text")!;
-const freeGpuClear = document.getElementById("free-gpu-clear") as HTMLButtonElement;
-const meetingHotkeyBtn = document.getElementById("meeting-hotkey-btn") as HTMLButtonElement;
-const meetingHotkeyText = document.getElementById("meeting-hotkey-text")!;
-const meetingHotkeyClear = document.getElementById("meeting-hotkey-clear") as HTMLButtonElement;
 const sendCommandSelect = document.getElementById("send-command-select") as HTMLSelectElement;
 const muteAudioToggle = document.getElementById("mute-audio-toggle") as HTMLInputElement;
 const gameFreeToggle = document.getElementById("game-free-toggle") as HTMLInputElement;
@@ -128,33 +111,28 @@ const gameFreeStatus = document.getElementById("game-free-status")!;
 const idleUnloadSelect = document.getElementById("idle-unload-select") as HTMLSelectElement;
 const unusedModelList = document.getElementById("unused-model-list")!;
 const unusedModelEmpty = document.getElementById("unused-model-empty")!;
-const replacementList = document.getElementById("replacement-list")!;
-const replacementEmpty = document.getElementById("replacement-empty")!;
-const replacementAdd = document.getElementById("replacement-add") as HTMLButtonElement;
 const historyModeSelect = document.getElementById("history-mode-select") as HTMLSelectElement;
-const historyList = document.getElementById("history-list")!;
-const historyEmpty = document.getElementById("history-empty")!;
-const historyCount = document.getElementById("history-count")!;
-const historyClear = document.getElementById("history-clear") as HTMLButtonElement;
-const soundboardSection = document.getElementById("section-soundboard")!;
-// The Soundboard tab; the same component runs in the pop-out window.
+/** Every speech model with its one line, behind the row's "More". */
+const modelMore = document.getElementById("model-more")!;
+/** A save the backend refused (or settings that did not load, or a backend that does not answer): the notice at the bottom of every page, and the line that reads it out. */
+const saveNotice = document.getElementById("save-notice")!;
+const saveNoticeText = document.getElementById("save-notice-text")!;
+const saveLive = document.getElementById("save-live")!;
+/** The pages whose controls are made of the settings: they rest until those are read. */
+const settingsPages = ["section-home", "section-files", "section-settings"].map((id) => document.getElementById(id)!);
+// The Soundboard page; the same component runs in the pop-out window.
 const soundboard = mountBoard(document.getElementById("sb-root")!, { popOut: false });
 
-// Section navigation
-const navItems = document.querySelectorAll(".nav-item");
-const sections = document.querySelectorAll(".content-section");
-
-function showSection(target: string) {
-  navItems.forEach((n) => n.classList.toggle("active", n.getAttribute("data-section") === target));
-  sections.forEach((s) => s.classList.remove("active"));
-  document.getElementById(`section-${target}`)?.classList.add("active");
-  soundboard.setActive(target === "soundboard");
-  if (target === "meetings") void renderMeetings();
-  if (target === "engine") void renderUnusedModels();
-}
-
-navItems.forEach((item) => {
-  item.addEventListener("click", () => showSection(item.getAttribute("data-section") ?? "general"));
+// Sections and Settings tabs (src/shell.ts); what a page needs when it is shown.
+initShell();
+initHints();
+initClamps();
+onRoute((now) => {
+  // Home's setup listens to the microphone only while it is on screen.
+  renderHome();
+  soundboard.setActive(now.section === "soundboard");
+  if (now.section === "meetings") void renderMeetings();
+  if (now.section === "settings" && now.tab === "models") void renderUnusedModels();
 });
 
 // Window drag — titlebar and sidebar empty space
@@ -169,11 +147,28 @@ titlebar.addEventListener("mousedown", (e) => {
 
 sidebar.addEventListener("mousedown", (e) => {
   if ((e.target as HTMLElement).closest("button, select, input, a, .nav-item")) return;
+  // The sidebar's own scrollbar (a very low window) scrolls, it does not move the window.
+  if (e.target === sidebar && e.offsetX >= sidebar.clientWidth) return;
   appWindow.startDragging();
 });
 
 let currentSettings: Settings;
+/** The settings were read and every control shows them. Until then nothing
+ *  is saved (a save reads the controls, and controls that are not filled
+ *  yet would be saved as empty: the microphone, the model, every
+ *  replacement and rule), and the pages made of settings rest (`inert`). */
+let settingsLoaded = false;
+/** The settings as the backend has them: as read, then as the last save
+ *  that was answered sent them. A save that is refused puts the controls
+ *  back on these. */
+let savedSettings: Settings | null = null;
 let mics: MicDevice[] = [];
+/** The microphones were listed (an empty list is then no microphone). */
+let micsListed = false;
+/** The microphone the backend has: as loaded, then as the last save that was
+ *  answered sent it. Home's level opens what is saved, so it follows this
+ *  and not the dropdown. */
+let savedMicrophone = "default";
 
 /// "default" follows whatever Windows uses as input. A saved device that is
 /// unplugged stays listed, so the dropdown never goes blank and a later save
@@ -188,77 +183,218 @@ function renderMicOptions() {
   };
   micSelect.innerHTML = "";
   const systemDefault = mics.find((m) => m.is_default);
-  add("default", systemDefault ? `${t("mic_system_default")} (${systemDefault.name})` : t("mic_system_default"));
+  // "System default: Microphone (Fast Track)": a name in brackets after it would end in two closing brackets.
+  add("default", systemDefault ? `${t("mic_system_default")}: ${systemDefault.name}` : t("mic_system_default"));
   for (const mic of mics) add(mic.name, mic.name);
   if (saved !== "default" && !mics.some((m) => m.name === saved)) {
-    add(saved, `${saved} (${t("mic_not_connected")})`);
+    // Before the microphones were listed nobody knows whether it is connected: its name alone.
+    add(saved, micsListed ? `${saved} (${t("mic_not_connected")})` : saved);
+    // Home tints its microphone line for it.
+    if (micsListed) (micSelect.lastElementChild as HTMLOptionElement).dataset.missing = "true";
   }
   micSelect.value = saved;
 }
 
-async function loadSettings() {
-  currentSettings = await invoke<Settings>("get_settings");
-
-  // UI language: auto-detect on first launch (empty string), otherwise use saved
-  if (!currentSettings.uiLanguage) {
-    currentSettings.uiLanguage = detectDefaultLang();
-    await invoke("save_settings", { settings: currentSettings });
-  }
-  uiLanguageSelect.value = currentSettings.uiLanguage;
-  setLang(currentSettings.uiLanguage);
-  populateLanguageSelect(languageSelect, getLang(), t("language_auto"));
-
-  // Volume
-  volumeSlider.value = String(currentSettings.volume);
-  setVolume(currentSettings.volume);
-
-  // Autostart
-  autostartToggle.checked = currentSettings.autostart;
-
-  // Populate mic dropdown
+/** The microphones Windows has now; the dropdown and the status follow. */
+async function listMicrophones() {
   mics = await invoke<MicDevice[]>("list_microphones");
+  micsListed = true;
+  // The dropdown shows the saved microphone: drawn once the settings are there (showSettings draws it then).
+  if (settingsLoaded) renderMicOptions();
+  renderStatus();
+}
+// A microphone plugged in while the window was away (the first run waits for
+// one). Only while none is listed: asking holds the backend up for a moment
+// and draws the dropdown again, also under an open one. And not before the
+// settings are loaded, which list the microphones themselves.
+window.addEventListener("focus", () => {
+  if (!settingsLoaded || !micsListed || mics.length > 0) return;
+  void listMicrophones().catch(console.error);
+});
+
+/** Read the settings and show them. Everything from the answer to the last
+ *  control that is filled happens in one go, with nothing waited for in
+ *  between: while it waited for the microphones and the models here, a click
+ *  on any setting saved the controls that were still empty (the microphone
+ *  as "", the model as "small", no replacement, no rule). What else the
+ *  start asks the backend is asked beside this, not inside it. */
+async function loadSettings() {
+  const loaded = await invoke<Settings>("get_settings");
+  savedSettings = structuredClone(loaded);
+  currentSettings = loaded;
+  // The Display Language: Windows' own on the first launch (an empty string), saved below.
+  const firstLanguage = !currentSettings.uiLanguage;
+  if (firstLanguage) currentSettings.uiLanguage = getLang();
+  // Known from here on: the parts that draw from the settings do. Nothing
+  // can come between this and the last control: no step below waits.
+  settingsLoaded = true;
+  try {
+    showSettings();
+  } catch (err) {
+    settingsLoaded = false;
+    throw err;
+  }
+  // Every control shows its setting: the pages may be used, and a save reads what is true.
+  for (const page of settingsPages) page.inert = false;
+  document.body.dataset.loaded = "true";
+  // Nothing the user chose: a failure is the log's, and the next save carries the language.
+  if (firstLanguage) store().catch((err) => console.error("saving the display language failed:", err));
+}
+
+/** Every control on what the settings say, and every text in their language:
+ *  after they were read, and after a save the backend refused (then they are
+ *  the saved ones again). Nothing is asked and nothing is waited for. */
+function showSettings() {
+  const s = currentSettings;
+  savedMicrophone = (savedSettings ?? s).microphone || "default";
+  uiLanguageSelect.value = s.uiLanguage;
+  setLang(s.uiLanguage);
+  volumeSlider.value = String(s.volume);
+  setVolume(s.volume);
+  autostartToggle.checked = s.autostart;
+  // The key before the engine: the cloud engine's notice reads the field
+  // (set after it, the notice warned of a missing key for a moment at every start).
+  groqKey.value = s.groqApiKey;
+  setEngine(s.engine);
+  // A model that downloads keeps the dropdown: its end saves or reverts the choice itself.
+  if (!downloadInFlight) {
+    modelSelect.value = s.whisperModel;
+    verifiedModel = s.whisperModel;
+  }
+  lastSavedModel = s.whisperModel;
+  gpuBackendSelect.value = s.gpuBackend || "auto";
+  gameFreeToggle.checked = s.freeGpuForGames ?? false;
+  idleUnloadSelect.value = String(s.idleUnloadMinutes ?? 0);
+  choose(modeToggle, s.recordingMode === "toggle");
+  choose(modePtt, s.recordingMode === "push-to-talk");
+  sendCommandSelect.value = s.sendCommand || "off";
+  muteAudioToggle.checked = s.muteAudio;
+  historyModeSelect.value = s.history || "audio";
+  // The spoken language's choices are written in the Display Language: filled, then set.
+  populateLanguageSelect(languageSelect, getLang(), t("language_auto"));
+  languageSelect.value = s.language;
+  showTexts();
+}
+
+/** Everything the page writes in the Display Language, again: the choices of
+ *  the selects, the rows built from the settings, and what is drawn from
+ *  what the backend last answered. Nothing is asked: each part draws what it
+ *  knows, so a language change waits for nothing and no failing question
+ *  can leave half the window in the old language. */
+function showTexts() {
+  if (prefs.lang !== getLang()) updatePrefs((p) => (p.lang = getLang()));
+  nameRows();
+  // "Delete history" and "Clear" were given their words when their pages
+  // were wired, before the language was known (src/confirm-delete.ts).
+  repaintDeletes();
+  // (It keeps the choice it had.)
+  populateLanguageSelect(languageSelect, getLang(), t("language_auto"));
   renderMicOptions();
-
-  // Engine
-  setEngine(currentSettings.engine);
-
-  // Model
-  modelSelect.value = currentSettings.whisperModel;
-  lastSavedModel = currentSettings.whisperModel;
-  await refreshModelStatusUI();
-
-  // Language
-  languageSelect.value = currentSettings.language;
-
-  // GPU backend
-  gpuBackendSelect.value = currentSettings.gpuBackend || "auto";
-  refreshDetectedGpus();
-
-  // Groq key
-  groqKey.value = currentSettings.groqApiKey;
-
-  // GPU management
-  gameFreeToggle.checked = currentSettings.freeGpuForGames ?? false;
-  idleUnloadSelect.value = String(currentSettings.idleUnloadMinutes ?? 0);
-  invoke<boolean>("game_free_state").then(showGameFree).catch(console.error);
-  void renderUnusedModels();
+  renderCloudNote();
+  renderDetectedGpus();
+  renderDownloadButton();
+  renderModels();
+  renderPcCheck();
+  drawUnusedModels();
+  renderReplacements();
+  showAiSettings();
   renderDictionary();
   renderFiles();
-  void soundboard.refresh();
-
-  // Recording mode
-  setRecordingMode(currentSettings.recordingMode);
-
-  // Hotkeys
+  renderHistory();
+  soundboard.redraw();
+  // The hotkeys, then the status, which draws Home.
   renderHotkeys();
+  renderStatus();
+}
 
-  // Send command, mute, replacements, history
-  sendCommandSelect.value = currentSettings.sendCommand || "off";
-  muteAudioToggle.checked = currentSettings.muteAudio;
-  renderReplacements();
-  historyModeSelect.value = currentSettings.history || "audio";
-  await refreshHistory();
-  await renderAiSettings();
+// ── Saving ────────────────────────────────────────────
+
+/** The saves that are out, and their numbers: of two answers, the later save's is what the backend has. */
+let savesOut = 0;
+let saveSent = 0;
+let saveAnswered = 0;
+
+/** Send the settings as they are now; throws what the backend answers. The
+ *  one way to the backend's `save_settings`: every save of the window goes
+ *  through here (the controls, the rules, the dictionary, Files' and
+ *  Meetings' own values). Not before the settings were read. */
+async function store(): Promise<void> {
+  if (!settingsLoaded) throw new Error("the settings are not loaded yet");
+  const sent = structuredClone(currentSettings);
+  const n = ++saveSent;
+  savesOut++;
+  try {
+    await invoke("save_settings", { settings: sent });
+  } finally {
+    savesOut--;
+  }
+  if (n < saveAnswered) return;
+  saveAnswered = n;
+  savedSettings = sent;
+  savedMicrophone = sent.microphone || "default";
+  // A save that works ends what was said of one that did not.
+  hideNotice();
+}
+
+// The notice lies over the bottom of the page: every page leaves that much
+// free at its end for as long as it shows (styles/shell.css), so its last
+// row can be scrolled clear of the notice. As high as the notice is now: its
+// words wrap with the window's width.
+new ResizeObserver(() => {
+  const high = saveNotice.offsetHeight;
+  document.getElementById("content")!.style.setProperty("--notice-room", high ? `${high + 12}px` : "0px");
+}).observe(saveNotice);
+
+/** Show the notice at the bottom of the page, and have it read out. */
+function sayNotice(text: string) {
+  saveNoticeText.textContent = text;
+  saveNotice.classList.remove("hidden");
+  // Written anew also where the words are the same (a second save failed).
+  saveLive.textContent = "";
+  saveLive.textContent = text;
+}
+
+function hideNotice() {
+  saveNotice.classList.add("hidden");
+  saveNoticeText.textContent = "";
+  saveLive.textContent = "";
+}
+document.getElementById("save-notice-close")!.addEventListener("click", () => {
+  // The button goes with its notice: the focus moves to the page's heading.
+  const held = saveNotice.contains(document.activeElement);
+  hideNotice();
+  if (held) document.querySelector<HTMLElement>(".content-section.active .section-title")?.focus();
+});
+
+/** A save was refused: say so in the page, and put every control back on
+ *  what is saved. Before, the control went on showing the new value and
+ *  only the console heard of it. Not while a later save is still out: that
+ *  one carries this change too, and its answer decides. */
+function saveFailed(err: unknown) {
+  console.error("saving the settings failed:", err);
+  if (savesOut > 0 || !savedSettings) return;
+  currentSettings = structuredClone(savedSettings);
+  showSettings();
+  sayNotice(t("save_failed").replace("{reason}", () => String(err)));
+}
+
+/** Save, and report a refusal in the page (saveFailed). True when it is saved. */
+async function storeOrSay(): Promise<boolean> {
+  if (!settingsLoaded) return false;
+  try {
+    await store();
+    return true;
+  } catch (err) {
+    saveFailed(err);
+    return false;
+  }
+}
+
+/** A value that is no control of the Settings pages (Files' speakers, a meeting's reminders), saved with the rest. */
+function savePatch(patch: Partial<Settings>): Promise<boolean> {
+  if (!settingsLoaded) return Promise.resolve(false);
+  Object.assign(currentSettings, patch);
+  return storeOrSay();
 }
 
 interface GpuDevice {
@@ -269,111 +405,314 @@ interface GpuDevice {
   memory_mib: number;
 }
 
+/** The graphics cards as the backend last listed them; null until it answered. */
+let detectedGpus: GpuDevice[] | null = null;
+
+/** The graphics cards, looked at once for the whole window (src/start.ts):
+ *  Home's setup asks for them too, and each look probes CUDA and Vulkan. */
 async function refreshDetectedGpus() {
-  const el = document.getElementById("gpu-detected")!;
   try {
-    const gpus = await invoke<GpuDevice[]>("detect_gpus");
-    // An iGPU reports shared system memory, so only dedicated cards count.
-    const dedicated = gpus.filter((g) => !g.integrated);
-    const vramGb = Math.max(0, ...dedicated.map((g) => g.memory_mib / 1024));
-    if (gpus.length === 0) {
-      el.textContent = `${t("gpu_detected_none")}. ${t("gpu_hint_cpu")}`;
-      return;
-    }
-    // An NVIDIA card is listed once per API; group the APIs by card name.
-    const byName = new Map<string, string[]>();
-    for (const g of gpus) {
-      const apis = byName.get(g.name) ?? [];
-      apis.push(g.api === "Cuda" ? "CUDA" : "Vulkan");
-      byName.set(g.name, apis);
-    }
-    const list = [...byName].map(([name, apis]) => `${name} (${apis.join(", ")})`);
-    let hint = "";
-    if (dedicated.length === 0) {
-      hint = t("gpu_hint_cpu");
-    } else if (vramGb <= 8.5) {
-      hint = t("gpu_hint_small").replace("{gb}", String(Math.round(vramGb)));
-    }
-    el.textContent = `${t("gpu_detected")}: ${list.join("; ")}. ${hint}`.trim();
+    detectedGpus = await askOnce<GpuDevice[]>("detect_gpus");
+    renderDetectedGpus();
+    // Which speech model is recommended for this PC is known now.
+    renderModels();
   } catch (e) {
     console.error("detect_gpus failed:", e);
   }
 }
 
+/** The models recommended for this PC's graphics card (the rule of the first
+ *  run's step 2, src/setup.ts); null until the cards are known. */
+function recommendation(): Recommendation | null {
+  return detectedGpus ? recommend(detectedGpus) : null;
+}
+
+/** The "Detected: …" line under GPU backend, from the list that is known
+ *  (looking at the cards again can take seconds): drawn again after a
+ *  change of the Display Language. */
+function renderDetectedGpus() {
+  const el = document.getElementById("gpu-detected")!;
+  const gpus = detectedGpus;
+  if (!gpus) return;
+  // An iGPU reports shared system memory, so only dedicated cards count.
+  const dedicated = gpus.filter((g) => !g.integrated);
+  const vramGb = Math.max(0, ...dedicated.map((g) => g.memory_mib / 1024));
+  if (gpus.length === 0) {
+    el.textContent = `${t("gpu_detected_none")}. ${t("gpu_hint_cpu")}`;
+    return;
+  }
+  // An NVIDIA card is listed once per API; group the APIs by card name.
+  const byName = new Map<string, string[]>();
+  for (const g of gpus) {
+    const apis = byName.get(g.name) ?? [];
+    apis.push(g.api === "Cuda" ? "CUDA" : "Vulkan");
+    byName.set(g.name, apis);
+  }
+  const list = [...byName].map(([name, apis]) => `${name} (${apis.join(", ")})`);
+  let hint = "";
+  if (dedicated.length === 0) {
+    hint = t("gpu_hint_cpu");
+  } else if (vramGb <= 8.5) {
+    hint = t("gpu_hint_small").replace("{gb}", () => String(Math.round(vramGb)));
+  }
+  el.textContent = `${t("gpu_detected")}: ${list.join("; ")}. ${hint}`.trim();
+}
+
+/** A segmented choice: the chosen button is `active` and pressed. */
+function choose(button: HTMLElement, on: boolean) {
+  button.classList.toggle("active", on);
+  button.setAttribute("aria-pressed", String(on));
+}
+
 function setEngine(engine: string) {
+  if (!currentSettings) return;
   currentSettings.engine = engine;
-  engineLocal.classList.toggle("active", engine === "local");
-  engineCloud.classList.toggle("active", engine === "cloud");
+  choose(engineLocal, engine === "local");
+  choose(engineCloud, engine === "cloud");
   localSettings.classList.toggle("hidden", engine !== "local");
   cloudSettings.classList.toggle("hidden", engine !== "cloud");
+  renderCloudNote();
 }
+
+/** The speech model's row is gone with the cloud engine: the notice in its
+ *  place says where the engine is. Without the key nothing is transcribed:
+ *  then it says that, in the colour of a warning, with the way to the key
+ *  field (it is in the Advanced fold, which may be closed). */
+function renderCloudNote() {
+  if (!currentSettings) return;
+  const keyed = groqKey.value.trim() !== "";
+  cloudNote.classList.toggle("hidden", currentSettings.engine !== "cloud");
+  if (keyed) delete cloudNote.dataset.tone;
+  else cloudNote.dataset.tone = "warn";
+  const text = document.getElementById("engine-cloud-text")!;
+  const key = keyed ? "cloud_note" : "cloud_note_no_key";
+  text.setAttribute("data-i18n", key);
+  text.textContent = t(key);
+  document.getElementById("engine-cloud-key")!.classList.toggle("hidden", keyed);
+}
+document.getElementById("engine-cloud-key")!.addEventListener("click", () => reveal("groq-key"));
 
 function setRecordingMode(mode: string) {
+  if (!currentSettings) return;
   currentSettings.recordingMode = mode;
-  modeToggle.classList.toggle("active", mode === "toggle");
-  modePtt.classList.toggle("active", mode === "push-to-talk");
+  choose(modeToggle, mode === "toggle");
+  choose(modePtt, mode === "push-to-talk");
+  // Home says how to dictate: "Hold …" or "Press …".
+  renderHome();
 }
 
-async function isCurrentModelDownloaded(): Promise<boolean> {
+/** Is this speech model on disk? Without an id: the one the dropdown is on. */
+async function isModelDownloaded(model = modelSelect.value): Promise<boolean> {
   return await invoke<boolean>("check_model_downloaded", {
-    modelSize: modelSelect.value,
+    modelSize: model,
   });
 }
 
+/** The Download button shows only while the chosen model is missing (a
+ *  downloaded one has its tick in the list), with the model's note under the label. */
 async function refreshModelStatusUI() {
-  const downloaded = await isCurrentModelDownloaded();
-  if (downloaded) {
-    downloadBtn.textContent = "\u2713";
-    downloadBtn.removeAttribute("data-i18n");
-  } else {
-    downloadBtn.setAttribute("data-i18n", "download");
-    downloadBtn.textContent = t("download");
-  }
-  (downloadBtn as HTMLButtonElement).disabled = downloaded;
+  const downloaded = await isModelDownloaded();
+  renderDownloadButton();
+  // A download that runs keeps its button as it is (this is also called on a
+  // language change): resting where Download was pressed, and not there at
+  // all where the dropdown started it.
+  if (!downloadInFlight) downloadBtn.classList.toggle("hidden", downloaded);
+  (downloadBtn as HTMLButtonElement).disabled = downloadInFlight;
+  renderModelNote();
   await refreshModelDropdownLabels();
 }
 
+/** The speech models that are on disk, as the backend last answered; null until it did. */
+let onDisk: Set<string> | null = null;
+
+/** The speech model whose download did not finish. The row says so until
+ *  the next choice or a download that works; a new try starts clean. */
+let downloadFailed: string | null = null;
+/** Why it did not finish, as the backend said it: a full disk is not a bad connection. */
+let downloadReason = "";
+
+/** The failure's sentence with its reason (src/progress.ts); `name`: the model with its size. */
+const failureSaid = (name: string) => downloadFailure(name, downloadReason);
+
+/** What was said of the last download is over: the row's failure, and the
+ *  line a screen reader was given. That line is not on screen, but someone
+ *  who reads the page with a screen reader still finds it: left alone, it
+ *  went on saying an old failure under a row that no longer shows one. */
+function forgetDownload() {
+  downloadFailed = null;
+  downloadReason = "";
+  downloadLive.textContent = "";
+}
+
+/** The one line about the model the dropdown is on. After a download that
+ *  did not finish it says that instead, in the colour of an error: which
+ *  model, and how to try again. The dropdown is back on the model that
+ *  works by then (a model is saved only once it is there), so "Retry"
+ *  stands in the line; where the dropdown is still on the model that
+ *  failed, the Download button beside it reads "Retry". */
+function renderModelNote() {
+  if (downloadFailed === null) {
+    const note = speechModel(modelSelect.value).note;
+    let text = note ? t(note) : "";
+    // The model the settings name is not on this PC (a first run, a file
+    // that is gone): the row says which one is recommended here and why.
+    // The dropdown itself stays on what the settings say: no setting
+    // changes without the user's word.
+    const best = recommendation();
+    if (best && onDisk && !onDisk.has(modelSelect.value) && !downloadInFlight) {
+      const named = modelLabel(best.model).replace(/ /g, "\u00a0");
+      const why = best.gpu ? t("setup_model_for").replace("{gpu}", () => best.gpu).replace("{model}", () => named) : t("setup_model_cpu").replace("{model}", () => named);
+      text = `${text} ${why}.`.trim();
+    }
+    modelNote.textContent = text;
+    delete modelNote.dataset.tone;
+    return;
+  }
+  // The name with its size stays on one line.
+  const name = modelLabel(downloadFailed).replace(/ /g, "\u00a0");
+  modelNote.textContent = failureSaid(name);
+  modelNote.dataset.tone = "error";
+  if (modelSelect.value === downloadFailed) return;
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "link-btn";
+  retry.textContent = t("retry");
+  retry.setAttribute("aria-label", t("setup_model_retry"));
+  retry.addEventListener("click", () => {
+    if (downloadFailed === null || downloadInFlight) return;
+    // The dropdown's own way: download it, and save the choice once it is there.
+    // This button goes with the note: the keyboard focus moves to the dropdown.
+    modelSelect.value = downloadFailed;
+    modelSelect.focus();
+    void chooseModel();
+  });
+  modelNote.append(" ", retry);
+}
+
+/** The Download button's words and its name ("Download" alone does not say
+ *  what): "Retry" after the download of the model the dropdown is on did not finish. */
+function renderDownloadButton() {
+  const again = downloadFailed !== null && downloadFailed === modelSelect.value;
+  downloadBtn.setAttribute("data-i18n", again ? "retry" : "download");
+  downloadBtn.textContent = t(again ? "retry" : "download");
+  downloadBtn.setAttribute("aria-label", t(again ? "setup_model_retry" : "setup_model_get"));
+}
+
+/** Ask which speech models are on disk, and draw what follows from it. */
 async function refreshModelDropdownLabels() {
-  const opts = Array.from(modelSelect.options) as HTMLOptionElement[];
-  await Promise.all(opts.map(async (o) => {
-    const ok = await invoke<boolean>("check_model_downloaded", { modelSize: o.value });
-    const key = o.getAttribute("data-i18n");
-    const base = key ? t(key) : (o.dataset.baseText ?? o.textContent ?? "");
-    if (!o.dataset.baseText) o.dataset.baseText = base;
-    o.textContent = ok ? `${base} \u2713` : base;
-  }));
+  const ids = SPEECH_MODELS.map((m) => m.id);
+  const there = await Promise.all(ids.map((id) => invoke<boolean>("check_model_downloaded", { modelSize: id })));
+  onDisk = new Set(ids.filter((_, i) => there[i]));
+  renderModels();
+}
+
+/** What the row says of the models, from what is known: the dropdown's
+ *  options, the note under the label and the list behind "More". */
+function renderModels() {
+  const best = recommendation()?.model;
+  // "Large v3 Turbo q8 · 870 MB · recommended ✓": name, size, the one for
+  // this PC's graphics card, and a tick when it is downloaded.
+  for (const o of Array.from(modelSelect.options)) {
+    const parts = [modelLabel(o.value)];
+    if (o.value === best) parts.push(t("model_recommended_short"));
+    o.textContent = parts.join(" \u00b7 ") + (onDisk?.has(o.value) ? " \u2713" : "");
+  }
+  renderModelNote();
+  // Every model with its one line, so that what "q5" is beside "q8" can be
+  // read without choosing it: choosing a model that is missing starts its
+  // download, of up to 2.9 GB.
+  modelMore.replaceChildren(
+    ...SPEECH_MODELS.map((m) => {
+      const item = document.createElement("span");
+      item.className = "model-list-item";
+      item.setAttribute("role", "listitem");
+      const name = document.createElement("span");
+      name.className = "model-list-name";
+      name.textContent = modelLabel(m.id);
+      item.append(name);
+      if (m.id === best) {
+        const mark = document.createElement("span");
+        mark.className = "model-list-mark";
+        mark.textContent = t("model_recommended_here");
+        item.append(" ", mark);
+      }
+      if (m.note) item.append(" ", t(m.note));
+      return item;
+    }),
+  );
 }
 
 let downloadInFlight = false;
 async function downloadCurrentModel(): Promise<boolean> {
   if (downloadInFlight) return false;
   downloadInFlight = true;
+  const model = modelSelect.value;
+  const name = modelLabel(model);
+  // The keyboard focus is on one of the row's controls: they rest while the
+  // download runs (a resting control cannot hold the focus), and "Retry" in
+  // the note goes with the failure it stood for.
+  const at = document.activeElement;
+  const focused = at === modelSelect || at === downloadBtn || modelNote.contains(at);
+  // A new try starts clean: the last one's failure, its "Retry" and its numbers are gone.
+  forgetDownload();
+  renderModelNote();
+  renderDownloadButton();
   (downloadBtn as HTMLButtonElement).disabled = true;
   modelSelect.disabled = true;
+  showProgress(speechProgress, NOT_STARTED);
   downloadProgress.classList.remove("hidden");
-  progressFill.style.width = "0%";
+  downloadLive.textContent = t("download_started").replace("{model}", () => name);
+  setDownload("speech", 0);
+  let ok = false;
   try {
-    await invoke("download_model", { modelSize: modelSelect.value });
-    downloadBtn.textContent = "\u2713";
-    downloadBtn.removeAttribute("data-i18n");
+    await invoke("download_model", { modelSize: model });
+    // It is on disk: a save may store it from here on.
+    verifiedModel = model;
+    onDisk?.add(model);
+    downloadBtn.classList.add("hidden");
+    downloadLive.textContent = t("download_done").replace("{model}", () => name);
+    ok = true;
     return true;
   } catch (e) {
-    downloadBtn.setAttribute("data-i18n", "retry");
-    downloadBtn.textContent = t("retry");
+    downloadFailed = model;
+    downloadReason = String(e ?? "");
+    downloadLive.textContent = failureSaid(name);
     (downloadBtn as HTMLButtonElement).disabled = false;
     console.error("Download failed:", e);
     return false;
   } finally {
+    // A download that failed is over. One that worked stays in the status
+    // until the backend has said that the model is there (downloadSettled).
+    if (!ok) setDownload("speech", null);
     downloadProgress.classList.add("hidden");
     modelSelect.disabled = false;
     downloadInFlight = false;
+    renderModelNote();
+    renderDownloadButton();
+    if (focused && (document.activeElement === document.body || document.activeElement === null)) modelSelect.focus();
     await refreshModelDropdownLabels();
   }
 }
 
-async function saveSettings() {
+/** After a download that worked: ask the backend for the speech model's
+ *  state, and only then take the download out of the status. Taken out
+ *  sooner, the status steps back to "Setup needed: no speech model" for as
+ *  long as the backend's last word still calls the model missing (a model
+ *  chosen in the dropdown is saved only after its download). */
+async function downloadSettled() {
+  try {
+    await refreshSpeech();
+  } finally {
+    // Not a download that started in the meantime: its own end clears it.
+    if (!downloadInFlight) setDownload("speech", null);
+  }
+}
+
+/** The controls' values, read into the settings. */
+function readControls() {
   currentSettings.microphone = micSelect.value;
-  currentSettings.whisperModel = modelSelect.value;
+  // Only a model that is known to be on disk (src/models.ts).
+  currentSettings.whisperModel = modelToSave(modelSelect.value, lastSavedModel, modelSelect.value !== verifiedModel);
   currentSettings.groqApiKey = groqKey.value;
   currentSettings.language = languageSelect.value;
   currentSettings.uiLanguage = uiLanguageSelect.value;
@@ -386,25 +725,46 @@ async function saveSettings() {
   currentSettings.idleUnloadMinutes = parseInt(idleUnloadSelect.value, 10) || 0;
   currentSettings.history = historyModeSelect.value;
   currentSettings.replacements = readReplacements();
-  await invoke("save_settings", { settings: currentSettings });
+}
+
+/** Save what the controls show. A save the backend refuses is said in the
+ *  page, and the controls go back to what is saved; false then, and also
+ *  before the settings were read (nothing is saved from controls that are
+ *  not filled yet). */
+function saveSettings(): Promise<boolean> {
+  if (!settingsLoaded) return Promise.resolve(false);
+  readControls();
+  return storeOrSay();
+}
+
+/** The same save for a caller that says the failure itself, on its own
+ *  button (a rule's, a word's, a replacement's Delete): it throws. */
+async function saveStrict(): Promise<void> {
+  if (!settingsLoaded) throw new Error("the settings are not loaded yet");
+  readControls();
+  await store();
 }
 
 // Event listeners
 engineLocal.addEventListener("click", () => {
   setEngine("local");
-  saveSettings();
+  void saveSettings();
 });
 
 engineCloud.addEventListener("click", () => {
   setEngine("cloud");
-  saveSettings();
+  void saveSettings();
 });
 
-micSelect.addEventListener("change", () => saveSettings());
+micSelect.addEventListener("change", async () => {
+  await saveSettings();
+  renderHome();
+});
 
 languageSelect.addEventListener("change", async () => {
   await saveSettings();
-  await renderAiSettings();
+  // "Write in" warns when a spoken language is set.
+  showAiSettings();
 });
 
 gpuBackendSelect.addEventListener("change", () => saveSettings());
@@ -430,73 +790,85 @@ interface ModelFile {
   otherLinks: boolean;
 }
 
-function formatSize(bytes: number): string {
-  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`;
-}
-
 const DELETE_ERRORS: Record<string, string> = {
   in_use: "unused_model_in_use",
   meeting_busy: "unused_model_meeting_busy",
   busy: "unused_model_busy",
 };
 
-/// One unused model with a Delete button that asks once more (click again
-/// within 3 s, like Clear history).
+/** The name the rest of the window gives the model in this file ("Medium",
+ *  "Gemma 4 E2B"); null for a file no model of the lists is kept in. */
+function modelNameOf(m: ModelFile): string | null {
+  if (m.kind === "ai") return aiModelNamed(m.file);
+  const id = /^ggml-(.+?)\.bin(\.part)?$/.exec(m.file)?.[1] ?? "";
+  const model = speechModel(id);
+  return model.mb > 0 ? model.name : null;
+}
+
+/// One unused model as a list row: its name as everywhere else, then its
+/// file, what it is and its size, and Delete.
 function unusedModelRow(m: ModelFile): HTMLElement {
   const row = document.createElement("div");
-  row.className = "unused-model-row";
+  row.className = "list-row unused-model-row";
+  row.setAttribute("role", "listitem");
   const info = document.createElement("div");
-  info.className = "unused-model-info";
+  info.className = "list-main";
+  const named = modelNameOf(m);
   const name = document.createElement("span");
-  name.className = "unused-model-name";
-  name.textContent = m.file;
+  name.className = "list-primary unused-model-name";
+  name.textContent = named ?? m.file;
   const meta = document.createElement("span");
-  meta.className = "label-hint";
-  const parts = [t(m.kind === "ai" ? "unused_model_ai" : "unused_model_whisper")];
+  meta.className = "list-secondary unused-model-name";
+  // The file's own name is the second line: it is what the models folder shows.
+  const parts = named ? [m.file] : [];
+  parts.push(t(m.kind === "ai" ? "unused_model_ai" : "unused_model_whisper"));
   if (m.partial) parts.push(t("unused_model_partial"));
-  parts.push(m.otherLinks ? `${formatSize(m.bytes)} (${t("unused_model_links")})` : formatSize(m.bytes));
+  parts.push(m.otherLinks ? `${sizeText(m.bytes)} (${t("unused_model_links")})` : sizeText(m.bytes));
   meta.textContent = parts.join(" \u00b7 ");
   const error = document.createElement("span");
-  error.className = "label-hint unused-model-error hidden";
+  error.className = "list-secondary unused-model-error hidden";
+  error.setAttribute("role", "alert");
   info.append(name, meta, error);
 
-  const del = document.createElement("button");
-  del.className = "btn-secondary";
-  del.textContent = t("unused_model_delete");
-  let armed: number | undefined;
-  const disarm = () => {
-    window.clearTimeout(armed);
-    armed = undefined;
-    del.classList.remove("armed");
-    del.textContent = t("unused_model_delete");
-  };
-  del.addEventListener("click", async () => {
-    if (armed === undefined) {
-      del.classList.add("armed");
-      // With other links nothing is freed: no size is promised.
-      del.textContent = m.otherLinks
-        ? t("unused_model_confirm_plain")
-        : t("unused_model_confirm").replace("{size}", formatSize(m.bytes));
-      armed = window.setTimeout(disarm, 3000);
-      return;
-    }
-    disarm();
-    del.disabled = true;
-    try {
-      await invoke<number>("delete_unused_model", { kind: m.kind, file: m.file });
+  // While the file is deleted the button rests (src/confirm-delete.ts). A
+  // delete that fails says why in the row (read out from there), the button
+  // says that it failed like every other delete, and the file stays in the list.
+  const del = deleteButton(
+    `model-${m.kind}-${m.file}`,
+    async () => {
+      error.classList.add("hidden");
+      try {
+        await invoke<number>("delete_unused_model", { kind: m.kind, file: m.file });
+      } catch (err) {
+        const code = String(err);
+        const key = DELETE_ERRORS[code];
+        error.textContent = key ? t(key) : t("unused_model_failed").replace("{error}", () => code);
+        error.classList.remove("hidden");
+        throw new FailureSaid(code);
+      }
       await renderUnusedModels();
-      if (m.kind === "ai") await renderAiSettings();
+      if (m.kind === "ai") await refreshAiStatus();
       else await refreshModelDropdownLabels();
-    } catch (err) {
-      const code = String(err);
-      const key = DELETE_ERRORS[code];
-      error.textContent = key ? t(key) : t("unused_model_failed").replace("{error}", code);
-      error.classList.remove("hidden");
-      del.disabled = false;
-    }
-  });
-  row.append(info, del);
+    },
+    // After the last file the sentence that says so takes the focus.
+    { name: named ?? m.file, after: () => unusedModelEmpty },
+  );
+  const actions = document.createElement("div");
+  actions.className = "list-actions";
+  actions.append(del);
+  row.append(info, actions);
   return row;
+}
+
+/** The unused models as the backend last listed them; null until it did. */
+let unusedModels: ModelFile[] | null = null;
+
+/** The list, drawn from what is known (again after a change of the Display Language). */
+function drawUnusedModels() {
+  if (!unusedModels) return;
+  unusedModelList.innerHTML = "";
+  for (const m of unusedModels) unusedModelList.appendChild(unusedModelRow(m));
+  unusedModelEmpty.classList.toggle("hidden", unusedModels.length > 0);
 }
 
 async function renderUnusedModels() {
@@ -506,9 +878,8 @@ async function renderUnusedModels() {
   } catch (err) {
     console.error("unused_models failed:", err);
   }
-  unusedModelList.innerHTML = "";
-  for (const m of files) unusedModelList.appendChild(unusedModelRow(m));
-  unusedModelEmpty.classList.toggle("hidden", files.length > 0);
+  unusedModels = files;
+  drawUnusedModels();
 }
 
 // PC check: measures, applies the fastest Whisper setup, shows a report.
@@ -518,20 +889,37 @@ interface PcCheckResult {
   whisperFlashAttn: string;
   changed: boolean;
 }
+/** The PC check that runs: the step it is at and how many there are ("…"
+ *  before its first report); null: none runs. */
+let pcChecking: { done: string; total: string } | null = null;
+
+/** The check's button: "Run check", or while it runs the step it is at.
+ *  Drawn again after a change of the Display Language, which writes every
+ *  button's resting words. */
+function renderPcCheck() {
+  pcCheckBtn.disabled = pcChecking !== null;
+  const running = pcChecking;
+  pcCheckBtn.textContent = running ? t("pc_check_running").replace("{done}", () => running.done).replace("{total}", () => running.total) : t("pc_check_run");
+}
+
 listen<[number, number, string]>("pc-check-progress", (event) => {
   const [done, total] = event.payload;
-  if (pcCheckBtn.disabled) {
-    pcCheckBtn.textContent = t("pc_check_running").replace("{done}", String(Math.min(done + 1, total))).replace("{total}", String(total));
-  }
+  if (!pcChecking) return;
+  pcChecking = { done: String(Math.min(done + 1, total)), total: String(total) };
+  renderPcCheck();
 });
 pcCheckBtn.addEventListener("click", async () => {
-  pcCheckBtn.disabled = true;
-  pcCheckBtn.textContent = t("pc_check_running").replace("{done}", "1").replace("{total}", "…");
+  if (pcChecking || !settingsLoaded) return;
+  pcChecking = { done: "1", total: "…" };
+  renderPcCheck();
   try {
     const result = await invoke<PcCheckResult>("pc_check");
-    // The check saved new settings; keep the page's copy in step.
-    currentSettings.gpuBackend = result.gpuBackend;
-    currentSettings.whisperFlashAttn = result.whisperFlashAttn;
+    // The check saved new settings; keep the page's copies in step (what is saved, too).
+    for (const copy of [currentSettings, savedSettings]) {
+      if (!copy) continue;
+      copy.gpuBackend = result.gpuBackend;
+      copy.whisperFlashAttn = result.whisperFlashAttn;
+    }
     gpuBackendSelect.value = result.gpuBackend;
     pcCheckReport.textContent = result.report;
     pcCheckResult.classList.remove("hidden");
@@ -540,8 +928,8 @@ pcCheckBtn.addEventListener("click", async () => {
     pcCheckReport.textContent = String(err) === "meeting_busy" ? t("pc_check_meeting_busy") : `${t("pc_check_failed")}: ${err}`;
     pcCheckResult.classList.remove("hidden");
   } finally {
-    pcCheckBtn.disabled = false;
-    pcCheckBtn.textContent = t("pc_check_run");
+    pcChecking = null;
+    renderPcCheck();
   }
 });
 pcCheckCopy.addEventListener("click", async () => {
@@ -551,23 +939,32 @@ pcCheckCopy.addEventListener("click", async () => {
 });
 
 uiLanguageSelect.addEventListener("change", async () => {
+  if (!settingsLoaded) return;
+  // The choice is saved first, before anything is drawn again: it was the
+  // tenth thing the handler did, after four questions to the backend, and
+  // one of them failing lost it. (The save reads every control, also the
+  // rows that are drawn again below.)
+  const saved = saveSettings();
   setLang(uiLanguageSelect.value);
-  populateLanguageSelect(languageSelect, getLang(), t("language_auto"));
-  renderMicOptions();
-  renderHotkeys();
-  await saveSettings();
-  await refreshHistory();
-  await renderAiSettings();
-  await renderUnusedModels();
-  renderDictionary();
-  renderFiles();
-  void soundboard.refresh();
-  void renderMeetings();
+  // What was written once, in the old language, and is not drawn from data:
+  // the line a screen reader was given of the last download, what the last
+  // import said, "Added …" on Home, the Soundboard's notice.
+  downloadLive.textContent = "";
+  clearDictionaryStatus();
+  forgetHomeSaid();
+  soundboard.redraw(true);
+  // Everything else, from what is known: nothing is asked, nothing can fail half way.
+  showTexts();
+  // The Meetings page reads its list again; the save does not wait for it.
+  void renderMeetings().catch((err) => console.error("drawing the Meetings page again failed:", err));
+  // A save that is refused puts the old language back (saveFailed).
+  await saved;
 });
 
 sendCommandSelect.addEventListener("change", () => saveSettings());
 muteAudioToggle.addEventListener("change", () => saveSettings());
 historyModeSelect.addEventListener("change", async () => {
+  if (!settingsLoaded) return;
   await saveSettings();
   await refreshHistory();
 });
@@ -578,46 +975,93 @@ volumeSlider.addEventListener("input", () => {
 volumeSlider.addEventListener("change", () => saveSettings());
 
 autostartToggle.addEventListener("change", async () => {
+  if (!settingsLoaded) return;
+  const enabled = autostartToggle.checked;
   try {
-    await invoke("set_autostart", { enabled: autostartToggle.checked });
-    await saveSettings();
+    await invoke("set_autostart", { enabled });
   } catch (e) {
+    // Windows refused: the switch goes back, and the page says why.
     console.error("Failed to toggle autostart:", e);
-    // Revert on failure
-    autostartToggle.checked = !autostartToggle.checked;
+    autostartToggle.checked = currentSettings.autostart;
+    sayNotice(t("save_failed").replace("{reason}", () => String(e)));
+    return;
   }
+  // Not saved: the switch is back on what is saved, and Windows is told the same.
+  if (!(await saveSettings())) invoke("set_autostart", { enabled: currentSettings.autostart }).catch((e) => console.error("Failed to toggle autostart:", e));
 });
 
 let lastSavedModel = "";
-modelSelect.addEventListener("change", async () => {
-  const chosen = modelSelect.value;
+/** The speech model a save may store (saveSettings): the one last known to
+ *  be on disk. At the start it is the saved one (saving that again changes
+ *  nothing, also where it is missing: the first run); then the model a check
+ *  found, the one a download brought, and after a download that failed the
+ *  saved one the dropdown goes back to. The dropdown itself says too little:
+ *  it is on a model before that model is known to be there, and whether a
+ *  download runs covers only a part of that time. Two saves fell in the
+ *  rest: one in the moment after a failed download, before the dropdown was
+ *  back (the rows' ticks are asked for first), and the save of an earlier
+ *  choice that found the dropdown already on the next, missing one. */
+let verifiedModel = "";
+/** The model in the dropdown was chosen: one that is missing is downloaded
+ *  first. True when it is there and saved. */
+async function chooseModel(): Promise<boolean> {
+  if (!settingsLoaded) return false;
+  const model = modelSelect.value;
   const previousSaved = lastSavedModel || currentSettings.whisperModel;
-  if (await isCurrentModelDownloaded()) {
+  // A new choice: what the row said of a download that did not finish is over.
+  if (!downloadInFlight) forgetDownload();
+  // The note follows the dropdown at once, also through the download of a model that is missing.
+  renderModelNote();
+  if (await isModelDownloaded(model)) {
+    // The answer is about `model`. Where the dropdown has moved on meanwhile
+    // (arrow keys go through the list), that choice has a call of its own,
+    // and this one must not vouch for it.
+    if (modelSelect.value === model) verifiedModel = model;
     await refreshModelStatusUI();
     await saveSettings();
-    lastSavedModel = chosen;
+    // What the save stored: this model, or the saved one where the dropdown moved on to a model that is not known yet.
+    lastSavedModel = currentSettings.whisperModel;
     await renderUnusedModels();
-    return;
+    return lastSavedModel === model;
   }
+  // A download runs already, and the dropdown rests on its model: this is a
+  // second word for the same choice (the list is disabled meanwhile, so it
+  // came from code). The download's own end saves it; going on here would
+  // find the download refused, and put the dropdown back on the old model
+  // under a download that then counts as failed.
+  if (downloadInFlight) return false;
+  // The dropdown moved on while this model was looked for: the newer choice has its own call.
+  if (modelSelect.value !== model) return false;
   // Missing -> auto-download. Don't persist until success.
   const ok = await downloadCurrentModel();
   if (ok) {
-    await saveSettings();
-    lastSavedModel = chosen;
+    try {
+      await saveSettings();
+    } finally {
+      await downloadSettled();
+    }
+    lastSavedModel = currentSettings.whisperModel;
     await refreshModelStatusUI();
     await renderUnusedModels();
-  } else {
-    // Revert dropdown to last working choice
+  } else if (modelSelect.value === model) {
+    // Revert dropdown to last working choice (unless the user has chosen
+    // another model since: the list is free again once the download ended).
     modelSelect.value = previousSaved;
+    verifiedModel = previousSaved;
     await refreshModelStatusUI();
   }
-});
+  return ok;
+}
+modelSelect.addEventListener("change", () => void chooseModel());
 
 downloadBtn.addEventListener("click", async () => {
-  await downloadCurrentModel();
+  if (!settingsLoaded) return;
+  if (await downloadCurrentModel()) await downloadSettled();
 });
 
 groqKey.addEventListener("change", () => saveSettings());
+// The notice above the fold follows the field as it is typed in.
+groqKey.addEventListener("input", renderCloudNote);
 
 modeToggle.addEventListener("click", () => {
   setRecordingMode("toggle");
@@ -629,26 +1073,16 @@ modePtt.addEventListener("click", () => {
   saveSettings();
 });
 
-// Listen for recording state changes
+// The start, stop and discard sounds of a dictation (the status itself is
+// src/status-view.ts).
 let prevRecordingState = "Ready";
 listen<string>("recording-state", (event) => {
   const state = event.payload;
-  statusDot.className = "";
-  statusText.removeAttribute("data-i18n");
   if (state === "Recording") {
-    statusDot.classList.add("recording");
-    statusText.setAttribute("data-i18n", "status_recording");
-    statusText.textContent = t("status_recording");
     if (prevRecordingState !== "Recording") playStart();
   } else if (state === "Transcribing") {
-    statusDot.classList.add("transcribing");
-    statusText.setAttribute("data-i18n", "status_transcribing");
-    statusText.textContent = t("status_transcribing");
     if (prevRecordingState === "Recording") playStop();
   } else {
-    statusDot.classList.add("ready");
-    statusText.setAttribute("data-i18n", "status_ready");
-    statusText.textContent = t("status_ready");
     // Recording -> Ready (no Transcribing in between) means cancel/discard
     if (prevRecordingState === "Recording") playDiscard();
   }
@@ -657,8 +1091,10 @@ listen<string>("recording-state", (event) => {
 
 // Listen for download progress
 listen<DownloadProgress>("download-progress", (event) => {
-  const { percent } = event.payload;
-  progressFill.style.width = `${percent}%`;
+  // The bar, and always the numbers too: percent and size. The bar is what a
+  // screen reader asks for them; nothing here is read out by itself.
+  showProgress(speechProgress, event.payload);
+  if (downloadInFlight) setDownload("speech", event.payload.percent);
 });
 
 // Hotkeys. "dictation" starts/stops recording, "pasteLast" pastes the last
@@ -669,305 +1105,94 @@ listen<DownloadProgress>("download-progress", (event) => {
 // the Soundboard.
 type HotkeyTarget = "dictation" | "pasteLast" | "rewriteLast" | "freeGpu" | "meeting";
 
-function renderHotkeys() {
-  hotkeyText.textContent = hotkeyLabel(currentSettings.hotkey);
-  pasteLastText.textContent = hotkeyLabel(currentSettings.pasteLastHotkey);
-  pasteLastClear.classList.toggle("hidden", !currentSettings.pasteLastHotkey);
-  rewriteLastText.textContent = hotkeyLabel(currentSettings.rewriteLastHotkey);
-  rewriteLastClear.classList.toggle("hidden", !currentSettings.rewriteLastHotkey);
-  freeGpuText.textContent = hotkeyLabel(currentSettings.freeGpuHotkey);
-  freeGpuClear.classList.toggle("hidden", !currentSettings.freeGpuHotkey);
-  meetingHotkeyText.textContent = hotkeyLabel(currentSettings.meetingHotkey);
-  meetingHotkeyClear.classList.toggle("hidden", !currentSettings.meetingHotkey);
+/** A place that shows a hotkey and sets it when it is clicked. */
+interface HotkeyView {
+  target: HotkeyTarget;
+  btn: HTMLButtonElement;
+  text: HTMLElement;
+  /** "Turn off" (in Settings; the dictation hotkey has none). */
+  clear: HTMLButtonElement | null;
 }
 
-function captureElements(target: HotkeyTarget) {
-  if (target === "dictation") return { btn: hotkeyBtn, text: hotkeyText };
-  if (target === "pasteLast") return { btn: pasteLastBtn, text: pasteLastText };
-  if (target === "rewriteLast") return { btn: rewriteLastBtn, text: rewriteLastText };
-  if (target === "meeting") return { btn: meetingHotkeyBtn, text: meetingHotkeyText };
-  return { btn: freeGpuBtn, text: freeGpuText };
+/** The view made of `<prefix>-btn`, `<prefix>-text` and, if there is one, `<prefix>-clear`. */
+function hotkeyView(target: HotkeyTarget, prefix: string): HotkeyView {
+  return {
+    target,
+    btn: document.getElementById(`${prefix}-btn`) as HTMLButtonElement,
+    text: document.getElementById(`${prefix}-text`)!,
+    clear: document.getElementById(`${prefix}-clear`) as HTMLButtonElement | null,
+  };
 }
+
+const hotkeyViews: HotkeyView[] = [
+  // Settings > Dictation
+  hotkeyView("dictation", "hotkey"),
+  hotkeyView("pasteLast", "paste-last"),
+  hotkeyView("rewriteLast", "rewrite-last"),
+  hotkeyView("freeGpu", "free-gpu"),
+  hotkeyView("meeting", "meeting-hotkey"),
+  // Home
+  hotkeyView("dictation", "home-hotkey"),
+  hotkeyView("pasteLast", "home-paste-last"),
+  hotkeyView("rewriteLast", "home-rewrite-last"),
+  hotkeyView("freeGpu", "home-free-gpu"),
+  // The first run's step 3
+  hotkeyView("dictation", "setup-hotkey"),
+];
+
+function hotkeyOf(target: HotkeyTarget): string {
+  if (!currentSettings) return "";
+  if (target === "dictation") return currentSettings.hotkey;
+  if (target === "pasteLast") return currentSettings.pasteLastHotkey;
+  if (target === "rewriteLast") return currentSettings.rewriteLastHotkey;
+  if (target === "meeting") return currentSettings.meetingHotkey;
+  return currentSettings.freeGpuHotkey;
+}
+
+/** Every place that shows a hotkey, from the settings. */
+function renderHotkeys() {
+  if (!currentSettings) return;
+  for (const view of hotkeyViews) {
+    const combo = hotkeyOf(view.target);
+    // A key that is not set is a key box that says "Not set", in every place
+    // (Home, Settings, a sound's tile): one form, in quieter words (components.css).
+    view.text.textContent = hotkeyLabel(combo);
+    view.btn.classList.toggle("key-unset", !combo);
+    // The × keeps its room while there is nothing to turn off, so every key box ends on one edge (styles/settings.css).
+    view.clear?.classList.toggle("unset", !combo);
+  }
+  renderHome();
+}
+
+/** The setting a hotkey is kept in. */
+const HOTKEY_SETTING = { dictation: "hotkey", pasteLast: "pasteLastHotkey", rewriteLast: "rewriteLastHotkey", meeting: "meetingHotkey", freeGpu: "freeGpuHotkey" } as const;
 
 async function setHotkey(target: HotkeyTarget, combo: string) {
+  if (!settingsLoaded) throw new Error("the settings are not loaded yet");
   await invoke("change_hotkey", { target, newHotkey: combo });
-  if (target === "dictation") currentSettings.hotkey = combo;
-  else if (target === "pasteLast") currentSettings.pasteLastHotkey = combo;
-  else if (target === "rewriteLast") currentSettings.rewriteLastHotkey = combo;
-  // Kept in step with the backend's copy: the next save_settings sends
-  // these settings back whole.
-  else if (target === "meeting") currentSettings.meetingHotkey = combo;
-  else currentSettings.freeGpuHotkey = combo;
+  // Kept in step with the backend's copy: the next save_settings sends these
+  // settings back whole. Also the copy of what is saved: a save that is
+  // refused puts the controls back on that one, and must not bring an old key with it.
+  currentSettings[HOTKEY_SETTING[target]] = combo;
+  if (savedSettings) savedSettings[HOTKEY_SETTING[target]] = combo;
 }
 
-function capture(target: HotkeyTarget) {
-  const { btn, text } = captureElements(target);
-  startCapture({ button: btn, text, apply: (combo) => setHotkey(target, combo), render: renderHotkeys });
-}
-
-hotkeyBtn.addEventListener("click", () => capture("dictation"));
-pasteLastBtn.addEventListener("click", () => capture("pasteLast"));
-rewriteLastBtn.addEventListener("click", () => capture("rewriteLast"));
-rewriteLastClear.addEventListener("click", async () => {
-  try {
-    await setHotkey("rewriteLast", "");
-  } catch (err) {
-    console.error("clearing rewrite hotkey failed:", err);
-  }
-  renderHotkeys();
-});
-pasteLastClear.addEventListener("click", async () => {
-  try {
-    await setHotkey("pasteLast", "");
-  } catch (err) {
-    console.error("clearing paste-last hotkey failed:", err);
-  }
-  renderHotkeys();
-});
-freeGpuBtn.addEventListener("click", () => capture("freeGpu"));
-freeGpuClear.addEventListener("click", async () => {
-  try {
-    await setHotkey("freeGpu", "");
-  } catch (err) {
-    console.error("clearing free-GPU hotkey failed:", err);
-  }
-  renderHotkeys();
-});
-meetingHotkeyBtn.addEventListener("click", () => capture("meeting"));
-meetingHotkeyClear.addEventListener("click", async () => {
-  try {
-    await setHotkey("meeting", "");
-  } catch (err) {
-    console.error("clearing the meeting hotkey failed:", err);
-  }
-  renderHotkeys();
-});
-
-// ── Replacements ──────────────────────────────────────
-
-function renderReplacements() {
-  replacementList.innerHTML = "";
-  for (const r of currentSettings.replacements ?? []) addReplacementRow(r);
-  replacementEmpty.classList.toggle("hidden", replacementList.children.length > 0);
-}
-
-function addReplacementRow(r: Replacement): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "replacement-row";
-
-  const from = document.createElement("input");
-  from.type = "text";
-  from.className = "replacement-from";
-  from.value = r.from;
-  from.placeholder = t("replacement_from_placeholder");
-  from.spellcheck = false;
-
-  const arrow = document.createElement("span");
-  arrow.className = "replacement-arrow";
-  arrow.textContent = "\u2192";
-
-  const to = document.createElement("textarea");
-  to.className = "replacement-to";
-  to.rows = 1;
-  to.value = r.to;
-  to.placeholder = t("replacement_to_placeholder");
-  to.spellcheck = false;
-
-  const remove = document.createElement("button");
-  remove.className = "icon-btn";
-  remove.title = t("replacement_remove");
-  remove.setAttribute("aria-label", t("replacement_remove"));
-  remove.innerHTML =
-    '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
-  remove.addEventListener("click", () => {
-    row.remove();
-    replacementEmpty.classList.toggle("hidden", replacementList.children.length > 0);
-    saveSettings();
+for (const view of hotkeyViews) {
+  // A click on the key listens for the new one, in place.
+  view.btn.addEventListener("click", () => {
+    if (!settingsLoaded) return;
+    startCapture({ button: view.btn, text: view.text, apply: (combo) => setHotkey(view.target, combo), render: renderHotkeys });
   });
-
-  from.addEventListener("change", () => saveSettings());
-  to.addEventListener("change", () => saveSettings());
-
-  row.append(from, arrow, to, remove);
-  replacementList.appendChild(row);
-  return row;
+  view.clear?.addEventListener("click", async () => {
+    if (!settingsLoaded) return;
+    try {
+      await setHotkey(view.target, "");
+    } catch (err) {
+      console.error(`turning the ${view.target} hotkey off failed:`, err);
+    }
+    renderHotkeys();
+  });
 }
-
-function readReplacements(): Replacement[] {
-  return Array.from(replacementList.querySelectorAll<HTMLElement>(".replacement-row")).map((row) => ({
-    from: (row.querySelector(".replacement-from") as HTMLInputElement).value,
-    to: (row.querySelector(".replacement-to") as HTMLTextAreaElement).value,
-  }));
-}
-
-replacementAdd.addEventListener("click", () => {
-  const row = addReplacementRow({ from: "", to: "" });
-  replacementEmpty.classList.add("hidden");
-  (row.querySelector(".replacement-from") as HTMLInputElement).focus();
-});
-
-// ── History ───────────────────────────────────────────
-
-let playing: { audio: HTMLAudioElement; url: string; btn: HTMLButtonElement } | null = null;
-
-function stopPlayback() {
-  if (!playing) return;
-  playing.audio.pause();
-  URL.revokeObjectURL(playing.url);
-  playing.btn.textContent = t("history_play");
-  playing = null;
-}
-
-// Dates follow the system locale (24 h in Switzerland even with an English UI).
-function formatWhen(ms: number): string {
-  const d = new Date(ms);
-  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  if (d.toDateString() === new Date().toDateString()) return time;
-  return `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })}, ${time}`;
-}
-
-function formatDuration(ms: number): string {
-  const secs = Math.max(1, Math.round(ms / 1000));
-  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
-}
-
-function smallButton(label: string, onClick: (btn: HTMLButtonElement) => void): HTMLButtonElement {
-  const b = document.createElement("button");
-  b.className = "btn-ghost";
-  b.textContent = label;
-  b.addEventListener("click", () => onClick(b));
-  return b;
-}
-
-function renderHistoryEntry(e: HistoryEntry): HTMLElement {
-  const item = document.createElement("article");
-  item.className = "history-item";
-
-  const text = document.createElement("p");
-  text.className = "history-text";
-  text.textContent = e.text;
-
-  const footer = document.createElement("div");
-  footer.className = "history-footer";
-  const meta = document.createElement("span");
-  meta.className = "history-meta";
-  const renderMeta = (entry: HistoryEntry) => {
-    const parts = [formatWhen(entry.id), formatDuration(entry.durationMs), entry.model];
-    if (entry.app) parts.push(entry.app);
-    if (entry.edit) parts.push(t("history_edit").replace("{instruction}", entry.edit));
-    meta.textContent = parts.join(" \u00b7 ");
-  };
-  renderMeta(e);
-
-  const actions = document.createElement("div");
-  actions.className = "history-actions";
-  actions.appendChild(
-    smallButton(t("history_copy"), async (b) => {
-      await invoke("copy_text", { text: text.textContent ?? "" });
-      b.textContent = t("history_copied");
-      setTimeout(() => (b.textContent = t("history_copy")), 1200);
-    }),
-  );
-  if (e.raw) {
-    let showingRaw = false;
-    actions.appendChild(
-      smallButton(t("history_original"), (b) => {
-        showingRaw = !showingRaw;
-        text.textContent = showingRaw ? e.raw! : e.text;
-        b.textContent = showingRaw ? t("history_ai_version") : t("history_original");
-      }),
-    );
-  }
-  if (e.hasAudio) {
-    actions.appendChild(
-      smallButton(t("history_play"), async (b) => {
-        const wasThis = playing?.btn === b;
-        stopPlayback();
-        if (wasThis) return;
-        try {
-          const bytes = await invoke<ArrayBuffer>("history_audio", { id: e.id });
-          const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
-          const audio = new Audio(url);
-          playing = { audio, url, btn: b };
-          b.textContent = t("history_stop");
-          audio.addEventListener("ended", stopPlayback);
-          await audio.play();
-        } catch (err) {
-          console.error("playback failed:", err);
-          stopPlayback();
-        }
-      }),
-    );
-    const rerun = smallButton(t("history_rerun"), async (b) => {
-      b.disabled = true;
-      b.textContent = t("history_rerunning");
-      try {
-        const updated = await invoke<HistoryEntry>("history_rerun", { id: e.id });
-        if (playing && item.contains(playing.btn)) stopPlayback();
-        item.replaceWith(renderHistoryEntry(updated));
-        return;
-      } catch (err) {
-        console.error("history_rerun failed:", err);
-        b.textContent = t("history_rerun_failed");
-        setTimeout(() => (b.textContent = t("history_rerun")), 2500);
-      } finally {
-        b.disabled = false;
-      }
-    });
-    rerun.title = t("history_rerun_title");
-    // An edit's recording is the instruction; re-running it as a dictation
-    // would replace the edited text with it.
-    if (!e.edit) actions.appendChild(rerun);
-  }
-  actions.appendChild(
-    smallButton(t("history_delete"), async () => {
-      if (playing && item.contains(playing.btn)) stopPlayback();
-      await invoke("history_delete", { id: e.id });
-      item.remove();
-      await refreshHistory();
-    }),
-  );
-
-  footer.append(meta, actions);
-  item.append(text, footer);
-  return item;
-}
-
-async function refreshHistory() {
-  const entries = await invoke<HistoryEntry[]>("history_list");
-  stopPlayback();
-  historyList.innerHTML = "";
-  for (const e of entries) historyList.appendChild(renderHistoryEntry(e));
-
-  const off = historyModeSelect.value === "off";
-  historyEmpty.textContent = off ? t("history_off") : t("history_empty");
-  historyEmpty.classList.toggle("hidden", entries.length > 0 && !off);
-  historyCount.textContent =
-    entries.length === 1 ? t("history_count_one") : t("history_count").replace("{n}", String(entries.length));
-  historyClear.classList.toggle("hidden", entries.length === 0);
-  resetClearButton();
-}
-
-let clearArmed: number | undefined;
-function resetClearButton() {
-  window.clearTimeout(clearArmed);
-  clearArmed = undefined;
-  historyClear.classList.remove("armed");
-  historyClear.textContent = t("history_clear");
-}
-
-historyClear.addEventListener("click", async () => {
-  if (clearArmed === undefined) {
-    historyClear.classList.add("armed");
-    historyClear.textContent = t("history_clear_confirm");
-    clearArmed = window.setTimeout(resetClearButton, 3000);
-    return;
-  }
-  await invoke("history_clear");
-  await refreshHistory();
-});
-
-listen("history-updated", () => refreshHistory());
 
 // Credit link -> opens 0ggi.ch in default browser
 document.getElementById("credit-link")?.addEventListener("click", async (e) => {
@@ -979,40 +1204,162 @@ document.getElementById("credit-link")?.addEventListener("click", async (e) => {
   }
 });
 
-initAiSettings({ settings: () => currentSettings, save: saveSettings });
-initDictionary({ settings: () => currentSettings, save: saveSettings });
+const loaded = () => settingsLoaded;
+// The AI's state is part of the status, and Home shows both.
+initAiSettings({ settings: () => currentSettings, loaded, save: saveSettings, saveStrict, changed: renderStatus });
+// How many dictations there are decides what Home shows and where the window opens.
+initHistory({ mode: () => historyModeSelect.value, openSetting: () => reveal("history-mode-select"), changed: historyChanged });
+initReplacements({ replacements: () => currentSettings?.replacements ?? [], loaded, save: saveSettings, saveStrict });
+initDictionary({ settings: () => currentSettings, loaded, save: saveSettings, saveStrict });
 initFiles({
   settings: () => currentSettings,
-  saveSettings: async (patch) => {
-    Object.assign(currentSettings, patch);
-    await invoke("save_settings", { settings: currentSettings });
-  },
-  showSection: () => showSection("files"),
-  acceptsDrops: () => !soundboardSection.classList.contains("active"),
+  saveSettings: savePatch,
+  showSection: () => go("files"),
+  // A file dropped before the settings are read finds no language to transcribe in.
+  acceptsDrops: () => settingsLoaded && currentRoute().section !== "soundboard",
 });
+
+/** The start's questions were given their time (startWaitOver, src/start.ts)
+ *  and an answer was still out: the window goes on with what it has, and what
+ *  is still not known counts neither as missing nor as a reason to wait. */
+let startWaited = false;
+
+/** Home's two views, as far as this module's own answers go (the AI's card is Home's own). */
+const firstSetup = () => setup({ speech: currentSpeech(), microphones: micsListed ? mics.length : null, history: historyCount(), aiDownloaded: true, aiDismissed: true, waited: settingsLoaded && startWaited });
+
+// Home is where the window opens for a first run (no speech model and an
+// empty history: the steps are there). Everyone else finds the window where
+// they left it, also with a microphone that is unplugged today. Decided
+// once, when the speech model's state, the microphones and the history are known.
+let startDecided = false;
+function decideStart() {
+  if (startDecided) return;
+  const now = firstSetup();
+  if (!now.known) return;
+  startDecided = true;
+  startOn(now.firstRun);
+}
+onStatus(decideStart);
+
+function historyChanged() {
+  decideStart();
+  renderHome();
+}
+
+function startHome() {
+  initHome({
+    loaded,
+    waited: () => startWaited,
+    history: historyCount,
+    recordingMode: () => currentSettings.recordingMode,
+    dictationKey: () => hotkeyLabel(currentSettings.hotkey),
+    microphones: () => (micsListed ? mics.length : null),
+    findMicrophones: listMicrophones,
+    microphone: () => savedMicrophone,
+    speechFailure: () => (downloadFailed === null ? null : { model: downloadFailed, reason: downloadReason }),
+    ai: aiSummary,
+    aiModel: aiModelInfo,
+    addWords,
+    // The Settings dropdown's own way: it downloads a model that is missing and saves the choice.
+    setUpSpeech: async (id) => {
+      // A download runs: the dropdown stays on its model (chooseModel's own guard comes after the dropdown is set).
+      if (downloadInFlight) return false;
+      modelSelect.value = id;
+      return chooseModel();
+    },
+    setUpAi,
+  });
+}
 
 // Initialize
 getVersion()
   .then((v) => (document.getElementById("version-text")!.textContent = `v${v}`))
   .catch(console.error);
 // The tray's Quit while a meeting records asks in this window: the question
-// is listened for from the start, on every tab.
+// is listened for from the start, on every page.
 initMeetingQuit();
-// The Meetings tab reads the settings, so it starts once they are loaded.
+
+// The start. Home and the status are wired at once (a form has its handler
+// before anyone can press Enter in it; Home shows its heading alone until
+// it knows more), and everything the start asks the backend is asked
+// together: the settings, the microphones, the history, the AI's state, the
+// status's four questions, the graphics cards. Before, they were asked one
+// after the other, and Home was wired after the eighth answer. What an
+// answer draws that is made of the settings or their language is drawn when
+// both are there (showSettings draws from what is known).
+const quietly = (what: string, asked: Promise<unknown>) => asked.catch((err) => console.error(`${what} failed:`, err));
+startHome();
+const statusKnown = quietly("the status's first questions", initStatus({ microphones: () => (micsListed ? mics.length : null), ai: aiActivity, loaded, waited: () => startWaited }));
+const settingsRead = loadSettings().then(
+  () => true,
+  (err) => {
+    // The pages made of settings stay at rest: nothing can be changed, and so nothing wrong is saved. Said in the page.
+    console.error("loading the settings failed:", err);
+    sayNotice(t("settings_load_failed").replace("{reason}", () => String(err)));
+    return false;
+  },
+);
+void refreshDetectedGpus();
+stateOnce<boolean, boolean>("game_free_state", "game-free")
+  .then((state) => showGameFree(state.later()?.payload ?? state.answer))
+  .catch(console.error);
+// The Meetings page reads the settings, so it starts once they are loaded.
 // It starts without them too (a meeting can record from the tray or the
-// hotkey, and the tab must show it): then with the reminders' defaults, and
-// nothing is saved over the settings that did not load.
-loadSettings()
-  .catch((err) => console.error("loading the settings failed:", err))
-  .then(() =>
+// hotkey, and the page must show it): then with the reminders' defaults, and
+// nothing is saved over the settings that did not load. Settings that never
+// answer are waited for as long as the start waits for anything.
+const meetingsWired = Promise.race([settingsRead, startWaitOver]).then(() =>
+  quietly(
+    "the Meetings page's start",
     initMeetings({
       settings: () => currentSettings ?? { meetingReminderOff: false, meetingHeadphonesSeen: false },
-      saveSettings: async (patch) => {
-        if (!currentSettings) return;
-        Object.assign(currentSettings, patch);
-        await invoke("save_settings", { settings: currentSettings });
-      },
-      showSection: () => showSection("meetings"),
+      saveSettings: savePatch,
+      showSection: () => go("meetings"),
     }),
-  )
-  .catch((err) => console.error("the Meetings tab did not start:", err));
+  ),
+);
+// A backend that does not answer. The start's questions return plain values
+// in the backend, so this is a hang and nothing a healthy app does; still,
+// one answer that never came left Home on "Getting ready…" for ever. After
+// the start's wait the window goes on with what it has: Home shows its daily
+// view from what is known (once the settings are), no status waits any more
+// for a list of microphones or the AI's state, every page is told where the
+// window starts, and the page's notice says what is the matter. An answer
+// that comes later still lands, each by its own way; with the last one the
+// notice goes.
+/** Every question of the start has answered. */
+let startAnswered = false;
+/** The notice of a backend that does not answer shows (and nothing was said over it since). */
+let silentSaid = false;
+void startWaitOver.then(() => {
+  if (startAnswered) return;
+  startWaited = true;
+  // Not over the notice of settings that could not be loaded: that one says more.
+  if (saveNotice.classList.contains("hidden")) {
+    sayNotice(t("backend_silent"));
+    silentSaid = true;
+  }
+  // The status again, and with it Home and the place the window starts on.
+  renderStatus();
+  announceRoute();
+});
+
+void Promise.all([
+  statusKnown,
+  quietly("listing the microphones", listMicrophones()),
+  quietly("reading the history", refreshHistory()),
+  quietly("asking for the AI's state", refreshAiStatus()),
+  // Which models are on disk, and the unused ones: their rows name the chosen model.
+  settingsRead.then((read) => (read ? quietly("looking for the speech models", refreshModelStatusUI()) : undefined)),
+  settingsRead.then(() => renderUnusedModels()),
+  meetingsWired,
+]).then(() => {
+  startAnswered = true;
+  // Every answer is in after all: what was said of a backend that does not answer is over.
+  if (silentSaid && saveNoticeText.textContent === t("backend_silent")) hideNotice();
+  silentSaid = false;
+  // Every page is wired: tell them the place the window starts on (a remembered one makes no change).
+  announceRoute();
+  // The start is over (tools/ui-check waits for this).
+  document.body.dataset.started = "true";
+});

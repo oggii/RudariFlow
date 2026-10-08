@@ -18,6 +18,8 @@ async function start() {
       const lang = saved.uiLanguage || detectDefaultLang();
       if (lang === getLang()) return;
       setLang(lang);
+      // The notice line was written in the old language.
+      board.redraw(true);
       await board.refresh();
     })();
   });

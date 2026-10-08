@@ -1,5 +1,5 @@
-// Hotkey capture, shared by the Recording settings and the Soundboard (tab
-// and pop-out window): a key combination or a mouse side button. The
+// Hotkey capture, shared by Settings > Dictation, Home and the Soundboard
+// (page and pop-out window): a key combination or a mouse side button. The
 // global hotkeys are released while it listens (`set_hotkey_paused`), so
 // pressing a current one reaches the page.
 import { invoke } from "@tauri-apps/api/core";
@@ -88,15 +88,15 @@ export function keyEventToCombo(e: KeyboardEvent, allowBare = false): string | n
  *  hotkey has ("Already used by …"), or a key it does not know. */
 export function hotkeyError(err: unknown, combo: string): string {
   const reason = String(err);
-  if (reason.includes("Windows shortcut")) return t("hotkey_reserved").replace("{combo}", hotkeyLabel(combo));
-  if (reason.includes("is a key alone")) return t("hotkey_bare").replace("{combo}", hotkeyLabel(combo));
+  if (reason.includes("Windows shortcut")) return t("hotkey_reserved").replace("{combo}", () => hotkeyLabel(combo));
+  if (reason.includes("is a key alone")) return t("hotkey_bare").replace("{combo}", () => hotkeyLabel(combo));
   const owner = /already used by (\w+)(?::(.*))?$/.exec(reason);
-  if (owner) return t("hotkey_taken_by").replace("{name}", ownerName(owner[1], owner[2]));
+  if (owner) return t("hotkey_taken_by").replace("{name}", () => ownerName(owner[1], owner[2]));
   return t("hotkey_invalid");
 }
 
 function ownerName(target: string, name?: string): string {
-  if (target === "sound") return t("quoted").replace("{name}", name ?? "");
+  if (target === "sound") return t("quoted").replace("{name}", () => name ?? "");
   const keys: Record<string, string> = {
     dictation: "hotkey_owner_dictation",
     pasteLast: "paste_last_label",
