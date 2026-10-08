@@ -13,8 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   tabs General, Engine, Recording, Dictionary, Replacements, AI cleanup and
   History held is now on Home and in Settings. The window opens where you
   left it; only a first run (no speech model yet and no dictation so far)
-  opens on Home. No setting was removed or renamed, and every setting keeps
-  its value.
+  opens on Home. No setting was removed and every setting keeps its value:
+  `config.json` has the same keys as in 0.16.0. What a setting is called in
+  the window did change in many places; "Labels renamed" below lists every
+  old name with its new one.
 - **Home is the dictation page:** your hotkeys (Dictate, Paste last,
   Rewrite last, Free GPU; click a key to change it in place), AI cleanup,
   Spoken language and Write in, what is loaded (speech model, AI model,
@@ -31,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   is behind Advanced, which stays open or closed per tab as you left it.
   Hints are one line; "More" opens the rest. Where things went: the speech
   model and Spoken language lead Models & GPU, with Transcription (on this
-  PC or Groq Cloud; "Engine" until now), the GPU backend,
+  PC or Groq Cloud; "Transcription Engine" until now), the GPU backend,
   PC check, Free GPU for games, Unload when idle and Unused models under
   Advanced. The hotkeys, the microphone and the start and stop sounds are
   on Dictation, with the Free GPU and meeting hotkeys, Mute other apps and
@@ -77,67 +79,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   beside the sounds. From about 1450 px a Settings tab is two columns
   (General's two cards side by side), the meetings are two columns of rows
   (the newer half at the left), an open meeting has its notes at the left
-  and its transcript at the right (without notes, and while it records,
-  what is said about the meeting stands in the notes' place), and Files
-  with a file has the file, its options and its summary at the left and
-  the transcript at the right. From about 1800 px Home's controls stand in
+  and its transcript at the right (without notes, what is said about the
+  meeting stands in the notes' place; a meeting that records has nothing
+  to put there yet, so its transcript has the whole width, under one line
+  that says when the notes come), and Files with a file has its options,
+  the file and its summary at the left and the transcript at the right. From about 1800 px Home's controls stand in
   two columns as well, and the setup steps stand beside the optional card
   and the recent dictations. One gutter between two columns everywhere.
   Running text (a transcript, notes, a summary) keeps a readable line
   length however wide its frame is.
 - **The smallest window (900×600):** Home's four keys stand two by two,
   so the recent dictations start on the first screen.
-- **Files:** without a file the drop zone takes the height the window
-  leaves. Once a file is loaded the drop zone shrinks to one line and so
-  do the options (their hints are behind "More"), so the transcript starts
-  higher up. "Summarise with AI" and the summary stand under the file's
-  line, before the transcript.
-- **Recent dictations are quieter.** "Copy" always shows, in one place in
-  every row; the other actions (Original, Play, Re-run, Delete) show while
-  the pointer is on the row or the keyboard focus is in it, and keep their
-  places while they are not seen. An armed "Delete?", "Stop" while a
-  recording plays and a failure stay in view; on a touch screen and in a
-  contrast theme all of them always show. A row's second line is the app,
-  the time and the length ("01:55 · 6 s") on one line; the model's
-  internal name is gone from it.
+- **Files:** the options (Language, Speakers) come first and the drop
+  zone under them: what to set stands before where to drop. Without a file
+  the zone takes the height the window leaves. Once a file is loaded the
+  drop zone shrinks to one line and so do the options (their hints are
+  behind "More"), so the transcript starts higher up. "Summarise with AI"
+  and the summary stand under the file's line, before the transcript;
+  where the summary stands over the transcript (a window under about
+  1450 px) it shows its first five lines, two in a window lower than
+  700 px, and "More" opens the rest, so the transcript's first lines stay
+  on the first screen. "Copy" copies the whole summary either way.
+- **Recent dictations are quieter.** "Copy" always shows, as the last
+  action of every row, at the card's right edge where the search field
+  ends; the other actions (Delete, Original, Play, Re-run) stand to its
+  left and show while the pointer is on the row or the focus is in it (the
+  keyboard's or a click's: after a click on Re-run the row keeps showing
+  it). They keep their places while they are not seen, and no row changes
+  its height. An armed "Delete?", "Stop" while a recording plays and a
+  failure stay in view; on a touch screen and in a contrast theme all of
+  them always show. A row's second line is the app, the time and the
+  length ("01:55 · 6 s") on one line; the model's internal name is gone
+  from it. In a narrow list (a window from about 1100 to 1440 px) "Copy"
+  stands at the end of that line, and the other actions take the line
+  while they show.
 - **One name for a model.** A model reads "Large v3 Turbo q8" everywhere:
   in a meeting's line (it was "Whisper large-v3-turbo-q8_0") and under
   Unused models, where the file's name ("ggml-medium.bin") is now the
   second line.
-- **Labels renamed** (English, then German; search for the old word and
-  you find the new one here):
-  - Language, on Home and under Models & GPU → Spoken language · Sprache
-    → Gesprochene Sprache
-  - Engine: Local Whisper / Groq Cloud → Transcription: On this PC / Groq
-    Cloud · Engine: Lokales Whisper / Groq Cloud → Transkription: Auf
-    diesem PC / Groq Cloud. "The cloud engine (Groq)" in a sentence is now
-    "Groq Cloud" · "Die Cloud-Engine (Groq)" → "Groq Cloud"
+- **Labels renamed** since 0.16.0 (English, then German; search for the
+  old word and you find the new one here). No key in `config.json` changed
+  with them.
+  - The sidebar's General, Engine, Recording, Dictionary, Replacements,
+    AI cleanup and History → Home and the five tabs of Settings ·
+    Allgemein, Engine, Aufnahme, Wörterbuch, Ersetzungen, KI-Korrektur und
+    Verlauf → Start und die fünf Tabs der Einstellungen. The page
+    "Transcribe a file" → Files · Datei transkribieren → Dateien
+  - Language, on the Engine tab → Spoken language, on Home and under
+    Models & GPU · Sprache → Gesprochene Sprache
+  - Transcription Engine: Local Whisper / Groq Cloud → Transcription: On
+    this PC / Groq Cloud · Transkriptions-Engine: Lokales Whisper / Groq
+    Cloud → Transkription: Auf diesem PC / Groq Cloud
+  - Model Size → Speech model · Modellgröße → Sprachmodell
+  - Model, under AI cleanup → AI model · Modell → KI-Modell
+  - Recording Mode (Toggle / Push to Talk) and Hotkey → one row, Dictate
+    (Hold / Toggle, and the key beside them) · Aufnahmemodus (Umschalten /
+    Push-to-Talk) und Tastenkürzel → eine Zeile, Diktieren (Halten /
+    Umschalten, daneben die Taste)
+  - Notification Volume → Start and stop sounds ·
+    Benachrichtigungslautstärke → Start- und Stopptöne
+  - Start with computer → Start with Windows · Mit Computer starten → Mit
+    Windows starten
+  - Paste last transcript → Paste last dictation (German as before:
+    Letztes Diktat einfügen)
+  - Clear history → Delete history (German as before: Verlauf löschen)
   - Clear, in Files → Remove transcript · Leeren → Transkript entfernen
-  - Key for sound hotkeys on/off → On/off key for sound hotkeys · Taste
-    für Sound-Tastenkürzel ein/aus → Ein/Aus-Taste für Sound-Tastenkürzel
+  - Hotkey to turn sound hotkeys on/off → On/off key for sound hotkeys ·
+    Tastenkürzel, das Sound-Tastenkürzel ein- und ausschaltet →
+    Ein/Aus-Taste für Sound-Tastenkürzel
+  - A Soundboard device: Automatic (name) → Auto: name · Automatisch
+    (Name) → Auto: Name
+  - A microphone: System default (name) → System default: name ·
+    Systemstandard (Name) → Systemstandard: Name
   - Whisper model, under Unused models → Speech model · Whisper-Modell →
     Sprachmodell
-  - "Not set · Set", an unset key on Home → a key box that says "Not set",
-    as in Settings · "Nicht gesetzt · Setzen" → "Nicht gesetzt"
-  - A microphone: "System default (name)" → "System default: name" ·
-    "Systemstandard (Name)" → "Systemstandard: Name"
-  - German only: Eigenes Fenster → In eigenem Fenster öffnen;
-    Verlauf-Einstellungen → Einstellungen zum Verlauf; Stopp → Stoppen;
-    Erneut versuchen → Wiederholen; Braucht Aufmerksamkeit → Handlung
-    nötig; "Kein Diktat passt." → "Kein Diktat gefunden." (and the same
-    for a word, a replacement, a meeting, a sound); Hotkey → Diktiertaste;
-    Strg → Ctrl and Umschalt → Shift, as the key boxes show them;
-    Bearbeiten → Bearbeiten per Stimme where the feature is meant; "Auto:"
-    → "Automatisch:" in the GPU backend's hint; "Ein Sprachmodell" in AI
-    cleanup's first sentence → "Ein KI-Modell" (Sprachmodell means the
-    Whisper model everywhere else)
+  - "Whisper" in a sentence of the window → "the speech model", or "the
+    app" where the dictionary is meant: "Loading Whisper…" → "Loading the
+    speech model…", "with your Whisper model" → "with your speech model",
+    "Words Whisper should know" → "Words the app should know" · „Whisper
+    wird geladen…“ → „Sprachmodell wird geladen…“, „mit deinem
+    Whisper-Modell“ → „mit deinem Sprachmodell“, „Wörter, die Whisper
+    kennen soll“ → „Wörter, die die App kennen soll“. The READMEs and the
+    PC check's report still name Whisper where the technology is meant.
+  - "Engine tab", "AI cleanup tab", "Meetings tab" in a sentence → the
+    place in the new window ("Settings › Models & GPU", "Settings › AI
+    cleanup › Advanced", "Meetings") · „Tab Engine“, „Tab KI-Korrektur“,
+    „Tab Meetings“ → „Einstellungen › Modelle & GPU“, „Einstellungen ›
+    KI-Korrektur › Erweitert“, „Meetings“
+  - AI cleanup's first sentence: "A language model" → "An AI model" · „Ein
+    Sprachmodell“ → „Ein KI-Modell“ (speech model, Sprachmodell, is the
+    model that transcribes, everywhere)
+  - GPU Backend → GPU backend (English only)
+  - German only: Eigenes Fenster → In eigenem Fenster öffnen; Stopp →
+    Stoppen; Erneut versuchen → Wiederholen; „Kein Sound passt.“ and „Kein
+    Meeting passt.“ → „Kein Sound gefunden.“, „Kein Meeting gefunden.“;
+    Hotkey → Diktiertaste (in sentences); Strg → Ctrl and Umschalt →
+    Shift, as the key boxes show them; Bearbeiten → Bearbeiten per Stimme
+    where the feature is meant (the pill's notice); „Auto:“ →
+    „Automatisch:“ in the GPU backend's hint
   - The pill, when a meeting cannot start: "Download a Whisper model
-    first" → "Download a speech model first" · "Zuerst ein Whisper-Modell
-    herunterladen" → "Zuerst ein Sprachmodell herunterladen"
+    first" → "Download a speech model first" · „Zuerst ein Whisper-Modell
+    herunterladen“ → „Zuerst ein Sprachmodell herunterladen“
 - **The pill is set in the window's font** (IBM Plex Sans; only its Latin
   part is loaded there) and takes the window's colours. While it shows
   text, the microphone, the bars and the x no longer show faintly behind
-  the words.
+  the words, and it keeps its outline: the ground of a text or a notice is
+  the pill's own shape and size (it was a larger box, 320 by 64 px around
+  a pill of 304 by 48).
 - **Smaller ones:** one thin scrollbar for every list and text box (a
   file's transcript had Windows' own); the tab labels no longer move when
   another tab is opened; one mark for "opens below" (Export and the
@@ -171,7 +219,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   from its first moment, and Home shows its heading alone until it knows
   what to show (a new PC no longer sees the daily view for a moment before
   the steps). The status says "Ready" only once the AI's state is known
-  too.
+  too, and never while Home still says "Getting ready…". Should one of
+  those questions never be answered, the window goes on after five seconds
+  with what it has, and a notice says "Could not reach the app's backend.
+  Restart RudariFlow."; an answer that comes later still counts.
 - **Less motion:** only a page change and an opening fold move (150 ms);
   hover and focus change at once, and nothing is animated when Windows is
   set to reduce motion.
@@ -198,12 +249,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   is transcribed, and "Enter the key" leads to the field.
 - **A save that fails says so.** A notice gives the reason ("Could not
   save: …"), and the control goes back to the saved value. The notice lies
-  over the page, under its title: it pushes nothing down and can be
-  dismissed. Before, the control kept showing the new value and nothing
-  was said.
-- For development: `tools/ui-check`, which opens 112 pages of the
+  over the bottom of the page: it pushes nothing down, covers neither the
+  tabs nor a page's head, and can be dismissed; a page leaves its height
+  free at its end meanwhile, so its last row can be scrolled clear of it.
+  Before, the control kept showing the new value and nothing was said.
+- For development: `tools/ui-check`, which opens 113 pages of the
   frontend in headless Chromium with a mocked backend and fails on layout,
-  accessibility and wording defects, and `npm run test:unit` (74 tests of
+  accessibility and wording defects, and `npm run test:unit` (76 tests of
   the pure modules, run by Node's own test runner). See the README.
 
 ### Fixed
@@ -228,7 +280,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   smallest size (900×600).
 - The font is shipped with the app; nothing is requested from Google Fonts
   at the start any more.
-- Switching the engine from Groq Cloud to Local Whisper loads the speech
+- Switching Transcription from Groq Cloud to On this PC loads the speech
   model at once instead of at the next dictation.
 - The pill in Edit mode: the cancel button was pushed out of the pill and
   its window beside "12 words", and a bar at the left end could be cut to
@@ -238,6 +290,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - German: text ran under the Soundboard's key box for sound hotkeys
   on/off, the second line of a history entry lost the app name, and the
   language select of a rule per app was cut.
+- Home's quick switches: in German "Gesprochene Sprache" stood over its
+  select while "Schreiben in" stood beside its own (in windows from 1800
+  px and from 1100 to 1239 px). Both selects stand beside their names at
+  every width now.
+- The Soundboard's pop-out: three hints that end in "More" broke before
+  their last word although the line was free.
 
 ## [0.16.0] - 2026-10-05 - Free GPU for games
 
