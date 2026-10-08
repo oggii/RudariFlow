@@ -146,7 +146,8 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
   /** Newest refresh started / applied (an older answer is dropped). */
   let refreshSeq = 0;
   let appliedSeq = 0;
-  let notice = { text: "", tone: "" };
+  /** The notice line. `ok`: what worked, said before `text` in its own colour (some sounds were added, some not). */
+  let notice: { text: string; tone: string; ok?: string } = { text: "", tone: "" };
   let listBox: HTMLElement | null = null;
   /** The refresh that is out; null: none. */
   let refreshing: Promise<void> | null = null;
@@ -191,8 +192,8 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     showPlaying(state.playing);
   }
 
-  function setNotice(text: string, tone = "") {
-    notice = { text, tone };
+  function setNotice(text: string, tone = "", ok = "") {
+    notice = { text, tone, ok };
     render();
   }
 
@@ -236,7 +237,9 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     const library = el("div", "sb-col sb-col-library");
     library.append(toolbar(), chips(s));
     if (notice.text) {
-      const line = el("p", "sb-notice", notice.text);
+      const line = el("p", "sb-notice");
+      if (notice.ok) line.append(el("span", "sb-notice-ok", notice.ok), "\n");
+      line.append(notice.text);
       line.dataset.tone = notice.tone;
       line.setAttribute("role", "status");
       library.append(line);
@@ -341,7 +344,8 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
         b.setAttribute("aria-controls", longId);
         // Named after its row like every "More" of Settings (rows.ts, `nameMore`).
         b.setAttribute("aria-label", t(open ? "hint_less_about" : "hint_more_about").replace("{label}", () => label));
-        h.append(" ", b);
+        // No space before it: the room between the hint and "More" is the button's own (components.css).
+        h.append(b);
         const long = el("span", "label-hint hint-long", more);
         long.id = longId;
         long.hidden = !open;
@@ -394,7 +398,10 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
           await save(combo);
           current = combo;
         },
-        render: () => (kbd.textContent = hotkeyLabel(current)),
+        render: () => {
+          kbd.textContent = hotkeyLabel(current);
+          btn.classList.toggle("key-unset", !current);
+        },
         done: () => {
           editing--;
           if (pending) render();
@@ -403,6 +410,8 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
       if (started) editing++;
     });
     btn.append(kbd);
+    // "Not set" in the quieter words of every key box without a key (components.css).
+    btn.classList.toggle("key-unset", !current);
     btn.setAttribute("aria-label", `${t("sb_hotkey")}: ${hotkeyLabel(current)}${off && current ? ` (${t("sb_sound_hotkeys_off_note")})` : ""}`);
     if (off && current) btn.title = t("sb_sound_hotkeys_off_note");
     wrap.append(btn);
@@ -754,10 +763,10 @@ export function mountBoard(root: HTMLElement, options: BoardOptions): BoardView 
     }
     const failed = results.filter((r) => r.error);
     const added = results.length - failed.length;
-    const lines: string[] = [];
-    if (added > 0) lines.push(added === 1 ? t("sb_added_one") : t("sb_added").replace("{n}", () => String(added)));
-    for (const f of failed) lines.push(`${f.name}: ${reasonText(f.error ?? "")}`);
-    setNotice(lines.join("\n"), failed.length > 0 ? "error" : "ok");
+    const worked = added > 0 ? (added === 1 ? t("sb_added_one") : t("sb_added").replace("{n}", () => String(added))) : "";
+    // Only the failures are red: what was added is said first, in the colour of what worked.
+    if (failed.length === 0) setNotice(worked, "ok");
+    else setNotice(failed.map((f) => `${f.name}: ${reasonText(f.error ?? "")}`).join("\n"), "error", worked);
   }
 
   function popped(): HTMLElement {

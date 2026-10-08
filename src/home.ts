@@ -692,7 +692,8 @@ async function watch() {
  *  are two columns themselves (styles/home.css), so a large window is filled.
  *
  *  While the setup steps show (`listOnly`), the list is the daily view's
- *  only card: it stands under the steps at the page's width, and the
+ *  only card: it stands under the steps at the page's width (beside them in
+ *  a large window, where the page is Home's grid: styles/home.css), and the
  *  controls, which the steps replace, are not shown.
  *
  *  The width is the one with the scrollbar's room in it. `clientWidth`

@@ -294,7 +294,7 @@
             <div class="setting-row">
               <div class="setting-label">
                 <span class="label-text" data-i18n="files_language_label">Language</span>
-                <span class="label-hint" data-i18n="files_language_hint">Auto-detect listens to the first minute and keeps that language for the whole file.</span>
+                <span class="label-hint" id="file-language-hint" data-i18n="files_language_hint">Auto-detect listens to the first minute and keeps that language for the whole file.</span>
               </div>
               <div class="setting-control">
                 <select id="file-language"></select>
@@ -319,6 +319,8 @@
                 </select>
               </div>
             </div>
+            <!-- With a file loaded the options are one line without their hints (src/style.css): this opens them. -->
+            <button type="button" id="file-options-more" class="hint-more" data-shows data-about="files_options_about" aria-expanded="false" aria-controls="file-language-hint file-speakers-hint" data-i18n="hint_more">More</button>
           </div>
           <div id="file-job" class="file-job hidden">
             <div class="file-job-head">
@@ -333,6 +335,17 @@
             <!-- Read out, not shown: how the run ended. The line above changes with every step. -->
             <p id="file-live" class="sr-only" role="status"></p>
           </div>
+          <!-- The summary: its button and what it writes, under the file's line and before the transcript
+               (in a window with room for two columns: in the side column, beside the transcript). -->
+          <button id="file-summarize" class="btn-secondary file-summarize" data-i18n="files_summarize">Summarise with AI</button>
+          <div id="file-summary-box" class="file-summary hidden">
+            <div class="file-summary-head">
+              <span class="file-summary-title" data-i18n="files_summary">Summary</span>
+              <button id="file-summary-toggle" class="btn-ghost" aria-expanded="true" aria-controls="file-summary" data-i18n="files_summary_hide">Hide</button>
+              <button id="file-summary-copy" class="btn-ghost" data-i18n="files_copy">Copy</button>
+            </div>
+            <div id="file-summary" class="file-summary-text"></div>
+          </div>
           <div id="file-result" class="file-result hidden">
             <div class="file-toolbar">
               <label class="file-times">
@@ -342,7 +355,7 @@
               <div class="file-actions">
                 <button id="file-copy" class="btn-secondary" data-i18n="files_copy">Copy</button>
                 <div class="export-menu">
-                  <button id="file-export" class="btn-secondary" aria-expanded="false" aria-controls="file-export-list"><span data-i18n="files_export">Export</span> ▾</button>
+                  <button id="file-export" class="btn-secondary has-menu" aria-expanded="false" aria-controls="file-export-list"><span data-i18n="files_export">Export</span></button>
                   <div id="file-export-list" class="export-list hidden">
                     <button data-kind="pdf" data-i18n="files_export_pdf">PDF…</button>
                     <button data-kind="docx" data-i18n="files_export_docx">Word (.docx)…</button>
@@ -351,20 +364,11 @@
                     <button data-kind="txt" data-i18n="files_export_txt">Text (.txt)…</button>
                   </div>
                 </div>
-                <button id="file-summarize" class="btn-secondary" data-i18n="files_summarize">Summarise with AI</button>
               </div>
             </div>
             <div id="file-speakers-row" class="file-speakers hidden">
               <span class="label-hint" data-i18n="files_speakers_names">Speakers:</span>
               <div id="file-speaker-chips" class="file-speaker-chips"></div>
-            </div>
-            <div id="file-summary-box" class="file-summary hidden">
-              <div class="file-summary-head">
-                <span class="file-summary-title" data-i18n="files_summary">Summary</span>
-                <button id="file-summary-toggle" class="btn-ghost" aria-expanded="true" aria-controls="file-summary" data-i18n="files_summary_hide">Hide</button>
-                <button id="file-summary-copy" class="btn-ghost" data-i18n="files_copy">Copy</button>
-              </div>
-              <div id="file-summary" class="file-summary-text"></div>
             </div>
             <textarea id="file-text" class="file-text" spellcheck="false" data-i18n-aria-label="files_transcript" aria-label="Transcript"></textarea>
           </div>
@@ -401,7 +405,7 @@
                 <div class="mt-view-actions">
                   <button id="mt-copy" class="btn-secondary" data-i18n="mt_copy_all">Copy all</button>
                   <div id="mt-export-menu" class="export-menu">
-                    <button id="mt-export" class="btn-secondary" aria-expanded="false" aria-controls="mt-export-list"><span data-i18n="files_export">Export</span> ▾</button>
+                    <button id="mt-export" class="btn-secondary has-menu" aria-expanded="false" aria-controls="mt-export-list"><span data-i18n="files_export">Export</span></button>
                     <div id="mt-export-list" class="export-list hidden">
                       <button data-kind="pdf" data-i18n="files_export_pdf">PDF…</button>
                       <button data-kind="docx" data-i18n="files_export_docx">Word (.docx)…</button>
@@ -417,9 +421,18 @@
                 <h2 class="mt-view-title-wrap"><button id="mt-view-title" class="mt-view-title" data-i18n-title="mt_rename" title="Click to rename"></button></h2>
                 <span id="mt-view-meta" class="label-hint mt-view-meta"></span>
               </div>
-              <div id="mt-hint" class="mt-hint hidden" role="status"></div>
               <div class="mt-body">
-                <div id="mt-notes" class="mt-notes hidden"></div>
+                <!-- What is said about the meeting and its notes: the side column in a window with room for two
+                     (src/style.css, "Meetings: two columns"). The last line stands in the notes' place while
+                     there are neither notes nor a hint row. -->
+                <div class="mt-side">
+                  <div id="mt-hint" class="mt-hint hidden" role="status"></div>
+                  <div id="mt-notes" class="mt-notes hidden"></div>
+                  <p class="mt-notes-none">
+                    <span class="mt-notes-live" data-i18n="mt_notes_live">The notes are written when the meeting ends.</span>
+                    <span class="mt-notes-never" data-i18n="mt_notes_never">This meeting has no notes.</span>
+                  </p>
+                </div>
                 <div class="mt-main">
                   <div id="mt-speakers" class="file-speakers mt-speakers hidden">
                     <span class="label-hint" data-i18n="files_speakers_names">Speakers:</span>
@@ -459,11 +472,11 @@
                percent (the bar has the numbers). The AI model's download has the AI's state line for that. -->
           <p id="download-live" class="sr-only" role="status"></p>
           <div id="settings-tabs" class="tabs" role="tablist" data-i18n-aria-label="settings_title" aria-label="Settings">
-            <button type="button" role="tab" class="tab" id="tab-dictation" data-tab="dictation" aria-controls="panel-dictation" aria-selected="true" data-i18n="tab_dictation">Dictation</button>
-            <button type="button" role="tab" class="tab" id="tab-ai" data-tab="ai" aria-controls="panel-ai" aria-selected="false" tabindex="-1" data-i18n="tab_ai">AI cleanup</button>
-            <button type="button" role="tab" class="tab" id="tab-dictionary" data-tab="dictionary" aria-controls="panel-dictionary" aria-selected="false" tabindex="-1" data-i18n="tab_dictionary">Dictionary</button>
-            <button type="button" role="tab" class="tab" id="tab-models" data-tab="models" aria-controls="panel-models" aria-selected="false" tabindex="-1" data-i18n="tab_models">Models &amp; GPU</button>
-            <button type="button" role="tab" class="tab" id="tab-general" data-tab="general" aria-controls="panel-general" aria-selected="false" tabindex="-1" data-i18n="tab_general">General</button>
+            <button type="button" role="tab" class="tab" id="tab-dictation" data-tab="dictation" aria-controls="panel-dictation" aria-selected="true" data-label="Dictation" data-i18n="tab_dictation">Dictation</button>
+            <button type="button" role="tab" class="tab" id="tab-ai" data-tab="ai" aria-controls="panel-ai" aria-selected="false" tabindex="-1" data-label="AI cleanup" data-i18n="tab_ai">AI cleanup</button>
+            <button type="button" role="tab" class="tab" id="tab-dictionary" data-tab="dictionary" aria-controls="panel-dictionary" aria-selected="false" tabindex="-1" data-label="Dictionary" data-i18n="tab_dictionary">Dictionary</button>
+            <button type="button" role="tab" class="tab" id="tab-models" data-tab="models" aria-controls="panel-models" aria-selected="false" tabindex="-1" data-label="Models &amp; GPU" data-i18n="tab_models">Models &amp; GPU</button>
+            <button type="button" role="tab" class="tab" id="tab-general" data-tab="general" aria-controls="panel-general" aria-selected="false" tabindex="-1" data-label="General" data-i18n="tab_general">General</button>
           </div>
 
           <!-- ── Dictation ─────────────────────────────────── -->
@@ -497,7 +510,7 @@
               <div class="setting-row">
                 <div class="setting-label">
                   <span class="label-text" data-i18n="rewrite_last_label">Rewrite last dictation</span>
-                  <span class="label-hint"><span data-i18n="rewrite_last_hint">Say how to change it: “shorter”, “more formal”.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="rewrite-last-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint"><span data-i18n="rewrite_last_hint">Say how to change it: “shorter”, “more formal”.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="rewrite-last-more" data-i18n="hint_more">More</button></span>
                   <span class="label-hint hint-long" id="rewrite-last-more" data-i18n="rewrite_last_more" hidden>Selects your last dictation and changes it the way you say. Needs AI cleanup and Edit mode.</span>
                 </div>
                 <div class="setting-control hotkey-control">
@@ -532,7 +545,7 @@
                   <div class="setting-row">
                     <div class="setting-label">
                       <span class="label-text" data-i18n="free_gpu_label">Free GPU</span>
-                      <span class="label-hint"><span data-i18n="free_gpu_hint">Unloads the models so a game gets the graphics card.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="free-gpu-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint"><span data-i18n="free_gpu_hint">Unloads the models so a game gets the graphics card.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="free-gpu-more" data-i18n="hint_more">More</button></span>
                       <span class="label-hint hint-long" id="free-gpu-more" data-i18n="free_gpu_more" hidden>Press again to load them; a dictation also loads them, the first one takes a few seconds longer.</span>
                     </div>
                     <div class="setting-control hotkey-control">
@@ -568,7 +581,7 @@
                   <div class="setting-row">
                     <div class="setting-label">
                       <span class="label-text" data-i18n="send_command_label">Voice command “send it”</span>
-                      <span class="label-hint"><span data-i18n="send_command_hint">End with “Send it.” to press Enter after pasting.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="send-command-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint"><span data-i18n="send_command_hint">End with “Send it.” to press Enter after pasting.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="send-command-more" data-i18n="hint_more">More</button></span>
                       <span class="label-hint hint-long" id="send-command-more" data-i18n="send_command_more" hidden>Say it as its own sentence, for example in chats. German: “Abschicken.”</span>
                     </div>
                     <div class="setting-control">
@@ -617,7 +630,7 @@
               <div class="setting-row">
                 <div class="setting-label">
                   <span class="label-text" data-i18n="ai_output_label">Write in</span>
-                  <span class="label-hint"><span data-i18n="ai_output_hint">Translates every dictation into this language.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-output-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint"><span data-i18n="ai_output_hint">Translates every dictation into this language.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-output-more" data-i18n="hint_more">More</button></span>
                   <span class="label-hint hint-long" id="ai-output-more" data-i18n="ai_output_more" hidden>Only while AI cleanup runs; apps set to No AI keep the spoken language.</span>
                   <span class="label-hint ai-output-warn hidden" id="ai-output-skip"></span>
                   <span class="label-hint ai-output-warn hidden" id="ai-output-warn" data-i18n="ai_output_warn">Set the Language to Auto-detect (Settings › Models &amp; GPU), so Whisper hears other languages correctly before they are translated.</span>
@@ -629,7 +642,7 @@
               <div class="setting-row">
                 <div class="setting-label">
                   <span class="label-text" data-i18n="ai_edit_label">Edit mode</span>
-                  <span class="label-hint"><span data-i18n="ai_edit_hint">Select text, hold your hotkey and say what to change.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-edit-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint"><span data-i18n="ai_edit_hint">Select text, hold your hotkey and say what to change.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-edit-more" data-i18n="hint_more">More</button></span>
                   <span class="label-hint hint-long" id="ai-edit-more" data-i18n="ai_edit_more" hidden>Say “shorter”, “more formal”, “in Turkish”, or the new text. Works where the app shares its text, not in terminals or address bars. Ctrl+Z undoes it.</span>
                 </div>
                 <div class="setting-control">
@@ -655,7 +668,7 @@
               <div class="list-head">
                 <h2 class="list-title" data-i18n="ai_rules_title">Rules per app</h2>
               </div>
-              <p class="label-hint"><span data-i18n="ai_rules_desc">Instructions and the spoken language for one app or website.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-rules-more" data-i18n="hint_more">More</button></p>
+              <p class="label-hint"><span data-i18n="ai_rules_desc">Instructions and the spoken language for one app or website.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="ai-rules-more" data-i18n="hint_more">More</button></p>
               <p class="label-hint hint-long" id="ai-rules-more" data-i18n="ai_rules_more" hidden>A rule matches the program name or a word in the window title, e.g. “whatsapp” also covers WhatsApp Web. The language is what Whisper hears in this app, also with AI cleanup off. No AI pastes the plain Whisper text.</p>
               <div id="ai-rule-list" class="list rule-list" role="list"></div>
               <p id="ai-rule-empty" class="empty-state hidden" data-i18n="ai_rules_empty">No rules yet.</p>
@@ -741,7 +754,7 @@
                 <h2 class="list-title" data-i18n="replacements_title">Replacements</h2>
                 <input type="search" id="replacement-search" spellcheck="false" autocomplete="off" data-i18n-placeholder="replacement_search" data-i18n-aria-label="replacement_search" placeholder="Search replacements" aria-label="Search replacements" />
               </div>
-              <p class="label-hint"><span data-i18n="replacements_desc">Say a short phrase, get longer text.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="replacements-more" data-i18n="hint_more">More</button></p>
+              <p class="label-hint"><span data-i18n="replacements_desc">Say a short phrase, get longer text.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="replacements-more" data-i18n="hint_more">More</button></p>
               <p class="label-hint hint-long" id="replacements-more" data-i18n="replacements_more" hidden>Good for email addresses, links and signatures. {date}, {time}, {weekday}, {year} and {iso_date} in the text are filled in when it is pasted.</p>
               <!-- One grid for the headings and the rows (styles/settings.css). -->
               <div class="replacement-table">
@@ -779,7 +792,7 @@
                   <div class="setting-row">
                     <div class="setting-label">
                       <span class="label-text" data-i18n="screen_context_label">Words on screen</span>
-                      <span class="label-hint"><span data-i18n="screen_context_hint">Spells names right by reading the window you dictate into, on your PC; nothing is saved.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="screen-context-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint"><span data-i18n="screen_context_hint">Spells names right by reading the window you dictate into, on your PC; nothing is saved.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="screen-context-more" data-i18n="hint_more">More</button></span>
                       <span class="label-hint hint-long" id="screen-context-more" data-i18n="screen_context_more" hidden>Whisper and the AI both use the names. They are read when you press the hotkey.</span>
                     </div>
                     <div class="setting-control">
@@ -792,7 +805,7 @@
                   <div class="setting-row">
                     <div class="setting-label">
                       <span class="label-text" data-i18n="learn_label">Learn from corrections</span>
-                      <span class="label-hint"><span data-i18n="learn_hint">Suggests names you correct; only the corrected word is kept, never your text.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="learn-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint"><span data-i18n="learn_hint">Suggests names you correct; only the corrected word is kept, never your text.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="learn-more" data-i18n="hint_more">More</button></span>
                       <span class="label-hint hint-long" id="learn-more" data-i18n="learn_more" hidden>A correction counts when you make it right after dictating. A suggestion shows at the top of this tab until you add or dismiss it.</span>
                     </div>
                     <div class="setting-control">
@@ -824,7 +837,7 @@
               <div class="setting-row" id="local-settings">
                 <div class="setting-label">
                   <span class="label-text" id="model-label" data-i18n="model_label">Speech model</span>
-                  <span class="label-hint"><span data-i18n="model_hint">Larger models are more accurate and need more memory.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="model-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint"><span data-i18n="model_hint">Larger models are more accurate and need more memory.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="model-more" data-i18n="hint_more">More</button></span>
                   <!-- Every model with its one line (src/main.ts, renderModels): what a model is can be read without choosing it. -->
                   <span class="label-hint hint-long model-list" id="model-more" role="list" hidden></span>
                   <span class="label-hint status-line" id="model-note"></span>
@@ -906,7 +919,7 @@
                   <div class="setting-row">
                     <div class="setting-label">
                       <span class="label-text" data-i18n="pc_check_label">PC check</span>
-                      <span class="label-hint"><span data-i18n="pc_check_hint">Measures this PC (about 20 seconds) and uses the fastest setup.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="pc-check-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint"><span data-i18n="pc_check_hint">Measures this PC (about 20 seconds) and uses the fastest setup.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="pc-check-more" data-i18n="hint_more">More</button></span>
                       <span class="label-hint hint-long" id="pc-check-more" data-i18n="pc_check_more" hidden>Whisper on your graphics card with and without flash attention, and the speed of the AI.</span>
                     </div>
                     <div class="setting-control">
@@ -920,7 +933,7 @@
                   <div class="setting-row">
                     <div class="setting-label">
                       <span class="label-text" data-i18n="game_free_label">Free GPU for games</span>
-                      <span class="label-hint"><span data-i18n="game_free_hint">Unloads the models while a game or video runs in fullscreen.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="game-free-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint"><span data-i18n="game_free_hint">Unloads the models while a game or video runs in fullscreen.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="game-free-more" data-i18n="hint_more">More</button></span>
                       <span class="label-hint hint-long" id="game-free-more" data-i18n="game_free_more" hidden>When a fullscreen app (a game or a video player) is in front for 5 seconds, Whisper and the AI model are unloaded, as with the Free GPU hotkey. Meanwhile a dictation loads only Whisper and is pasted without AI cleanup, and Edit mode is off. The models load again 30 seconds after the game is closed, minimised or no longer fullscreen, not when you just use another window or monitor. Browsers, calls (Teams, Zoom, Discord) and remote desktops in fullscreen do not count.</span>
                       <span class="label-hint ai-status status-line hidden" id="game-free-status" data-tone="warn" data-i18n="game_free_now">Freed for a game: dictations run without AI cleanup until it ends.</span>
                     </div>
@@ -934,7 +947,7 @@
                   <div class="setting-row">
                     <div class="setting-label">
                       <span class="label-text" data-i18n="idle_unload_label">Unload when idle</span>
-                      <span class="label-hint"><span data-i18n="idle_unload_hint">Frees the graphics card after this long without a dictation.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="idle-unload-more" data-i18n="hint_more">More</button></span>
+                      <span class="label-hint"><span data-i18n="idle_unload_hint">Frees the graphics card after this long without a dictation.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="idle-unload-more" data-i18n="hint_more">More</button></span>
                       <span class="label-hint hint-long" id="idle-unload-more" data-i18n="idle_unload_more" hidden>On mains power. The next dictation loads the models again and takes a few seconds longer. On battery it is always 10 minutes.</span>
                     </div>
                     <div class="setting-control">
@@ -991,7 +1004,7 @@
               <div class="setting-row">
                 <div class="setting-label">
                   <span class="label-text" data-i18n="history_mode_label">Keep history</span>
-                  <span class="label-hint"><span data-i18n="history_mode_hint">The last 200 texts and 50 recordings are kept.</span> <button type="button" class="hint-more" aria-expanded="false" aria-controls="history-mode-more" data-i18n="hint_more">More</button></span>
+                  <span class="label-hint"><span data-i18n="history_mode_hint">The last 200 texts and 50 recordings are kept.</span><button type="button" class="hint-more" aria-expanded="false" aria-controls="history-mode-more" data-i18n="hint_more">More</button></span>
                   <span class="label-hint hint-long" id="history-mode-more" data-i18n="history_mode_more" hidden>Recordings let you re-run a dictation with another model.</span>
                 </div>
                 <div class="setting-control">

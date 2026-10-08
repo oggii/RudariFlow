@@ -130,10 +130,22 @@ export function reveal(id: string) {
 
 // ── The window's width ────────────────────────────────
 
-/** From this much room beside the sidebar a page is two columns (Home). */
+// The three steps of the one layout system (written down at the top of
+// styles/shell.css). Every page runs from the common left edge to the
+// window's right edge at every size; the steps only say how many columns
+// stand inside that width.
+
+/** From this much room beside the sidebar a page with a narrow side and a
+ *  list is two columns: Home (controls, dictations) and the Soundboard
+ *  (settings panel, sounds). */
 export const WIDE = 900;
-/** From this much it has room for more: Home's controls are two columns of
- *  cards themselves, and a Settings tab is two columns. */
+/** From this much a page of setting rows or of two texts is two columns:
+ *  Settings, the Meetings library, an open meeting (notes or what stands in
+ *  for them, transcript) and Files (the file and its summary, transcript). */
+export const ROOMY = 1250;
+/** From this much a page with enough separate things has more: Home's
+ *  controls are two columns of cards themselves, and the setup steps stand
+ *  beside the optional card and the dictations. */
 export const WIDER = 1600;
 
 /** The room beside the sidebar, with the scrollbar's own room in it.
@@ -145,13 +157,15 @@ export function roomBeside(): number {
   return document.getElementById("content")?.offsetWidth ?? 0;
 }
 
-/** The pages that are two columns in a large window: Settings (styles/settings.css),
- *  Files (the drop zone beside its options) and the Meetings library (style.css). */
-const WIDER_PAGES = ["section-settings", "section-files", "section-meetings"];
-
-function layoutWider() {
-  const wider = roomBeside() >= WIDER;
-  for (const id of WIDER_PAGES) document.getElementById(id)?.classList.toggle("wider", wider);
+/** Every page learns the steps the window has reached as classes ("wide",
+ *  "roomy", "wider"); what a page does with a step is its style sheet's. */
+function layoutSteps() {
+  const room = roomBeside();
+  for (const page of document.querySelectorAll<HTMLElement>(".content-section")) {
+    page.classList.toggle("wide", room >= WIDE);
+    page.classList.toggle("roomy", room >= ROOMY);
+    page.classList.toggle("wider", room >= WIDER);
+  }
 }
 
 /** Wire the sidebar, the tab bar and the folds, and show the remembered place. */
@@ -190,8 +204,8 @@ export function initShell() {
   }
 
   const content = document.getElementById("content");
-  if (content) new ResizeObserver(layoutWider).observe(content);
-  layoutWider();
+  if (content) new ResizeObserver(layoutSteps).observe(content);
+  layoutSteps();
 
   draw();
 }

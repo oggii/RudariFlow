@@ -7,12 +7,8 @@
   padding: var(--s2) 0 var(--s3);
 }
 
-/* One column on the left edge every page shares. It grows with the window
-   up to 1080 px of rows: wider than that, a label and its control at the
-   other end of the row no longer read as one. */
-#section-settings {
-  max-width: calc(1080px + 2 * var(--s5));
-}
+/* One column that fills the page's width until the window has room for two
+   (the layout system, styles/shell.css): see "Two columns" below. */
 
 /* A row's label is its top, and the control stands beside the label and
    its one line of hint. So a control keeps its place when "More" opens the
@@ -43,9 +39,14 @@
 }
 
 /* A row without a hint has one line of label: it stands at the middle of
-   its control, not at its top. */
+   its control, not at its top. Its control may take more of the row: the
+   microphone's name is long and its label is one word. */
 .tab-panel .setting-row:not(:has(.label-hint)) {
   align-items: center;
+}
+
+.tab-panel .setting-row:not(:has(.label-hint)) > .setting-control {
+  max-width: 75%;
 }
 
 /* ── A model's download, on the model's row ─────────── */
@@ -92,31 +93,30 @@
   margin-right: calc(28px + var(--s1));
 }
 
-/* ── A large window: two columns ────────────────────── */
+/* ── Two columns ────────────────────────────────────── */
 
-/* From 1600 px beside the sidebar (the class "wider", set by src/shell.ts
-   on the same width as Home's step) a tab is two columns on the page's left
-   edge, each up to 900 px, so a label stays near its control and a 1920 or
-   2560 px window is used. Only the placement changes: the order in the
-   page, and with it the Tab order, is the one of the single column. Below
-   the step nothing here applies. The tab bar spans the whole width. */
-#section-settings.wider {
-  max-width: none;
-}
-
-#section-settings.wider .tab-panel {
+/* From 1250 px beside the sidebar (the class "roomy", set by src/shell.ts;
+   the layout system is written down in styles/shell.css) a tab is two
+   columns that share the page's width, with Home's gutter between them: a
+   label stays near its control, and the rows end at the window's right
+   edge like every page's. Each column is 588 px at the step (a row's hint
+   and "More" still share a line there in German), 825 px in a 1920 px
+   window. Only the placement changes: the order in the page, and with it
+   the Tab order, is the one of the single column. Below the step a tab is
+   one column of the page's width. The tab bar spans the whole width. */
+#section-settings.roomy .tab-panel {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 900px));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
-  gap: var(--s4);
+  gap: var(--gutter);
 }
 
 /* The grid's gap spaces the parts. */
-#section-settings.wider .tab-panel > * {
+#section-settings.roomy .tab-panel > * {
   margin: 0;
 }
 
-#section-settings.wider .tab-panel > .panel-lead {
+#section-settings.roomy .tab-panel > .panel-lead {
   grid-column: 1 / -1;
 }
 
@@ -128,19 +128,19 @@
    fold), so Tab changes column once, as on the other tabs, and the common
    rows come before Advanced. The last row takes what is left, so the main
    card's height never pushes the fold away from the rules above it. */
-#section-settings.wider #panel-ai {
+#section-settings.roomy #panel-ai {
   grid-template-rows: auto auto 1fr;
 }
 
-#section-settings.wider #panel-ai > .panel-lead + .card {
+#section-settings.roomy #panel-ai > .panel-lead + .card {
   grid-area: 2 / 1 / span 2;
 }
 
-#section-settings.wider #panel-ai > .card:has(#ai-rule-list) {
+#section-settings.roomy #panel-ai > .card:has(#ai-rule-list) {
   grid-area: 2 / 2;
 }
 
-#section-settings.wider #panel-ai > .fold {
+#section-settings.roomy #panel-ai > .fold {
   grid-area: 3 / 2;
 }
 
@@ -149,27 +149,26 @@
    share the rows of a grid (a short card beside a long one would leave a
    hole under it), so here the columns are columns of text flow, broken
    before the replacements; no card is split. */
-#section-settings.wider #panel-dictionary {
+#section-settings.roomy #panel-dictionary {
   display: block;
   columns: 2;
-  column-gap: var(--s4);
-  max-width: calc(2 * 900px + var(--s4));
+  column-gap: var(--gutter);
 }
 
-#section-settings.wider #panel-dictionary > * {
-  margin: 0 0 var(--s4);
+#section-settings.roomy #panel-dictionary > * {
+  margin: 0 0 var(--gutter);
   break-inside: avoid;
 }
 
-#section-settings.wider #panel-dictionary > .panel-lead {
+#section-settings.roomy #panel-dictionary > .panel-lead {
   column-span: all;
 }
 
-#section-settings.wider #panel-dictionary > .card:has(#replacement-list) {
+#section-settings.roomy #panel-dictionary > .card:has(#replacement-list) {
   break-before: column;
 }
 
-#section-settings.wider #panel-dictionary > :is(.card:has(#dict-list), .fold) {
+#section-settings.roomy #panel-dictionary > :is(.card:has(#dict-list), .fold) {
   margin-bottom: 0;
 }
 
@@ -177,7 +176,7 @@
    the card's ground, as wide as the column and on the top edge of the card
    beside it. So both columns start on one edge, and a closed fold in a
    column of its own still reads as something to open. */
-#section-settings.wider .fold > summary {
+#section-settings.roomy .fold > summary {
   display: flex;
   min-height: 48px;
   margin: 0;
@@ -186,11 +185,11 @@
   background: var(--surface);
 }
 
-#section-settings.wider .fold > summary:hover {
+#section-settings.roomy .fold > summary:hover {
   color: var(--text);
 }
 
-#section-settings.wider .fold[open] > summary {
+#section-settings.roomy .fold[open] > summary {
   margin-bottom: var(--s2);
 }
 
@@ -234,7 +233,49 @@
 }
 
 /* Every speech model with its one line, behind the row's "More": the name
-   and size as the dropdown has them, then what the model is. */
+   and size as the dropdown has them, then what the model is. The open list
+   takes the row's whole width, under the label and the dropdown (in the
+   label's narrow column every model took two lines at 900×600), and the one
+   line about the chosen model, which the list says too, rests meanwhile; a
+   failed download's line stays. */
+#local-settings:has(#model-more:not([hidden])) {
+  display: grid;
+  /* The control's share is the one it has in every row: at most 60 %. */
+  grid-template-columns: minmax(0, 1fr) fit-content(60%);
+  /* The label, its hint, and a row that takes what a higher control needs
+     (the dropdown with Download under it), so the hint keeps its place. */
+  grid-template-rows: auto auto 1fr;
+  align-items: start;
+  row-gap: 0;
+}
+
+#local-settings:has(#model-more:not([hidden])) > .setting-label {
+  display: contents;
+}
+
+#local-settings:has(#model-more:not([hidden])) > .setting-label > * {
+  grid-column: 1;
+}
+
+/* (Its own 60 % would be 60 % of its column here: the column has the cap.) */
+#local-settings:has(#model-more:not([hidden])) > .setting-control {
+  grid-area: 1 / 2 / span 3;
+  max-width: none;
+}
+
+#local-settings:has(#model-more:not([hidden])) #model-more {
+  grid-area: 4 / 1 / 5 / -1;
+  max-width: none;
+}
+
+#local-settings:has(#model-more:not([hidden])) #model-note {
+  grid-area: 5 / 1 / 6 / -1;
+}
+
+#local-settings:has(#model-more:not([hidden])) #model-note:not([data-tone="error"]) {
+  display: none;
+}
+
 .model-list-item {
   display: block;
 }
@@ -323,11 +364,6 @@
   -webkit-user-select: text;
 }
 
-/* The suggestions stand out until they are dealt with. */
-.dict-suggest {
-  box-shadow: 0 0 0 1px var(--accent) inset;
-}
-
 /* ── Dictionary: replacements ───────────────────────── */
 
 /* "When I say" → "Insert", and Delete: one grid for the headings and every
@@ -399,19 +435,12 @@
 /* A text box for a sentence or two is at most 720 px wide, and what is
    typed uses all of it: a field that wrapped its text halfway (a measure
    kept by padding inside the box) read as a defect. So in a wide card the
-   row ends early: "Try it" with its field, its buttons and its result, and
-   a rule's fields with Delete after them. */
+   field ends early: "Try it" with its field, its buttons and its result,
+   and a rule's fields. A rule's Delete stands at the card's right edge, as
+   every Delete of a list does. */
 .ai-test,
 .rule-fields {
   max-width: 720px;
-}
-
-.rule-row {
-  justify-content: flex-start;
-}
-
-.rule-row > .list-actions {
-  margin-left: 0;
 }
 
 /* ── AI cleanup: rules per app ──────────────────────── */

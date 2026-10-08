@@ -6,52 +6,48 @@
 @import "./styles/home.css";
 @import "./styles/settings.css";
 
-/* The Files tab uses the whole window: the transcript takes the height. */
-#section-files {
-  max-width: none;
-}
-
-/* The Soundboard takes the window's width: its sounds are tiles that fill
-   it (see "Soundboard layout"). */
-#section-soundboard {
-  max-width: none;
-}
+/* The Soundboard's sounds are tiles that fill the page's width (see
+   "Soundboard layout"). */
 #section-soundboard .sb-layout {
   margin: 0;
 }
 
+/* ── Files ──────────────────────────────────────────── */
+
+/* The page has the window's width and its height (the layout system:
+   styles/shell.css). Without a file the drop zone takes the height that is
+   free: a target as large as the window allows, its prompt in the middle.
+   With a file the zone is one line and the transcript has the height.
+
+   One column, under 1250 px beside the sidebar: the zone, the options, the
+   file's line, "Summarise with AI" and the summary it writes, then the
+   transcript under its toolbar and its speakers.
+
+   Two columns from there (class "roomy", set by shell.ts), once a file is
+   loaded: the side column at the left holds the file and what is done with
+   it (the zone's line, the options, the file's line with its progress,
+   "Summarise with AI" and the summary); the transcript stands at the right
+   under its toolbar, in a frame that runs to the window's right edge and
+   down to its bottom, with its text at the measure. It is the shape of an
+   open meeting (notes at the left, transcript at the right), with the same
+   side column (--side-col) and the same gutter. Nothing is moved in the
+   page for it: the page's order is the side column from top to bottom and
+   then the transcript's, and so is Tab's. */
 #section-files.active {
   display: flex;
   flex-direction: column;
   min-height: 100%;
 }
 
-#section-files .file-result:not(.hidden) {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-#section-files .file-text {
-  flex: 1;
-  min-height: 260px;
-  resize: none;
-}
-
-.file-summary.collapsed .file-summary-text {
-  display: none;
-}
-
-/* ── Files ──────────────────────────────────────────── */
-
 .file-drop {
+  flex: 1 0 auto;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 22px 16px 18px;
-  margin-bottom: 16px;
+  margin-bottom: var(--s4);
   border: 1px dashed var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
@@ -61,10 +57,43 @@
   border-color: var(--accent);
   background: var(--accent-subtle);
 }
-/* A file is loaded: one line, so the transcript starts on the first screen. */
+.file-drop-icon {
+  color: var(--text-secondary);
+}
+.file-drop-title {
+  font-size: var(--fs);
+  font-weight: 600;
+  color: var(--text);
+}
+.file-drop .btn-secondary {
+  margin-top: 6px;
+}
+
+/* The options under the zone. With room for two columns and no file yet,
+   the two settings stand side by side, each in its half of the card: their
+   texts start where the texts of two cards side by side would. */
+#section-files.roomy:not(.has-file) .files-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: calc(var(--gutter) + 2 * var(--s4));
+}
+#section-files.roomy:not(.has-file) .files-options > .setting-row {
+  border-bottom: none;
+}
+/* Without a file the options end the page. */
+#section-files:not(.has-file) .files-options {
+  margin-bottom: 0;
+}
+/* "More" belongs to the options' short form (below). */
+#section-files:not(.has-file) .files-options > .hint-more {
+  display: none;
+}
+
+/* A file is loaded: the zone is one line, so the transcript starts on the
+   first screen. */
 #section-files.has-file .file-drop {
+  flex: none;
   flex-direction: row;
-  justify-content: center;
   gap: var(--s3);
   padding: var(--s2) var(--s3);
   margin-bottom: var(--s3);
@@ -79,101 +108,126 @@
 #section-files.has-file .section-header {
   margin-bottom: var(--s3);
 }
-/* A large window (class "wider", set by shell.ts on the room beside the
-   sidebar): the drop zone and the options side by side, each half of the
-   page, so a label is not a window's width away from its control. Nothing is
-   moved in the page: the Tab order is the single column's.
+#section-files.has-file .files-options {
+  margin-bottom: var(--s3);
+}
 
-   The file's line and the result do not take the page's width there. A
-   transcript's lines end at the measure (tokens.css), and a frame that went
-   on for another 1000 px left "Clear", "Copy" and "Hide" that far from the
-   text they act on, and the transcript's field half empty. The transcript's
-   frame is as wide as its text: the measure, the field's padding and edge,
-   and the room of its scrollbar (--file-frame). With a summary the summary
-   stands beside the transcript as a meeting's notes do: at the left and at
-   the notes' width (--file-side), its head with Hide and Copy above its own
-   text; the transcript at the right under its own toolbar. */
-#section-files.wider {
-  --file-frame: calc(var(--measure) + 46px);
-  --file-side: clamp(340px, 36%, 460px);
-  --file-gap: 20px;
+/* And the options are their short form: the two choices side by side, each
+   under its name, without their hints. "More" at the end opens the card as
+   it is without a file (the hints under the names, a choice per row), and
+   so does the speakers' line while it has something to say that is no hint:
+   its model downloads, or could not be downloaded (data-state, set by
+   src/files.ts). */
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s2) var(--s3);
+  padding-top: var(--s2);
+  padding-bottom: var(--s3);
 }
-#section-files.wider.active {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: auto auto auto minmax(0, 1fr);
-  column-gap: var(--s4);
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) > .setting-row {
+  flex: 2 1 120px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0;
+  border-bottom: none;
 }
-#section-files.wider > .file-job,
-#section-files.wider > .file-result {
-  max-width: var(--file-frame);
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) .label-hint {
+  display: none;
 }
-#section-files.wider:has(.file-summary:not(.hidden)) > .file-job {
-  max-width: calc(var(--file-side) + var(--file-gap) + var(--file-frame));
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) .setting-label {
+  flex: none;
 }
-/* Two columns, three lines: the toolbar, the speakers (where there are any)
-   and the transcript at the right, the summary beside all three. The lines'
-   distances are the single column's (10 px, and 8 more under the speakers),
-   as margins: a gap would also stand around the speakers' line where it is
-   empty. */
-#section-files.wider > .file-result:not(.hidden):has(> .file-summary:not(.hidden)) {
-  display: grid;
-  grid-template-columns: var(--file-side) minmax(0, var(--file-frame));
-  grid-template-rows: auto auto minmax(0, 1fr);
-  gap: 0 var(--file-gap);
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) .label-text {
+  font-size: var(--fs-s);
+  color: var(--text-2);
+}
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) .setting-control {
   max-width: none;
 }
-#section-files.wider .file-summary:not(.hidden) {
-  grid-area: 1 / 1 / -1 / 2;
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) select {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+#section-files.has-file .files-options:not(:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"])) > .setting-row:first-child {
+  flex: 3 1 190px;
+}
+/* "More" stands on the selects' middle line; opened, it is the card's last line. */
+.files-options > .hint-more {
+  align-self: flex-end;
+  margin: 0 0 5px;
+}
+#section-files.has-file .files-options:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"]) > .hint-more {
+  display: inline-block;
+  margin: var(--s1) 0 var(--s2) -2px;
+}
+#section-files.has-file .files-options:has(.hint-more[aria-expanded="true"], .label-hint[data-state="busy"], .label-hint[data-state="error"]) > .setting-row:last-of-type {
+  border-bottom: 1px solid var(--line);
+}
+/* Opened in the side column, a choice stands under its name and hint: the
+   column is too narrow for both side by side. */
+#section-files.roomy.has-file .files-options > .setting-row {
+  flex-direction: column;
+  align-items: stretch;
+}
+#section-files.roomy.has-file .files-options .setting-control {
+  max-width: none;
+  justify-content: flex-start;
+}
+
+/* Two columns (see the head of this part): the parts of the side column
+   one under the other at the left, the result beside all of them. Its
+   toolbar is as high as the zone's line, so both columns start with a line
+   of one height. */
+#section-files.roomy.has-file.active {
+  display: grid;
+  grid-template-columns: var(--side-col) minmax(0, 1fr);
+  grid-template-rows: repeat(6, auto) minmax(0, 1fr);
+  column-gap: var(--gutter);
+}
+#section-files.roomy.has-file > .section-header {
+  grid-area: 1 / 1 / 2 / -1;
+}
+#section-files.roomy.has-file > .file-drop {
+  grid-area: 2 / 1;
+}
+/* The zone's line in the side column: its words and its button, without the mark. */
+#section-files.roomy.has-file .file-drop-icon {
+  display: none;
+}
+#section-files.roomy.has-file > .files-options {
+  grid-area: 3 / 1;
+}
+#section-files.roomy.has-file > .file-job {
+  grid-area: 4 / 1;
+}
+#section-files.roomy.has-file > .file-summarize {
+  grid-area: 5 / 1;
+  justify-self: start;
+}
+#section-files.roomy.has-file > .file-summary {
+  grid-area: 6 / 1;
   align-self: start;
+  margin-bottom: 0;
 }
-#section-files.wider .file-summary:not(.hidden) ~ .file-text {
-  grid-area: 3 / 2;
+#section-files.roomy.has-file > .file-result {
+  grid-area: 2 / 2 / -1 / 3;
 }
-#section-files.wider .file-result:has(> .file-summary:not(.hidden)) > .file-toolbar {
-  grid-area: 1 / 2;
-  margin-bottom: 10px;
-}
-#section-files.wider .file-result:has(> .file-summary:not(.hidden)) > .file-speakers {
-  grid-area: 2 / 2;
-  margin-bottom: 18px;
-}
-/* The field is as wide as its text: no padding that stands in for the rest
-   of a wider frame (see .file-text). */
-#section-files.wider .file-text {
-  padding-right: 14px;
-}
-#section-files.wider > * {
-  grid-column: 1 / -1;
-}
-#section-files.wider > .file-drop {
-  grid-column: 1;
-  justify-content: center;
-}
-#section-files.wider > .files-options {
-  grid-column: 2;
-}
-/* With a file loaded the zone is its one line here too. Beside the options
-   it keeps their height, so the two boxes stay one row with one top and one
-   bottom edge. */
-#section-files.wider.has-file .file-drop {
-  align-items: center;
-  margin-bottom: 16px;
-}
-.file-drop-icon {
-  color: var(--text-secondary);
-}
-.file-drop-title {
-  font-size: var(--fs);
-  font-weight: 600;
-  color: var(--text);
-}
-.file-drop .btn-secondary {
-  margin-top: 6px;
+#section-files.roomy.has-file .file-toolbar {
+  min-height: 52px;
+  margin-bottom: var(--s3);
 }
 
 .files-options {
-  margin-bottom: 16px;
+  margin-bottom: var(--s4);
+}
+
+.file-summary.collapsed .file-summary-text {
+  display: none;
 }
 
 .file-job {
@@ -208,11 +262,15 @@
 .file-status[data-tone="ok"] { color: var(--green); }
 .file-status[data-tone="error"] { color: var(--red); }
 
+/* The result: the transcript under its toolbar and its speakers, and it
+   takes the height that is left. The lines' distances are margins: a gap
+   would also stand around a line that is not there. */
 .file-result {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding-bottom: 24px;
+  min-width: 0;
+  min-height: 0;
 }
 .file-toolbar {
   display: flex;
@@ -220,6 +278,16 @@
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+/* "Summarise with AI" heads the summary it writes: under the file's line,
+   before the transcript. There while there is a transcript to summarise. */
+.file-summarize {
+  align-self: flex-start;
+  margin-bottom: var(--s3);
+}
+#section-files:not(:has(> .file-result:not(.hidden))) > .file-summarize {
+  display: none;
 }
 .file-times {
   display: inline-flex;
@@ -268,13 +336,13 @@
 .export-list button:focus-visible {
   background: var(--bg);
 }
-/* In one column the frame keeps the page's width and the text its measure
-   (what is left at the right is the frame's own padding). In a large window
-   the frame itself ends at the text (#section-files.wider, above). */
+/* The frame has its column's width and the text its measure: what is left
+   at the right is the frame's own padding. */
 .file-text {
+  flex: 1 1 auto;
   width: 100%;
-  min-height: 220px;
-  resize: vertical;
+  min-height: 260px;
+  resize: none;
   padding: 12px max(14px, calc(100% - var(--measure) - 14px)) 12px 14px;
   font: inherit;
   font-size: var(--fs);
@@ -286,11 +354,13 @@
   user-select: text;
   -webkit-user-select: text;
 }
+/* A card like every card: the surface, no edge (an accent outline read as
+   the keyboard focus). */
 .file-summary {
-  background: var(--surface);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-lg);
+  margin-bottom: var(--s3);
   padding: 10px 14px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
 }
 .file-summary-head {
   display: flex;
@@ -385,7 +455,7 @@
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .file-speaker-chips {
@@ -548,6 +618,10 @@
   padding: 10px 14px;
 }
 .sb-devices > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  list-style: none;
   min-height: 24px;
   /* The shape of its focus ring. */
   border-radius: var(--radius-s);
@@ -614,6 +688,11 @@
 }
 .sb-notice[data-tone="ok"] { color: var(--green); }
 .sb-notice[data-tone="error"] { color: var(--red); }
+/* Some sounds were added and some were not: what worked keeps its colour,
+   only the failures are red. */
+.sb-notice-ok {
+  color: var(--green);
+}
 /* The sounds are tiles that fill the library's width: one column in a narrow
    window and in the pop-out, more with room (two beside the open panel at
    1600 px of window, four at 2560 px). A narrower library has fewer columns
@@ -763,7 +842,7 @@
    the tile's right edge like the first line, so the controls of the tiles
    stand under each other. What does not fit goes to a line of its own inside
    the tile and never leaves it: the volume while the key box asks for its
-   key or says why not and beside a combination of three or four keys; in
+   key or says why not and beside a combination of four keys; in
    the pop-out, whose tile is narrower than the three together, always. */
 .sb-controls {
   grid-area: controls;
@@ -794,23 +873,29 @@
 .sb-controls .sb-hotkey {
   min-width: 140px;
 }
+/* The volume gives way before it goes to a line of its own: down to 80 px
+   with its number, which is what a tile of 450 px has left beside a
+   combination of three keys. So the tiles of a row keep one height in the
+   common case; only a combination of four keys still takes the second line. */
 .sb-controls .sb-slider {
-  flex: 1 1 110px;
+  flex: 1 1 80px;
   display: flex;
   justify-content: flex-end;
-  min-width: 110px;
+  min-width: 80px;
 }
 .sb-controls .sb-slider input[type="range"] {
   flex: 1 1 auto;
   width: auto;
+  min-width: 24px;
   max-width: 160px;
 }
 .sb-note {
   font-size: var(--fs-s);
   color: var(--yellow);
 }
-/* A sound's hotkey while the sound hotkeys are switched off. */
-.sb-hotkey.off .hotkey-btn:not(.capturing) kbd {
+/* A sound's hotkey while the sound hotkeys are switched off. ("Not set" is
+   in its quiet words already: dimmed once more it could not be read.) */
+.sb-hotkey.off .hotkey-btn:not(.capturing, .key-unset) kbd {
   opacity: 0.5;
 }
 .sb-popped {
@@ -874,19 +959,23 @@ body.sb-page {
 .sb-page .sb-slider input[type="range"] {
   width: 110px;
 }
+/* In the pop-out a tile is narrower than its three controls with a volume
+   one can still set: there the volume keeps its own line, as wide as the
+   tile, instead of shrinking beside the key. */
+.sb-page .sb-controls .sb-slider {
+  flex-basis: 110px;
+  min-width: 110px;
+}
 
 /* ── Meetings ───────────────────────────────────────── */
 
 /* The tab takes the window's height: an open meeting's transcript scrolls in
-   its own box, which is what "Jump to live" follows. The column is as wide
-   as a Settings tab (1080 px in one column); with room an open meeting's
-   notes stand beside the transcript (see the container query below), and in
-   a large window the library's rows are two columns (class "wider", set by
-   shell.ts on the room beside the sidebar). */
-#section-meetings {
-  max-width: none;
-  container: mtmain / inline-size;
-}
+   its own box, which is what "Jump to live" follows. The page has the
+   window's width like every page (the layout system, styles/shell.css). In
+   one column the library is a list of rows that fill it, and an open
+   meeting is its hints, its notes and its transcript one under the other.
+   From 1250 px beside the sidebar (class "roomy", set by shell.ts) there
+   are two columns: see "Meetings: two columns" at the end of this part. */
 #section-meetings.active {
   display: flex;
   flex-direction: column;
@@ -897,37 +986,8 @@ body.sb-page {
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 1080px;
   min-height: 0;
   margin: 0;
-}
-/* A large window: the measure of Settings' two columns, for the library and
-   for an open meeting with its notes beside the transcript, so the page
-   keeps its width when such a meeting opens (one without notes: see below).
-   In the library the start row keeps the first column,
-   the head spans both, and the meetings read across (the page's order, and
-   Tab's). */
-#section-meetings.wider .mt-layout,
-#section-meetings.wider.mt-open.mt-has-notes .mt-layout {
-  max-width: calc(2 * 900px + var(--s4));
-}
-#section-meetings.wider .mt-start {
-  max-width: calc(50% - var(--s4) / 2);
-}
-/* An open meeting without notes is its transcript, and the transcript's
-   lines end at the measure (.mt-para-text). So its frame ends near its text
-   in every window: 840 px, the width the transcript has beside the notes
-   (the measure, a paragraph's indent, the frame's padding, and the room of
-   the head's buttons). The head's buttons and a hint row's button stay near
-   the text they act on, and a hint row has the line for its sentence. After
-   the rule above, which would make it the page's width in a large window. */
-#section-meetings.mt-open:not(.mt-has-notes) .mt-layout {
-  max-width: 840px;
-}
-#section-meetings.wider .mt-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px var(--s4);
 }
 /* An open meeting has the tab to itself; "All meetings" leads back. */
 #section-meetings.mt-open .section-header,
@@ -1166,6 +1226,24 @@ body.sb-page {
   gap: 12px;
   min-height: 0;
 }
+/* The hint rows and the notes: in one column they are parts of the page's
+   one stack, in two columns they are the side column (see "Meetings: two
+   columns"). */
+.mt-side {
+  display: contents;
+}
+/* What stands in the notes' place while there are neither notes nor a hint
+   row; only in two columns, where the place would be empty. A quiet line,
+   like every empty state. */
+.mt-notes-none {
+  display: none;
+  padding: 8px 0;
+  color: var(--text-secondary);
+}
+.mt-view:not([data-state="recording"]) .mt-notes-live,
+.mt-view[data-state="recording"] .mt-notes-never {
+  display: none;
+}
 .mt-main {
   flex: 1 1 0px;
   display: flex;
@@ -1188,8 +1266,8 @@ body.sb-page {
   flex-direction: column;
   gap: 14px;
   padding: 12px 16px 14px;
+  /* A card like every card: no accent outline, which read as the keyboard focus. */
   background: var(--surface);
-  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
   border-radius: var(--radius-lg);
   user-select: text;
   -webkit-user-select: text;
@@ -1278,16 +1356,6 @@ body.sb-page {
   content: attr(data-empty);
   font-size: 12px;
   color: var(--text-secondary);
-}
-.mt-transcript::-webkit-scrollbar {
-  width: 6px;
-}
-.mt-transcript::-webkit-scrollbar-track {
-  background: transparent;
-}
-.mt-transcript::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: 3px;
 }
 .mt-para {
   flex-shrink: 0;
@@ -1391,14 +1459,16 @@ body.sb-page {
 .mt-search::placeholder {
   color: var(--text-2);
 }
+/* The rows are spaced by their own margin: in two columns (below) the list
+   is columns of text flow, which know no gap between the rows. */
 .mt-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-bottom: 8px;
+  display: block;
+  padding-bottom: 2px;
 }
 .mt-item {
   display: grid;
+  width: 100%;
+  margin-bottom: 6px;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 2px 12px;
@@ -1482,23 +1552,49 @@ body.sb-page {
   margin-top: 6px;
 }
 
-/* Room for two columns: the notes beside the transcript, which then has the
-   window's height. */
-@container mtmain (min-width: 1040px) {
-  #section-meetings.mt-open.mt-has-notes .mt-layout {
-    max-width: 1320px;
-  }
-  #section-meetings.mt-has-notes .mt-body {
-    flex-direction: row;
-    gap: 20px;
-  }
-  #section-meetings.mt-has-notes .mt-notes {
-    flex: 0 0 clamp(340px, 36%, 460px);
-    align-self: flex-start;
-  }
-  #section-meetings.mt-has-notes .mt-main {
-    min-height: 320px;
-  }
+/* ── Meetings: two columns ──────────────────────────── */
+
+/* The library: the meetings in two columns that are filled one after the
+   other (columns of text flow, as the Dictionary's words are). The list is
+   sorted by date, newest first, and a list that is sorted reads downwards:
+   the left column is the newer half, the right one goes on where it ends.
+   Filled across, the dates would zigzag (5 Oct, 2 Oct / 28 Sep, 27 Sep …)
+   and the eye would have to cross the whole window for every second entry.
+   With two meetings both stand side by side on the first line, the same in
+   either way. The order in the page, and Tab's, is the list's own. */
+#section-meetings.roomy .mt-list {
+  columns: 2;
+  column-gap: var(--gutter);
+}
+#section-meetings.roomy .mt-item {
+  break-inside: avoid;
+}
+/* An open meeting, with notes or without: the side column at the left, the
+   transcript at the right in a frame that runs to the window's right edge
+   and has the window's height. The side column holds what is said about the
+   meeting (its hint rows with their buttons, "Write notes" among them) and
+   its notes; while it has neither (a meeting that records, one that never
+   got notes) a line says so in the notes' place. So the page has one shape
+   whether the notes are there yet or not, and the head's buttons end at the
+   window's right edge in both. */
+#section-meetings.roomy .mt-body {
+  display: grid;
+  grid-template-columns: var(--side-col) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--gutter);
+}
+#section-meetings.roomy .mt-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-self: start;
+  min-width: 0;
+}
+#section-meetings.roomy .mt-main {
+  min-height: 320px;
+}
+#section-meetings.roomy .mt-side:not(:has(> :is(.mt-hint, .mt-notes):not(.hidden))) > .mt-notes-none {
+  display: block;
 }
 @media (prefers-reduced-motion: reduce) {
   .mt-bar-dot,

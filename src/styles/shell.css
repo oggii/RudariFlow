@@ -1,4 +1,52 @@
-/* The window: title bar, sidebar with five sections, content area. */
+/* The window: title bar, sidebar with five sections, content area.
+
+   ── The layout system: one for every page ────────────
+
+   1. A page's content runs from the common left edge to the window's right
+      edge (the content area's padding, --s5), at every window size. No page
+      has a max-width that leaves the right part of the window empty. So
+      every page has the same left edge and the same right edge.
+
+   2. Inside that width a page has columns. How many is decided on the room
+      beside the sidebar (roomBeside() in src/shell.ts: #content.offsetWidth,
+      the width with the scrollbar's own room in it, so a scrollbar that
+      comes or goes cannot flip a step). shell.ts writes the steps a window
+      has reached on every page as classes:
+
+        under 900 px   one column, on every page
+        .wide   900    two columns where a narrow side stands beside a list:
+                       Home (controls, dictations), the Soundboard (its
+                       settings panel, the sounds)
+        .roomy  1250   two columns where both sides are setting rows or
+                       texts: Settings (the main card, the Advanced fold;
+                       General's two cards), the Meetings library (its rows,
+                       filled column by column), an open meeting and the live
+                       view (notes, or the hints that stand in for them;
+                       transcript), Files (the file, its options and its
+                       summary; transcript)
+        .wider  1600   more only where a page has enough separate things:
+                       Home's controls are two columns of cards, and the
+                       setup steps stand beside the optional card and the
+                       dictations
+
+      A page of setting rows is one column until 1250 px, not until 900: a
+      column narrower than about 560 px breaks a row's hint into three lines.
+      Between the steps the one column fills the width (rows end at the right
+      edge). Where one column of rows would be absurdly wide, the answer is
+      the second column, never an empty half.
+
+   3. One gutter between two columns, on every page: --gutter (tokens.css).
+      The side column beside a transcript is --side-col on both pages that
+      have one.
+
+   4. A frame or card takes its column's width. Running text inside it keeps
+      --measure (tokens.css): a transcript's frame runs to the window's edge
+      and its lines end at the measure.
+
+   5. A wider form is never the higher one, and every step is decided on
+      offsetWidth. tools/ui-check sweeps each step in a window that draws its
+      scrollbar (layoutHolds, settingsHold, boardHolds, pagesHold) and holds
+      every page to one left and one right edge (the "edges" page). */
 
 #app {
   display: flex;
@@ -147,9 +195,10 @@
   overflow-y: auto;
 }
 
+/* A page: from the common left edge to the window's right edge (the layout
+   system above). */
 .content-section {
   display: none;
-  max-width: 880px;
   margin: 0;
   padding: var(--s2) var(--s5) var(--s5);
 }
@@ -173,26 +222,6 @@
 /* A paragraph that opens a Settings tab. */
 .panel-lead {
   margin: 0 0 var(--s4);
-}
-
-#content::-webkit-scrollbar,
-#sidebar::-webkit-scrollbar {
-  width: 6px;
-}
-
-#content::-webkit-scrollbar-track,
-#sidebar::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-#content::-webkit-scrollbar-thumb,
-#sidebar::-webkit-scrollbar-thumb {
-  border-radius: 3px;
-  background: var(--surface-3);
-}
-
-#content::-webkit-scrollbar-thumb:hover {
-  background: var(--line-strong);
 }
 
 /* A contrast theme (see components.css): the sidebar's current page has the

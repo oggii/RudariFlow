@@ -188,6 +188,14 @@ export function aiSummary(): { name: string; state: string; tone: string; kind: 
   };
 }
 
+/** The name of the AI model that is kept in this file ("Gemma 4 E2B" for
+ *  "gemma-4-E2B-it-Q4_K_M.gguf"); null while the models are not known, or
+ *  for a file of no model in the list. A file is named after its model's id. */
+export function aiModelNamed(file: string): string | null {
+  const name = file.toLowerCase();
+  return status?.models.find((m) => name.includes(`${m.id}-`))?.label ?? null;
+}
+
 /** An AI model's name and size, for the setup's suggestion. */
 export function aiModelInfo(id: string): { name: string; bytes: number } | null {
   const model = status?.models.find((m) => m.id === id);

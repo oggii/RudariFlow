@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { setLang, getLang, detectDefaultLang, t } from "./i18n";
 import { populateLanguageSelect } from "./languages";
-import { aiActivity, aiModelInfo, aiSummary, initAiSettings, refreshAiStatus, setUpAi, showAiSettings, type AppRule } from "./ai-settings";
+import { aiActivity, aiModelInfo, aiModelNamed, aiSummary, initAiSettings, refreshAiStatus, setUpAi, showAiSettings, type AppRule } from "./ai-settings";
 import { addWords, clearDictionaryStatus, initDictionary, renderDictionary } from "./dictionary";
 import { historyCount, initHistory, refreshHistory, renderHistory } from "./history";
 import { forgetHomeSaid, initHome, renderHome } from "./home";
@@ -182,7 +182,8 @@ function renderMicOptions() {
   };
   micSelect.innerHTML = "";
   const systemDefault = mics.find((m) => m.is_default);
-  add("default", systemDefault ? `${t("mic_system_default")} (${systemDefault.name})` : t("mic_system_default"));
+  // "System default: Microphone (Fast Track)": a name in brackets after it would end in two closing brackets.
+  add("default", systemDefault ? `${t("mic_system_default")}: ${systemDefault.name}` : t("mic_system_default"));
   for (const mic of mics) add(mic.name, mic.name);
   if (saved !== "default" && !mics.some((m) => m.name === saved)) {
     // Before the microphones were listed nobody knows whether it is connected: its name alone.
@@ -785,19 +786,32 @@ const DELETE_ERRORS: Record<string, string> = {
   busy: "unused_model_busy",
 };
 
-/// One unused model as a list row: its file, what it is and its size, and Delete.
+/** The name the rest of the window gives the model in this file ("Medium",
+ *  "Gemma 4 E2B"); null for a file no model of the lists is kept in. */
+function modelNameOf(m: ModelFile): string | null {
+  if (m.kind === "ai") return aiModelNamed(m.file);
+  const id = /^ggml-(.+?)\.bin(\.part)?$/.exec(m.file)?.[1] ?? "";
+  const model = speechModel(id);
+  return model.mb > 0 ? model.name : null;
+}
+
+/// One unused model as a list row: its name as everywhere else, then its
+/// file, what it is and its size, and Delete.
 function unusedModelRow(m: ModelFile): HTMLElement {
   const row = document.createElement("div");
   row.className = "list-row unused-model-row";
   row.setAttribute("role", "listitem");
   const info = document.createElement("div");
   info.className = "list-main";
+  const named = modelNameOf(m);
   const name = document.createElement("span");
   name.className = "list-primary unused-model-name";
-  name.textContent = m.file;
+  name.textContent = named ?? m.file;
   const meta = document.createElement("span");
-  meta.className = "list-secondary";
-  const parts = [t(m.kind === "ai" ? "unused_model_ai" : "unused_model_whisper")];
+  meta.className = "list-secondary unused-model-name";
+  // The file's own name is the second line: it is what the models folder shows.
+  const parts = named ? [m.file] : [];
+  parts.push(t(m.kind === "ai" ? "unused_model_ai" : "unused_model_whisper"));
   if (m.partial) parts.push(t("unused_model_partial"));
   parts.push(m.otherLinks ? `${sizeText(m.bytes)} (${t("unused_model_links")})` : sizeText(m.bytes));
   meta.textContent = parts.join(" \u00b7 ");
@@ -827,7 +841,7 @@ function unusedModelRow(m: ModelFile): HTMLElement {
       else await refreshModelDropdownLabels();
     },
     // After the last file the sentence that says so takes the focus.
-    { name: m.file, after: () => unusedModelEmpty },
+    { name: named ?? m.file, after: () => unusedModelEmpty },
   );
   const actions = document.createElement("div");
   actions.className = "list-actions";
@@ -1088,18 +1102,15 @@ interface HotkeyView {
   text: HTMLElement;
   /** "Turn off" (in Settings; the dictation hotkey has none). */
   clear: HTMLButtonElement | null;
-  /** On Home a key that is not set reads "Not set · Set". */
-  home: boolean;
 }
 
 /** The view made of `<prefix>-btn`, `<prefix>-text` and, if there is one, `<prefix>-clear`. */
-function hotkeyView(target: HotkeyTarget, prefix: string, home = false): HotkeyView {
+function hotkeyView(target: HotkeyTarget, prefix: string): HotkeyView {
   return {
     target,
     btn: document.getElementById(`${prefix}-btn`) as HTMLButtonElement,
     text: document.getElementById(`${prefix}-text`)!,
     clear: document.getElementById(`${prefix}-clear`) as HTMLButtonElement | null,
-    home,
   };
 }
 
@@ -1111,10 +1122,10 @@ const hotkeyViews: HotkeyView[] = [
   hotkeyView("freeGpu", "free-gpu"),
   hotkeyView("meeting", "meeting-hotkey"),
   // Home
-  hotkeyView("dictation", "home-hotkey", true),
-  hotkeyView("pasteLast", "home-paste-last", true),
-  hotkeyView("rewriteLast", "home-rewrite-last", true),
-  hotkeyView("freeGpu", "home-free-gpu", true),
+  hotkeyView("dictation", "home-hotkey"),
+  hotkeyView("pasteLast", "home-paste-last"),
+  hotkeyView("rewriteLast", "home-rewrite-last"),
+  hotkeyView("freeGpu", "home-free-gpu"),
   // The first run's step 3
   hotkeyView("dictation", "setup-hotkey"),
 ];
@@ -1133,18 +1144,10 @@ function renderHotkeys() {
   if (!currentSettings) return;
   for (const view of hotkeyViews) {
     const combo = hotkeyOf(view.target);
-    const unset = view.home && !combo;
-    if (unset) {
-      // "Not set · Set": the second part is what a click does, and only it is underlined.
-      const [state, act = ""] = t("home_key_unset").split(" · ");
-      const set = document.createElement("span");
-      set.className = "key-set";
-      set.textContent = act;
-      view.text.replaceChildren(`${state} · `, set);
-    } else {
-      view.text.textContent = hotkeyLabel(combo);
-    }
-    view.btn.classList.toggle("key-unset", unset);
+    // A key that is not set is a key box that says "Not set", in every place
+    // (Home, Settings, a sound's tile): one form, in quieter words (components.css).
+    view.text.textContent = hotkeyLabel(combo);
+    view.btn.classList.toggle("key-unset", !combo);
     // The × keeps its room while there is nothing to turn off, so every key box ends on one edge (styles/settings.css).
     view.clear?.classList.toggle("unset", !combo);
   }

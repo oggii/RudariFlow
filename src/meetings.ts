@@ -15,6 +15,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { getLang, t } from "./i18n";
 import { confirmDelete, disarmDelete, FailureSaid, nameDelete } from "./confirm-delete";
 import { stateOnce } from "./start";
+import { speechModel } from "./models.ts";
 
 export interface MeetingsHost {
   settings(): { meetingReminderOff: boolean; meetingHeadphonesSeen: boolean };
@@ -521,9 +522,12 @@ function renderView() {
     transcriptEl.replaceChildren();
   }
   const live = m.state === "recording";
+  // For the style sheet: what stands in the notes' place depends on it.
+  viewEl.dataset.state = m.state;
   viewTitle.textContent = m.title;
   const meta = live ? [when(m.startedAt, m.utcOffsetMin)] : [clock(m.lengthMs), when(m.startedAt, m.utcOffsetMin)];
-  if (m.whisperModel) meta.push(fill("mt_meta_model", { model: m.whisperModel }));
+  // The models by the names the rest of the window gives them ("Large v3 Turbo q8"), not by their ids.
+  if (m.whisperModel) meta.push(fill("mt_meta_model", { model: m.whisperModel.split(", ").map((id) => speechModel(id).name).join(", ") }));
   viewMeta.textContent = meta.join(" · ");
   copyBtn.disabled = view.paragraphs.length === 0;
   exportBtn.disabled = live || m.lines.length === 0;

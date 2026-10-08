@@ -51,6 +51,9 @@
   --s3: 12px;
   --s4: 16px;
   --s5: 24px;
+  /* Between two columns of a page, on every page (the layout system:
+     styles/shell.css). */
+  --gutter: var(--s4);
 
   /* Type: 12 / 14 / 16 / 22, body 14. */
   --fs-s: 12px;
@@ -76,10 +79,8 @@
        .mt-para-text                 a meeting's transcript (style.css)
        .mt-notes-text, .mt-notes li  a meeting's notes
        .file-summary-text            a file's summary
-       .file-text                    a file's transcript: in one column the
-                                     frame's right padding takes the rest, in
-                                     a large window the frame is as wide as
-                                     the text (--file-frame)
+       .file-text                    a file's transcript: the frame's right
+                                     padding takes the rest of its width
        .history-text                 a dictation on Home, in the wide list
                                      only (home.css)
        .ai-test-result p             what "Try it" answers
@@ -87,10 +88,10 @@
      and at 72ch, which is the same width: .panel-lead and .hint-long, the
      text behind "More" (components.css).
 
-     Frames that end near their text: an open meeting without notes (840 px,
-     style.css) and Files in a large window (--file-frame). Fields with a
-     width of their own: a rule's instructions and "Try it" (720 px,
-     settings.css).
+     A frame takes its column's width (the layout system, styles/shell.css):
+     a transcript's frame runs to the window's right edge and its text keeps
+     the measure inside it. Fields with a width of their own: a rule's
+     instructions and "Try it" (720 px, settings.css).
 
      Hints, at the width of their place: .card > .label-hint (settings.css),
      .empty-state (components.css), .mt-hint-text, .mt-warning and
@@ -100,6 +101,10 @@
      tools/ui-check holds the first list to it: at 1920 px no line of
      running text is longer than 110 characters (inpage.js, RUNNING). */
   --measure: 42em;
+  /* The side column beside a transcript (a meeting's notes, a file and its
+     summary): a share of the page, never narrower than a card of setting
+     rows reads, never wider than its own running text needs. */
+  --side-col: clamp(360px, 38%, calc(42 * var(--fs) + 34px));
 
   /* Motion: a page change and a fold opening, nothing else. */
   --ease: 150ms ease-out;

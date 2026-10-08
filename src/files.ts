@@ -220,6 +220,14 @@ function renameSpeaker(i: number, chip: HTMLButtonElement) {
   input.addEventListener("blur", () => apply(true));
 }
 
+/** The line under Speakers: its hint, or what the speaker model's download
+ *  does. With a state it stays on screen where the options are one line
+ *  without their hints (a file is loaded: src/style.css). */
+function speakersSay(text: string, state: "" | "busy" | "error" = "") {
+  speakersHint.textContent = text;
+  speakersHint.dataset.state = state;
+}
+
 /** Download the speaker model if needed; true when it is ready. */
 function ensureSpeakerModel(): Promise<boolean> {
   if (modelDownload) return modelDownload;
@@ -227,12 +235,12 @@ function ensureSpeakerModel(): Promise<boolean> {
     try {
       const status = await invoke<{ downloaded: boolean }>("speaker_model_status");
       if (status.downloaded) return true;
-      speakersHint.textContent = t("files_speakers_downloading").replace("{percent}", () => "0");
+      speakersSay(t("files_speakers_downloading").replace("{percent}", () => "0"), "busy");
       await invoke("speaker_model_download");
-      speakersHint.textContent = t("files_speakers_hint");
+      speakersSay(t("files_speakers_hint"));
       return true;
     } catch {
-      speakersHint.textContent = t("files_speakers_download_failed");
+      speakersSay(t("files_speakers_download_failed"), "error");
       return false;
     } finally {
       setDownload("speaker", null);
@@ -565,7 +573,7 @@ export function initFiles(h: FilesHost) {
   confirmDelete(clearBtn, "file", clearFile, { label: "files_clear", armedLabel: "files_clear_confirm", armedSaid: "files_clear_said" });
   listen<FileProgress>("file-progress", (e) => onProgress(e.payload));
   listen<DownloadProgress>("speaker-model-progress", (e) => {
-    speakersHint.textContent = t("files_speakers_downloading").replace("{percent}", () => String(Math.round(e.payload.percent)));
+    speakersSay(t("files_speakers_downloading").replace("{percent}", () => String(Math.round(e.payload.percent))), "busy");
     if (modelDownload) setDownload("speaker", e.payload.percent);
   });
   listen<[number, number]>("summary-progress", (e) => {

@@ -59,11 +59,20 @@ const rerunning = new Set<number>();
 /** Counts the clicks on Play: of two recordings asked for, only the one asked for last plays. */
 let playAsked = 0;
 
+/** A row's action that says something of the moment ("Stop" while its
+ *  recording plays, "AI version" while the original shows, a failure) stays
+ *  in view; the others show with the pointer on the row or the keyboard in
+ *  it (styles/home.css, "Row actions"). */
+function keep(btn: HTMLElement, on: boolean) {
+  btn.toggleAttribute("data-on", on);
+}
+
 function stopPlayback() {
   if (!playing) return;
   playing.audio.pause();
   URL.revokeObjectURL(playing.url);
   playing.btn.textContent = t("history_play");
+  keep(playing.btn, false);
   playing = null;
 }
 
@@ -74,6 +83,7 @@ function showPlaying() {
   if (!btn) return stopPlayback();
   playing.btn = btn;
   btn.textContent = t("history_stop");
+  keep(btn, true);
 }
 
 // Dates follow the system locale (24 h in Switzerland even with an English UI).
@@ -84,9 +94,13 @@ function formatWhen(ms: number): string {
   return `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })}, ${time}`;
 }
 
+/** How long a dictation was, written so that it cannot be read as a time
+ *  of day beside one: "6 s", "1 min 12 s" (the units are the same in both
+ *  languages). */
 function formatDuration(ms: number): string {
   const secs = Math.max(1, Math.round(ms / 1000));
-  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  if (secs < 60) return `${secs} s`;
+  return secs % 60 === 0 ? `${secs / 60} min` : `${Math.floor(secs / 60)} min ${secs % 60} s`;
 }
 
 /** A row's action as a button. `name` finds the same action again in a row
@@ -104,13 +118,17 @@ function action(label: string, onClick: (btn: HTMLButtonElement) => void | Promi
     } catch (err) {
       console.error(`history: "${label}" failed:`, err);
       b.textContent = t("history_action_failed").replace("{action}", () => label);
-      setTimeout(() => (b.textContent = label), 2500);
+      keep(b, true);
+      setTimeout(() => {
+        b.textContent = label;
+        keep(b, false);
+      }, 2500);
     }
   });
   return b;
 }
 
-/** One dictation as a list row: the text, a line with app, time, length and model, and its actions. */
+/** One dictation as a list row: the text, a line with app, time and length, and its actions. */
 function renderEntry(e: HistoryEntry): HTMLElement {
   const item = document.createElement("article");
   item.className = "list-row history-item";
@@ -128,31 +146,40 @@ function renderEntry(e: HistoryEntry): HTMLElement {
   text.textContent = e.text;
   const meta = document.createElement("span");
   meta.className = "list-secondary history-meta";
-  // The app first: it is what a search for an app finds. The line wraps
-  // between two parts, never inside one ("large-v3-turbo-q8_0") and never
-  // before a dot: each part is one piece with the dot that follows it.
+  // The app first: it is what a search for an app finds; then when, and
+  // for how long ("01:55 · 6 s": a time and a length cannot be mistaken for
+  // each other). The three are one line that never breaks, so no dot is
+  // left at a line's end; a name too long for it ends in an ellipsis. Which
+  // model wrote it is not said here: Home's "loaded" card names the model.
   const parts = [];
   if (e.app) parts.push(e.app);
-  parts.push(formatWhen(e.id), formatDuration(e.durationMs), e.model);
-  for (const [i, part] of parts.entries()) {
-    const piece = document.createElement("span");
-    piece.className = "history-part";
-    piece.textContent = i < parts.length - 1 || e.edit ? `${part} ·` : part;
-    meta.append(piece, " ");
+  parts.push(formatWhen(e.id), formatDuration(e.durationMs));
+  const line = document.createElement("span");
+  line.className = "history-parts";
+  line.textContent = parts.join(" · ");
+  meta.append(line);
+  // What was said in Edit mode is a sentence: it has a line of its own and wraps like one.
+  if (e.edit) {
+    const said = document.createElement("span");
+    said.className = "history-edit";
+    said.textContent = t("history_edit").replace("{instruction}", () => e.edit ?? "");
+    meta.append(said);
   }
-  // What was said in Edit mode is a sentence: it wraps like one.
-  if (e.edit) meta.append(t("history_edit").replace("{instruction}", () => e.edit ?? ""));
-  else meta.lastChild?.remove();
   main.append(text, meta);
 
+  // The actions end in "Copy" and, apart from it at the card's edge, Delete:
+  // what a row can do besides stands before them, so the "Copy" of all rows
+  // stand under each other whatever else a row has (styles/home.css).
   const actions = document.createElement("div");
   actions.className = "list-actions history-actions";
-  actions.appendChild(
-    action(t("history_copy"), async (b) => {
+  const copy = action(
+    t("history_copy"),
+    async (b) => {
       await invoke("copy_text", { text: text.textContent ?? "" });
       b.textContent = t("history_copied");
       setTimeout(() => (b.textContent = t("history_copy")), 1200);
-    }),
+    },
+    "copy",
   );
   if (e.raw) {
     let showingRaw = false;
@@ -161,6 +188,7 @@ function renderEntry(e: HistoryEntry): HTMLElement {
         showingRaw = !showingRaw;
         text.textContent = showingRaw ? e.raw! : e.text;
         b.textContent = showingRaw ? t("history_ai_version") : t("history_original");
+        keep(b, showingRaw);
       }),
     );
   }
@@ -224,7 +252,11 @@ function renderEntry(e: HistoryEntry): HTMLElement {
           if (!b.isConnected) return render();
           b.removeAttribute("aria-disabled");
           b.textContent = t("history_rerun_failed");
-          setTimeout(() => (b.textContent = t("history_rerun")), 2500);
+          keep(b, true);
+          setTimeout(() => {
+            b.textContent = t("history_rerun");
+            keep(b, false);
+          }, 2500);
         }
       },
       "rerun",
@@ -238,6 +270,7 @@ function renderEntry(e: HistoryEntry): HTMLElement {
     // would replace the edited text with it.
     if (!e.edit) actions.appendChild(rerun);
   }
+  actions.appendChild(copy);
   actions.appendChild(
     deleteButton(
       `history-${e.id}`,
@@ -272,16 +305,18 @@ function focusPlace(): Place | null {
 }
 
 /** The list was drawn again and the focused button went with the old rows:
- *  the same action of the same dictation takes the focus; after a Delete the
- *  first action of the row that moved up; with no row left the search
+ *  the same action of the same dictation takes the focus; after a Delete
+ *  "Copy" of the row that moved up (the action that always shows, so the
+ *  focus lands on something that is seen); with no row left the search
  *  field, or the text that says the list is empty. */
 function restoreFocus(place: Place) {
   const rows = [...list.children] as HTMLElement[];
   const buttons = (row?: HTMLElement) => [...(row?.querySelectorAll<HTMLElement>(".history-actions button") ?? [])];
+  const copyOf = (row?: HTMLElement) => row?.querySelector<HTMLElement>('[data-action="copy"]') ?? buttons(row)[0];
   const same = rows.find((row) => row.dataset.id === place.id);
   const target = same
-    ? ((place.name ? same.querySelector<HTMLElement>(`[data-action="${place.name}"]`) : null) ?? buttons(same)[place.at] ?? buttons(same)[0])
-    : buttons(rows[Math.min(place.row, rows.length - 1)])[0];
+    ? ((place.name ? same.querySelector<HTMLElement>(`[data-action="${place.name}"]`) : null) ?? buttons(same)[place.at] ?? copyOf(same))
+    : copyOf(rows[Math.min(place.row, rows.length - 1)]);
   (target ?? (search.classList.contains("hidden") ? empty : search)).focus();
 }
 

@@ -1,11 +1,8 @@
 /* Home: the dictation page. One column; two from 900 px beside the sidebar
    (the class "wide", set by src/home.ts together with the order of the
    cards); from 1600 px the controls' side is two columns of cards itself
-   (the class "wider"). The page takes the window's whole width. */
-
-#section-home {
-  max-width: none;
-}
+   (the class "wider"). The page takes the window's whole width, like every
+   page (the layout system: styles/shell.css). */
 
 .home-heading {
   display: flex;
@@ -26,13 +23,13 @@
 .home-grid {
   display: flex;
   flex-direction: column;
-  gap: var(--s4);
+  gap: var(--gutter);
 }
 
 .home-col {
   display: flex;
   flex-direction: column;
-  gap: var(--s4);
+  gap: var(--gutter);
   min-width: 0;
 }
 
@@ -87,33 +84,52 @@
 /* While the setup steps show (src/home.ts, layout): of the daily view only
    the recent dictations, under the steps and as wide as they are. The
    controls are what the steps stand in for. */
-.home-grid.list-only {
-  max-width: 832px;
-}
-
 .home-grid.list-only > .home-col {
   display: none;
 }
 
-/* A key that is not set reads "Not set · Set", not a key box; "Set" is
-   what a click does. The words end where the key boxes above them end.
-   While it listens for the key, or says why a key was refused, it is the
-   accent box of every other key (components.css). */
-.hotkey-btn.key-unset:not(.capturing) kbd {
-  padding-right: 0;
-  border-color: transparent;
-  background: none;
-  font-family: var(--font);
-  color: var(--text-2);
+/* One column (the smallest window, 900×600): the four keys stand two by
+   two, each with its name before it as in the wide card, and their rows
+   are lower. So the list that is used every day starts on the first
+   screen: in German its head and its first dictation show without
+   scrolling. A key box that asks for its key in a sentence goes under its
+   name. */
+.home-grid:not(.wide) #home-hotkeys {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: calc(2 * var(--s4));
+  padding-top: var(--s1);
+  padding-bottom: var(--s1);
 }
 
-.hotkey-btn.key-unset:not(.capturing) .key-set {
-  text-decoration: underline;
-  text-underline-offset: 2px;
+.home-grid:not(.wide) #home-hotkeys > .setting-row {
+  flex-wrap: wrap;
+  min-height: 46px;
+  padding: var(--s2) 0;
 }
 
-.hotkey-btn.key-unset:not(.capturing):hover .key-set {
-  color: var(--text);
+.home-grid:not(.wide) #home-hotkeys > .setting-row:nth-last-child(-n + 2) {
+  border-bottom: none;
+}
+
+/* The name keeps its width; what does not fit beside it goes under it, at
+   the right. */
+.home-grid:not(.wide) #home-hotkeys .setting-label {
+  flex: 1 0 auto;
+}
+
+.home-grid:not(.wide) #home-hotkeys .setting-control {
+  max-width: 100%;
+  margin-left: auto;
+}
+
+.home-grid:not(.wide) #home-switches {
+  padding-top: var(--s1);
+  padding-bottom: var(--s1);
+}
+
+.home-grid:not(.wide) #home-switches > .setting-row {
+  padding: var(--s2) 0;
 }
 
 /* ── Quick switches ─────────────────────────────────── */
@@ -241,18 +257,27 @@
   cursor: text;
 }
 
-/* App, time, length, model: each part stays whole and keeps its dot, so a
-   line breaks between two parts and never starts with the dot. */
-.history-part {
+/* App, time, length: one line that does not break (no dot is ever left at
+   a line's end); a name that is too long for it ends in an ellipsis. What
+   was said in Edit mode stands under it and wraps like the sentence it is. */
+.history-parts {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.history-edit {
+  display: block;
 }
 
 /* Every row has one shape, whatever it can do; which one, the list's width
    decides for all rows together (the @container rules below), not a row's
    number of actions. In a narrow list: the text, its second line, the
-   actions below. They start at the text's left edge; Delete stands apart at
-   the card's right edge, where the search field and the lines between the
-   rows end. */
+   actions below. They end at the card's right edge, where the search field
+   and the lines between the rows end: "Copy", and apart from it Delete, the
+   row's last action as in every list; what else a row can do stands before
+   them. */
 .history-item {
   flex-direction: column;
   flex-wrap: nowrap;
@@ -264,27 +289,52 @@
 }
 
 .history-actions {
-  justify-content: flex-start;
+  justify-content: flex-end;
   /* As wide as the row and its two margins: "100 %" would stop 8 px short of the right edge. */
   max-width: none;
   margin: 0 calc(-1 * var(--s2));
 }
 
 .history-actions > :last-child {
-  margin-left: auto;
+  margin-left: var(--s3);
+}
+
+/* Row actions. "Copy" is what a dictation is opened for and always shows,
+   in one place in every row: the "Copy" of all rows stand under each other.
+   The others (Original, Play, Re-run before it, Delete after it) show while
+   the pointer is on the row or the keyboard focus is in it: eight rows no
+   longer carry thirty grey words. They keep their places while they are not
+   seen, so nothing moves when they come; they stay in the page, in the Tab
+   order and named.
+   An action that says something of the moment stays in view: an armed
+   "Delete?", "Stop" while the recording plays, "AI version" while the
+   original shows, "Transcribing…", a failure (data-on, src/history.ts).
+   Where no pointer hovers (touch) and in a contrast theme all of them
+   always show. */
+@media (hover: hover) and (forced-colors: none) {
+  .history-item:not(:hover, :has(:focus-visible)) .history-actions > :not([data-action="copy"], .armed, [data-on], [aria-disabled="true"]) {
+    opacity: 0;
+  }
 }
 
 /* With more room the actions stand at the right, on the level of the
    second line: the text keeps the row's whole width. From 600 px, so that
    the smallest window (a list of 620 px, 614 with the page's scrollbar) has
-   this shape with and without the scrollbar; the German actions then leave
-   the second line about 190 px, and it breaks between two of its parts. */
+   this shape with and without the scrollbar. The rows share the list's two
+   columns: the second is as wide as the row with the most actions needs. */
 @container (min-width: 600px) {
-  .history-item {
+  .history-list {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: var(--s3);
+  }
+
+  .history-item {
+    display: grid;
+    grid-template-columns: subgrid;
+    grid-column: 1 / -1;
     align-items: center;
-    gap: 0 var(--s3);
+    row-gap: 0;
   }
 
   .history-item > .list-main {
@@ -296,32 +346,22 @@
   }
 
   .history-meta {
+    grid-column: 1;
+    min-width: 0;
     margin-top: 0;
   }
 
   .history-actions {
+    grid-column: 2;
     flex-wrap: nowrap;
-    justify-content: flex-end;
     margin-left: 0;
-  }
-
-  .history-actions > :last-child {
-    margin-left: var(--s4);
   }
 }
 
-/* A wide list: the actions stand beside the text. The rows share the list's
-   two columns, so every text is as wide as the next one. */
+/* A wide list: the actions stand beside the text, which keeps the measure
+   of running text. */
 @container (min-width: 840px) {
-  .history-list {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    column-gap: var(--s3);
-  }
-
   .history-item {
-    grid-template-columns: subgrid;
-    grid-column: 1 / -1;
     align-items: start;
     row-gap: 2px;
   }
@@ -332,7 +372,6 @@
   }
 
   .history-actions {
-    grid-column: 2;
     grid-row: 1 / span 2;
   }
 }
@@ -346,10 +385,12 @@
 }
 
 /* "Show all" starts at the rows' left edge; the way to the list's setting
-   ends at their right edge, where Delete does. */
+   ends at their right edge, where Delete does: a small, quiet link, not a
+   third button. */
 .home-recent-foot {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--s2);
   margin: 0 calc(-1 * var(--s2));
   padding: var(--s1) 0;
@@ -357,6 +398,15 @@
 
 #history-settings {
   margin-left: auto;
+  font-weight: 400;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+
+#history-settings:hover {
+  background: none;
+  text-decoration-color: currentColor;
 }
 
 /* "History is off. …" ends in the way to its setting. */
@@ -370,18 +420,43 @@
 
 /* ── First run ──────────────────────────────────────── */
 
-/* The steps instead of the daily view, and the optional card. The steps
-   keep the measure of a Settings page, so in a large window a step's button
-   stays near its text; after the setup the card heads the daily view and is
-   as wide as it. */
+/* The steps instead of the daily view, and the optional card. Like every
+   page they have the window's width (a step is a row: what it is at the
+   left, its one button at the right edge). After the setup the card heads
+   the daily view. */
 #home-setup,
 #home-ai-card {
-  max-width: 832px;
-  margin: 0 0 var(--s4);
+  margin: 0 0 var(--gutter);
 }
 
-#home-setup.hidden ~ #home-ai-card {
-  max-width: none;
+/* A large window (1600 px beside the sidebar: the class "wider" on the
+   page, set by src/shell.ts): Home's grid, with the two sides' shares of
+   the daily view. The three steps at the left; at the right the optional
+   card and, for someone who has dictated before, the recent dictations.
+   Nothing is moved in the page: the Tab order is steps, card, list. With
+   neither card nor list the steps keep the page's width. */
+#section-home.wider.active:has(> #home-setup:not(.hidden)):has(> :is(#home-ai-card, #home-daily):not(.hidden)) {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  grid-template-rows: auto auto auto 1fr;
+  column-gap: var(--gutter);
+  align-items: start;
+}
+
+#section-home.wider:has(> #home-setup:not(.hidden)) > :is(.section-header, #home-notice) {
+  grid-column: 1 / -1;
+}
+
+#section-home.wider:has(> :is(#home-ai-card, #home-daily):not(.hidden)) > #home-setup:not(.hidden) {
+  grid-area: 3 / 1 / span 2;
+}
+
+#section-home.wider:has(> #home-setup:not(.hidden)) > #home-ai-card {
+  grid-area: 3 / 2;
+}
+
+#section-home.wider:has(> #home-setup:not(.hidden)) > #home-daily {
+  grid-area: 4 / 2;
 }
 
 .setup-steps {

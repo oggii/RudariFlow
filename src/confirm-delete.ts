@@ -133,6 +133,9 @@ function paint(button: HTMLElement) {
   const text = failed.has(id) ? t("history_action_failed").replace("{action}", () => rest) : on ? ask : rest;
   button.classList.toggle("armed", on);
   if (button.textContent !== text) button.textContent = text;
+  // For a style sheet that shows a row's actions only while they are needed
+  // (Home's dictations): a failure stays in view.
+  button.toggleAttribute("data-on", failed.has(id));
   // The button keeps the width of the wider of its two texts, so arming it
   // moves nothing beside it (styles/components.css).
   button.dataset.deleteRest = rest;

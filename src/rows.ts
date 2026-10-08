@@ -37,10 +37,12 @@ export function nameRows(root: ParentNode = document) {
   for (const more of root.querySelectorAll<HTMLElement>(".hint-more:not([data-own])")) nameMore(more);
 }
 
-/** What a "More" is about: its row's label, or the heading of the card it stands in. */
+/** What a "More" is about: its row's label, or the heading of the card it
+ *  stands in; one that stands for several rows says so itself (`data-about`,
+ *  an i18n key). */
 function nameMore(more: HTMLElement) {
   const about = more.closest(".setting-row")?.querySelector(".label-text") ?? more.closest(".card")?.querySelector(".list-title");
-  const text = (about?.textContent ?? "").trim();
+  const text = more.dataset.about ? t(more.dataset.about) : (about?.textContent ?? "").trim();
   if (!text) return;
   const open = more.getAttribute("aria-expanded") === "true";
   more.setAttribute("aria-label", t(open ? "hint_less_about" : "hint_more_about").replace("{label}", () => text));
@@ -52,11 +54,16 @@ export function initHints() {
     const more = (e.target as HTMLElement).closest<HTMLElement>(".hint-more");
     // The Soundboard redraws its rows and keeps their state itself.
     if (!more || more.dataset.own !== undefined) return;
-    const long = document.getElementById(more.getAttribute("aria-controls") ?? "");
-    if (!long) return;
+    const longs = (more.getAttribute("aria-controls") ?? "")
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter((el): el is HTMLElement => el !== null);
+    if (longs.length === 0) return;
     const open = more.getAttribute("aria-expanded") !== "true";
     more.setAttribute("aria-expanded", String(open));
-    long.hidden = !open;
+    // `data-shows`: the style sheet shows what it opens (Files' options,
+    // whose hints a page without a file shows anyway).
+    if (more.dataset.shows === undefined) for (const long of longs) long.hidden = !open;
     // The key too, so a language change keeps the right word.
     more.setAttribute("data-i18n", open ? "hint_less" : "hint_more");
     more.textContent = t(open ? "hint_less" : "hint_more");
