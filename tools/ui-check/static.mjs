@@ -300,11 +300,15 @@ export function staticChecks(root, contract) {
   return out;
 }
 
-/** The commands the frontend calls now: every invoke("name", …) in src/ and in the pill. */
+/**
+ * The commands the frontend calls now: every invoke("name", …) in src/ and in the pill, and every question
+ * of the start that is asked once for several parts of the window (src/start.ts: askOnce("name"),
+ * stateOnce("name", "event"), which invoke the name they are given).
+ */
 export function commandsCalled(root) {
   const names = new Set();
   const texts = filesUnder(path.join(root, "src"), ".ts").map((f) => fs.readFileSync(f, "utf8"));
   texts.push(fs.readFileSync(path.join(root, "src/overlay.html"), "utf8"));
-  for (const text of texts) for (const m of text.matchAll(/invoke(?:<[^(]*>)?\(\s*"([a-z_]+)"/g)) names.add(m[1]);
+  for (const text of texts) for (const m of text.matchAll(/(?:invoke|askOnce|stateOnce)(?:<[^(]*>)?\(\s*"([a-z_]+)"/g)) names.add(m[1]);
   return [...names].sort();
 }

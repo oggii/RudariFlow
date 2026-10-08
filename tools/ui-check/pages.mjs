@@ -30,6 +30,14 @@
 // in this order; put a state that changes the window after the plain pages
 // and mark it `fresh`.
 
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { literal } from "./static.mjs";
+
+/** This folder: the app's sources are two folders up. */
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
 const wait = (page, ms = 350) => page.waitForTimeout(ms);
 
 /** Open a sidebar section. */
@@ -234,11 +242,13 @@ const windowComes = (page) =>
   });
 
 /**
- * The page has started: the status is known and Home is wired (asking for the graphics cards is the last
- * thing it does, after the settings, the microphones and the first status), and its fonts are in.
+ * The page has started: the settings are shown, every first answer is drawn (the status, the microphones,
+ * the history, the AI's state, the models on disk) and every page is wired. The page says so itself
+ * (`data-started` on the body, src/main.ts). It does not wait for the graphics cards: a driver that hangs
+ * never answers. Its fonts are in.
  */
 async function started(page) {
-  await until(page, () => !!document.getElementById("status-indicator").dataset.kind && window.__MOCK__.calls.some((c) => c.cmd === "detect_gpus"), 10_000);
+  await until(page, () => document.body?.dataset.started === "true" && !!document.getElementById("status-indicator").dataset.kind, 10_000);
   await page.evaluate(async () => {
     document.body.getBoundingClientRect(); // laid out, so every font the page uses is asked for
     await document.fonts.ready;
@@ -301,6 +311,7 @@ async function loadFailed(page) {
   await wait(page, 150);
   const failed = await page.evaluate(() => ({
     notice: document.getElementById("home-notice").checkVisibility(),
+    said: [document.getElementById("home-live").textContent === document.querySelector("#home-notice .notice-text").textContent, document.getElementById("home-live").getAttribute("role"), document.getElementById("home-notice").getAttribute("role")],
     steps: document.getElementById("home-setup").checkVisibility(),
     daily: document.getElementById("home-daily").checkVisibility(),
     kind: document.getElementById("status-indicator").dataset.kind,
@@ -312,7 +323,9 @@ async function loadFailed(page) {
   out.push(...expect(at[0] === "model-select" && at[1], "the notice leads to the speech model in Models & GPU", JSON.stringify(at)));
   await report(null);
   await section(page, "home");
-  out.push(...expect(!(await shows(page, "home-notice")), "the notice goes when the model's state is good again"));
+  // A notice that is only un-hidden changes no text: its sentence is written into a line that is there from the start.
+  out.push(...expect(failed.said[0] && failed.said[1] === "status" && failed.said[2] === null, "the notice's sentence is written into a line that is read out when the notice shows", JSON.stringify(failed.said)));
+  out.push(...expect(!(await shows(page, "home-notice")) && (await page.evaluate(() => document.getElementById("home-live").textContent)) === "", "the notice goes when the model's state is good again, and the line that read it out is empty"));
   return out;
 }
 
@@ -893,8 +906,15 @@ async function firstRun(page, run) {
       return [px(card.height), px(rect("setup-ai-line").left), px(rect("setup-ai-line").right), px(rect("setup-ai-download").top - card.top), px(rect("setup-ai-download").width), px(rect("home-daily").top)].join(" ");
     });
   const stands = { rests: await cardNow() };
-  if (flat.width >= 1200) out.push(...expect(flat.height <= 60 && flat.right, "from 1200 px of window the optional card is flat: its text at the left, its buttons at the right", JSON.stringify(flat)));
-  if (flat.width >= 1600) out.push(...expect(flat.oneLine && flat.height <= 52 && flat.over === 0, "in a large window the optional card is one line, and the daily view does not scroll because of it", JSON.stringify(flat)));
+  // Since the card also says where the model can be had later (wave 1 of the whole-branch review; "Hide"
+  // hides it for good), its text is longer: under its title in up to two lines at 1200 px (77 px of card,
+  // 57 before), in one at 1600 px, where English is one line with its title and German stands under it.
+  if (flat.width >= 1200) out.push(...expect(flat.height <= 80 && flat.right, "from 1200 px of window the optional card is flat: its text at the left in at most two lines, its buttons at the right", JSON.stringify(flat)));
+  if (flat.width >= 1600) out.push(...expect((flat.oneLine ? flat.height <= 52 : flat.height <= 60) && flat.over === 0, "in a large window the optional card's text is one line, beside its title or under it, and the daily view does not scroll because of it", JSON.stringify(flat)));
+  if (flat.width >= 1900) out.push(...expect(flat.oneLine && flat.height <= 52, "from 1900 px of window the optional card is one line in both languages", JSON.stringify(flat)));
+  // The card says where the model can be downloaded later: its button hides it for good.
+  const later = await page.evaluate(() => document.getElementById("setup-ai-text").textContent);
+  out.push(...expect(de ? /Einstellungen › KI-Korrektur/.test(later) : /Settings › AI cleanup/.test(later), "the optional card says where the AI model can be downloaded later", later));
   // Pressed twice in one go: one download.
   rested = await pressTwice(page, "setup-ai-download");
   await until(page, () => window.__MOCK__.calls.some((c) => c.cmd === "ai_download_model"));
@@ -923,7 +943,7 @@ async function firstRun(page, run) {
   await until(page, () => document.getElementById("setup-ai-text").dataset.tone === "error");
   out.push(...expect((await logged(page)) === 1, "the failed AI download is written to the log once"));
   ai = await page.evaluate(() => [document.getElementById("setup-ai-text").dataset.tone, document.getElementById("setup-ai-download").textContent, document.getElementById("setup-ai-progress").checkVisibility(), document.getElementById("home-ai-card").checkVisibility(), document.getElementById("setup-ai-text").textContent, document.getElementById("setup-ai-dismiss").textContent, document.activeElement?.id]);
-  out.push(...expect(ai[0] === "error" && ai[1] === (de ? "Wiederholen" : "Retry") && !ai[2] && ai[3] && /Gemma\s4\sE4B\s\(5\.0\sGB\)/.test(ai[4]) && ai[5] === (de ? "Jetzt nicht" : "Not now") && ai[6] === "setup-ai-download", "an AI download that fails is said on the card, with the model, its size and Retry, which keeps the focus", JSON.stringify(ai)));
+  out.push(...expect(ai[0] === "error" && ai[1] === (de ? "Wiederholen" : "Retry") && !ai[2] && ai[3] && /Gemma\s4\sE4B\s\(5\.0\sGB\)/.test(ai[4]) && ai[5] === (de ? "Ausblenden" : "Hide") && ai[6] === "setup-ai-download", "an AI download that fails is said on the card, with the model, its size and Retry, which keeps the focus", JSON.stringify(ai)));
   stands.failed = await cardNow();
   out.push(...expect(stands.downloads === stands.rests && stands.failed === stands.rests, "the optional card has one height, one place for its text and its button, and the daily view under it stays where it is, while it rests, downloads and after a failure", JSON.stringify(stands)));
   await page.click("#setup-ai-download");
@@ -934,15 +954,15 @@ async function firstRun(page, run) {
   out.push(...expect(!on[0] && on[1] === true && on[2] === "gemma-4-e4b" && on[3] && on[4] === "home-title", "with its model the card goes and AI cleanup is on", JSON.stringify(on)));
 
   if (once) {
-    // ── "Not now" closes the card, and it stays closed after a new start. ──
+    // ── "Hide" closes the card, and it stays closed after a new start. ──
     await fresh();
     out.push(...expect(await shows(page, "home-ai-card"), "a new first run shows the optional card again"));
     await page.click("#setup-ai-dismiss");
     await wait(page, 100);
     const gone = [await shows(page, "home-ai-card"), await shows(page, "home-setup"), await page.evaluate(() => document.activeElement?.id ?? "")];
     await fresh();
-    out.push(...expect(!gone[0] && gone[1] && !(await shows(page, "home-ai-card")) && (await shows(page, "home-setup")), "Not now closes the card for good, and the steps stay", JSON.stringify(gone)));
-    out.push(...expect(gone[2] === "home-title", "the focus Not now had is on Home's heading", gone[2]));
+    out.push(...expect(!gone[0] && gone[1] && !(await shows(page, "home-ai-card")) && (await shows(page, "home-setup")), "Hide closes the card for good, and the steps stay", JSON.stringify(gone)));
+    out.push(...expect(gone[2] === "home-title", "the focus Hide had is on Home's heading", gone[2]));
     // Hidden while its download runs: the download goes on, and AI cleanup turns on at its end, as the card said.
     await page.evaluate(() => localStorage.removeItem("rudariflow-ui"));
     await fresh();
@@ -1831,6 +1851,7 @@ async function deleteRule(page, lang, spec, out = []) {
     const onButton = s.texts[0] !== rest && s.texts[0] !== ask && s.texts[0].includes(rest) && (!spec.named || s.names[0] === `${s.texts[0]}: ${name}`);
     const told = spec.reason ? s.live === "" && (await spec.reason()) : s.live.startsWith(s.texts[0]);
     say(onButton && left === start.left && s.armed.length === 0, "a delete that fails says so on its button and the thing stays", { ...s, left });
+    say(await page.evaluate(() => !document.getElementById("save-notice")?.checkVisibility()), "a delete that fails is not said a second time by the page's save notice", s.texts[0]);
     say(told, spec.reason ? "a delete that fails is read out once, by the page's own notice with the reason" : "a delete that fails is read out", s.live);
     say(s.focus === 0, "after a delete that failed the focus is on the button again", s);
     if (spec.redraw) {
@@ -3033,6 +3054,876 @@ async function measureProbe(page) {
   return out;
 }
 
+// ── After the whole-branch review, wave 1 ──
+// What the review of the whole branch found in behaviour, robustness and accessibility: the history that
+// was unreachable under the setup steps, saves during the load window, the start's order, saves the backend
+// refuses, the Display Language's change, the speech models' list, and the smaller ones. Each has a page or
+// a probe here; the pages stand before `measure`, the last page of the main window.
+
+/** The two language tables of src/i18n.ts, and the texts of each that read differently in the other one. */
+const I18N = (() => {
+  const source = fs.readFileSync(path.join(HERE, "../../src/i18n.ts"), "utf8");
+  const en = literal(source, "const en: Translations = {");
+  const de = literal(source, "const de: Translations = {");
+  const only = (a, b) => {
+    const others = new Set(Object.values(b));
+    return [...new Set(Object.keys(a).filter((key) => key in b && a[key] !== b[key] && !a[key].includes("{") && a[key].length > 3).map((key) => a[key]))].filter((text) => !others.has(text));
+  };
+  return { en, de, onlyEn: only(en, de), onlyDe: only(de, en) };
+})();
+
+/** The texts of the language the window is NOT in. */
+const otherLanguage = (lang) => (lang === "de" ? I18N.onlyEn : I18N.onlyDe);
+
+/**
+ * Runs in the page: the texts among `others` that the window shows. What a user can read: the text of
+ * every element that shows, a select's chosen option, and the names a screen reader or the pointer gets
+ * (aria-label, title, placeholder). `hidden`: also what does not show (a page that is not open).
+ */
+function foreignTexts([others, hidden]) {
+  const set = new Set(others);
+  const found = new Set();
+  const seen = (text) => {
+    const said = (text ?? "").trim();
+    if (set.has(said)) found.add(said);
+  };
+  for (const el of document.querySelectorAll("#app *, dialog *")) {
+    if (el.closest("script, style") || el.id === "pc-check-report") continue;
+    if (!hidden && !el.checkVisibility()) {
+      // A select's chosen option shows, though an <option> has no box.
+      if (!(el instanceof HTMLOptionElement && el.selected && el.parentElement?.checkVisibility())) continue;
+    }
+    for (const node of el.childNodes) if (node.nodeType === Node.TEXT_NODE) seen(node.textContent);
+    for (const name of ["aria-label", "title", "placeholder"]) if (el.hasAttribute(name)) seen(el.getAttribute(name));
+  }
+  return [...found];
+}
+
+/** A real click at the middle of `selector`, scrolled into view first. It goes where the pointer is: a page that rests (`inert`) does not get it. */
+async function mouseClick(page, selector) {
+  const at = await page.evaluate((selector) => {
+    const el = document.querySelector(selector);
+    if (!el) return null;
+    el.scrollIntoView({ block: "center" });
+    const r = el.getBoundingClientRect();
+    return r.width > 0 ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+  }, selector);
+  if (at) await page.mouse.click(at.x, at.y);
+  return !!at;
+}
+
+/** What the mocked backend holds as saved settings, as one string. */
+const savedNow = (page) => page.evaluate(() => JSON.stringify(window.__MOCK__.settings()));
+
+/** The mocked backend answers `ms` late from the first moment of the next start (0: at once again, also now). */
+const lateStart = (page, ms) =>
+  page.evaluate((ms) => {
+    window.__MOCK__.keep({ answerDelay: ms });
+    if (!ms) window.__MOCK__.answerDelay = 0;
+  }, ms);
+
+// ── The history under the setup steps ──
+
+/** Home, with the steps and what stands under them. */
+const underSteps = (page) =>
+  page.evaluate(() => {
+    const box = (id) => document.getElementById(id).getBoundingClientRect();
+    const shown = (id) => document.getElementById(id).checkVisibility();
+    const steps = box("home-setup");
+    const list = box("home-recent");
+    return {
+      steps: shown("home-setup"),
+      controls: shown("home-controls"),
+      list: shown("home-recent"),
+      rows: document.querySelectorAll("#history-list .history-item").length,
+      search: shown("history-search"),
+      under: list.top >= steps.bottom,
+      edges: [Math.round(steps.left), Math.round(list.left), Math.round(steps.right), Math.round(list.right)],
+      title: document.getElementById("home-title").textContent,
+      pill: document.getElementById("home-status-text").textContent,
+      states: ["setup-mic", "setup-model", "setup-key"].map((id) => document.getElementById(id).dataset.state).join(),
+      section: document.querySelector(".content-section.active")?.id,
+    };
+  });
+
+/** The state of both pages: the steps show, the controls do not, and the recent dictations stand under the steps. */
+const stepsAndList = (what) =>
+  onScreen(what, () => {
+    const shown = (id) => document.getElementById(id).checkVisibility();
+    const now = { home: document.getElementById("section-home").classList.contains("active"), steps: shown("home-setup"), list: shown("home-recent"), controls: shown("home-controls"), rows: document.querySelectorAll("#history-list .history-item").length };
+    return (now.home && now.steps && now.list && !now.controls && now.rows === 8) || now;
+  });
+
+/**
+ * Someone who has dictated before and lacks something today (`reason`: what the pill says): the steps, and
+ * under them the recent dictations with everything they can do. In 0.16.0 the history was a page of its own;
+ * before this fix Home hid the whole daily view behind the steps, and the list was nowhere.
+ */
+async function historyStays(page, run, reason) {
+  const out = [];
+  const t = I18N[run.lang];
+  const see = await underSteps(page);
+  out.push(...expect(see.steps && !see.controls && see.list && see.rows === 8 && see.search && see.under, "while the setup steps show, the recent dictations stay on screen under them", JSON.stringify(see)));
+  out.push(...expect(see.edges[0] === see.edges[1] && see.edges[2] === see.edges[3], "the steps and the list under them share their left and right edge", JSON.stringify(see.edges)));
+  // No newcomer: the plain heading with the reason, not the welcome.
+  out.push(...expect(see.title === t.home_title_setup && see.pill === t[reason], "someone with a history is not welcomed as new: the heading is Setup needed, with the reason", JSON.stringify([see.title, see.pill])));
+  if (!(run.lang === "en" && run.size === BEHAVIOUR)) return out;
+  // The list works: its search, and a dictation is copied.
+  await page.fill("#history-search", "olk");
+  await wait(page, 150);
+  const found = await page.locator("#history-list .history-item").count();
+  await page.fill("#history-search", "");
+  await wait(page, 150);
+  const text = await page.evaluate(() => document.querySelector("#history-list .history-text").textContent);
+  await page.click("#history-list .history-item:first-child .history-actions button:first-child");
+  await wait(page, 150);
+  const copied = await page.evaluate(() => [window.__MOCK__.calls.filter((c) => c.cmd === "copy_text").at(-1)?.args.text, document.querySelector("#history-list .history-item:first-child .history-actions button").textContent]);
+  out.push(...expect(found === 2 && copied[0] === text && copied[1] === "Copied", "under the steps the list is searched and a dictation is copied", JSON.stringify([found, copied])));
+  // Original and Delete too: every action of a row is there.
+  const actions = await page.evaluate(() => [...document.querySelectorAll("#history-list .history-item:first-child .history-actions button")].map((b) => b.textContent));
+  out.push(...expect(actions.length === 5 && actions.includes("Original") && actions.includes("Play") && actions.includes("Re-run") && actions.at(-1) === "Delete", "a dictation under the steps has every action: Copy, Original, Play, Re-run, Delete", JSON.stringify(actions)));
+  // The window opens where it was left: only a first run is brought to Home.
+  await settings(page, "general");
+  await restart(page);
+  const place = await page.evaluate(() => [document.querySelector(".content-section.active")?.id, document.getElementById("status-indicator").dataset.kind]);
+  out.push(...expect(place[0] === "section-settings" && place[1] === "setup", "with a history the window opens where it was left, also while something is missing", JSON.stringify(place)));
+  await section(page, "home");
+  return out;
+}
+
+// ── Saves during the load window ──
+
+const LATE = 600;
+
+/**
+ * A click while the settings are still on their way must change nothing: before, every control of
+ * Settings was live while only the first of them were filled, and a save reads them all. One click on
+ * "Hold" then saved the microphone as "", the model as "small", no replacement and no rule. The pages
+ * rest until the settings are shown (a real click does not arrive), a save is refused until then (a
+ * click from code arrives and still saves nothing), and the controls are filled in one go right after the
+ * answer, with nothing waited for in between.
+ */
+async function loadWindow(page) {
+  const out = [];
+  const before = await savedNow(page);
+  const places = [
+    ["dictation", ["#mode-ptt", "#mode-toggle"]],
+    ["ai", ["#ai-rule-add", "#ai-edit-toggle"]],
+    ["dictionary", ["#replacement-add", "#swiss-toggle"]],
+    ["general", ["#autostart-toggle", "#history-mode-select"]],
+  ];
+  for (const [tab, controls] of places) {
+    await settings(page, tab);
+    await lateStart(page, LATE);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const rests = await page.evaluate(() => ({ inert: document.getElementById("section-settings").inert, loaded: document.body.dataset.loaded ?? "", asked: window.__MOCK__.calls.some((c) => c.cmd === "get_settings") }));
+    for (const selector of controls) {
+      // The pointer's click, and the same from code (a script, an assistive tool that presses the element itself).
+      await mouseClick(page, selector);
+      await page.evaluate((selector) => {
+        const el = document.querySelector(selector);
+        if (el instanceof HTMLSelectElement) {
+          el.selectedIndex = el.options.length - 1;
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        } else el.click();
+      }, selector);
+    }
+    const still = await page.evaluate(() => document.body.dataset.loaded ?? "");
+    await started(page);
+    await wait(page, 150);
+    const after = await page.evaluate(() => ({
+      saves: window.__MOCK__.calls.filter((c) => c.cmd === "save_settings").length,
+      autostart: window.__MOCK__.calls.filter((c) => c.cmd === "set_autostart").length,
+      rules: document.querySelectorAll("#ai-rule-list .rule-row").length,
+      replacements: document.querySelectorAll("#replacement-list .replacement-row").length,
+      inert: document.getElementById("section-settings").inert,
+      shown: [document.getElementById("mode-ptt").classList.contains("active"), document.getElementById("ai-edit-toggle").checked, document.getElementById("swiss-toggle").checked, document.getElementById("autostart-toggle").checked, document.getElementById("history-mode-select").value].join(),
+    }));
+    out.push(...expect(rests.asked && rests.inert && rests.loaded === "" && still === "", `Settings > ${tab}: the check pressed while the settings were still on their way (the pages rest until then)`, JSON.stringify({ rests, still })));
+    out.push(
+      ...expect(
+        after.saves === 0 && after.autostart === 0 && (await savedNow(page)) === before && after.rules === 3 && after.replacements === 3 && !after.inert && after.shown === "true,true,true,true,audio",
+        `Settings > ${tab}: ${controls.join(" and ")} pressed during the load window change nothing, and every control shows its setting afterwards`,
+        JSON.stringify(after),
+      ),
+    );
+  }
+  // The moment the settings are read every control shows them: nothing is waited for between the answer
+  // and the last control. A click right then is a real one, and saves that one value and nothing else.
+  await settings(page, "dictation");
+  await lateStart(page, LATE);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await until(page, () => document.body.dataset.loaded === "true", 5000);
+  const filled = await page.evaluate(() => ({
+    started: document.body.dataset.started ?? "",
+    mic: document.getElementById("mic-select").value,
+    model: document.getElementById("model-select").value,
+    replacements: document.querySelectorAll("#replacement-list .replacement-row").length,
+    rules: document.querySelectorAll("#ai-rule-list .rule-row").length,
+    words: document.querySelectorAll("#dict-list .dict-row").length,
+    send: document.getElementById("send-command-select").value,
+    mute: document.getElementById("mute-audio-toggle").checked,
+    game: document.getElementById("game-free-toggle").checked,
+    idle: document.getElementById("idle-unload-select").value,
+    key: document.getElementById("hotkey-text").textContent,
+    inert: document.getElementById("section-settings").inert,
+  }));
+  out.push(
+    ...expect(
+      filled.started === "" && filled.mic === "default" && filled.model === "large-v3-turbo-q8_0" && filled.replacements === 3 && filled.rules === 3 && filled.words === 12 && filled.send === "enter" && filled.mute && filled.game && filled.idle === "30" && filled.key === "Ctrl+Shift+Space" && !filled.inert,
+      "the moment the settings are read every control shows its saved value, while the start's later answers are still out",
+      JSON.stringify(filled),
+    ),
+  );
+  await mouseClick(page, "#mode-toggle");
+  const early = await page.evaluate(() => document.body.dataset.started ?? "");
+  await started(page);
+  await wait(page, 200);
+  const was = JSON.parse(before);
+  const now = JSON.parse(await savedNow(page));
+  const changed = Object.keys(was).filter((key) => JSON.stringify(was[key]) !== JSON.stringify(now[key]));
+  out.push(...expect(early === "" && changed.join() === "recordingMode" && now.recordingMode === "toggle", "a click right after the settings are shown, before the start is over, saves that one setting and loses none (the microphone, the model, the replacements, the rules)", JSON.stringify({ early, changed, mic: now.microphone, model: now.whisperModel, replacements: now.replacements?.length, rules: now.aiRules?.length })));
+  await lateStart(page, 0);
+  await restart(page);
+  return out;
+}
+
+// ── The start ──
+
+/** Runs in the page: what the window shows now; null before the page's own script has run. */
+function startFrame(others) {
+  const title = document.getElementById("home-title");
+  if (!title || !window.__MOCK__?.calls.some((c) => c.cmd === "get_settings")) return null;
+  const shown = (id) => !!document.getElementById(id)?.checkVisibility();
+  const set = new Set(others);
+  const foreign = new Set();
+  const seen = (text) => {
+    const said = (text ?? "").trim();
+    if (set.has(said)) foreign.add(said);
+  };
+  for (const el of document.querySelectorAll("#app *")) {
+    if (!el.checkVisibility() && !(el instanceof HTMLOptionElement && el.selected && el.parentElement?.checkVisibility())) continue;
+    for (const node of el.childNodes) if (node.nodeType === Node.TEXT_NODE) seen(node.textContent);
+    for (const name of ["aria-label", "title", "placeholder"]) if (el.hasAttribute(name)) seen(el.getAttribute(name));
+  }
+  const pill = document.getElementById("status-indicator");
+  return {
+    loaded: document.body.dataset.loaded === "true",
+    started: document.body.dataset.started === "true",
+    lang: document.documentElement.lang,
+    title: title.textContent,
+    kind: pill.dataset.kind ?? "",
+    status: document.getElementById("status-text").textContent,
+    daily: shown("home-daily"),
+    steps: shown("home-setup"),
+    how: shown("home-how"),
+    keys: [...document.querySelectorAll("#home-hotkeys kbd")].filter((k) => k.checkVisibility()).map((k) => k.textContent.trim()),
+    inert: document.getElementById("section-home").inert,
+    foreign: [...foreign],
+  };
+}
+
+/**
+ * Load the window again and note what Home shows about every 100 ms until the start is over. With `film`
+ * (a path without its ending) each frame is also saved as a picture: UI_CHECK_FILM=<folder> for the run.
+ */
+async function startFrames(page, lang, film = "") {
+  await page.reload({ waitUntil: "commit" });
+  const frames = [];
+  const from = Date.now();
+  for (;;) {
+    const frame = await page.evaluate(startFrame, otherLanguage(lang)).catch(() => null);
+    if (frame) {
+      frames.push({ at: Date.now() - from, ...frame });
+      if (film) await page.screenshot({ path: `${film}-${String(frames.length).padStart(2, "0")}-${frames.at(-1).at}ms.png` });
+    }
+    if (frame?.started || Date.now() - from > 12_000) break;
+    await page.waitForTimeout(100);
+  }
+  return frames;
+}
+
+/**
+ * The start with a backend that takes 300 ms for every answer. Before, the window showed English text in
+ * a German window, empty key boxes and an empty daily view (on a new PC the daily view first, then the
+ * steps), and "Ready" before the AI's state was known; Home was wired after eight answers in a row.
+ */
+async function startSequence(page, run) {
+  const out = [];
+  const t = I18N[run.lang];
+  const firstrun = run.scenario === "firstrun";
+  const film = process.env.UI_CHECK_FILM ? path.join(process.env.UI_CHECK_FILM, `start-${run.scenario}-${run.lang}`) : "";
+  await lateStart(page, 300);
+  const frames = await startFrames(page, run.lang, film);
+  const brief = (list) => JSON.stringify(list.map((f) => `${f.at}:${f.loaded ? "L" : "-"}${f.daily ? "D" : "-"}${f.steps ? "S" : "-"} ${f.kind || "?"} "${f.title}"`));
+  const early = frames.filter((f) => !f.loaded);
+  out.push(...expect(frames.length >= 4 && early.length >= 1 && frames.at(-1).started, "the start is watched from before the first answer to its end", brief(frames)));
+  // The start's questions go out together: Home shows its view after one answer's time (it was wired after
+  // the eighth answer in a row: 2.4 s here), and everything is drawn and wired after a few.
+  const homeAt = frames.find((f) => f.daily || f.steps)?.at ?? 0;
+  const done = frames.find((f) => f.started)?.at ?? 0;
+  out.push(...expect(homeAt > 0 && homeAt < (film ? 1500 : 900) && done > 0 && done < (film ? 3500 : 2000), "with 300 ms for every answer Home shows its view after one answer's time, and the start is over within two seconds", `Home ${homeAt} ms, the start ${done} ms`));
+  // One view, and never the other one first.
+  const wrong = frames.filter((f) => (firstrun ? f.daily : f.steps) || (f.daily && f.steps));
+  const settled = frames.findIndex((f) => f.daily || f.steps);
+  const flips = settled >= 0 && frames.slice(settled).some((f) => f.daily !== frames[settled].daily || f.steps !== frames[settled].steps);
+  out.push(...expect(wrong.length === 0 && settled >= 0 && !flips, firstrun ? "a new PC never sees the daily view: nothing, then the steps" : "a PC in daily use never sees the steps: nothing, then the daily view", brief(frames)));
+  // Before Home knows which view it shows: the neutral heading, no sentence about a key that is not known yet, no empty key box.
+  const blank = frames.filter((f) => !f.daily && !f.steps);
+  out.push(...expect(blank.length >= 1 && blank.every((f) => f.title === t.home_title_loading && !f.how && f.keys.length === 0 && f.inert !== f.loaded), "until Home knows what it shows it has its neutral heading alone, and rests until the settings are read", JSON.stringify(blank.map((f) => [f.at, f.title, f.how, f.keys, f.inert, f.loaded]))));
+  out.push(...expect(frames.every((f) => f.keys.every((key) => key !== "")), "no key box ever shows empty", JSON.stringify(frames.map((f) => f.keys))));
+  // "Ready" only once it is true: never on a new PC, and on a PC in daily use never taken back.
+  const ready = (f) => f.kind === "ready" || f.title === t.home_title_ready;
+  const firstReady = frames.findIndex(ready);
+  const takenBack = firstReady >= 0 && frames.slice(firstReady).some((f) => f.kind !== "ready");
+  const headed = frames.filter((f) => f.title === t.home_title_ready && !(f.daily && f.loaded));
+  out.push(...expect(firstrun ? firstReady < 0 : firstReady >= 0 && !takenBack && headed.length === 0 && frames.at(-1).kind === "ready", firstrun ? "a new PC is never called ready" : "Ready is said once it is true and never taken back, and Home says it only with its daily view", brief(frames)));
+  // The language: the window's from its first moment, and nothing of the other one once the settings are read.
+  const mixed = frames.filter((f) => f.lang !== run.lang || f.foreign.length > 0);
+  out.push(...expect(mixed.length === 0, `no text of the other language in a ${run.lang === "de" ? "German" : "English"} window at any moment of the start`, JSON.stringify(mixed.map((f) => [f.at, f.lang, f.foreign.slice(0, 5)]))));
+  if (run.lang === "en" && !firstrun) {
+    // The Display Language is not Windows' own (English Windows, German chosen): German from the first answer
+    // on, and at the next start from the first moment (the window remembers the language it was shown in).
+    await page.evaluate(() => {
+      window.__MOCK__.keep({ settings: { uiLanguage: "de" } });
+      localStorage.removeItem("rudariflow-ui");
+    });
+    const first = await startFrames(page, "de");
+    const late = first.filter((f) => f.loaded && (f.lang !== "de" || f.foreign.length > 0));
+    out.push(...expect(first.some((f) => f.loaded) && late.length === 0, "a Display Language that is not Windows' own shows from the first answer on, with no English text left", JSON.stringify(late.map((f) => [f.at, f.lang, f.foreign.slice(0, 5)]))));
+    const second = await startFrames(page, "de");
+    const any = second.filter((f) => f.lang !== "de" || f.foreign.length > 0);
+    out.push(...expect(second.length >= 4 && any.length === 0, "at the next start the window is in its Display Language from the first moment", JSON.stringify(any.map((f) => [f.at, f.lang, f.foreign.slice(0, 5)]))));
+    await page.evaluate(() => window.__MOCK__.keep({ settings: null }));
+  }
+  // A form has its handler from the start: Enter in "Add a word" adds the word and does not load the page again.
+  if (run.lang === "en" && !firstrun) {
+    await lateStart(page, 0);
+    await restart(page);
+    await section(page, "home");
+    await page.evaluate(() => (window.__sameLoad = true));
+    await page.fill("#home-word-input", "Winterthur");
+    await page.press("#home-word-input", "Enter");
+    await wait(page, 200);
+    const added = await page.evaluate(() => [window.__sameLoad === true, window.__MOCK__.settings().customPrompt.endsWith(", Winterthur")]);
+    out.push(...expect(added[0] && added[1], "Enter in Add a word adds the word and does not load the page again", JSON.stringify(added)));
+  }
+  await lateStart(page, 0);
+  await restart(page);
+  return out;
+}
+
+// ── A save the backend refuses ──
+
+/** The notice at the top of the page, the line that is read out, and what the mocked backend holds. */
+const noticeNow = (page) =>
+  page.evaluate(() => ({
+    shown: document.getElementById("save-notice").checkVisibility(),
+    text: document.getElementById("save-notice-text").textContent,
+    said: document.getElementById("save-live").textContent,
+    tone: document.getElementById("save-notice").dataset.tone,
+    live: document.getElementById("save-live").getAttribute("role"),
+  }));
+
+const DENIED = "Access is denied. (os error 5)";
+
+/** The next save is refused, in the backend's words. */
+const refuseSave = (page) => page.evaluate((why) => window.__MOCK__.refuseNext("save_settings", why), DENIED);
+
+/**
+ * A save that is refused says so in the page, and the control is back on what is saved. Before, the
+ * control went on showing the new value, nothing was said, and the console had an unhandled rejection.
+ */
+async function saveFails(page) {
+  const out = [];
+  const before = await savedNow(page);
+  // The page's state: "Toggle" was pressed and refused (see the page's `open`).
+  let see = await noticeNow(page);
+  const mode = await page.evaluate(() => [document.getElementById("mode-ptt").getAttribute("aria-pressed"), document.getElementById("mode-toggle").getAttribute("aria-pressed")]);
+  out.push(...expect(see.shown && see.text === `Could not save: ${DENIED}` && see.said === see.text && see.tone === "error" && see.live === "status", "a refused save is said in a notice at the top of the page, with the backend's reason, and read out", JSON.stringify(see)));
+  out.push(...expect(mode.join() === "true,false" && (await savedNow(page)) === before, "the segmented choice is back on the saved value", JSON.stringify(mode)));
+  // Its button closes it; the focus goes to the page's heading.
+  await page.focus("#save-notice-close");
+  await page.keyboard.press("Enter");
+  await wait(page, 100);
+  see = await noticeNow(page);
+  const at = await page.evaluate(() => document.activeElement?.className ?? "");
+  out.push(...expect(!see.shown && see.said === "" && at.includes("section-title"), "the notice's button closes it, and the keyboard focus goes to the page's heading", JSON.stringify([see, at])));
+  // Every kind of control: a select, a switch, a text field, a row's field, Home's quick switch, Files' own setting.
+  const cases = [
+    ["a select", "dictation", () => choose(page, "send-command-select", "off"), () => page.evaluate(() => document.getElementById("send-command-select").value), "enter"],
+    ["a switch", "dictation", () => page.evaluate(() => document.getElementById("mute-audio-toggle").click()), () => page.evaluate(() => String(document.getElementById("mute-audio-toggle").checked)), "true"],
+    ["a text field", "ai", () => page.evaluate(() => {
+      const field = document.getElementById("ai-instructions");
+      field.value = "Short.";
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    }), () => page.evaluate(() => document.getElementById("ai-instructions").value), "Always use du, never Sie. No emojis."],
+    ["a rule's field", "ai", () => page.evaluate(() => {
+      const field = document.querySelector("#ai-rule-list .rule-row .rule-app");
+      field.value = "telegram";
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    }), () => page.evaluate(() => [...document.querySelectorAll("#ai-rule-list .rule-app")].map((f) => f.value).join()), "whatsapp,code,outlook"],
+    ["a replacement's field", "dictionary", () => page.evaluate(() => {
+      const field = document.querySelector("#replacement-list .replacement-row .replacement-to");
+      field.value = "nobody@example.com";
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    }), () => page.evaluate(() => document.querySelector("#replacement-list .replacement-row .replacement-to").value), "info@0ggi.ch"],
+    ["the AI cleanup switch", "ai", () => page.evaluate(() => document.getElementById("ai-toggle").click()), () => page.evaluate(() => [document.getElementById("ai-toggle").checked, document.getElementById("home-ai-toggle").checked].join()), "true,true"],
+    ["Start with Windows", "general", () => page.evaluate(() => document.getElementById("autostart-toggle").click()), () => page.evaluate(() => `${document.getElementById("autostart-toggle").checked} ${window.__MOCK__.calls.filter((c) => c.cmd === "set_autostart").map((c) => c.args.enabled).join()}`), "true false,true"],
+  ];
+  for (const [what, tab, change, read, saved] of cases) {
+    await settings(page, tab);
+    await refuseSave(page);
+    await change();
+    await wait(page, 200);
+    see = await noticeNow(page);
+    const got = await read();
+    out.push(...expect(see.shown && see.said === `Could not save: ${DENIED}` && got === saved && (await savedNow(page)) === before, `${what}: a refused save is said, and the control is back on the saved value`, JSON.stringify({ got, saved, notice: see.text })));
+    await page.click("#save-notice-close");
+  }
+  // Files' Speakers, which is saved with the settings.
+  await section(page, "files");
+  await refuseSave(page);
+  await choose(page, "file-speakers", "3");
+  await wait(page, 200);
+  see = await noticeNow(page);
+  const speakers = await page.evaluate(() => document.getElementById("file-speakers").value);
+  out.push(...expect(see.shown && speakers === "auto", "Files' Speakers: a refused save is said, and the list is back on the saved value", JSON.stringify([see.text, speakers])));
+  // A word added on Home: it is not in the list, it stays in the field, and nothing says "Added".
+  await section(page, "home");
+  await refuseSave(page);
+  await page.fill("#home-word-input", "Winterthur");
+  await page.press("#home-word-input", "Enter");
+  await wait(page, 200);
+  see = await noticeNow(page);
+  const word = await page.evaluate(() => [document.getElementById("home-word-input").value, document.getElementById("home-word-status").textContent, document.querySelectorAll("#dict-list .dict-row").length]);
+  out.push(...expect(see.shown && word[0] === "Winterthur" && word[1] === "" && word[2] === 12, "a word that could not be saved stays in its field, and Home does not say that it was added", JSON.stringify(word)));
+  // The next save that works ends the notice.
+  await settings(page, "dictation");
+  await page.click("#mode-toggle");
+  await wait(page, 200);
+  see = await noticeNow(page);
+  out.push(...expect(!see.shown && see.said === "" && JSON.parse(await savedNow(page)).recordingMode === "toggle", "a save that works ends the notice", JSON.stringify(see)));
+  await page.click("#mode-ptt");
+  await wait(page, 200);
+  // The Display Language: saved first; refused, the window is back in the saved language, and says so in it.
+  await settings(page, "general");
+  await refuseSave(page);
+  await choose(page, "ui-language-select", "de");
+  await wait(page, 300);
+  see = await noticeNow(page);
+  const language = await page.evaluate(() => [document.documentElement.lang, document.getElementById("ui-language-select").value, document.getElementById("tab-general").textContent, window.__MOCK__.settings().uiLanguage]);
+  out.push(...expect(see.shown && see.text.startsWith("Could not save") && language.join() === "en,en,General,en", "a refused save of the Display Language puts the window back in the saved language", JSON.stringify([see.text, language])));
+  await page.click("#save-notice-close");
+  // Two saves in a row, the first refused: the second carries the first one's change too, so nothing is lost and nothing is said.
+  await settings(page, "dictation");
+  await page.evaluate(() => (window.__MOCK__.saveDelay = 150));
+  await refuseSave(page);
+  await page.evaluate(() => {
+    document.getElementById("mute-audio-toggle").click();
+    document.getElementById("send-command-select").value = "off";
+    document.getElementById("send-command-select").dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await wait(page, 500);
+  see = await noticeNow(page);
+  const both = JSON.parse(await savedNow(page));
+  const shown = await page.evaluate(() => [document.getElementById("mute-audio-toggle").checked, document.getElementById("send-command-select").value]);
+  out.push(...expect(!see.shown && both.muteAudio === false && both.sendCommand === "off" && shown.join() === "false,off", "a refused save that a later one makes good is not said: the later save carries both changes", JSON.stringify([see, both.muteAudio, both.sendCommand, shown])));
+  await page.evaluate(() => (window.__MOCK__.saveDelay = 0));
+  return out;
+}
+
+// ── A change of the Display Language ──
+
+/**
+ * The choice is saved before anything is drawn again (it was the tenth step, after four questions to the
+ * backend), and what was written once in the old language is drawn again or emptied.
+ */
+async function languageChange(page) {
+  const out = [];
+  // What is on screen in English, written once: "Added …" on Home, an export's line, "Try it"'s time,
+  // the Soundboard's notice, the PC check while it runs, and the detected graphics cards.
+  await section(page, "home");
+  await page.fill("#home-word-input", "Zeitgeist");
+  await page.press("#home-word-input", "Enter");
+  await wait(page, 200);
+  await tryIt(page);
+  await advanced(page, "dictionary");
+  await page.evaluate(() => (window.__MOCK__.savePath = "C:\\Users\\Oggi\\Documents\\words.txt"));
+  await page.click("#dict-export");
+  await wait(page, 200);
+  await section(page, "soundboard");
+  await page.evaluate(() => window.__MOCK__.emit("tauri://drag-drop", { paths: ["C:\\notes.txt"], position: { x: 400, y: 300 } }));
+  await wait(page, 300);
+  await advanced(page, "models");
+  await page.evaluate(() => window.__MOCK__.holdNext("pc_check"));
+  await page.click("#pc-check-btn");
+  await page.evaluate(() => window.__MOCK__.emit("pc-check-progress", [1, 4, ""]));
+  await wait(page, 150);
+  const texts = () =>
+    page.evaluate(() => ({
+      word: document.getElementById("home-word-status").textContent,
+      io: document.getElementById("dict-io-status").textContent,
+      tried: document.getElementById("ai-test-meta").textContent,
+      board: document.querySelector("#sb-root .sb-notice")?.textContent ?? "",
+      check: document.getElementById("pc-check-btn").textContent,
+      checking: document.getElementById("pc-check-btn").disabled,
+      gpus: document.getElementById("gpu-detected").textContent,
+    }));
+  const english = await texts();
+  out.push(...expect(english.word.length > 5 && english.io.length > 5 && /412/.test(english.tried) && english.board.length > 5 && /2\/4/.test(english.check) && english.checking && english.gpus.startsWith("Detected"), "the texts that are written once are on screen before the language changes", JSON.stringify(english)));
+  // A question of the redraw fails: the language is saved all the same.
+  await awaitError(page, /drawing the Meetings page again failed|meeting_list/);
+  await page.evaluate(() => window.__MOCK__.refuseNext("meeting_list", "it broke"));
+  await settings(page, "general");
+  const from = await page.evaluate(() => window.__MOCK__.calls.length);
+  await choose(page, "ui-language-select", "de");
+  await wait(page, 400);
+  const sent = await page.evaluate((from) => window.__MOCK__.calls.slice(from).map((c) => c.cmd).filter((cmd) => !cmd.startsWith("plugin:")), from);
+  const saved = await page.evaluate(() => [window.__MOCK__.settings().uiLanguage, document.documentElement.lang, document.getElementById("save-notice").checkVisibility()]);
+  out.push(...expect(sent[0] === "save_settings" && saved.join() === "de,de,false", "the Display Language is saved first, before anything is asked or drawn again, and a failing redraw does not lose it", JSON.stringify([sent.slice(0, 6), saved])));
+  // The redraw asks the backend nothing that it knows already: only the Meetings page reads its list.
+  const asked = sent.filter((cmd) => cmd !== "save_settings" && cmd !== "meeting_list" && cmd !== "meeting_default_title");
+  out.push(...expect(asked.length === 0, "the window is drawn in the new language from what it knows: nothing is asked again", JSON.stringify(asked)));
+  const german = await texts();
+  out.push(
+    ...expect(
+      german.word === "" && german.io === "" && /^Dauer: 412 ms$/.test(german.tried) && german.board === "" && /^Prüfe 2\/4/.test(german.check) && german.checking && german.gpus.startsWith("Erkannt"),
+      "after a language change nothing keeps its old text: what is drawn from data is in the new language, what was said once is gone",
+      JSON.stringify(german),
+    ),
+  );
+  // Nothing in the whole window, shown or not, is still English. (The Meetings page's list, whose question
+  // was refused above, is read again when the page is opened.)
+  await section(page, "meetings");
+  await settings(page, "general");
+  const left = await page.evaluate(foreignTexts, [I18N.onlyEn, true]);
+  out.push(...expect(left.length === 0, "no English text is left anywhere in the window after the change to German", JSON.stringify(left.slice(0, 12))));
+  await logged(page);
+  await page.evaluate(() => window.__MOCK__.release("pc_check"));
+  await choose(page, "ui-language-select", "en");
+  await wait(page, 300);
+  const back = await page.evaluate(foreignTexts, [I18N.onlyDe, true]);
+  out.push(...expect(back.length === 0, "and none is German after the change back", JSON.stringify(back.slice(0, 12))));
+  return out;
+}
+
+// ── The speech models' list ──
+
+/**
+ * Every model with its one line behind the row's "More". Before, a description showed only for the chosen
+ * model (Base and Medium had none), and choosing a model to read about it started its download.
+ */
+async function modelList(page, run) {
+  const out = [];
+  const t = I18N[run.lang];
+  const firstrun = run.scenario === "firstrun";
+  const see = await page.evaluate(() => {
+    const items = [...document.querySelectorAll("#model-more .model-list-item")];
+    const select = document.getElementById("model-select");
+    return {
+      role: [document.getElementById("model-more").getAttribute("role"), items.every((item) => item.getAttribute("role") === "listitem")],
+      names: items.map((item) => item.querySelector(".model-list-name").textContent),
+      notes: items.map((item) => [...item.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent.trim()).join("")),
+      marks: items.map((item) => item.querySelector(".model-list-mark")?.textContent ?? ""),
+      options: [...select.options].map((o) => o.textContent),
+      value: select.value,
+      note: document.getElementById("model-note").textContent,
+      more: [document.querySelector("#local-settings .hint-more").getAttribute("aria-expanded"), document.querySelector("#local-settings .hint-more").getAttribute("aria-label")],
+      downloads: window.__MOCK__.calls.filter((c) => c.cmd === "download_model").length,
+      saves: window.__MOCK__.calls.filter((c) => c.cmd === "save_settings").length,
+      saved: window.__MOCK__.settings().whisperModel,
+    };
+  });
+  const plain = (option) => option.replace(/ ✓$/, "").replace(` · ${t.model_recommended_short}`, "");
+  out.push(...expect(see.role[0] === "list" && see.role[1] && see.names.length === 8 && see.names.join("|") === see.options.map(plain).join("|") && see.names.every((name) => / · \d/.test(name)), "More lists all eight speech models with name and size, in the dropdown's order", JSON.stringify([see.names, see.options])));
+  out.push(...expect(see.notes.every((note) => note.length >= 15 && /\.$/.test(note)), "every model has its one-line description, Base and Medium too", JSON.stringify(see.notes)));
+  // The mocked PC has an RTX 5080 with 16 GB: Large v3 Turbo q8 is the one for it.
+  const marked = see.marks.map((mark, i) => (mark ? see.names[i] : "")).filter(Boolean);
+  const suffixed = see.options.filter((option) => option.includes(` · ${t.model_recommended_short}`));
+  out.push(...expect(marked.length === 1 && marked[0].startsWith("Large v3 Turbo q8 ·") && see.marks.includes(t.model_recommended_here) && suffixed.length === 1 && suffixed[0].startsWith("Large v3 Turbo q8 ·"), "the model recommended for this PC's graphics card is marked in the list and in the dropdown, and no other", JSON.stringify([marked, suffixed])));
+  // Reading costs nothing: no download, no save, the dropdown where the settings have it.
+  out.push(...expect(see.downloads === 0 && see.value === see.saved && see.more[0] === "true" && see.more[1] === t.hint_less_about.replace("{label}", t.model_label), "reading about the models starts no download and changes no setting", JSON.stringify([see.downloads, see.value, see.saved, see.more])));
+  if (firstrun) {
+    // A new PC: the dropdown stays on what the settings say, and the row says which model is recommended and why.
+    out.push(...expect(see.value === "small" && see.saves === 0 && see.note.includes("NVIDIA GeForce RTX 5080") && /Large\sv3\sTurbo\sq8/.test(see.note), "on a new PC the dropdown keeps the settings' model, and the row says which one is recommended for the graphics card", JSON.stringify([see.value, see.saves, see.note])));
+  } else {
+    out.push(...expect(!see.note.includes("RTX"), "with the chosen model on disk the row's note is the model's own line", see.note));
+  }
+  return out;
+}
+
+// ── Smaller ones ──
+
+/** Runs in the page: the levels of the headings that show, in the page's order. */
+function headingLevels() {
+  return [...document.querySelectorAll("#content :is(h1, h2, h3, h4, h5, h6)")].filter((h) => h.checkVisibility()).map((h) => Number(h.tagName[1]));
+}
+
+/** One h1 at the top, and no level left out below it. */
+const outlineOk = (levels) => levels[0] === 1 && levels.filter((l) => l === 1).length === 1 && levels.every((l, i) => i === 0 || l <= levels[i - 1] + 1);
+
+/** Every page's outline: its title is the h1, a card's heading an h2, what stands under that an h3. */
+async function outlines(page) {
+  const bad = [];
+  const look = async (where) => {
+    const levels = await page.evaluate(headingLevels);
+    if (!outlineOk(levels)) bad.push(`${where}: ${levels.join(" ") || "no heading"}`);
+  };
+  for (const name of ["home", "files", "meetings", "soundboard"]) {
+    await section(page, name);
+    await look(name);
+  }
+  for (const tab of TABS) {
+    // With its Advanced fold open, where the tab has one.
+    await page.evaluate((tab) => document.querySelector(`details.fold[data-fold="${tab}"]`)?.setAttribute("open", ""), tab);
+    await settings(page, tab);
+    await look(`settings/${tab}`);
+  }
+  await section(page, "home");
+  return expect(bad.length === 0, "every page has one h1, its title, and its headings leave no level out", bad.join("; "));
+}
+
+/** The way from the list to its two settings: the link under it, and with the history off the sentence itself. */
+async function historyLinks(page) {
+  const out = [];
+  await section(page, "home");
+  await page.click("#history-settings");
+  await wait(page);
+  let at = await page.evaluate(() => [document.activeElement.id, document.activeElement.checkVisibility()]);
+  out.push(...expect(at[0] === "history-mode-select" && at[1], "the link under the recent dictations leads to Keep history", JSON.stringify(at)));
+  await choose(page, "history-mode-select", "off");
+  await wait(page, 200);
+  await section(page, "home");
+  const off = await page.evaluate(() => {
+    const empty = document.getElementById("history-empty");
+    return [empty.checkVisibility(), empty.textContent, !!empty.querySelector(".link-btn"), document.getElementById("history-settings").checkVisibility()];
+  });
+  out.push(...expect(off[0] && off[2] && /Settings › General/.test(off[1]) && !off[3], "with the history off the sentence says where to turn it on, and is the one link there", JSON.stringify(off)));
+  await page.click("#history-empty .link-btn");
+  await wait(page);
+  at = await page.evaluate(() => [document.activeElement.id, document.activeElement.checkVisibility()]);
+  out.push(...expect(at[0] === "history-mode-select" && at[1], "the sentence's link leads to Keep history", JSON.stringify(at)));
+  await choose(page, "history-mode-select", "audio");
+  await wait(page, 200);
+  await section(page, "home");
+  return out;
+}
+
+/**
+ * The window crosses the 900 px step and the list is moved to its other place: whoever was in it keeps
+ * the keyboard focus (a moved node loses it, and the next Tab started at the top of the page).
+ */
+async function focusOverStep(page) {
+  const out = [];
+  const size = page.viewportSize();
+  const where = () =>
+    page.evaluate(() => {
+      const at = document.activeElement;
+      return [at?.id || at?.closest(".history-item")?.dataset.id || at?.tagName, at instanceof HTMLInputElement ? `${at.selectionStart}-${at.selectionEnd}` : "", document.getElementById("home-recent").previousElementSibling?.id];
+    });
+  const cross = async (what) => {
+    const before = await where();
+    await page.setViewportSize({ width: 1000, height: size.height });
+    await wait(page, 200);
+    const narrow = await where();
+    await page.setViewportSize(size);
+    await wait(page, 200);
+    const wide = await where();
+    out.push(...expect(before[0] === narrow[0] && before[0] === wide[0] && before[1] === narrow[1] && before[1] === wide[1] && narrow[2] === "home-switches" && wide[2] === "home-controls", `${what} keeps the keyboard focus when the window crosses the 900 px step, both ways`, JSON.stringify([before, narrow, wide])));
+  };
+  await section(page, "home");
+  await page.fill("#history-search", "olk");
+  await page.evaluate(() => document.getElementById("history-search").setSelectionRange(1, 3));
+  await cross("the search field, with its selection,");
+  await page.fill("#history-search", "");
+  await wait(page, 150);
+  await page.focus("#history-list .history-item:nth-child(2) .history-actions button:first-child");
+  await cross("a dictation's Copy");
+  await page.evaluate(() => document.activeElement?.blur?.());
+  return out;
+}
+
+/** User text with "$&" in it is text: as a plain replacement string it was a pattern, and "$&" came out as the placeholder itself. */
+async function dollarText(page) {
+  const out = [];
+  const odd = "$& $1 $$";
+  // A rule's app, in the sentence under "Write in".
+  await settings(page, "ai");
+  await page.evaluate((odd) => {
+    const app = document.querySelector("#ai-rule-list .rule-row:nth-child(2) .rule-app");
+    app.value = odd;
+    app.dispatchEvent(new Event("change", { bubbles: true }));
+  }, odd);
+  await choose(page, "ai-output-select", "en");
+  await wait(page, 200);
+  const skip = await page.evaluate(() => document.getElementById("ai-output-skip").textContent);
+  out.push(...expect(skip.includes(odd), "an app's name with $& in it stands as it is in the sentence under Write in", skip));
+  // The backend's own words about a model that cannot be deleted.
+  await awaitError(page, /delete "[^"]*" failed|command failed/);
+  await advanced(page, "models");
+  await page.evaluate((odd) => window.__MOCK__.refuseNext("delete_unused_model", odd), odd);
+  const del = page.locator("#unused-model-list [data-delete-id]").first();
+  await del.click();
+  await wait(page, ANSWER);
+  await del.click();
+  await wait(page, 300);
+  const why = await page.evaluate(() => document.querySelector("#unused-model-list .unused-model-error")?.textContent ?? "");
+  await logged(page);
+  out.push(...expect(why.includes(odd), "the backend's reason with $& in it stands as it is in the model's row", why));
+  // A suggestion's "heard as".
+  await page.evaluate((odd) => window.__MOCK__.emit("dictionary-suggestions", [{ word: "Shiggy", heard: odd, count: 2 }]), odd);
+  await settings(page, "dictionary");
+  const heard = await page.evaluate(() => document.querySelector("#dict-suggest-list .list-secondary")?.textContent ?? "");
+  out.push(...expect(heard.includes(odd), "what was heard, with $& in it, stands as it is in the suggestion", heard));
+  return out;
+}
+
+/** An older answer that lands after a newer one is not drawn: the recent dictations, and the AI's state. */
+async function olderAnswers(page) {
+  const out = [];
+  await section(page, "home");
+  // The list is asked for; before its answer is back a dictation is deleted and the list is asked for again.
+  const second = await page.evaluate(() => Number(document.querySelectorAll("#history-list .history-item")[1].dataset.id));
+  await page.evaluate(async (id) => {
+    window.__MOCK__.lateNext("history_list", 400);
+    window.__MOCK__.emit("history-updated");
+    await window.__TAURI_INTERNALS__.invoke("history_delete", { id });
+    window.__MOCK__.emit("history-updated");
+  }, second);
+  await wait(page, 700);
+  const rows = await page.evaluate(() => [...document.querySelectorAll("#history-list .history-item")].map((row) => Number(row.dataset.id)));
+  out.push(...expect(rows.length === 7 && !rows.includes(second), "the older answer about the history, arriving last, does not bring a deleted dictation back", JSON.stringify([rows.length, rows.includes(second)])));
+  // The AI's state: "ready" is on its way while the backend already says "loading".
+  await settings(page, "ai");
+  await page.evaluate(() => {
+    window.__MOCK__.lateNext("ai_status", 400);
+    window.__MOCK__.emit("ai-status");
+    window.__MOCK__.ai = { server: { state: "loading" } };
+    window.__MOCK__.emit("ai-status");
+  });
+  await wait(page, 700);
+  const line = await page.evaluate(() => [document.getElementById("ai-status-line").textContent, document.getElementById("status-indicator").dataset.kind]);
+  out.push(...expect(/^Loading/.test(line[0]) && line[1] === "loading", "the older answer about the AI, arriving last, does not put Ready back over Loading", JSON.stringify(line)));
+  await page.evaluate(() => {
+    window.__MOCK__.ai = null;
+    window.__MOCK__.emit("ai-status");
+  });
+  await wait(page, 200);
+  return out;
+}
+
+/**
+ * The window is loaded again while the AI model downloads: the backend goes on, and says so. The model's
+ * row, the line beside the switch and the sidebar follow the same word (before, the sidebar followed only a
+ * download this window had started, and said "Ready" beside "Downloading the model…").
+ */
+async function downloadAfterReload(page) {
+  const out = [];
+  await page.evaluate(() => window.__MOCK__.keep({ ai: { downloading: "gemma-4-e4b" } }));
+  await restart(page);
+  await advanced(page, "ai");
+  const now = () =>
+    page.evaluate(() => ({
+      line: document.getElementById("ai-status-line").textContent,
+      percent: document.getElementById("ai-status-percent").textContent,
+      bar: document.getElementById("ai-download-progress").checkVisibility(),
+      numbers: document.getElementById("ai-progress-text").textContent,
+      kind: document.getElementById("status-indicator").dataset.kind,
+      status: document.getElementById("status-text").textContent,
+      select: document.getElementById("ai-model-select").disabled,
+    }));
+  let see = await now();
+  out.push(...expect(/^Downloading/.test(see.line) && see.bar && see.numbers === "0 %" && see.kind === "downloading" && see.select, "after a reload during the AI model's download the row, the state line and the sidebar all say that it downloads", JSON.stringify(see)));
+  await page.evaluate(() => window.__MOCK__.emit("ai-download-progress", { downloaded: 2.14e9, total: 4977171584, percent: 43.2 }));
+  await wait(page, 150);
+  see = await now();
+  out.push(...expect(see.percent === "43 %" && / 43 %$/.test(see.status) && /^43 %/.test(see.numbers), "its progress shows in all three", JSON.stringify(see)));
+  // It ends: the backend says so, and all three are done with it.
+  await page.evaluate(() => {
+    window.__MOCK__.keep({ ai: null });
+    window.__MOCK__.ai = null;
+    window.__MOCK__.emit("ai-status");
+  });
+  await wait(page, 250);
+  // A progress event that arrives late brings nothing back.
+  await page.evaluate(() => window.__MOCK__.emit("ai-download-progress", { downloaded: 4.9e9, total: 4977171584, percent: 99 }));
+  await wait(page, 150);
+  see = await now();
+  out.push(...expect(!/^Downloading/.test(see.line) && !see.bar && see.kind === "ready" && see.percent === "" && !see.select, "when the backend says the download is over all three are done with it, and a late progress event brings nothing back", JSON.stringify(see)));
+  return out;
+}
+
+/** What wave 1 fixed that has no page of its own: one probe, in one window. */
+async function wave1(page) {
+  return [...(await outlines(page)), ...(await historyLinks(page)), ...(await focusOverStep(page)), ...(await dollarText(page)), ...(await olderAnswers(page)), ...(await downloadAfterReload(page))];
+}
+
+// ── Windows contrast themes ──
+
+/**
+ * `forced-colors: active`: Windows paints with the theme's few colours, and every colour of the app's own
+ * is gone. Before there was no rule for it: a switch could not be seen unless it had the focus, and no
+ * selected state showed. What is asserted here is the least: a switch has an edge and its two states
+ * differ, and what is selected differs from what is not. The pictures are for the eye.
+ */
+async function forcedColors(page) {
+  const out = [];
+  const forced = await page.evaluate(() => matchMedia("(forced-colors: active)").matches);
+  out.push(...expect(forced, "the window is in a contrast theme (forced colours)"));
+  const style = (selector, pseudo, props) =>
+    page.evaluate(
+      ([selector, pseudo, props]) => {
+        const el = document.querySelector(selector);
+        if (!el) return null;
+        const cs = getComputedStyle(el, pseudo || undefined);
+        return Object.fromEntries(props.map((p) => [p, cs.getPropertyValue(p)]));
+      },
+      [selector, pseudo, props],
+    );
+  const EDGE = ["border-top-width", "border-top-style", "border-top-color", "background-color"];
+  const differs = (a, b, props) => !!a && !!b && props.some((p) => a[p] !== b[p]);
+  const edged = (s) => !!s && parseFloat(s["border-top-width"]) >= 1 && s["border-top-style"] !== "none" && s["border-top-color"] !== s["background-color"];
+  // Home: the AI cleanup switch, on and off.
+  await section(page, "home");
+  const on = await style("#home-ai-toggle + .switch-slider", "", EDGE);
+  const thumbOn = await style("#home-ai-toggle + .switch-slider", "::before", ["background-color"]);
+  await page.evaluate(() => document.getElementById("ai-toggle").click());
+  await wait(page, 200);
+  const off = await style("#home-ai-toggle + .switch-slider", "", EDGE);
+  const thumbOff = await style("#home-ai-toggle + .switch-slider", "::before", ["background-color"]);
+  await page.evaluate(() => document.getElementById("ai-toggle").click());
+  await wait(page, 200);
+  out.push(...expect(edged(off) && !!on && parseFloat(on["border-top-width"]) >= 1 && differs(on, off, ["background-color"]) && thumbOff["background-color"] !== off["background-color"] && thumbOn["background-color"] !== on["background-color"], "a switch has a visible edge and thumb, and on differs from off", JSON.stringify({ on, off, thumbOn, thumbOff })));
+  // The sidebar's current page.
+  const current = await style('.nav-item[aria-current="page"]', "", ["background-color", "color", "border-top-color"]);
+  const other = await style(".nav-item:not([aria-current])", "", ["background-color", "color", "border-top-color"]);
+  out.push(...expect(differs(current, other, ["background-color"]), "the sidebar's current page differs from the others", JSON.stringify({ current, other })));
+  // Settings: the selected tab, and a segmented choice.
+  await settings(page, "dictation");
+  const tabOn = await style('.tab[aria-selected="true"]', "::after", ["background-color", "height"]);
+  const tabOnEdge = await style('.tab[aria-selected="true"]', "", ["border-bottom-color"]);
+  const tabOff = await style('.tab[aria-selected="false"]', "", ["border-bottom-color", "background-color"]);
+  out.push(...expect(!!tabOn && parseFloat(tabOn.height) >= 2 && tabOn["background-color"] !== tabOff["background-color"] && tabOnEdge["border-bottom-color"] !== tabOff["border-bottom-color"], "the selected tab has a mark the others lack", JSON.stringify({ tabOn, tabOnEdge, tabOff })));
+  const chosen = await style('.toggle-btn[aria-pressed="true"]', "", ["background-color", "color"]);
+  const unchosen = await style('.toggle-btn[aria-pressed="false"]', "", ["background-color", "color"]);
+  out.push(...expect(differs(chosen, unchosen, ["background-color"]) && chosen.color !== chosen["background-color"], "the chosen half of a segmented choice differs from the other", JSON.stringify({ chosen, unchosen })));
+  // A card is an area with an edge.
+  const card = await style("#panel-dictation .card", "", EDGE);
+  out.push(...expect(edged(card), "a card has an edge (its own ground is gone)", JSON.stringify(card)));
+  // The Soundboard: a tile has an edge, loop on differs from loop off, and the chosen chip from the others.
+  await section(page, "soundboard");
+  await wait(page, 200);
+  const tile = await style("#sb-root .sb-row", "", EDGE);
+  const loopOn = await style('#sb-root .sb-loop[aria-pressed="true"]', "", ["background-color", "color"]);
+  const loopOff = await style('#sb-root .sb-loop[aria-pressed="false"]', "", ["background-color", "color"]);
+  const chipOn = await style('#sb-root .sb-chip[aria-pressed="true"]', "", ["background-color", "color"]);
+  const chipOff = await style('#sb-root .sb-chip[aria-pressed="false"]', "", ["background-color", "color"]);
+  out.push(...expect(edged(tile) && differs(loopOn, loopOff, ["background-color"]) && differs(chipOn, chipOff, ["background-color"]), "a sound's tile has an edge, and loop on and the chosen chip differ from the others", JSON.stringify({ tile, loopOn, loopOff, chipOn, chipOff })));
+  await section(page, "home");
+  return out;
+}
+
 // ── The pill ──
 // A window of its own, 320 × 64 px, transparent over whatever is on the desktop, with a small style sheet of
 // its own. Until the review of Task 8 its pages were pictures only: it has none of the window's tokens, the
@@ -3548,16 +4439,17 @@ export const PAGES = [
       });
       out.push(...expect(after[0] === 7 && after[1] === second && after[2] === true, "after Delete from the keyboard the focus is on the next row's first action", JSON.stringify([...after, second])));
       // The cloud engine without its key is a setup again: the Speech model line says what is missing, and
-      // Home shows the steps, whose second one leads to the key (the daily view is hidden behind them).
+      // Home shows the steps, whose second one leads to the key. Of the daily view the recent dictations
+      // stay, under the steps (the controls are what the steps stand in for).
       await page.evaluate(() => document.getElementById("engine-cloud").click());
       await present(page);
       await wait(page, 200);
       const cloud = await page.evaluate(() => [document.getElementById("home-loaded-speech").textContent, document.getElementById("home-loaded-speech").dataset.tone]);
-      const asks = [await shown("home-setup"), await shown("home-daily"), (await micOpen(page)).ok];
+      const asks = [await shown("home-setup"), await page.evaluate(() => document.getElementById("home-controls").checkVisibility()), (await micOpen(page)).ok, await page.evaluate(() => document.getElementById("home-recent").checkVisibility())];
       await page.click("#setup-model-download");
       await wait(page);
       let landed = await page.evaluate(() => [document.activeElement.id, document.activeElement.checkVisibility()]);
-      out.push(...expect(cloud[0].includes(" · ") && cloud[1] === "warn" && asks[0] && !asks[1] && asks[2] && landed[0] === "groq-key" && landed[1], "the cloud engine without its key: Home shows the steps, and the second one leads to the key field", JSON.stringify([cloud, asks, landed])));
+      out.push(...expect(cloud[0].includes(" · ") && cloud[1] === "warn" && asks[0] && !asks[1] && asks[2] && asks[3] && landed[0] === "groq-key" && landed[1], "the cloud engine without its key: Home shows the steps with the recent dictations under them, and the second step leads to the key field", JSON.stringify([cloud, asks, landed])));
       // With the key the daily view is back, the microphone is closed, and the Speech model line leads to the key field.
       await page.fill("#groq-key", "gsk_check");
       await page.evaluate(() => document.getElementById("groq-key").dispatchEvent(new Event("change", { bubbles: true })));
@@ -3692,6 +4584,8 @@ export const PAGES = [
       let see = await boardNow(page);
       out.push(...expect(see.panel === !see.wide && see.expanded === String(!see.wide), "Soundboard settings opens and closes the panel and says which", JSON.stringify(see)));
       out.push(...expect(see.switchShown, "the virtual microphone's switch shows whether the panel is open or not", JSON.stringify(see)));
+      const roles = await page.evaluate(() => [...document.querySelectorAll("#sb-root .switch input")].map((input) => input.getAttribute("role")));
+      out.push(...expect(roles.length >= 1 && roles.every((role) => role === "switch"), "every switch of the Soundboard is a switch to a screen reader, not a checkbox", JSON.stringify(roles)));
       out.push(...(await tiles(page)));
       // What the keyboard does with the button and what a new start remembers depend neither on the data nor on
       // the language or the window's size: once (the pop-out's page tries the keyboard where the panel is no column).
@@ -3930,7 +4824,19 @@ export const PAGES = [
     // With a file loaded the transcript starts on the first screen.
     probe: async (page, run) => {
       const at = await page.evaluate(() => [Math.round(document.getElementById("file-text").getBoundingClientRect().top), window.innerHeight]);
-      return [...expect(at[0] < at[1], "the transcript starts on the first screen", `y ${at[0]} of ${at[1]}`), ...filesLayout(await filesNow(page), run.lang), ...(await resultLayout(page))];
+      // The end of the run is read out once: the status line itself changes with every step and is no live region.
+      const said = await page.evaluate(() => {
+        const bar = document.getElementById("file-progress-bar");
+        const live = document.getElementById("file-live");
+        return { live: live.textContent, role: live.getAttribute("role"), status: document.getElementById("file-status").textContent, statusRole: document.getElementById("file-status").getAttribute("role"), bar: [bar.getAttribute("role"), bar.getAttribute("aria-valuenow"), bar.getAttribute("aria-valuetext"), document.getElementById(bar.getAttribute("aria-labelledby"))?.textContent ?? ""] };
+      });
+      return [
+        ...expect(at[0] < at[1], "the transcript starts on the first screen", `y ${at[0]} of ${at[1]}`),
+        ...expect(said.live.length > 10 && said.live === said.status && said.role === "status" && said.statusRole === null, "the end of a transcription is read out, once, by a line of its own", JSON.stringify(said)),
+        ...expect(said.bar[0] === "progressbar" && said.bar[1] === "100" && said.bar[2] === said.status && said.bar[3].length > 3, "the file's bar is a progress bar named after the file, with its percent and what the status line says", JSON.stringify(said.bar)),
+        ...filesLayout(await filesNow(page), run.lang),
+        ...(await resultLayout(page)),
+      ];
     },
   },
   {
@@ -4490,7 +5396,9 @@ export const PAGES = [
         return (now.cancel && /43 %$/.test(now.status)) || now;
       }),
       probe: async (page) => {
-        const see = await page.evaluate(() => ({ status: document.getElementById("file-status").textContent, cancel: document.getElementById("file-cancel").checkVisibility(), clear: document.getElementById("file-clear").disabled, text: document.getElementById("file-text").value.length, bar: document.getElementById("file-progress-fill").style.width }));
+        const see = await page.evaluate(() => ({ status: document.getElementById("file-status").textContent, cancel: document.getElementById("file-cancel").checkVisibility(), clear: document.getElementById("file-clear").disabled, text: document.getElementById("file-text").value.length, bar: document.getElementById("file-progress-fill").style.width, live: document.getElementById("file-live").textContent, now: document.getElementById("file-progress-bar").getAttribute("aria-valuenow") }));
+        // While it runs nothing is read out by itself: the bar has the percent for a screen reader that asks.
+        if (see.live !== "" || see.now !== "89") return expect(false, "while a file runs nothing is read out step by step, and its bar has the percent", JSON.stringify(see));
         return expect(/43 %$/.test(see.status) && see.cancel && see.clear && see.text > 100 && see.bar === "89%", "a file that runs shows its percent, the text so far and Cancel", JSON.stringify(see));
       },
       after: (page) => page.evaluate(() => window.__MOCK__.release("transcribe_file")),
@@ -4870,6 +5778,145 @@ export const PAGES = [
       }),
       probe: async (page) => expect(await page.evaluate(() => document.getElementById("home-output-hint").checkVisibility() && document.getElementById("home-output-hint").textContent.length > 20), "Home says under Write in what Settings warns of") },
   ),
+  // ── After the whole-branch review, wave 1 ──
+  // Someone who has dictated before and has no microphone today (a USB headset that is off, a laptop away
+  // from its dock): the steps, and under them the recent dictations, which are nowhere else in the window.
+  {
+    id: "home-no-microphone",
+    state: true,
+    shows: stepsAndList("a PC in daily use without a microphone: the setup steps, with the recent dictations under them"),
+    scenarios: ["populated"],
+    sizes: STATE_SIZES,
+    open: async (page) => {
+      await page.evaluate(() => window.__MOCK__.keep({ mics: [] }));
+      await restart(page);
+      await section(page, "home");
+    },
+    probe: (page, run) => historyStays(page, run, "home_reason_microphone"),
+    after: async (page) => {
+      await page.evaluate(() => window.__MOCK__.keep({ mics: null }));
+      await restart(page);
+    },
+  },
+  // The same PC with the cloud engine and no key (it was cleared): step 2 asks for the key.
+  {
+    id: "home-cloud-no-key",
+    state: true,
+    shows: stepsAndList("a PC in daily use with the cloud engine and no key: the setup steps, with the recent dictations under them"),
+    scenarios: ["populated"],
+    sizes: STATE_SIZES,
+    open: async (page) => {
+      await page.evaluate(() => window.__MOCK__.keep({ settings: { engine: "cloud", groqApiKey: "" } }));
+      await restart(page);
+      await section(page, "home");
+    },
+    probe: async (page, run) => {
+      const out = await historyStays(page, run, "home_reason_key");
+      const step = await page.evaluate(() => [document.getElementById("setup-model").dataset.state, document.getElementById("setup-model-text").textContent, document.getElementById("setup-model-download").checkVisibility()]);
+      out.push(...expect(step[0] === "todo" && step[1] === I18N[run.lang].setup_model_cloud_key && step[2], "step 2 asks for the cloud engine's key", JSON.stringify(step)));
+      return out;
+    },
+    after: async (page) => {
+      await page.evaluate(() => window.__MOCK__.keep({ settings: null }));
+      await restart(page);
+    },
+  },
+  // A click while the settings are still on their way (see `loadWindow`).
+  {
+    id: "settings-load-window",
+    scenarios: ["populated"],
+    sizes: [BEHAVIOUR],
+    fresh: true,
+    checks: false,
+    open: (page) => settings(page, "dictation"),
+    probe: (page, run) => (run.lang === "en" ? loadWindow(page) : []),
+  },
+  // The start with a slow backend, frame by frame (see `startSequence`).
+  {
+    id: "home-start",
+    sizes: [BEHAVIOUR],
+    fresh: true,
+    checks: false,
+    open: (page) => section(page, "home"),
+    probe: startSequence,
+  },
+  // A save the backend refuses: the notice at the top of the page, and the control back on the saved value.
+  state(
+    "save-failed",
+    async (page) => {
+      await settings(page, "dictation");
+      await awaitError(page, /saving the settings failed|Failed to toggle autostart/);
+      await refuseSave(page);
+      await page.click("#mode-toggle");
+      await wait(page, 200);
+    },
+    {
+      shows: onScreen("the notice of a save the backend refused, with its reason", () => {
+        const notice = document.getElementById("save-notice");
+        const now = { shown: notice.checkVisibility(), text: notice.textContent.trim(), inView: notice.getBoundingClientRect().top >= 0 };
+        return (now.shown && now.inView && /Access is denied/.test(now.text)) || now;
+      }),
+      probe: (page, run) => (run.lang === "en" && run.size === BEHAVIOUR ? saveFails(page) : []),
+      after: logged,
+    },
+  ),
+  // A change of the Display Language (see `languageChange`).
+  {
+    id: "language-change",
+    scenarios: ["populated"],
+    sizes: [BEHAVIOUR],
+    fresh: true,
+    checks: false,
+    open: (page) => section(page, "home"),
+    probe: (page, run) => (run.lang === "en" ? languageChange(page) : []),
+    after: restart,
+  },
+  // The speech model's row with "More" open: every model with its one line. On a new PC the row also says
+  // which model is recommended for its graphics card.
+  {
+    id: "settings-models-list",
+    state: true,
+    shows: onScreen("the speech model's row with every model listed behind More", () => {
+      const list = document.getElementById("model-more");
+      const now = { tab: document.getElementById("panel-models").checkVisibility(), list: list.checkVisibility(), items: list.querySelectorAll(".model-list-item").length };
+      return (now.tab && now.list && now.items === 8) || now;
+    }),
+    sizes: STATE_SIZES,
+    open: async (page) => {
+      await restart(page);
+      await settings(page, "models");
+      await page.click("#local-settings .hint-more");
+      await wait(page, 150);
+    },
+    probe: modelList,
+    after: restart,
+  },
+  // What has no page of its own: the pages' outlines, the links to "Keep history", the focus over the
+  // 900 px step, user text with "$&", older answers that arrive last, a download after a reload.
+  {
+    id: "wave1",
+    scenarios: ["populated"],
+    sizes: [BEHAVIOUR],
+    fresh: true,
+    checks: false,
+    open: (page) => section(page, "home"),
+    probe: (page, run) => (run.lang === "en" ? wave1(page) : []),
+    after: restart,
+  },
+  // A Windows contrast theme: every control has an edge, every selected state shows (see `forcedColors`).
+  {
+    id: "forced-colors",
+    scenarios: ["populated"],
+    sizes: STATE_SIZES,
+    fresh: true,
+    checks: false,
+    open: async (page) => {
+      await page.emulateMedia({ forcedColors: "active" });
+      await section(page, "home");
+    },
+    probe: forcedColors,
+    after: (page) => page.emulateMedia({ forcedColors: null }),
+  },
   // Running text keeps its measure where the window is wide (see `measureProbe`). The last page of the main
   // window: it leaves the Soundboard without a cable and puts that back.
   {
@@ -4981,6 +6028,7 @@ export const PAGES = [
     });
     await wait(page, 150);
     out.push(...expect((await text()) === "Modelle geladen", "the pill follows a change of the Display Language", await text()));
+    out.push(...expect((await page.evaluate(() => document.documentElement.lang)) === "de", "the pill's document says which language it is in", await page.evaluate(() => document.documentElement.lang)));
     return out;
   }),
   pill("no-model", `window.__MOCK__.emit("speech-notice", "no_model");`, pillShows("says that there is no speech model", "notice", "notice"), async (page) => {

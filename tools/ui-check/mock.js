@@ -21,12 +21,20 @@
 // load: "failed" }); answerDelay makes every answer take that many ms on
 // its way back (the command itself arrives at once), as over a busy IPC:
 // what the page does between a question and its answer then has the time
-// to go wrong.
+// to go wrong. keep({ answerDelay }) makes that hold from the first moment
+// of the next start of the page (set on window.__MOCK__ it begins only once
+// a check can run, which is after the start's questions went out), and
+// keep({ settings }) lays values over the settings the next start reads
+// (the cloud engine without its key: { engine: "cloud" }).
 // The states the page cannot bring about itself (ui-check's state pages):
 // refuseNext(cmd, why) makes the next call of a command fail with the
 // backend's own words; holdNext(cmd) lets the next call wait (a file being
 // transcribed, a summary, the PC check) until release(cmd) answers it or
-// reject(cmd, why) refuses it; sb is the Soundboard beside its saved board
+// reject(cmd, why) refuses it; lateNext(cmd, ms) answers the next call with
+// what was true when it arrived, ms later (an older answer that lands after
+// a newer one); ai is laid over what ai_status answers (a download that runs
+// in the backend: { downloading: "gemma-4-e4b" }; with keep({ ai }) also for
+// the next start of the page); sb is the Soundboard beside its saved board
 // (status, missing, taken, playing, devices: null = as the data set has it)
 // and board the saved board itself, to change before a "soundboard-changed";
 // manySounds() fills it with 24 sounds in 5 categories; meetingRecording(patch)
@@ -86,6 +94,9 @@
         idleUnloadMinutes: 30,
       }
     : { ...defaults, uiLanguage: CFG.lang || "" };
+  /** What a check set for this start of the page and the next ones (the session's). */
+  const kept = JSON.parse(sessionStorage.getItem("ui-check-mock") || "{}");
+  if (kept.settings) settings = { ...settings, ...kept.settings };
 
   const history = rich
     ? [
@@ -110,8 +121,6 @@
   /** A model that was just downloaded loads for a moment, as in the app. */
   let loadingUntil = 0;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  /** What a check set for this start of the page and the next ones (the session's). */
-  const kept = JSON.parse(sessionStorage.getItem("ui-check-mock") || "{}");
 
   // ── Meetings ──
   const M1 = "m-20261005-1400", M2 = "m-20261002-1000", MREC = "m-live";
@@ -264,6 +273,9 @@
     aiFallback: null,
     refuseNext: (cmd, why) => (refusals[cmd] = why),
     holdNext: (cmd) => holds.add(cmd),
+    lateNext: (cmd, ms) => (lates[cmd] = ms),
+    /** Laid over what ai_status answers; null: as the data set and the downloads have it. */
+    ai: kept.ai ?? null,
     release: (cmd) => waiting[cmd]?.finish(),
     reject: (cmd, why) => waiting[cmd]?.fail(why),
     /** `n` more dictations in the history (for "Show all" and its pages). */
@@ -288,7 +300,7 @@
     /** Laid over the speech model's state; null: as the settings and the downloads have it. */
     speech: null,
     /** Every answer (and every refusal) is this many ms on its way back to the page. */
-    answerDelay: 0,
+    answerDelay: kept.answerDelay ?? 0,
     finishDownload: (kind = "speech") => downloads[kind]?.finish(),
     failDownload: (kind = "speech", why = "error sending request") => downloads[kind]?.fail(why),
   };
@@ -297,6 +309,7 @@
   const refusals = {};
   const holds = new Set();
   const waiting = {};
+  const lates = {};
 
   // ── Hotkeys: what the backend refuses (main.rs: change_hotkey, check_board_hotkey) ──
   const windowsShortcut = (hotkey) => {
@@ -464,6 +477,7 @@
       // On a new PC the AI runs once its model is there and AI cleanup is on.
       server: rich || (settings.aiCleanup && aiModels.some((m) => m.id === settings.aiModel && m.downloaded)) ? { state: "ready", device: "NVIDIA GeForce RTX 5080 (CUDA)" } : { state: "stopped" },
       installed: true, models: aiModels, downloading: downloads.ai ? settings.aiModel : null, gpuFreed: false, gameFreed: false,
+      ...window.__MOCK__.ai,
     }),
     ai_download_model: (a) => {
       // One at a time, as in the backend.
@@ -649,6 +663,13 @@
           const why = refusals[cmd];
           delete refusals[cmd];
           throw why;
+        }
+        // Late: answered now, with what is true now, and delivered later.
+        if (cmd in lates) {
+          const ms = lates[cmd];
+          delete lates[cmd];
+          const answer = JSON.parse(JSON.stringify(handler(a) ?? null));
+          return sleep(ms).then(() => answer);
         }
         // Held: the answer waits until a check gives or refuses it.
         if (holds.delete(cmd)) {
