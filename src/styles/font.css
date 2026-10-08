@@ -1,0 +1,7 @@
+/* IBM Plex Sans in the three weights the windows write in, every script the
+   package has. Shipped with the app (SIL Open Font License 1.1, see
+   licenses/IBM-Plex-Sans-OFL.txt): nothing is fetched. The pill loads the
+   Latin part of two weights itself (src/overlay.html). */
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";

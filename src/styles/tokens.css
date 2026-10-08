@@ -1,9 +1,9 @@
 /* Design tokens (look B: calm and airy dark). The one source for colours,
-   shape, space, type and motion; components.css and the pages use these
-   names only. The font is shipped with the app: nothing is fetched. */
-@import "@fontsource/ibm-plex-sans/400.css";
-@import "@fontsource/ibm-plex-sans/500.css";
-@import "@fontsource/ibm-plex-sans/600.css";
+   shape, space, type and motion; components.css, the pages and the pill
+   (src/overlay.html) use these names only. The font's files are loaded by
+   whoever uses the tokens (styles/font.css for the windows; the pill takes
+   the Latin part alone): the font is shipped with the app, nothing is
+   fetched. */
 
 :root {
   color-scheme: dark;

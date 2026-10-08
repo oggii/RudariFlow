@@ -3,11 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <style>
-      /* The pill has its own small palette (it floats over any desktop) and
-         takes two things from the window's standard: its sizes are on the
-         type scale, and what fades does so like a page of the window
-         (src/styles/tokens.css, --ease). */
-      :root { --ease: 150ms ease-out; }
+      /* The pill is a part of the app: it is set in the window's font and
+         takes the window's tokens (src/styles/tokens.css: the colours of
+         text, of what records, of what waits and of Edit mode, the type
+         scale, the one fade). Of the font only the Latin part is loaded, in
+         the two weights the pill writes in; the pill's own are what floats
+         over any desktop: its see-through ground, its edge and its resting
+         bars. */
+      @import "@fontsource/ibm-plex-sans/latin-500.css";
+      @import "@fontsource/ibm-plex-sans/latin-600.css";
+      @import "./styles/tokens.css";
+      /* Not the tokens' dark colour scheme: it gives a page whose own ground
+         is see-through a dark ground from the browser, and the pill's window
+         must stay see-through around the pill, as it was. */
+      :root { color-scheme: normal; }
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body {
         background: transparent;
@@ -15,8 +24,8 @@
         user-select: none;
         -webkit-user-select: none;
         height: 100%;
-        font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
-        color: #fff;
+        font-family: var(--font);
+        color: var(--text);
       }
       body {
         display: flex;
@@ -47,7 +56,7 @@
         height: 22px;
         fill: rgba(255, 255, 255, 0.85);
       }
-      body[data-state="transcribing"] .mic-icon { fill: #ffb74d; }
+      body[data-state="transcribing"] .mic-icon { fill: var(--text-warn); }
 
       /* The newest level is the bar at the right (the first one in the
          markup: the row runs from right to left). Where the 32 bars have less
@@ -84,9 +93,9 @@
         border-radius: 2px;
         transition: height 80ms ease-out, background 200ms ease;
       }
-      body[data-state="recording"] .bar { background: #ff5c5c; }
+      body[data-state="recording"] .bar { background: var(--text-danger); }
       body[data-state="transcribing"] .bar {
-        background: rgba(255, 183, 77, 0.85);
+        background: var(--text-warn);
         animation: shimmer 1.2s ease-in-out infinite;
       }
       @keyframes shimmer {
@@ -101,7 +110,7 @@
         border-radius: 50%;
         background: rgba(255, 255, 255, 0.1);
         border: none;
-        color: #fff;
+        color: var(--text);
         font-size: 14px;
         line-height: 1;
         cursor: pointer;
@@ -110,7 +119,7 @@
         justify-content: center;
       }
       .cancel:hover { background: rgba(255, 92, 92, 0.85); }
-      .cancel svg { width: 10px; height: 10px; stroke: #fff; }
+      .cancel svg { width: 10px; height: 10px; stroke: currentColor; }
       /* What was said so far, on one line in the middle of the window. The
          text grows with every segment Whisper sends, and what the user
          watches is its end: a text that fits stands in the middle, a longer
@@ -119,7 +128,11 @@
          (justify-content) with the text as its one item; the item's auto
          margins centre it while there is room and count as nothing once
          there is none. The fade lies in the line's own left padding, where a
-         text that fits never stands. */
+         text that fits never stands.
+
+         The ground of a text state is solid (the window's card surface): on
+         the pill's own see-through ground the microphone, the bars and the
+         x showed faintly behind the words. */
       .transcript {
         position: absolute;
         inset: 0;
@@ -129,8 +142,8 @@
         font-size: 12px;
         font-weight: 500;
         line-height: 1.3;
-        color: rgba(255, 255, 255, 0.95);
-        background: rgba(20, 20, 22, 0.92);
+        color: var(--text);
+        background: var(--surface);
         border-radius: 999px;
         border: 1px solid rgba(255, 255, 255, 0.08);
         opacity: 0;
@@ -167,8 +180,8 @@
         margin-right: 10px;
         padding: 3px 8px;
         border-radius: 999px;
-        background: rgba(124, 138, 255, 0.22);
-        color: #c9cfff;
+        background: var(--accent-bg);
+        color: var(--text-accent);
         font-size: 12px;
         font-weight: 600;
       }
@@ -180,8 +193,8 @@
         mask-image: none;
       }
       @keyframes polish {
-        0%, 100% { color: rgba(255, 255, 255, 0.95); }
-        50% { color: rgba(255, 255, 255, 0.6); }
+        0%, 100% { color: var(--text); }
+        50% { color: var(--text-2); }
       }
       /* Reduced motion: nothing in the pill moves; its states still change, at once. */
       @media (prefers-reduced-motion: reduce) {
@@ -200,8 +213,8 @@
         justify-content: center;
         font-size: 12px;
         font-weight: 500;
-        color: rgba(255, 255, 255, 0.95);
-        background: rgba(20, 20, 22, 0.92);
+        color: var(--text);
+        background: var(--surface);
         border-radius: 999px;
         border: 1px solid rgba(255, 255, 255, 0.08);
         /* A long notice takes two lines. */
@@ -222,15 +235,15 @@
         gap: 4px;
         padding: 3px 8px;
         border-radius: 999px;
-        background: rgba(124, 138, 255, 0.22);
-        color: #c9cfff;
+        background: var(--accent-bg);
+        color: var(--text-accent);
         font-size: 12px;
         font-weight: 600;
         white-space: nowrap;
       }
       body[data-edit="1"] .edit-chip { display: flex; }
-      body[data-edit="1"] .mic-icon { fill: #9aa5ff; }
-      body[data-edit="1"][data-state="recording"] .bar { background: #9aa5ff; }
+      body[data-edit="1"] .mic-icon { fill: var(--text-accent); }
+      body[data-edit="1"][data-state="recording"] .bar { background: var(--text-accent); }
 
       /* A meeting records: a small red dot, also between dictations (the
          window lets clicks through then, see recorder.rs rest_overlay). */
@@ -242,7 +255,7 @@
         width: 10px;
         height: 10px;
         border-radius: 50%;
-        background: #ff5c5c;
+        background: var(--text-danger);
         box-shadow: 0 0 0 2px rgba(20, 20, 22, 0.92);
         pointer-events: none;
       }
@@ -406,7 +419,7 @@
           gpu_freed: "GPU freed", gpu_loading: "Loading models…", gpu_loaded: "Models loaded",
           gpu_failed: "Models could not be loaded",
           sb_hotkeys_off: "Sound hotkeys off", sb_hotkeys_on: "Sound hotkeys on",
-          mt_limit: "Meeting stopped at 4 hours", mt_no_model: "Download a Whisper model first",
+          mt_limit: "Meeting stopped at 4 hours", mt_no_model: "Download a speech model first",
           mt_disk_full: "Not enough disk space for a meeting", mt_pc_check: "Wait for the PC check to finish",
           mt_failed: "The meeting could not start",
           no_model: "No speech model yet. Open RudariFlow to download one.", cancel: "Cancel recording",
@@ -414,14 +427,14 @@
         de: {
           audio_empty: "Keine Sprache erkannt", mic_error: "Mikrofon nicht verfügbar", polishing: "Überarbeitung",
           mic_missing: "Mikrofon nicht gefunden", no_mic: "Kein Mikrofon gefunden",
-          rewrite_missing: "Letztes Diktat hier nicht gefunden", rewrite_needs_ai: "Umschreiben braucht KI-Korrektur und Bearbeiten",
+          rewrite_missing: "Letztes Diktat hier nicht gefunden", rewrite_needs_ai: "Umschreiben braucht KI-Korrektur und Bearbeiten per Stimme",
           rewrite_game: "Kein Umschreiben, solange die GPU für ein Spiel frei ist",
           edit_game: "Kein Bearbeiten, solange die GPU für ein Spiel frei ist",
           editing: "Bearbeiten", word: "Wort", words: "Wörter", edit_failed: "Bearbeiten ging nicht, Text unverändert",
           gpu_freed: "GPU freigegeben", gpu_loading: "Modelle werden geladen…", gpu_loaded: "Modelle geladen",
           gpu_failed: "Modelle konnten nicht geladen werden",
           sb_hotkeys_off: "Sound-Tastenkürzel aus", sb_hotkeys_on: "Sound-Tastenkürzel ein",
-          mt_limit: "Meeting nach 4 Stunden beendet", mt_no_model: "Zuerst ein Whisper-Modell herunterladen",
+          mt_limit: "Meeting nach 4 Stunden beendet", mt_no_model: "Zuerst ein Sprachmodell herunterladen",
           mt_disk_full: "Zu wenig Speicherplatz für ein Meeting", mt_pc_check: "Erst den PC-Check abwarten",
           mt_failed: "Das Meeting konnte nicht starten",
           no_model: "Noch kein Sprachmodell. Öffne RudariFlow und lade eines herunter.", cancel: "Aufnahme abbrechen",
